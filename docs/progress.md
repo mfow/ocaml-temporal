@@ -29,6 +29,9 @@ Evidence:
 - A focused boundary test then failed for negative and non-finite metadata and
   passed after the common tag constructor normalized invalid durations and
   counts to zero.
+- A reporter re-entry regression first produced an extra workflow command,
+  then passed after runtime reports began masking the Domain-local workflow
+  context around application callbacks.
 - Repository smoke tests first failed because `logs` was absent from package
   metadata, then passed after Dune, OPAM, and the locked dependency closure
   declared it.

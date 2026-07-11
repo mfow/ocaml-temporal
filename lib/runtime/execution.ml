@@ -6,6 +6,12 @@ type ('input, 'output) implementation =
     workflow command and error semantics never depend on application logging. *)
 module Observability = Temporal_base.Observability
 
+(** Reports with workflow context masked so an application reporter cannot
+    re-enter workflow APIs and mutate the deterministic command buffer. *)
+let report ~src level ~tags message =
+  Workflow_context_store.without_context (fun () ->
+      Observability.report ~src level ~tags message)
+
 (** In-memory state for one workflow. Only the activation loop changes it.
     [terminal] prevents a second completion command, and [evicted] prevents use
     after Core asks the worker to remove the execution from its cache. *)
@@ -39,7 +45,7 @@ let start definition input =
     Observability.tags ~operation:"execution_created"
       ~workflow_type:(Temporal_base.Definition.name definition) ()
   in
-  Observability.report ~src:Observability.Source.workflow Logs.Debug ~tags
+  report ~src:Observability.Source.workflow Logs.Debug ~tags
     "workflow execution state created";
   execution
 
@@ -60,7 +66,7 @@ let emit_terminal execution command =
           Observability.tags ~operation:"workflow_completed"
             ~workflow_type:(workflow_type execution) ()
         in
-        Observability.report ~src:Observability.Source.workflow Logs.Info ~tags
+        report ~src:Observability.Source.workflow Logs.Info ~tags
           "workflow completed"
     | Fail_workflow _ | Cancel_workflow_execution
     | Schedule_activity _ | Request_cancel_activity _ | Start_timer _
@@ -74,7 +80,7 @@ let fail execution error =
         ~workflow_type:(workflow_type execution)
         ~error_kind:(Temporal_base.Error.kind error) ()
     in
-    Observability.report ~src:Observability.Source.workflow Logs.Error ~tags
+    report ~src:Observability.Source.workflow Logs.Error ~tags
       "workflow failed");
   emit_terminal execution (Activation.Fail_workflow error)
 
@@ -95,7 +101,7 @@ let start_workflow execution =
       Observability.tags ~operation:"workflow_started"
         ~workflow_type:(workflow_type execution) ()
     in
-    Observability.report ~src:Observability.Source.workflow Logs.Info ~tags
+    report ~src:Observability.Source.workflow Logs.Info ~tags
       "workflow started";
     Scheduler.spawn execution.scheduler (fun () ->
         match Temporal_base.Definition.implementation execution.definition with
@@ -135,7 +141,7 @@ let process_job execution = function
           Observability.tags ~operation:"workflow_cancelled"
             ~workflow_type:(workflow_type execution) ()
         in
-        Observability.report ~src:Observability.Source.workflow Logs.Info ~tags
+        report ~src:Observability.Source.workflow Logs.Info ~tags
           "workflow cancellation requested");
       emit_terminal execution Activation.Cancel_workflow_execution
   | Remove_from_cache ->
@@ -144,7 +150,7 @@ let process_job execution = function
         Observability.tags ~operation:"execution_evicted"
           ~workflow_type:(workflow_type execution) ()
       in
-      Observability.report ~src:Observability.Source.workflow Logs.Debug ~tags
+      report ~src:Observability.Source.workflow Logs.Debug ~tags
         "workflow execution evicted";
       Workflow_context_store.shutdown execution.context
 
@@ -173,7 +179,7 @@ let activate execution jobs =
             Observability.tags ~operation:"activation_ignored"
               ~workflow_type:(workflow_type execution) ~job_count ()
           in
-          Observability.report ~src:Observability.Source.workflow Logs.Warning
+          report ~src:Observability.Source.workflow Logs.Warning
             ~tags "activation ignored after cache eviction";
           [])
         else (
@@ -190,6 +196,6 @@ let activate execution jobs =
       ~workflow_type:(workflow_type execution) ~job_count
       ~command_count:(List.length commands) ()
   in
-  Observability.report ~src:Observability.Source.workflow Logs.Debug ~tags
+  report ~src:Observability.Source.workflow Logs.Debug ~tags
     "workflow activation processed";
   commands

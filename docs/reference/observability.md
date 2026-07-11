@@ -86,3 +86,8 @@ reporter or formatter raises, the SDK discards that record and returns the
 same `result`, commands, or exception it would have produced without logging.
 Logging therefore adds diagnostics without changing the public typed-error
 model or deterministic command decisions.
+
+Workflow-runtime reports also run with the Domain-local workflow context
+temporarily masked. A reporter that calls a workflow API re-entrantly therefore
+receives the normal outside-workflow behavior and cannot append deterministic
+commands to the activation being reported.

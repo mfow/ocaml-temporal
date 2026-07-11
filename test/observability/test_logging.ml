@@ -96,11 +96,37 @@ let waiting_activity =
   Temporal.Activity.remote ~name:"wait" ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
 
+(** Records whether an application reporter can observe active workflow
+    context, and attempts a re-entrant workflow API call if it can. *)
+let reporter_observed_workflow_context = ref false
+
+(** Reporter fixture that probes the determinism boundary before acknowledging
+    each record. *)
+let context_probing_reporter =
+  let report _source _level ~over continuation messagef =
+    if Temporal.Workflow_context.is_active () then (
+      reporter_observed_workflow_context := true;
+      ignore (Temporal.Activity.start waiting_activity "reporter-reentry"));
+    messagef (fun ?header:_ ?tags:_ format ->
+        Format.kasprintf
+          (fun _message ->
+            over ();
+            continuation ())
+          format)
+  in
+  { Logs.report }
+
 (** Workflow fixture whose payload-like input must never enter log prose. *)
 let waiting_workflow =
   Temporal.Workflow.define ~name:"logging_fixture"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
       Temporal.Activity.execute waiting_activity input)
+
+(** Workflow fixture that reaches the failure reporter from a running fiber. *)
+let failing_workflow =
+  Temporal.Workflow.define ~name:"failing_logging_fixture"
+    ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+      Error (Temporal.Error.defect ~message:"fixture failure"))
 
 (** Stable source and tag names are the filtering contract applications use. *)
 let test_source_and_tag_names () =
@@ -215,8 +241,28 @@ let test_reporter_exceptions_are_contained () =
       | [ Activation.Schedule_activity _ ] -> ()
       | _ -> failwith "reporter changed workflow behavior")
 
+(** Application reporters run outside workflow context so re-entrant SDK calls
+    cannot append commands or otherwise affect deterministic execution. *)
+let test_reporters_cannot_reenter_workflow_context () =
+  let reporter = Logs.reporter () in
+  let level = Logs.level () in
+  reporter_observed_workflow_context := false;
+  Logs.set_reporter context_probing_reporter;
+  Logs.set_level (Some Logs.Debug);
+  Fun.protect
+    ~finally:(fun () ->
+      Logs.set_reporter reporter;
+      Logs.set_level level)
+    (fun () ->
+      let execution = Execution.start failing_workflow () in
+      match Execution.activate execution [ Activation.Start_workflow ] with
+      | [ Activation.Fail_workflow _ ] ->
+          assert (not !reporter_observed_workflow_context)
+      | _ -> failwith "reporter re-entry changed workflow commands")
+
 let () =
   test_source_and_tag_names ();
   test_bridge_events ();
   test_workflow_events_and_privacy ();
-  test_reporter_exceptions_are_contained ()
+  test_reporter_exceptions_are_contained ();
+  test_reporters_cannot_reenter_workflow_context ()

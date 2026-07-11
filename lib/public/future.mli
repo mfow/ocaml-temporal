@@ -31,7 +31,9 @@ val both :
 
 (** Returns a future that completes after every input. Successful values retain
     input order. When inputs fail, the first error in input order is returned
-    after all siblings settle. The empty list succeeds immediately. *)
+    after all siblings settle. The empty list succeeds immediately and, when
+    called by workflow code, retains that execution's ownership so it can be
+    composed with other futures. *)
 val all : ('value, Error.t) t list -> ('value list, Error.t) t
 
 (** Returns the first completion from two differently typed inputs. An error is

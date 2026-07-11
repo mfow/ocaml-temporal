@@ -21,8 +21,9 @@ val define :
   ('input, 'output) implementation ->
   ('input, 'output) t
 
-(** Creates a typed reference to a workflow implemented by another worker. It
-    will be usable as a child-workflow target when that API is added. *)
+(** Creates a typed reference to a workflow implemented by another worker. Use
+    it with [Child_workflow.start] or [Child_workflow.execute] when invoking the
+    workflow as a child. *)
 val remote :
   name:string ->
   input:'input Codec.t ->

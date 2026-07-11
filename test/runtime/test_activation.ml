@@ -199,6 +199,22 @@ let zero_start_sleep_workflow =
       if Temporal.Future.is_ready timer then Temporal.Future.await timer
       else Error (Temporal.Error.defect ~message:"zero timer was pending"))
 
+(** Workflow fixture combining the identity value [all []] with a normal timer.
+    The empty aggregate must inherit this execution's scheduler ownership so it
+    composes without a false cross-execution defect. *)
+let empty_all_with_timer_workflow =
+  Temporal.Workflow.define ~name:"empty_all_with_timer"
+    ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+      let empty = Temporal.Future.all [] in
+      let timer =
+        Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 1L)
+      in
+      match Temporal.Future.await (Temporal.Future.both empty timer) with
+      | Ok ([], ()) -> Ok ()
+      | Ok (_ :: _, ()) ->
+          Error (Temporal.Error.defect ~message:"empty all returned a value")
+      | Error error -> Error error)
+
 (** Covers zero sleep and rejection of negative durations. *)
 let test_zero_sleep_and_duration_validation () =
   let execution = Execution.start zero_sleep_workflow () in
@@ -243,6 +259,22 @@ let test_start_sleep () =
   | Some (Error error) ->
       expect "detached start sleep" "defect" (Temporal.Error.kind error)
   | Some (Ok ()) | None -> failwith "detached start sleep did not fail immediately"
+
+(** Proves an empty aggregate created inside a workflow is owned by that
+    workflow and can be paired with an ordinary pending operation. *)
+let test_empty_all_uses_current_workflow_owner () =
+  let execution = Execution.start empty_all_with_timer_workflow () in
+  expect "empty all composes with timer"
+    [ Activation.Start_timer { seq = 1L; milliseconds = 1L } ]
+    (Execution.activate execution [ Activation.Start_workflow ]);
+  expect "empty all and timer complete"
+    [
+      Activation.Complete_workflow
+        (match Temporal.Codec.encode Temporal.Codec.unit () with
+        | Ok payload -> payload
+        | Error error -> failwith (Temporal.Error.message error));
+    ]
+    (Execution.activate execution [ Activation.Fire_timer { seq = 1L } ])
 
 (** Covers the child schedule/resolution path and proves the application-owned
     ID is emitted unchanged as durable command data. *)
@@ -449,6 +481,7 @@ let () =
   test_bridge_defects ();
   test_zero_sleep_and_duration_validation ();
   test_start_sleep ();
+  test_empty_all_uses_current_workflow_owner ();
   test_child_workflow_completion ();
   test_child_workflow_concurrency_and_decoding ();
   test_child_workflow_validation ();

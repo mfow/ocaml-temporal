@@ -22,7 +22,15 @@ let map_error = Temporal_runtime.Future_store.map_error
 let both left right =
   Temporal_runtime.Future_store.both ~ownership_error left right
 
-let all futures = Temporal_runtime.Future_store.all ~ownership_error futures
+(** Preserves the active workflow's ownership for the empty identity aggregate.
+    Without an input from which to infer an owner, the low-level store uses an
+    inert owner; selecting the current context here lets [all []] compose with
+    ordinary workflow futures while remaining ready and command-free. *)
+let all futures =
+  match (futures, Temporal_runtime.Workflow_context_store.current ()) with
+  | [], Some context ->
+      Temporal_runtime.Workflow_context_store.resolved context (Ok [])
+  | _ -> Temporal_runtime.Future_store.all ~ownership_error futures
 
 let race left right =
   Temporal_runtime.Future_store.race ~ownership_error left right

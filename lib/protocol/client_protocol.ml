@@ -166,11 +166,40 @@ let encode_start_request (value : start_request) =
         ("input", input);
       ])
 
-let decode_start_response input =
+(** Verifies that a decoded response names the request's workflow identity.
+    Start responses only require the server-assigned run to be non-empty;
+    exact-run waits additionally pass [run_id] and require an exact match. *)
+let validate_execution_matches path ~namespace ~workflow_id ?run_id
+    (actual : execution) =
+  if not (String.equal actual.namespace namespace) then
+    Error
+      (invalid ~path:(path ^ ".namespace")
+         "response namespace does not match the requested execution")
+  else if not (String.equal actual.workflow_id workflow_id) then
+    Error
+      (invalid ~path:(path ^ ".workflow_id")
+         "response workflow ID does not match the requested execution")
+  else if String.length actual.run_id = 0 then
+    Error (invalid ~path:(path ^ ".run_id") "response run ID is empty")
+  else
+    match run_id with
+    | Some expected when not (String.equal actual.run_id expected) ->
+        Error
+          (invalid ~path:(path ^ ".run_id")
+             "response run ID does not match the requested execution")
+    | Some _ | None -> Ok ()
+
+(** Parses a successful start document and correlates its execution with the
+    request that produced it before exposing the server-assigned run. *)
+let decode_start_response ~request input =
   let* json = decode_object input in
   let* entries = exact_object "$" [ "execution" ] json in
   let* execution_json = field "$" "execution" entries in
   let* execution = decode_execution "$.execution" execution_json in
+  let* () =
+    validate_execution_matches "$.execution" ~namespace:request.namespace
+      ~workflow_id:request.workflow_id execution
+  in
   Ok { execution }
 
 let encode_wait_request (value : wait_request) =
@@ -283,7 +312,6 @@ let validate_wait_successor execution outcome =
 let client_error_code kind path value =
   let rpc_codes =
     [
-      "ok";
       "cancelled";
       "unknown";
       "invalid_argument";
@@ -307,16 +335,24 @@ let client_error_code kind path value =
   if List.mem value allowed then Ok value
   else Error (invalid ~path "unknown client error code")
 
-let decode_wait_response input =
+(** Parses one terminal exact-run response and verifies that the response
+    execution is the requested run before validating its outcome chain. *)
+let decode_wait_response ~(request : wait_request) input =
   let* json = decode_object input in
   let* entries = exact_object "$" [ "execution"; "outcome" ] json in
   let* execution_json = field "$" "execution" entries in
   let* execution = decode_execution "$.execution" execution_json in
+  let* () =
+    validate_execution_matches "$.execution" ~namespace:request.namespace
+      ~workflow_id:request.workflow_id ~run_id:request.run_id execution
+  in
   let* outcome_json = field "$" "outcome" entries in
   let* outcome = decode_outcome outcome_json in
   let* () = validate_wait_successor execution outcome in
   Ok { execution; outcome }
 
+(** Parses the closed structured error body emitted by Rust. Operation-specific
+    wrappers below add request identity and allowed-category checks. *)
 let decode_client_error input =
   let* json = decode_object input in
   let path = "$" in
@@ -347,3 +383,37 @@ let decode_client_error input =
       if String.equal kind "rpc" then Ok (Rpc { code })
       else Ok (Protocol { code })
   | _ -> Error (invalid ~path:"$.kind" "unknown client error kind")
+
+(** Checks that an error body is valid for a workflow-start operation. The
+    [already_started] identity is correlated with the request so a malformed
+    native response cannot attribute another workflow's conflict to the
+    caller. *)
+let validate_start_error (request : start_request) = function
+  | Already_started { workflow_id; _ } as error ->
+      if String.equal workflow_id request.workflow_id then Ok error
+      else
+        Error
+          (invalid ~path:"$.workflow_id"
+             "already-started error names a different workflow ID")
+  | (Rpc _ | Protocol _) as error -> Ok error
+
+(** Rejects error categories that cannot be returned by an exact-run wait.
+    Keeping this check beside the decoder makes the operation-specific closed
+    vocabulary explicit rather than relying only on Rust status numbers. *)
+let validate_wait_error (_request : wait_request) = function
+  | Already_started _ ->
+      Error
+        (invalid ~path:"$.kind"
+           "already_started is not a valid exact-run wait error")
+  | (Rpc _ | Protocol _) as error -> Ok error
+
+(** Decodes a start failure and correlates any existing-run identity with the
+    requested workflow ID. *)
+let decode_start_error ~request input =
+  let* error = decode_client_error input in
+  validate_start_error request error
+
+(** Decodes a wait failure while rejecting the start-only conflict category. *)
+let decode_wait_error ~request input =
+  let* error = decode_client_error input in
+  validate_wait_error request error

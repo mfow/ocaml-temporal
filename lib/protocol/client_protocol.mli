@@ -59,14 +59,26 @@ val error_view : error -> error_view
 val encode_start_request : start_request -> (string, error) result
 (** Validates and serializes one start request. *)
 
-val decode_start_response : string -> (start_response, error) result
-(** Strictly decodes one successful start response. *)
+val decode_start_response : request:start_request -> string -> (start_response, error) result
+(** Strictly decodes one successful start response and verifies that the
+    returned namespace and workflow ID belong to the requested start. *)
 
 val encode_wait_request : wait_request -> (string, error) result
 (** Validates and serializes one exact-run wait request. *)
 
-val decode_wait_response : string -> (wait_response, error) result
-(** Strictly decodes one terminal exact-run response. *)
+val decode_wait_response : request:wait_request -> string -> (wait_response, error) result
+(** Strictly decodes one terminal exact-run response and verifies that the
+    returned execution is exactly the requested run. *)
 
 val decode_client_error : string -> (client_error, error) result
 (** Strictly decodes the structured error body returned by the native ABI. *)
+
+val decode_start_error :
+  request:start_request -> string -> (client_error, error) result
+(** Decodes a start error and correlates an [already_started] body with the
+    workflow ID supplied by the start request. *)
+
+val decode_wait_error :
+  request:wait_request -> string -> (client_error, error) result
+(** Decodes an exact-run wait error and rejects the start-only
+    [already_started] category. *)

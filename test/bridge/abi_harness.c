@@ -11,6 +11,7 @@ static void assert_empty(ocaml_temporal_core_buffer buffer) {
 
 int main(void) {
   ocaml_temporal_core_result result = {0};
+  ocaml_temporal_core_runtime *runtime = NULL;
 
   assert(ocaml_temporal_core_v1_check_abi_version(
              OCAML_TEMPORAL_CORE_ABI_VERSION, &result) ==
@@ -62,10 +63,35 @@ int main(void) {
   assert(ocaml_temporal_core_v1_result_free(&result) ==
          OCAML_TEMPORAL_CORE_STATUS_OK);
 
+  assert(ocaml_temporal_core_v1_runtime_new(&runtime, &result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(runtime != NULL);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_runtime_free(&runtime) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+
+  assert(ocaml_temporal_core_v1_runtime_new(&runtime, &result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_runtime_dispose(&runtime) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(runtime == NULL);
+  assert(runtime == NULL);
+  assert(ocaml_temporal_core_v1_runtime_free(&runtime) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+
   assert(ocaml_temporal_core_v1_check_abi_version(
              OCAML_TEMPORAL_CORE_ABI_VERSION, NULL) ==
          OCAML_TEMPORAL_CORE_STATUS_INVALID_ARGUMENT);
   assert(ocaml_temporal_core_v1_result_free(NULL) ==
+         OCAML_TEMPORAL_CORE_STATUS_INVALID_ARGUMENT);
+  assert(ocaml_temporal_core_v1_runtime_new(NULL, &result) ==
+         OCAML_TEMPORAL_CORE_STATUS_INVALID_ARGUMENT);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_runtime_free(NULL) ==
          OCAML_TEMPORAL_CORE_STATUS_INVALID_ARGUMENT);
 
   return 0;

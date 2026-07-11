@@ -15,11 +15,11 @@ background threads.
 
 ABI version 1 uses only symbols beginning with `ocaml_temporal_core_v1_`.
 Before using the bridge, OCaml asks Rust which ABI version it implements and
-checks that it matches `OCAML_TEMPORAL_CORE_ABI_VERSION`. Future bridge code
-will represent the Rust runtime, server connection, and worker with opaque
-handles. “Opaque” means OCaml can pass a handle back to Rust but cannot inspect
-the Rust object it refers to. A connection handle is only one internal part of
-the SDK; the public package is not merely a service client.
+checks that it matches `OCAML_TEMPORAL_CORE_ABI_VERSION`. The bridge represents
+the Rust runtime, and will represent server connections and workers, with
+opaque handles. “Opaque” means OCaml can pass a handle back to Rust but cannot
+inspect the Rust object it refers to. A connection handle is only one internal
+part of the SDK; the public package is not merely a service client.
 
 The canonical header is
 `rust/core-bridge/include/ocaml_temporal_core.h`. Both Rust and C compile-time
@@ -107,15 +107,33 @@ same wait path. This avoids polling timers while also avoiding runtime
 registration, reentrancy, and teardown races from Tokio threads entering
 OCaml.
 
+### Runtime destruction
+
+Creating an SDK runtime starts its Tokio executor and a small Rust cleanup
+thread dedicated to that owner. Explicit OCaml shutdown atomically detaches the
+opaque pointer, releases the OCaml runtime lock, transfers Core to the cleanup
+thread, and waits until Core's destructor has returned. This makes orderly
+shutdown observable without preventing other OCaml Domains from running.
+
+The OCaml custom-block finalizer is a fallback for abandoned runtime values. It
+performs the same atomic detach and ownership transfer but does not wait. Core
+is therefore never destroyed by the OCaml garbage collector thread, whose
+progress must not depend on Tokio shutdown. Both paths clear the handle before
+transfer and are idempotent; exactly one path can own the native runtime.
+
 ## Verification
 
 Rust integration tests cover version negotiation, status propagation, binary
 and zero-length buffers, invalid null pointers, bounded blocking, repeated
-result disposal, and panic containment. A C11 harness compiles against the
-public header, links the actual static archive, exercises the ownership
-contract, and runs with Address Sanitizer and UndefinedBehavior Sanitizer in
-the development container. An OCaml two-Domain test calls the linked Rust
-archive and proves another Domain progresses during a native wait. An install
+result disposal, panic containment, explicit runtime closure, and completion of
+the asynchronous finalizer fallback. The latter runs in an isolated test
+process and observes monotonic cleanup counters only after Core's destructor
+returns, preventing a parallel test from producing a false positive. A C11
+harness compiles against the public header, links the actual static archive,
+exercises the ownership contract, and runs with Address Sanitizer and
+UndefinedBehavior Sanitizer in the development container. An OCaml two-Domain
+test calls the linked Rust archive and proves another Domain progresses during
+a native wait. An install
 smoke test builds a fresh OCaml executable from the staged package and invokes
 the negotiated ABI through the public `Temporal.Runtime_info` module.
 

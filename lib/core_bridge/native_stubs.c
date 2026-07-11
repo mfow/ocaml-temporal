@@ -8,6 +8,7 @@
 #include <caml/threads.h>
 
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,10 +20,21 @@ typedef struct owned_response {
   int live;
 } owned_response;
 
+/* OCaml custom block owning the sole native runtime pointer for one SDK
+ * instance. Future client and worker state remains subordinate to this owner. */
+typedef struct owned_runtime {
+  _Atomic(ocaml_temporal_core_runtime *) runtime;
+} owned_runtime;
+
 /* Extract the custom-block payload; callers must separately require liveness
  * before reading Rust-owned pointer fields. */
 static owned_response *Response_val(value response) {
   return (owned_response *)Data_custom_val(response);
+}
+
+/* Extract the private runtime owner stored in an OCaml custom block. */
+static owned_runtime *Runtime_val(value runtime) {
+  return (owned_runtime *)Data_custom_val(runtime);
 }
 
 /* Release Rust allocations exactly once and poison further field access. */
@@ -38,11 +50,35 @@ static void finalize_response(value response) {
   release_response(Response_val(response));
 }
 
+/* GC fallback for a runtime whose supervisor did not complete explicit
+ * shutdown. Normal operation closes the owner deterministically first. */
+static void finalize_runtime(value runtime) {
+  owned_runtime *owned = Runtime_val(runtime);
+  ocaml_temporal_core_runtime *native_runtime =
+      atomic_exchange_explicit(&owned->runtime, NULL, memory_order_acq_rel);
+  if (native_runtime != NULL) {
+    (void)ocaml_temporal_core_v1_runtime_dispose(&native_runtime);
+  }
+}
+
 /* Custom operations deliberately use identity/default behavior; responses are
  * resource owners, not serializable or semantically comparable values. */
 static struct custom_operations response_operations = {
     .identifier = "org.ocaml-temporal.native-response.v1",
     .finalize = finalize_response,
+    .compare = custom_compare_default,
+    .hash = custom_hash_default,
+    .serialize = custom_serialize_default,
+    .deserialize = custom_deserialize_default,
+    .compare_ext = custom_compare_ext_default,
+    .fixed_length = NULL,
+};
+
+/* Runtime owners are identity resources and cannot be serialized or compared
+ * by native contents. */
+static struct custom_operations runtime_operations = {
+    .identifier = "org.ocaml-temporal.native-runtime.v1",
+    .finalize = finalize_runtime,
     .compare = custom_compare_default,
     .hash = custom_hash_default,
     .serialize = custom_serialize_default,
@@ -63,6 +99,19 @@ static value alloc_response(void) {
   memset(owned, 0, sizeof(*owned));
   owned->live = 1;
   CAMLreturn(response);
+}
+
+/* Allocate a null-initialized runtime owner before entering native code so a
+ * later OCaml allocation failure cannot orphan a successfully created handle. */
+static value alloc_runtime(void) {
+  CAMLparam0();
+  CAMLlocal1(runtime);
+  owned_runtime *owned;
+
+  runtime = caml_alloc_custom(&runtime_operations, sizeof(owned_runtime), 0, 1);
+  owned = Runtime_val(runtime);
+  atomic_init(&owned->runtime, NULL);
+  CAMLreturn(runtime);
 }
 
 /* Reject use-after-free deterministically at the private binding boundary. */
@@ -95,6 +144,7 @@ CAMLprim value ocaml_temporal_echo(value input) {
   CAMLlocal1(response);
   size_t input_length = caml_string_length(input);
   uint8_t *input_copy = NULL;
+  ocaml_temporal_core_result native_result = {0};
   owned_response *owned;
 
   /* Allocate the finalizable owner before acquiring any unmanaged resource. */
@@ -110,9 +160,10 @@ CAMLprim value ocaml_temporal_echo(value input) {
   }
 
   caml_enter_blocking_section();
-  (void)ocaml_temporal_core_v1_echo(input_copy, input_length, &owned->result);
+  (void)ocaml_temporal_core_v1_echo(input_copy, input_length, &native_result);
   caml_leave_blocking_section();
   free(input_copy);
+  owned->result = native_result;
 
   CAMLreturn(response);
 }
@@ -125,6 +176,7 @@ CAMLprim value ocaml_temporal_conformance_wait_ms(value milliseconds) {
   CAMLlocal1(response);
   intnat requested = Long_val(milliseconds);
   uint32_t bounded_request;
+  ocaml_temporal_core_result native_result = {0};
   owned_response *owned;
 
   bounded_request =
@@ -135,9 +187,55 @@ CAMLprim value ocaml_temporal_conformance_wait_ms(value milliseconds) {
   owned = Response_val(response);
   caml_enter_blocking_section();
   (void)ocaml_temporal_core_v1_conformance_wait_ms(bounded_request,
-                                                   &owned->result);
+                                                   &native_result);
   caml_leave_blocking_section();
+  owned->result = native_result;
   CAMLreturn(response);
+}
+
+/* Create Core/Tokio while the OCaml runtime lock is released. Rust writes only
+ * C-stack storage during the blocking section; the opaque pointer and result
+ * are copied into rooted custom blocks after reacquiring the lock. */
+CAMLprim value ocaml_temporal_runtime_create(value unit) {
+  CAMLparam1(unit);
+  CAMLlocal3(runtime, response, pair);
+  ocaml_temporal_core_runtime *native_runtime = NULL;
+  ocaml_temporal_core_result native_result = {0};
+  owned_runtime *runtime_owner;
+  owned_response *response_owner;
+
+  runtime = alloc_runtime();
+  response = alloc_response();
+
+  caml_enter_blocking_section();
+  (void)ocaml_temporal_core_v1_runtime_new(&native_runtime, &native_result);
+  caml_leave_blocking_section();
+
+  runtime_owner = Runtime_val(runtime);
+  atomic_store_explicit(&runtime_owner->runtime, native_runtime,
+                        memory_order_release);
+  response_owner = Response_val(response);
+  response_owner->result = native_result;
+
+  pair = caml_alloc_tuple(2);
+  Store_field(pair, 0, runtime);
+  Store_field(pair, 1, response);
+  CAMLreturn(pair);
+}
+
+/* Atomically detach the pointer while holding the OCaml lock, then destroy
+ * Core/Tokio without blocking another Domain. A second close observes null. */
+CAMLprim value ocaml_temporal_runtime_close(value runtime) {
+  CAMLparam1(runtime);
+  owned_runtime *owned = Runtime_val(runtime);
+  ocaml_temporal_core_runtime *native_runtime =
+      atomic_exchange_explicit(&owned->runtime, NULL, memory_order_acq_rel);
+  ocaml_temporal_core_status status;
+
+  caml_enter_blocking_section();
+  status = ocaml_temporal_core_v1_runtime_free(&native_runtime);
+  caml_leave_blocking_section();
+  CAMLreturn(Val_int(status));
 }
 
 /* Read the status while the custom block remains live. */

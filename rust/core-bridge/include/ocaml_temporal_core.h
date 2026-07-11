@@ -64,6 +64,29 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_echo(
 ocaml_temporal_core_status ocaml_temporal_core_v1_conformance_wait_ms(
     uint32_t milliseconds, ocaml_temporal_core_result *output);
 
+/*
+ * Create the sole native runtime owner for one SDK instance. On success,
+ * `runtime` receives an opaque handle and `output` is an empty success.
+ */
+ocaml_temporal_core_status ocaml_temporal_core_v1_runtime_new(
+    ocaml_temporal_core_runtime **runtime,
+    ocaml_temporal_core_result *output);
+
+/*
+ * Destroy a runtime and clear the caller's slot. Calling this again with the
+ * same now-null slot is safe. Child worker/client handles must already be shut
+ * down before their owning runtime is released.
+ */
+ocaml_temporal_core_status ocaml_temporal_core_v1_runtime_free(
+    ocaml_temporal_core_runtime **runtime);
+
+/*
+ * GC fallback that transfers runtime destruction to its Rust cleanup thread
+ * without waiting. SDK supervisors use runtime_free for explicit shutdown.
+ */
+ocaml_temporal_core_status ocaml_temporal_core_v1_runtime_dispose(
+    ocaml_temporal_core_runtime **runtime);
+
 ocaml_temporal_core_status ocaml_temporal_core_v1_result_free(
     ocaml_temporal_core_result *result);
 

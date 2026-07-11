@@ -14,6 +14,10 @@ type error = {
   message : string;
 }
 
+(** Private owner of the Temporal Core runtime and Tokio executor for one SDK
+    instance. It is intentionally abstract and never enters the public API. *)
+type runtime
+
 (** Version of the C-compatible interface expected by this OCaml code. *)
 val abi_version : int32
 
@@ -28,3 +32,11 @@ val echo : bytes -> (bytes, error) result
     Domains to run. This tests the blocking-call design used by future worker
     polling. Values outside 0 through 1,000 return an error. *)
 val conformance_wait_ms : int -> (unit, error) result
+
+(** Creates a native runtime after checking that the statically linked bridge
+    implements the compatibility contract expected by this OCaml build. *)
+val runtime_create : unit -> (runtime, error) result
+
+(** Destroys the native runtime. Repeating this call on the same value is safe.
+    The SDK supervisor must close all future child handles first. *)
+val runtime_close : runtime -> (unit, error) result

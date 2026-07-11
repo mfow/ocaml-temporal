@@ -68,8 +68,9 @@ and bridge, read the [documentation guide](../README.md) first.
 ## Core boundary assumptions
 
 - Core and every Cargo dependency are pinned and license-audited.
-- Activation/completion protobuf bytes cross the language boundary as owned
-  buffers with one explicit free path.
+- Rust alone handles Temporal/Core protobuf. Strict JSON activation and
+  completion documents cross the language boundary as owned buffers with one
+  explicit free path; OCaml copies them into typed values before execution.
 - Rust panics, decode errors, and Core failures become explicit bridge errors.
 - Foreign runtime threads never call arbitrary OCaml closures.
 - Blocking FFI calls occur only while the OCaml runtime lock is released.

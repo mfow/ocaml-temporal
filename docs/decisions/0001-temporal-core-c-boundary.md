@@ -51,9 +51,14 @@ Rust/Tokio threads never invoke arbitrary OCaml closures. Panics are caught at
 the ABI boundary and converted to explicit error results. No Rust layout,
 pointer lifetime, or Core crate type is public OCaml API.
 
-Serialized `WorkflowActivation` and `WorkflowActivationCompletion` protobuf
-bytes are the Phase 2 workflow data boundary. Activity and Nexus task bytes
-can use the same ownership mechanism in later parity phases.
+The compatibility number is checked once when an SDK instance starts. It also
+covers the strict internal adapter schema described by ADR 0002, so a stale or
+partially rebuilt Rust archive cannot silently exchange the wrong document
+shape with OCaml.
+
+The owned byte-buffer mechanism carries a project-defined strict JSON control
+document, not Temporal protobuf. ADR 0002 records that correction. Rust remains
+solely responsible for decoding and constructing Temporal/Core protobuf.
 
 ## Why not use the upstream bridge unchanged?
 

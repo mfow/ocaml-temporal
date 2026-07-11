@@ -100,7 +100,7 @@ The intended top-level layout is:
 ├── lib/
 │   ├── public/          # Stable OCaml modules and .mli files
 │   ├── runtime/         # Effect scheduler and activation interpreter
-│   ├── protocol/        # Generated/private protobuf representation
+│   ├── protocol/        # Typed private JSON adapter values and validation
 │   └── ffi/             # OCaml C stubs
 ├── rust/
 │   └── bridge/          # Project-owned staticlib over Temporal Core

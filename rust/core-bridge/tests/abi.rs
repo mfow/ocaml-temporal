@@ -4,7 +4,8 @@ use ocaml_temporal_core_bridge::{
     ABI_VERSION, Buffer, Result as AbiResult, STATUS_ABI_MISMATCH, STATUS_INVALID_ARGUMENT,
     STATUS_OK, STATUS_PANIC, ocaml_temporal_core_v1_check_abi_version,
     ocaml_temporal_core_v1_conformance_wait_ms, ocaml_temporal_core_v1_echo,
-    ocaml_temporal_core_v1_result_free, test_invoke_panic,
+    ocaml_temporal_core_v1_result_free, ocaml_temporal_core_v1_runtime_dispose,
+    ocaml_temporal_core_v1_runtime_free, ocaml_temporal_core_v1_runtime_new, test_invoke_panic,
 };
 
 /// Produces writable initialized storage matching the C caller contract.
@@ -157,6 +158,85 @@ fn bounds_the_conformance_wait() {
     assert!(!bytes(&result.error).is_empty());
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+}
+
+#[test]
+/// Creates one Core/Tokio owner and proves close clears the caller's handle.
+fn creates_and_idempotently_closes_a_runtime() {
+    let mut runtime = ptr::null_mut();
+    let mut result = empty_result();
+
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        STATUS_OK
+    );
+    assert!(!runtime.is_null());
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
+    assert!(runtime.is_null());
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
+}
+
+#[test]
+/// Rejects missing runtime/result output storage without creating a handle.
+fn runtime_creation_rejects_null_output_pointers() {
+    // A non-null sentinel proves the function canonicalizes the output slot
+    // before returning for the independently invalid result pointer.
+    let mut runtime = std::ptr::dangling_mut();
+    let mut result = empty_result();
+
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(ptr::null_mut(), &mut result) },
+        STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, ptr::null_mut()) },
+        STATUS_INVALID_ARGUMENT
+    );
+    assert!(runtime.is_null());
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(ptr::null_mut()) },
+        STATUS_INVALID_ARGUMENT
+    );
+}
+
+#[test]
+/// Transfers GC fallback cleanup without making the caller wait for Core drop.
+fn disposes_a_runtime_asynchronously_and_clears_the_handle() {
+    let mut runtime = ptr::null_mut();
+    let mut result = empty_result();
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_dispose(&mut runtime) },
+        STATUS_OK
+    );
+    assert!(runtime.is_null());
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_dispose(&mut runtime) },
         STATUS_OK
     );
 }

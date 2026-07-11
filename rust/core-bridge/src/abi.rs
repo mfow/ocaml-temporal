@@ -1,6 +1,9 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 use std::time::Duration;
+use temporalio_sdk_core::{CoreRuntime, RuntimeOptions, TokioRuntimeBuilder};
 
 /// Version of the native ABI implemented by this crate.
 pub const ABI_VERSION: u32 = 1;
@@ -20,6 +23,11 @@ pub const STATUS_PANIC: Status = 3;
 pub const STATUS_INTERNAL: Status = 4;
 
 const _: () = assert!(size_of::<Status>() == 4);
+
+/// Monotonic test instrumentation for successfully exposed runtime owners.
+static RUNTIMES_CREATED: AtomicU64 = AtomicU64::new(0);
+/// Monotonic test instrumentation for Core instances whose destructor ran.
+static RUNTIMES_CLEANED: AtomicU64 = AtomicU64::new(0);
 
 /// Byte allocation owned by the Rust bridge.
 ///
@@ -83,6 +91,91 @@ const _: () = {
 struct Failure {
     status: Status,
     message: String,
+}
+
+/// Owns the Tokio executor and shared Temporal Core runtime for one SDK instance.
+///
+/// The type is opaque to C. Higher-level client and worker handles will retain
+/// the same runtime owner rather than creating independent executors.
+pub struct Runtime {
+    core: Option<CoreRuntime>,
+    cleanup: std::sync::mpsc::Sender<RuntimeCleanup>,
+}
+
+/// Ownership transfer consumed by the runtime's dedicated cleanup thread.
+struct RuntimeCleanup {
+    core: CoreRuntime,
+    completed: Option<SyncSender<Status>>,
+}
+
+impl Runtime {
+    /// Starts the cleanup thread before exposing a handle, so every successful
+    /// runtime allocation already has a non-blocking GC fallback path.
+    fn new(core: CoreRuntime) -> std::result::Result<Self, Failure> {
+        let (cleanup, receiver) = channel();
+        std::thread::Builder::new()
+            .name("ocaml-temporal-runtime-cleanup".to_owned())
+            .spawn(move || run_runtime_cleanup(receiver))
+            .map_err(|error| Failure {
+                status: STATUS_INTERNAL,
+                message: format!("could not start Temporal runtime cleanup thread: {error}"),
+            })?;
+        RUNTIMES_CREATED.fetch_add(1, Ordering::Relaxed);
+        Ok(Self {
+            core: Some(core),
+            cleanup,
+        })
+    }
+
+    /// Transfers Core to its cleanup thread and optionally waits for disposal.
+    ///
+    /// Explicit close waits while the OCaml lock is released. GC fallback does
+    /// not wait, so a custom-block finalizer never stalls the collector.
+    fn close(mut self, wait: bool) -> Status {
+        let Some(core) = self.core.take() else {
+            return STATUS_OK;
+        };
+        let (completed, receiver) = if wait {
+            let (sender, receiver) = sync_channel(1);
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
+        let message = RuntimeCleanup { core, completed };
+
+        if let Err(error) = self.cleanup.send(message) {
+            // The receiver only exits after a message, so this indicates a
+            // defect in the cleanup thread itself. Reclaim on this thread to
+            // preserve the no-leak guarantee even on that defensive path.
+            drop(error.0.core);
+            RUNTIMES_CLEANED.fetch_add(1, Ordering::Release);
+            return STATUS_INTERNAL;
+        }
+
+        match receiver {
+            Some(receiver) => receiver.recv().unwrap_or(STATUS_INTERNAL),
+            None => STATUS_OK,
+        }
+    }
+}
+
+/// Drops Core away from OCaml's collector and reports completion when asked.
+fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
+    let Ok(message) = receiver.recv() else {
+        return;
+    };
+    let RuntimeCleanup { core, completed } = message;
+    let status = if catch_unwind(AssertUnwindSafe(|| drop(core))).is_ok() {
+        STATUS_OK
+    } else {
+        STATUS_PANIC
+    };
+    // Release publishes completion after Core's destructor has returned. The
+    // matching Acquire load is used only by the isolated ownership test.
+    RUNTIMES_CLEANED.fetch_add(1, Ordering::Release);
+    if let Some(completed) = completed {
+        let _ = completed.send(status);
+    }
 }
 
 /// Byte-producing operation accepted by the shared panic/ownership wrapper.
@@ -245,6 +338,145 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_conformance_wait_ms(
     }
 }
 
+/// Create the native runtime that will own later Core clients and workers.
+///
+/// On success, `runtime` receives one owned opaque handle. The caller must
+/// eventually pass that same slot to [`ocaml_temporal_core_v1_runtime_free`].
+///
+/// # Safety
+///
+/// `runtime` must be null or point to writable storage for one runtime pointer.
+/// `output` follows the result contract of
+/// [`ocaml_temporal_core_v1_check_abi_version`]. A non-null runtime slot must
+/// not already contain a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_runtime_new(
+    runtime: *mut *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    // Canonicalize any writable handle slot even when the independent result
+    // pointer is invalid. A caller can therefore inspect a known null value on
+    // every failing return instead of retaining indeterminate ownership state.
+    if !runtime.is_null() {
+        // SAFETY: A non-null runtime argument promises writable pointer storage.
+        unsafe { ptr::write(runtime, ptr::null_mut()) };
+    }
+    if output.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    if runtime.is_null() {
+        // SAFETY: The result pointer was checked above and the closure does
+        // not inspect the missing runtime slot.
+        return unsafe {
+            invoke(output, || {
+                Err(Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime output pointer is null".to_owned(),
+                })
+            })
+        };
+    }
+
+    // SAFETY: Both output locations were validated above.
+    unsafe {
+        invoke(output, || {
+            let options = RuntimeOptions::builder()
+                .build()
+                .map_err(|message| Failure {
+                    status: STATUS_INTERNAL,
+                    message: format!("could not configure Temporal Core runtime: {message}"),
+                })?;
+            let core =
+                CoreRuntime::new(options, TokioRuntimeBuilder::default()).map_err(|error| {
+                    Failure {
+                        status: STATUS_INTERNAL,
+                        message: format!("could not create Temporal Core runtime: {error}"),
+                    }
+                })?;
+            let owned = Box::into_raw(Box::new(Runtime::new(core)?));
+
+            // SAFETY: The runtime slot remains exclusively owned by this call
+            // until it returns and was validated before invoking the closure.
+            ptr::write(runtime, owned);
+            Ok(Vec::new())
+        })
+    }
+}
+
+/// Destroy one native runtime and clear the caller's slot.
+///
+/// Passing the same slot again after a successful call is safe because the
+/// first call stores null before dropping the owner.
+///
+/// # Safety
+///
+/// `runtime` must be null or point to a slot initialized by
+/// [`ocaml_temporal_core_v1_runtime_new`]. The slot must not be accessed
+/// concurrently, and all future child handles must be closed first.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_runtime_free(runtime: *mut *mut Runtime) -> Status {
+    if runtime.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        // Clear first so even a defensive panic during destruction cannot
+        // invite a second attempt to free the same allocation.
+        // SAFETY: The caller guarantees exclusive writable access to the slot.
+        let owned = unsafe { ptr::replace(runtime, ptr::null_mut()) };
+        if owned.is_null() {
+            STATUS_OK
+        } else {
+            // SAFETY: Non-null values in this slot originate from `Box::into_raw`
+            // in `runtime_new` and have not been reclaimed previously.
+            let runtime = unsafe { Box::from_raw(owned) };
+            runtime.close(true)
+        }
+    }));
+
+    match outcome {
+        Ok(status) => status,
+        Err(_) => STATUS_PANIC,
+    }
+}
+
+/// Transfer a runtime to its cleanup thread without waiting for destruction.
+///
+/// This is reserved for the OCaml custom-block finalizer. Normal supervisor
+/// shutdown uses [`ocaml_temporal_core_v1_runtime_free`] and waits while the
+/// OCaml runtime lock is released.
+///
+/// # Safety
+///
+/// `runtime` has the same exclusive slot contract as
+/// [`ocaml_temporal_core_v1_runtime_free`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_runtime_dispose(
+    runtime: *mut *mut Runtime,
+) -> Status {
+    if runtime.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: The caller guarantees exclusive writable access to the slot.
+        let owned = unsafe { ptr::replace(runtime, ptr::null_mut()) };
+        if owned.is_null() {
+            STATUS_OK
+        } else {
+            // SAFETY: The pointer was created by `runtime_new` and is consumed
+            // exactly once by this pointer-to-pointer operation.
+            let runtime = unsafe { Box::from_raw(owned) };
+            runtime.close(false)
+        }
+    }));
+
+    match outcome {
+        Ok(status) => status,
+        Err(_) => STATUS_PANIC,
+    }
+}
+
 /// Release both owned buffers in a result and reset it to the empty state.
 ///
 /// Repeated calls with the same result object are safe. Copying a live result
@@ -292,4 +524,17 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_result_free(result: *mut Result)
 pub unsafe fn test_invoke_panic(output: *mut Result) -> Status {
     // SAFETY: The pointer contract is forwarded unchanged to `invoke`.
     unsafe { invoke(output, || panic!("intentional ABI containment probe")) }
+}
+
+/// Returns process-local lifecycle counts for the isolated cleanup test.
+///
+/// This is intentionally not part of the C ABI. Keeping the counters monotonic
+/// lets the test wait for asynchronous destruction without reaching into the
+/// runtime owner or depending on timing alone.
+#[doc(hidden)]
+pub fn test_runtime_cleanup_counts() -> (u64, u64) {
+    (
+        RUNTIMES_CREATED.load(Ordering::Acquire),
+        RUNTIMES_CLEANED.load(Ordering::Acquire),
+    )
 }

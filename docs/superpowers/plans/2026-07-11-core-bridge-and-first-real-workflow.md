@@ -30,10 +30,10 @@ they are not sufficient acceptance evidence for an essential feature.
 worker handles. A versioned blocking C ABI transfers owned byte buffers; OCaml
 C stubs release the runtime lock during blocking calls. OCaml owns workflow
 definitions, effect continuations, deterministic scheduling, and activation
-interpretation. The bridge transfers raw Core activation/completion protobuf
-bytes. A small project-owned protobuf wire module handles the supported schema
-surface and is checked against exact Core-generated fixtures, avoiding a
-copyleft OCaml protobuf runtime.
+interpretation. Rust alone handles Core's generated protobuf types. The bridge
+transfers a small, strict JSON control document with base64 payload bytes;
+OCaml strictly validates that document into ordinary typed values. Shared
+fixtures verify both directions without duplicating Temporal's wire schema.
 
 **Tech stack:** OCaml 5.2, 5.3, 5.4, and 5.5 on amd64 and arm64, Dune,
 Rust 1.94, Temporal Core commit
@@ -54,22 +54,22 @@ Temporal Server, PostgreSQL, and the Temporal CLI.
   fail the standalone GitHub Actions license job.
 - Expected workflow failures remain `result` values. Exceptions are caught
   only at the worker defect boundary.
-- Core protobuf field compatibility is proven by cross-language fixtures;
-  handwritten numeric tags are never accepted without such a fixture.
-- Unknown protobuf fields are skipped safely, and malformed or oversized
-  input returns a structured decode error.
+- Adapter compatibility is proven by cross-language fixtures for every message
+  variant; OCaml never contains Temporal protobuf field numbers.
+- Duplicate, missing, unknown, malformed, or oversized JSON adapter fields
+  return a structured decode error.
 - Every task starts with a failing focused test, ends with focused and full
   verification, updates documentation, and creates one commit.
 
-## Rejected protobuf packages
+## Rejected OCaml protobuf packages
 
 `ocaml-protoc` 4.1 and `pbrt` 4.1 are MIT, but their runtime closure includes
 `stdlib-shims` 0.3.0 under
 `LGPL-2.1-only WITH OCaml-LGPL-linking-exception`. The standing exception is
 limited to reviewed compiler/runtime packages, so this closure is not
 accepted. `ocaml-protoc-plugin` 6.2.0 also reaches `stdlib-shims` and a much
-larger build closure. Phase 2 therefore uses a project-owned wire codec with no
-new OCaml runtime dependency.
+larger build closure. More importantly, OCaml no longer needs to decode Core
+protobuf at all. Rust translates it into the project-owned strict adapter.
 
 ## File map
 
@@ -79,11 +79,11 @@ new OCaml runtime dependency.
 | `rust/Cargo.lock` | Exact Core and transitive Cargo closure |
 | `rust/core-bridge/` | Project-owned Temporal Core static library and ABI tests |
 | `rust/core-bridge/include/` | Installed versioned C header |
-| `lib/proto/` | Private bounded protobuf wire reader/writer and Core subset |
+| `lib/protocol/` | Private typed JSON adapter values and strict validation |
 | `lib/core_bridge/` | Private OCaml bindings and C stubs |
 | `lib/worker/` | OCaml registry, Core activation adapter, and worker loop |
 | `bin/` | Dune-built example/integration worker executable |
-| `test/bridge/` | ABI, lock-release, and cross-language protobuf tests |
+| `test/bridge/` | ABI, lock-release, and cross-language adapter tests |
 | `test/integration/` | Compose-backed real Temporal workflow tests |
 | `scripts/check-cargo-licenses.py` | Cargo metadata license-policy gate |
 | `compose.yaml` | Development, Temporal, PostgreSQL, UI, CLI, and test services |
@@ -159,26 +159,29 @@ and an install smoke test; modify package metadata and documentation.
 - [ ] Run all supported OCaml/compiler architecture cells plus Rust/C tests,
   update docs, and commit.
 
-### Task 4: Bounded Core protobuf compatibility layer
+### Task 4: Strict Core-to-OCaml adapter protocol
 
-**Files:** Create `lib/proto/`, `test/bridge/fixtures/`, a Rust fixture
-generator/validator, and `docs/reference/core-protocol.md`.
+**Files:** Create `lib/protocol/`, `test/bridge/fixtures/`, Rust adapter
+types/validation, `docs/reference/core-protocol.md`, and Draft 2020-12 schemas
+under `docs/schemas/bridge/`.
 
-- [ ] Write failing pure OCaml tests for canonical varints, signed/fixed
-  values, length-delimited messages, unknown-field skipping, truncation,
-  overflow, recursion depth, and configured byte limits.
-- [ ] Implement a dependency-free wire reader/writer using `bytes`/`string`
-  from the OCaml standard library only. Decoders return structured `result`
-  errors with field context.
-- [ ] Add typed decoding for the Phase 2 activation jobs: initialize workflow,
-  resolve activity, fire timer, cancel workflow, and remove from cache.
-- [ ] Add typed encoding for schedule activity, start/cancel timer, complete,
-  fail, and cancel workflow completion commands.
-- [ ] Generate binary fixtures with the exact pinned Core `prost` types and
-  prove OCaml decodes them. Prove Rust decodes OCaml-produced completion bytes.
-  Record the upstream message and field provenance for every supported tag.
-- [ ] Run fuzz/property-style bounded-input tests, full verification, update
-  protocol docs, and commit.
+- [ ] Write failing OCaml and Rust tests for exact field validation,
+  duplicate/missing fields, unknown tags, wrong types, invalid
+  base64, integer bounds, nesting, and configured byte limits.
+- [ ] Define strict Rust adapter types that translate official Core activation
+  protobuf into JSON and completion JSON back into Core protobuf. Temporal
+  protobuf types never cross into OCaml.
+- [ ] Add typed OCaml decoding for initialize workflow, resolve activity, fire
+  timer, cancel workflow, and remove from cache.
+- [ ] Add typed OCaml encoding for schedule activity, start/cancel timer,
+  complete, fail, and cancel workflow commands.
+- [ ] Share golden JSON fixtures across Rust and OCaml in both directions and
+  prove all payload byte patterns round-trip through canonical base64.
+- [ ] Validate typed invariants and the serialized document on the sending
+  side, then repeat strict validation on the receiver. Validate every example
+  and fixture independently against the checked-in JSON Schemas in CI.
+- [ ] Run generated round-trip and bounded malformed-input tests, full
+  verification, update protocol docs, and commit.
 
 ### Task 5: Core runtime, client, worker, and blocking poll loop
 
@@ -191,8 +194,9 @@ bridge documentation.
 - [ ] Create one Tokio runtime per bridge runtime handle. Connect the official
   Core client and initialize a workflow-only worker with explicit namespace,
   task queue, identity, build ID, cache, poller, and graceful-shutdown options.
-- [ ] Implement blocking poll and completion calls which encode/decode the
-  official Core protobuf types and return owned buffers or structured errors.
+- [ ] Implement blocking poll and completion calls which translate official
+  Core protobuf through the strict adapter and return owned buffers or
+  structured errors.
 - [ ] Implement idempotent shutdown ordering: initiate shutdown, drain pollers,
   finalize worker, then release client/runtime handles.
 - [ ] Add leak, shutdown-race, and repeated create/destroy tests; run full
@@ -249,7 +253,8 @@ Phase 2 is complete only when all of the following are linked from
    Rust static library.
 2. Rust/Core threads never invoke OCaml callbacks and lock-release tests pass.
 3. Cargo and OPAM closures pass the executable license policy.
-4. Cross-language protobuf fixtures pass in both directions.
+4. Cross-language adapter fixtures pass in both directions while Rust alone
+   handles Temporal/Core protobuf.
 5. Fresh Docker Compose volumes reach healthy PostgreSQL and Temporal Server.
 6. A CLI-started workflow completes with the expected typed OCaml result.
 7. OCaml 5.2, 5.3, 5.4, and 5.5 GitHub Actions jobs pass on native amd64 and

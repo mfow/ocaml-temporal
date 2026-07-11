@@ -28,4 +28,7 @@ let () =
   in
   Domain.join worker;
   Domain.join waiter;
-  assert (Atomic.get progressed)
+  assert (Atomic.get progressed);
+  let runtime = unwrap (Bridge.runtime_create ()) in
+  unwrap (Bridge.runtime_close runtime);
+  unwrap (Bridge.runtime_close runtime)

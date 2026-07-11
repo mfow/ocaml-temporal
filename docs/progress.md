@@ -10,8 +10,7 @@ details. For a concise statement of what users can run today, see the project
 
 ## 2026-07-11: Plain-language documentation and maintained JSON codec
 
-Status: verified locally; GitHub Actions verification follows the milestone
-commit.
+Status: verified locally and by GitHub Actions.
 
 The repository documentation now begins with a guide and glossary, clearly
 separates implemented behavior from target architecture, and explains public
@@ -40,6 +39,48 @@ Evidence:
 
 Next objective: the live Temporal/PostgreSQL Compose acceptance topology with
 separate OCaml test-client and workflow/activity worker executables.
+
+## 2026-07-11: Native Temporal Core runtime ownership
+
+Status: verified locally; GitHub Actions verification follows the milestone
+commit.
+
+The OCaml-owned executable can now create and close a real Temporal Core/Tokio
+runtime through the statically linked Rust bridge. The runtime remains an
+abstract private OCaml value. Explicit shutdown waits for complete destruction
+while the OCaml runtime lock is released; the garbage-collector fallback
+transfers destruction to a dedicated Rust cleanup thread without waiting.
+
+The C stub atomically detaches the sole native pointer, making explicit close,
+repeated close, and finalization safe against one another. Blocking Rust calls
+write only into C-stack storage while the OCaml runtime lock is released and
+copy the completed result into a rooted custom block afterward.
+
+The Core activation/completion adapter will use strict JSON rather than expose
+Core protobuf to OCaml. The accepted design requires independent outgoing and
+incoming validation in both languages, closed JSON Schema Draft 2020-12
+schemas, duplicate-key rejection, bounded allocation, semantic validation, and
+shared positive and malformed fixtures.
+
+Evidence:
+
+- The initial Rust ABI test failed because runtime lifecycle functions did not
+  exist; the initial OCaml bridge test failed because `runtime_create` was not
+  bound.
+- Rust ABI tests pass runtime creation, explicit idempotent close, null-pointer
+  rejection, and asynchronous pointer detachment.
+- A separate Rust integration-test process waits until the asynchronously
+  disposed Core destructor completes, preventing another parallel test from
+  producing a false positive.
+- The C11 ABI harness creates, explicitly closes, and asynchronously disposes
+  real Core runtimes through the public header.
+- The OCaml bridge suite creates and repeatedly closes the native runtime.
+- `make native-verify NATIVE_OCAML_VERSION=5.4 NATIVE_RUST_VERSION=1.96.0
+  NATIVE_ARCH=arm64 NATIVE_RUST_HOST=aarch64-apple-darwin` passed the complete
+  local build, Clippy, Rust tests, OCaml tests, and install smoke test.
+
+Next objective: implement the strict, bilaterally validated JSON activation and
+completion adapter before connecting a worker to the Compose acceptance stack.
 
 ## 2026-07-11: Repository foundation
 

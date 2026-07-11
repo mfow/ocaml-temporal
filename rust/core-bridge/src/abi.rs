@@ -248,6 +248,11 @@ struct RuntimeCleanup {
     core: CoreRuntime,
     client: Option<Connection>,
     worker: Option<PollLanes>,
+    /// Aborted asynchronous-start tasks whose join handles must be awaited
+    /// before the Core runtime and its connection clones are dropped.  The
+    /// non-blocking OCaml finalizer transfers these handles here instead of
+    /// dropping them on the caller thread, which would detach the tasks.
+    pending_start_tasks: Vec<JoinHandle<()>>,
     completed: Option<SyncSender<Status>>,
 }
 
@@ -545,13 +550,14 @@ impl Runtime {
             .map_err(protocol_failure)
     }
 
-    /// Aborts and joins every in-flight start before Core enters cleanup.
+    /// Aborts every in-flight start and returns handles that need cleanup.
     ///
-    /// This is called by the owner before moving the runtime graph to the
-    /// cleanup thread. It prevents a detached Tokio task from retaining a
-    /// `Connection` or sending into a channel after the native handle has
-    /// become unreachable.
-    fn abort_pending_starts(&mut self, wait: bool) {
+    /// Explicit shutdown (`wait = true`) joins on the owner thread while the
+    /// C stub has released the OCaml runtime lock.  GC fallback (`wait = false`)
+    /// must not block the finalizer, so it returns the already-aborted handles
+    /// for the dedicated cleanup thread to join before Core is released.  In
+    /// either mode no task is detached while it still owns a Core connection.
+    fn abort_pending_starts(&mut self, wait: bool) -> Vec<JoinHandle<()>> {
         let handle = self.core.as_ref().map(|core| core.tokio_handle());
         let tasks = self
             .pending_starts
@@ -569,6 +575,9 @@ impl Runtime {
                     }
                 });
             }
+            Vec::new()
+        } else {
+            tasks
         }
     }
 
@@ -928,9 +937,10 @@ impl Runtime {
     /// Transfers Core to its cleanup thread and optionally waits for disposal.
     ///
     /// Explicit close waits while the OCaml lock is released. GC fallback does
-    /// not wait, so a custom-block finalizer never stalls the collector.
+    /// not wait on this caller, so a custom-block finalizer never stalls the
+    /// collector; the dedicated cleanup thread joins any aborted start tasks.
     fn close(mut self, wait: bool) -> Status {
-        self.abort_pending_starts(wait);
+        let pending_start_tasks = self.abort_pending_starts(wait);
         let Some(core) = self.core.take() else {
             return STATUS_OK;
         };
@@ -944,6 +954,7 @@ impl Runtime {
             core,
             client: self.client.take(),
             worker: self.worker.take(),
+            pending_start_tasks,
             completed,
         };
 
@@ -952,7 +963,12 @@ impl Runtime {
             // defect in the cleanup thread itself. Reclaim on this thread to
             // preserve the no-leak guarantee even on that defensive path.
             let message = error.0;
-            drop_runtime_graph(message.core, message.client, message.worker);
+            drop_runtime_graph(
+                message.core,
+                message.client,
+                message.worker,
+                message.pending_start_tasks,
+            );
             RUNTIMES_CLEANED.fetch_add(1, Ordering::Release);
             return STATUS_INTERNAL;
         }
@@ -973,10 +989,11 @@ fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
         core,
         client,
         worker,
+        pending_start_tasks,
         completed,
     } = message;
     let status = if catch_unwind(AssertUnwindSafe(|| {
-        drop_runtime_graph(core, client, worker)
+        drop_runtime_graph(core, client, worker, pending_start_tasks)
     }))
     .is_ok()
     {
@@ -992,10 +1009,24 @@ fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
     }
 }
 
-/// Releases worker, then client, then Core on the runtime cleanup thread.
-fn drop_runtime_graph(core: CoreRuntime, client: Option<Connection>, worker: Option<PollLanes>) {
+/// Releases aborted start tasks, then worker, client, and Core on the runtime
+/// cleanup thread.  Awaiting the transferred handles is essential: dropping a
+/// Tokio [`JoinHandle`] after `abort` would detach its task, allowing the task
+/// to retain a cloned `Connection` beyond the lifetime of the runtime graph.
+fn drop_runtime_graph(
+    core: CoreRuntime,
+    client: Option<Connection>,
+    worker: Option<PollLanes>,
+    pending_start_tasks: Vec<JoinHandle<()>>,
+) {
+    let handle = core.tokio_handle();
+    handle.block_on(async {
+        for task in pending_start_tasks {
+            let _ = task.await;
+        }
+    });
+
     if let Some(mut worker) = worker {
-        let handle = core.tokio_handle();
         {
             // Cleanup runs on a plain OS thread, so explicitly enter Core's
             // executor before its synchronous shutdown code spawns a task.
@@ -2258,3 +2289,7 @@ mod client_wait_tests {
         assert_eq!(result, Ok(Some(response)));
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/pending_start_cleanup.rs"]
+mod pending_start_cleanup_tests;

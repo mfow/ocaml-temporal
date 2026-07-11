@@ -91,6 +91,31 @@ let validate_identifier path value : (unit, error) result =
     Error (invalid path "identifier must be valid UTF-8")
   else Ok ()
 
+(** Copies a protocol payload before retaining it in translated activation
+    metadata. Protocol payload bodies and metadata values are mutable [bytes],
+    so retaining the caller's record directly would let a later mutation alter
+    replay inputs after validation. *)
+let copy_protocol_payload (value : Protocol.payload) : Protocol.payload =
+  Protocol.
+    {
+      metadata =
+        List.map (fun (key, bytes) -> (key, Bytes.copy bytes)) value.metadata;
+      data = Bytes.copy value.data;
+    }
+
+(** Copies the payload-bearing part of initialization context. The remaining
+    context fields are immutable strings, options, integers, and small records,
+    so a record copy is sufficient for them. *)
+let copy_initialize_context (value : Protocol.initialize_context) =
+  Protocol.
+    {
+      value with
+      headers =
+        List.map
+          (fun (key, payload) -> (key, copy_protocol_payload payload))
+          value.headers;
+    }
+
 (** Converts one protocol payload into the runtime payload type. Runtime codecs
     intentionally expose metadata values as strings; a binary metadata value
     therefore cannot be represented losslessly and is reported as an explicit
@@ -293,10 +318,10 @@ let runtime_job path = function
               {
                 workflow_id;
                 workflow_type;
-                arguments;
+                arguments = List.map copy_protocol_payload arguments;
                 randomness_seed;
                 attempt;
-                context;
+                context = Option.map copy_initialize_context context;
               },
             None,
             None,

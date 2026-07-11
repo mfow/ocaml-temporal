@@ -109,6 +109,57 @@ let test_activation_metadata_and_order () =
       ()
   | _ -> failwith "initialization metadata was not retained"
 
+(** Confirms that retained protocol payloads are independent of mutable input
+    bytes. This guards the Domain/lifetime boundary used by a later worker loop:
+    validation must not turn caller-owned buffers into shared replay state. *)
+let test_retained_payloads_are_copied () =
+  let argument = protocol_payload "input" in
+  let header = protocol_payload "header" in
+  let context : Protocol.initialize_context =
+    {
+      headers = [ ("request", header) ];
+      identity = "worker";
+      parent_workflow = None;
+      workflow_execution_timeout = None;
+      workflow_run_timeout = None;
+      workflow_task_timeout = None;
+      first_execution_run_id = "first-run";
+      start_time = None;
+      root_workflow = None;
+      priority = None;
+    }
+  in
+  let translated =
+    unwrap "payload copy translation"
+      (Native_execution.translate_activation
+         (activation
+            [
+              Protocol.Initialize_workflow
+                {
+                  workflow_id = "workflow-copy";
+                  workflow_type = "copy";
+                  arguments = [ argument ];
+                  randomness_seed = "1";
+                  attempt = 1;
+                  context = Some context;
+                };
+            ]))
+  in
+  Bytes.set argument.data 0 'X';
+  Bytes.set header.data 0 'Y';
+  match translated.initialization with
+  | Some { arguments = [ argument_copy ]; context = Some context_copy; _ } ->
+      let header_copy =
+        match context_copy.headers with
+        | [ (_, payload) ] -> payload
+        | _ -> failwith "copied context header disappeared"
+      in
+      if Bytes.to_string argument_copy.data <> "input" then
+        failwith "initialization argument retained caller-owned bytes";
+      if Bytes.to_string header_copy.data <> "header" then
+        failwith "initialization context retained caller-owned bytes"
+  | _ -> failwith "initialization payload copies were not retained"
+
 (** Confirms cancellation and cache-removal facts are retained instead of being
     silently lost by marker-only runtime jobs. *)
 let test_cancellation_and_eviction () =
@@ -281,6 +332,7 @@ let test_unknown_sequence_becomes_failure () =
 (** Runs every native-execution translation assertion. *)
 let () =
   test_activation_metadata_and_order ();
+  test_retained_payloads_are_copied ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();
   test_activate_eviction_completion ();

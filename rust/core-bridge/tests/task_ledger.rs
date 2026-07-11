@@ -122,6 +122,51 @@ fn duplicate_workflow_admission_preserves_lease_state() {
     assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
 }
 
+/// A workflow activation rejected during Rust-to-semantic conversion was never
+/// visible to OCaml. Retiring that exact lease prevents shutdown from waiting
+/// for a completion the language runtime cannot possibly construct.
+#[test]
+fn rejected_workflow_conversion_retires_the_inaccessible_lease() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(
+        ledger.admit_workflow("unrepresentable-run"),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_workflow("unrepresentable-run"), Ok(()));
+
+    assert_eq!(
+        ledger.retire_rejected_workflow("unrepresentable-run"),
+        Ok(())
+    );
+    ledger.begin_draining();
+    assert!(ledger.can_finalize());
+    assert_eq!(
+        ledger.retire_rejected_workflow("unrepresentable-run"),
+        Err(CompleteError::UnknownWorkflow)
+    );
+}
+
+/// Remote activity conversion failure follows the same one-shot ownership
+/// rule, using the opaque Core token rather than a workflow run identifier.
+#[test]
+fn rejected_activity_conversion_retires_the_inaccessible_token() {
+    let mut ledger = TaskLedger::new();
+    let token = b"unrepresentable-activity";
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+
+    assert_eq!(ledger.retire_rejected_activity(token), Ok(()));
+    ledger.begin_draining();
+    assert!(ledger.can_finalize());
+    assert_eq!(
+        ledger.retire_rejected_activity(token),
+        Err(CompleteError::UnknownActivity)
+    );
+}
+
 /// The acceptance worker polls only workflows and remote activities; enabling
 /// local activities or Nexus would create unimplemented completion paths.
 #[test]

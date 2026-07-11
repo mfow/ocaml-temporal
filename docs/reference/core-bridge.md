@@ -164,6 +164,15 @@ non-blocking handoff, and leaves only after Core accepts the exact matching run
 ID or opaque activity token. Activity cancellation reuses the original token
 and therefore does not create a second completion debt.
 
+There is one deliberate pre-handoff exception. If a leased Core value cannot
+be converted to the closed semantic JSON protocol, OCaml never receives its
+run ID or task token and therefore cannot complete it. Rust generates exactly
+one workflow-task or activity failure for Core and retires the inaccessible
+lease on every outcome. A rejected generated completion remains a fatal worker
+error, but it cannot also leave a fabricated language-side debt that blocks
+shutdown forever. Regression tests cover this rule independently for workflow
+and activity conversion failures.
+
 Shutdown first closes ledger admission, then asks Core to wake both polls, then
 joins both lane tasks. Existing ready and leased work remains completable while
 the worker drains. Core finalization is refused until the ledger is empty, and

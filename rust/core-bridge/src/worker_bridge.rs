@@ -9,10 +9,12 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::sync::{Arc, Mutex};
 use temporalio_common::protos::coresdk::{
     ActivityTaskCompletion,
+    activity_result::ActivityExecutionResult,
     activity_task::{ActivityTask, activity_task},
     workflow_activation::WorkflowActivation,
     workflow_completion::WorkflowActivationCompletion,
 };
+use temporalio_common::protos::temporal::api::enums::v1::WorkflowTaskFailedCause;
 use temporalio_common::worker::WorkerTaskTypes;
 use temporalio_sdk_core::{PollError, Worker};
 use tokio::sync::mpsc;
@@ -238,6 +240,74 @@ impl PollLanes {
             .unwrap_or_else(|error| error.into_inner())
             .complete_activity(&task_token)
             .map_err(WorkerBridgeError::Completion)
+    }
+
+    /// Fails an activation that could not cross the semantic JSON boundary.
+    ///
+    /// The activation was leased by [`Self::try_take_workflow`] but was never
+    /// exposed to OCaml, so no language-side caller can return its completion.
+    /// This method makes exactly one Core completion attempt and then retires
+    /// the private debt even if Core rejects that attempt. A rejection is a
+    /// fatal worker error, but it must not also fabricate an eternally leased
+    /// task that prevents deterministic shutdown.
+    pub async fn reject_workflow_delivery(&self, run_id: &str) -> Result<(), WorkerBridgeError> {
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .ensure_workflow_leased(run_id)
+            .map_err(WorkerBridgeError::Completion)?;
+        let completion = WorkflowActivationCompletion::fail(
+            run_id,
+            "OCaml bridge could not represent the workflow activation".into(),
+            Some(WorkflowTaskFailedCause::WorkflowWorkerUnhandledFailure),
+        );
+        let core_result = self
+            .worker
+            .complete_workflow_activation(completion)
+            .await
+            .map_err(|error| WorkerBridgeError::CoreWorkflow(error.to_string()));
+        let ledger_result = self
+            .ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retire_rejected_workflow(run_id)
+            .map_err(WorkerBridgeError::Completion);
+        core_result.and(ledger_result)
+    }
+
+    /// Fails a remote activity task that semantic conversion could not expose.
+    ///
+    /// As with workflow rejection, the generated failure is attempted once
+    /// and the inaccessible token is retired on every outcome. Retaining it
+    /// after conversion failure would make graceful shutdown impossible
+    /// because OCaml never received the token needed to complete it.
+    pub async fn reject_activity_delivery(
+        &self,
+        task_token: &[u8],
+    ) -> Result<(), WorkerBridgeError> {
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .ensure_activity_leased(task_token)
+            .map_err(WorkerBridgeError::Completion)?;
+        let completion = ActivityTaskCompletion {
+            task_token: task_token.to_vec(),
+            result: Some(ActivityExecutionResult::fail(
+                "OCaml bridge could not represent the activity task".into(),
+            )),
+        };
+        let core_result = self
+            .worker
+            .complete_activity_task(completion)
+            .await
+            .map_err(|error| WorkerBridgeError::CoreActivity(error.to_string()));
+        let ledger_result = self
+            .ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retire_rejected_activity(task_token)
+            .map_err(WorkerBridgeError::Completion);
+        core_result.and(ledger_result)
     }
 
     /// Consumes a fully drained worker and runs Core's terminal finalizer.
@@ -537,6 +607,21 @@ impl TaskLedger {
             Some(_) => Err(CompleteError::NotLeased),
             None => Err(CompleteError::UnknownActivity),
         }
+    }
+
+    /// Retires a leased workflow that failed before OCaml could observe it.
+    ///
+    /// This is distinct from ordinary completion only at the call site: both
+    /// consume one exact leased debt, but rejection is permitted solely after
+    /// the bridge has attempted its own failure completion with Core.
+    pub fn retire_rejected_workflow(&mut self, run_id: &str) -> Result<(), CompleteError> {
+        self.complete_workflow(run_id)
+    }
+
+    /// Retires a leased activity token that semantic conversion could not
+    /// expose, after the bridge has attempted a generated failure completion.
+    pub fn retire_rejected_activity(&mut self, task_token: &[u8]) -> Result<(), CompleteError> {
+        self.complete_activity(task_token)
     }
 
     /// Verifies that an activity completion is authorized without mutating it.

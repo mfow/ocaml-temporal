@@ -335,9 +335,20 @@ impl Runtime {
             .try_take_workflow()
             .ok_or_else(not_ready)?
             .map_err(poll_lane_failure)?;
-        let semantic = workflow_protocol::activation_from_core(&activation)
-            .map_err(core_conversion_failure)?;
-        let encoded = workflow_protocol::encode_activation(&semantic).map_err(protocol_failure)?;
+        let semantic = match workflow_protocol::activation_from_core(&activation) {
+            Ok(semantic) => semantic,
+            Err(error) => {
+                self.reject_workflow_delivery(&activation.run_id)?;
+                return Err(core_conversion_failure(error));
+            }
+        };
+        let encoded = match workflow_protocol::encode_activation(&semantic) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                self.reject_workflow_delivery(&activation.run_id)?;
+                return Err(protocol_failure(error));
+            }
+        };
         if self
             .workflow_activations
             .insert(semantic.run_id.clone(), semantic)
@@ -391,10 +402,52 @@ impl Runtime {
             .try_take_activity()
             .ok_or_else(not_ready)?
             .map_err(poll_lane_failure)?;
-        let semantic = activity_protocol::task_from_core(&task).map_err(core_conversion_failure)?;
-        Ok(activity_protocol::encode_task(&semantic)
-            .map_err(protocol_failure)?
-            .into_bytes())
+        let semantic = match activity_protocol::task_from_core(&task) {
+            Ok(semantic) => semantic,
+            Err(error) => {
+                self.reject_activity_delivery(&task.task_token)?;
+                return Err(core_conversion_failure(error));
+            }
+        };
+        match activity_protocol::encode_task(&semantic) {
+            Ok(encoded) => Ok(encoded.into_bytes()),
+            Err(error) => {
+                self.reject_activity_delivery(&task.task_token)?;
+                Err(protocol_failure(error))
+            }
+        }
+    }
+
+    /// Fails and retires a workflow activation that was never exposed to OCaml.
+    fn reject_workflow_delivery(&self, run_id: &str) -> std::result::Result<(), Failure> {
+        let worker = self.worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .expect("worker retains parent runtime")
+            .tokio_handle();
+        handle
+            .block_on(worker.reject_workflow_delivery(run_id))
+            .map_err(worker_bridge_failure)
+    }
+
+    /// Fails and retires an activity task that was never exposed to OCaml.
+    fn reject_activity_delivery(&self, task_token: &[u8]) -> std::result::Result<(), Failure> {
+        let worker = self.worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .expect("worker retains parent runtime")
+            .tokio_handle();
+        handle
+            .block_on(worker.reject_activity_delivery(task_token))
+            .map_err(worker_bridge_failure)
     }
 
     /// Strictly validates and submits one leased remote-activity completion.

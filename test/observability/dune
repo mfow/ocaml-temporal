@@ -1,0 +1,12 @@
+(test
+ (name test_logging)
+ (libraries
+  logs
+  temporal-sdk
+  temporal-sdk.internal_base
+  temporal-sdk.internal_core_bridge
+  temporal-sdk.runtime))
+
+(test
+ (name test_tag_normalization)
+ (libraries logs temporal-sdk.internal_base))

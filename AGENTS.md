@@ -112,6 +112,9 @@ boundary.
 - Keep CI and local checks efficient and high-signal. Add scanners only when
   they are maintained, permissively licensed, and provide value beyond existing
   compiler, test, formatting, and lint gates.
+- Immediately before merging a pull request, refresh its conversation comments,
+  reviews, and unresolved review threads. Address and resolve actionable
+  feedback, and rerun applicable CI after code changes.
 
 ## AI disclosure
 

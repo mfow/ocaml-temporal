@@ -13,6 +13,10 @@ type error = {
   message : string;
 }
 
+(** Shared source and tag vocabulary. It contains reporter exceptions so a
+    consumer's logging setup cannot change bridge behavior. *)
+module Observability = Temporal_base.Observability
+
 (** Version requested by this binding layer. *)
 let abi_version = 1l
 
@@ -49,6 +53,15 @@ let status = function
   | 4 -> Internal
   | code -> Unknown code
 
+(** Converts a bridge status to a bounded stable tag value without exposing the
+    Rust-owned diagnostic message. *)
+let status_name = function
+  | Invalid_argument -> "invalid_argument"
+  | Abi_mismatch -> "abi_mismatch"
+  | Panic -> "panic"
+  | Internal -> "internal"
+  | Unknown _ -> "unknown"
+
 (** Copies either the successful bytes or error message into OCaml, then always
     frees the Rust allocation. [Fun.protect] still runs cleanup if copying
     raises an OCaml exception. *)
@@ -62,37 +75,88 @@ let decode response =
         Error
           { status = status code; message = response_error response })
 
+(** Measures one complete bridge operation, reports its structural outcome,
+    and returns the original [result] unchanged. *)
+let bridge_call operation action =
+  let result, duration_ms = Observability.measure_ms action in
+  let duration_tags = Observability.tags ~operation ~duration_ms () in
+  Observability.report ~src:Observability.Source.bridge Logs.Debug
+    ~tags:duration_tags "bridge operation completed";
+  (match result with
+  | Ok _ -> ()
+  | Error error ->
+      let tags =
+        Observability.tags ~operation
+          ~bridge_status:(status_name error.status) ()
+      in
+      Observability.report ~src:Observability.Source.bridge Logs.Error ~tags
+        "bridge operation failed");
+  result
+
 (** Converts successful test operations with no useful output to [Ok ()] after
     [decode] has performed the normal memory cleanup. *)
 let check_abi_version version =
-  Result.map (fun _ -> ()) (decode (check_abi_version_raw version))
+  bridge_call "check_abi_version" (fun () ->
+      Result.map (fun _ -> ()) (decode (check_abi_version_raw version)))
 
-let echo input = decode (echo_raw input)
+let echo input = bridge_call "echo" (fun () -> decode (echo_raw input))
 
 let conformance_wait_ms milliseconds =
-  Result.map (fun _ -> ())
-    (decode (conformance_wait_ms_raw milliseconds))
+  bridge_call "conformance_wait_ms" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (conformance_wait_ms_raw milliseconds)))
 
 (** Closes the native owner after first clearing its OCaml-held pointer. This
     makes repeated sequential calls safe; the future supervisor actor will
     serialize all lifecycle calls across Domains. *)
 let runtime_close runtime =
-  match runtime_close_raw runtime with
-  | 0 -> Ok ()
-  | code ->
-      Error
-        { status = status code; message = "Temporal Core runtime close failed" }
+  let result =
+    bridge_call "runtime_close" (fun () ->
+        match runtime_close_raw runtime with
+        | 0 -> Ok ()
+        | code ->
+            Error
+              {
+                status = status code;
+                message = "Temporal Core runtime close failed";
+              })
+  in
+  let level, message, bridge_status =
+    match result with
+    | Ok () -> (Logs.Info, "runtime closed", None)
+    | Error error ->
+        (Logs.Error, "runtime shutdown failed", Some (status_name error.status))
+  in
+  let tags =
+    Observability.tags ~operation:"runtime_close" ?bridge_status ()
+  in
+  Observability.report ~src:Observability.Source.lifecycle level ~tags message;
+  result
 
 (** Checks the linked bridge contract once, then creates the native runtime.
     If creation fails after allocating the OCaml owner, cleanup remains safe
     because its native pointer is either null or explicitly closed here. *)
 let runtime_create () =
-  match check_abi_version abi_version with
-  | Error _ as error -> error
-  | Ok () ->
-      let runtime, response = runtime_create_raw () in
-      (match decode response with
-      | Ok _ -> Ok runtime
-      | Error error ->
-          ignore (runtime_close runtime);
-          Error error)
+  let result =
+    bridge_call "runtime_create" (fun () ->
+        match check_abi_version abi_version with
+        | Error _ as error -> error
+        | Ok () ->
+            let runtime, response = runtime_create_raw () in
+            (match decode response with
+            | Ok _ -> Ok runtime
+            | Error error ->
+                ignore (runtime_close runtime);
+                Error error))
+  in
+  let level, message, bridge_status =
+    match result with
+    | Ok _ -> (Logs.Info, "runtime initialized", None)
+    | Error error ->
+        (Logs.Error, "runtime initialization failed", Some (status_name error.status))
+  in
+  let tags =
+    Observability.tags ~operation:"runtime_create" ?bridge_status ()
+  in
+  Observability.report ~src:Observability.Source.lifecycle level ~tags message;
+  result

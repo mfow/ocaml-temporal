@@ -13,6 +13,11 @@ val current : unit -> t option
     context even if [action] raises. Nested calls are supported. *)
 val with_context : t -> (unit -> 'value) -> 'value
 
+(** Runs [action] with no workflow context installed and restores the previous
+    context afterward. Infrastructure callbacks that must not re-enter
+    deterministic workflow state use this boundary. *)
+val without_context : (unit -> 'value) -> 'value
+
 (** Creates an already-resolved future owned by the context scheduler. *)
 val resolved :
   t ->

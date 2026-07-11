@@ -17,10 +17,14 @@ depends: [
   "base-threads" {= "base"}
   "base-unix" {= "base"}
   "dune" {= "3.24.0"}
+  "logs" {= "0.10.0"}
   "ocaml" {= "5.2.1"}
   "ocaml-base-compiler" {= "5.2.1"}
   "ocaml-config" {= "3"}
   "ocaml-options-vanilla" {= "1"}
+  "ocamlbuild" {= "0.16.1"}
+  "ocamlfind" {= "1.9.8"}
+  "topkg" {= "1.1.1"}
   "yojson" {= "3.0.0"}
 ]
 build: [

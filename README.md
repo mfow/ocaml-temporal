@@ -59,6 +59,17 @@ push to `master`. Separate native jobs build and test the complete OCaml-to-Rust
 link on Windows x64 and macOS ARM64 with OCaml 5.5. These jobs use
 `make native-verify`; the Compose commands remain the supported local default.
 
+## Logging
+
+The SDK emits application-configurable events through the OCaml `logs`
+library. It provides stable `temporal.sdk.lifecycle`, `temporal.sdk.bridge`,
+and `temporal.sdk.workflow` sources, structural tags, and elapsed-millisecond
+measurements at meaningful runtime boundaries. It does not install a reporter
+or set a global logging level; the owning application retains those choices.
+Payloads, workflow arguments, and bridge diagnostics are excluded from log
+events. See the [observability reference](docs/reference/observability.md) for
+level semantics, filtering examples, privacy rules, and Domain considerations.
+
 ## Workflow style
 
 ```ocaml
@@ -94,6 +105,7 @@ not a claim that a production worker can connect yet.
 - [Workflow guide](docs/guides/workflows.md)
 - [Runtime invariants](docs/reference/runtime-invariants.md)
 - [Native Core bridge and ownership](docs/reference/core-bridge.md)
+- [Logging and observability](docs/reference/observability.md)
 - [Temporal Core boundary decision](docs/decisions/0001-temporal-core-c-boundary.md)
 - [Dependency and license inventory](docs/dependencies.md)
 - [Verified progress](docs/progress.md)

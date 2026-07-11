@@ -3,9 +3,9 @@ set -eu
 
 failed=0
 
-# Return success only for an approved SPDX expression. The two exceptions are
-# deliberately restricted to exact package names and versions reviewed in
-# docs/dependencies.md.
+# Return success only for an approved SPDX expression. Linking and metadata
+# exceptions are deliberately restricted to the exact packages and versions
+# reviewed in docs/dependencies.md.
 allowed_license() {
   package=$1
   version=$2
@@ -19,6 +19,9 @@ allowed_license() {
       case "$package" in
         ocaml|ocaml-base-compiler|ocaml-compiler-libs) return 0 ;;
       esac
+      ;;
+    'LGPL-2.0-or-later WITH OCaml-LGPL-linking-exception')
+      [ "$package" = "ocamlbuild" ] && [ "$version" = "0.16.1" ] && return 0
       ;;
     'CC0-1.0+')
       [ "$package" = "ocaml-options-vanilla" ] && [ "$version" = "1" ] && return 0

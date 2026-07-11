@@ -40,6 +40,14 @@ let with_context context action =
   Domain.DLS.set current_key (Some context);
   Fun.protect ~finally:(fun () -> Domain.DLS.set current_key previous) action
 
+(** Runs infrastructure code with no workflow installed, then restores the
+    previous context. This prevents re-entrant callbacks such as application
+    log reporters from mutating deterministic workflow state. *)
+let without_context action =
+  let previous = current () in
+  Domain.DLS.set current_key None;
+  Fun.protect ~finally:(fun () -> Domain.DLS.set current_key previous) action
+
 (** Builds the error returned when code waits for a workflow future from the
     wrong scheduler or after workflow execution has ended. *)
 let outside_error () =

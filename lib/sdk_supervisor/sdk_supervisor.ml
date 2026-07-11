@@ -227,6 +227,7 @@ end
     does not own native handles, mutate lease state, or perform network I/O. *)
 module Protocol_adapter = struct
   module Bridge = Temporal_core_bridge.Native_bridge
+  module Client = Temporal_protocol.Client_protocol
   module Workflow = Temporal_protocol.Workflow_protocol
   module Activity = Temporal_protocol.Activity_protocol
 
@@ -334,6 +335,124 @@ module Protocol_adapter = struct
     match Activity.encode_completion completion with
     | Ok output -> Ok (Bytes.of_string output)
     | Error error -> activity_error "activity completion encoding" error
+
+  (** Converts a client codec diagnostic to the same bounded bridge error
+      vocabulary used by worker protocol adapters. The source JSON is never
+      copied into the message, so malformed native output cannot leak payload
+      data through logs or exceptions. *)
+  let client_error operation error =
+    let view = Client.error_view error in
+    Error
+      {
+        Bridge.status = Protocol;
+        message =
+          Printf.sprintf "%s failed: %s at %s: %s" operation view.code
+            view.path view.message;
+      }
+
+  (** Canonically serializes a typed start request before it reaches the C
+      boundary. The native bridge remains the only layer that handles raw
+      bytes; callers of this adapter see a typed protocol value. *)
+  let encode_client_start_request request =
+    match Client.encode_start_request request with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> client_error "client start request encoding" error
+
+  (** Canonically serializes a typed exact-run wait request before it reaches
+      the native bridge. *)
+  let encode_client_wait_request request =
+    match Client.encode_wait_request request with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> client_error "client wait request encoding" error
+
+  (** Converts a malformed native client error document into a privacy-safe
+      protocol failure. Native status text is intentionally not included. *)
+  let malformed_client_error operation error =
+    let view = Client.error_view error in
+    Error
+      {
+        Bridge.status = Protocol;
+        message =
+          Printf.sprintf "%s returned an invalid client error: %s at %s: %s"
+            operation view.code view.path view.message;
+      }
+
+  (** Checks that the native numeric status agrees with the structured JSON
+      category. This prevents a future bridge regression from turning a
+      connection failure into an already-started workflow result or vice
+      versa. *)
+  let client_error_status = function
+    | Client.Already_started _ -> Bridge.Already_started
+    | Client.Rpc _ -> Bridge.Connection
+    | Client.Protocol _ -> Bridge.Protocol
+
+  (** Decodes and status-checks one structured start failure. Statuses outside
+      the client protocol's structured vocabulary remain ordinary bridge
+      failures, for example [Invalid_state] before a connection exists. *)
+  let decode_client_start_failure request native_error =
+    match native_error.Bridge.status with
+    | Already_started | Connection | Protocol -> (
+        match Client.decode_start_error ~request native_error.message with
+        | Error error -> malformed_client_error "client start" error
+        | Ok client_error ->
+            if native_error.Bridge.status = client_error_status client_error then
+              Ok (Error client_error)
+            else
+              Error
+                {
+                  Bridge.status = Protocol;
+                  message =
+                    "client start error status does not match its JSON kind";
+                })
+    | _ -> Error native_error
+
+  (** Decodes and status-checks one structured exact-run wait failure. A wait
+      never returns [already_started], so that category is rejected by the
+      operation-specific codec even if a native status is accidentally reused. *)
+  let decode_client_wait_failure request native_error =
+    match native_error.Bridge.status with
+    | Connection | Protocol -> (
+        match Client.decode_wait_error ~request native_error.message with
+        | Error error -> malformed_client_error "client wait" error
+        | Ok client_error ->
+            if native_error.Bridge.status = client_error_status client_error then
+              Ok (Error client_error)
+            else
+              Error
+                {
+                  Bridge.status = Protocol;
+                  message =
+                    "client wait error status does not match its JSON kind";
+                })
+    | Already_started ->
+        Error
+          {
+            Bridge.status = Protocol;
+            message = "client wait returned an impossible already-started status";
+          }
+    | _ -> Error native_error
+
+  (** Validates a successful native start response and translates it to the
+      typed protocol result. Response identity correlation happens in the
+      codec using the original request. *)
+  let decode_client_start_result request = function
+    | Ok input -> (
+        match
+          Client.decode_start_response ~request (Bytes.to_string input)
+        with
+        | Ok response -> Ok (Ok response)
+        | Error error -> client_error "client start response decoding" error)
+    | Error native_error -> decode_client_start_failure request native_error
+
+  (** Validates a successful native exact-run response and translates it to
+      the typed protocol result. [Not_ready] remains an outer bridge result so
+      orchestration code can retry without manufacturing a terminal outcome. *)
+  let decode_client_wait_result request = function
+    | Ok input -> (
+        match Client.decode_wait_response ~request (Bytes.to_string input) with
+        | Ok response -> Ok (Ok response)
+        | Error error -> client_error "client wait response decoding" error)
+    | Error native_error -> decode_client_wait_failure request native_error
 end
 
 (** The production backend owns one runtime-client-worker graph. Every
@@ -341,6 +460,7 @@ end
     race another operation or teardown. *)
 module Native_backend = struct
   module Bridge = Temporal_core_bridge.Native_bridge
+  module Client = Temporal_protocol.Client_protocol
 
   type config = unit
   type state = Bridge.runtime
@@ -348,8 +468,12 @@ module Native_backend = struct
   type _ operation =
     | Check_compatibility : unit operation
     | Connect_client : Bridge.client_config -> unit operation
-    | Client_start_workflow : bytes -> bytes operation
-    | Client_wait_workflow : bytes -> bytes operation
+    | Client_start_workflow :
+        Client.start_request ->
+        (Client.start_response, Client.client_error) result operation
+    | Client_wait_workflow :
+        Client.wait_request ->
+        (Client.wait_response, Client.client_error) result operation
     | Start_worker : Bridge.worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation
@@ -372,10 +496,18 @@ module Native_backend = struct
     | Check_compatibility ->
         Bridge.check_abi_version Bridge.abi_version
     | Connect_client config -> Bridge.client_connect runtime config
-    | Client_start_workflow input ->
-        Bridge.client_start_workflow_json runtime input
-    | Client_wait_workflow input ->
-        Bridge.client_wait_workflow_json runtime input
+    | Client_start_workflow request -> (
+        match Protocol_adapter.encode_client_start_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_start_result request
+              (Bridge.client_start_workflow_json runtime input))
+    | Client_wait_workflow request -> (
+        match Protocol_adapter.encode_client_wait_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_wait_result request
+              (Bridge.client_wait_workflow_json runtime input))
     | Start_worker config -> Bridge.worker_start runtime config
     | Try_poll_workflow ->
         Protocol_adapter.workflow_poll_result
@@ -418,6 +550,7 @@ module Native = struct
   include Make (Native_backend)
 
   module Protocol_adapter = Protocol_adapter
+  module Client = Temporal_protocol.Client_protocol
 
   type client_config = Native_backend.Bridge.client_config
   type worker_config = Native_backend.Bridge.worker_config
@@ -425,8 +558,12 @@ module Native = struct
   type 'result operation = 'result Native_backend.operation =
     | Check_compatibility : unit operation
     | Connect_client : client_config -> unit operation
-    | Client_start_workflow : bytes -> bytes operation
-    | Client_wait_workflow : bytes -> bytes operation
+    | Client_start_workflow :
+        Client.start_request ->
+        (Client.start_response, Client.client_error) result operation
+    | Client_wait_workflow :
+        Client.wait_request ->
+        (Client.wait_response, Client.client_error) result operation
     | Start_worker : worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation

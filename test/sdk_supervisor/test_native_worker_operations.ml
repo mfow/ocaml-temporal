@@ -1,5 +1,6 @@
 module Supervisor = Sdk_supervisor.Native
 module Bridge = Temporal_core_bridge.Native_bridge
+module Client = Temporal_protocol.Client_protocol
 module Workflow = Temporal_protocol.Workflow_protocol
 module Activity = Temporal_protocol.Activity_protocol
 
@@ -160,6 +161,114 @@ let test_protocol_failures_are_typed () =
       if String.length message = 0 then failwith "empty completion protocol error"
   | _ -> failwith "invalid workflow completion was not a protocol error"
 
+(** Exercises the typed client adapter without a Temporal server. The native
+    result shapes below model the already-owned bytes returned by the private
+    bridge, allowing this test to cover OCaml response/error validation and
+    status correlation independently from network availability. *)
+let test_client_protocol_adapter () =
+  let start_request : Client.start_request =
+    {
+      namespace = "default";
+      workflow_id = "workflow-1";
+      workflow_type = "Smoke";
+      task_queue = "queue";
+      input = [];
+    }
+  in
+  let wait_request : Client.wait_request =
+    { namespace = "default"; workflow_id = "workflow-1"; run_id = "run-1" }
+  in
+  let start_json =
+    {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"}}|}
+  in
+  let wait_json =
+    {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"},"outcome":{"kind":"cancelled","details":[]}}|}
+  in
+  let start_bytes =
+    require_bridge
+      (Supervisor.Protocol_adapter.encode_client_start_request start_request)
+  in
+  if not (contains_substring (Bytes.to_string start_bytes) "workflow-1") then
+    failwith "typed start request was not encoded";
+  let wait_bytes =
+    require_bridge
+      (Supervisor.Protocol_adapter.encode_client_wait_request wait_request)
+  in
+  if not (contains_substring (Bytes.to_string wait_bytes) "run-1") then
+    failwith "typed wait request was not encoded";
+  (match
+     Supervisor.Protocol_adapter.decode_client_start_result start_request
+       (Ok (Bytes.of_string start_json))
+   with
+  | Ok (Ok { Client.execution = { run_id = "run-2"; _ } }) -> ()
+  | _ -> failwith "valid start response was not typed");
+  (match
+     Supervisor.Protocol_adapter.decode_client_wait_result wait_request
+       (Ok (Bytes.of_string wait_json))
+   with
+  | Ok (Ok { Client.execution = { run_id = "run-1"; _ }; outcome = Cancelled _ }) ->
+      ()
+  | _ -> failwith "valid wait response was not typed");
+  let already_started =
+    Error
+      {
+        Bridge.status = Already_started;
+        message =
+          {|{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":"run-existing"}|};
+      }
+  in
+  (match
+     Supervisor.Protocol_adapter.decode_client_start_result start_request
+       already_started
+   with
+  | Ok (Error (Client.Already_started { workflow_id = "workflow-1"; _ })) -> ()
+  | _ -> failwith "structured already-started error was not typed");
+  let rpc_failure =
+    Error
+      {
+        Bridge.status = Connection;
+        message = {|{"kind":"rpc","code":"unavailable"}|};
+      }
+  in
+  (match
+     Supervisor.Protocol_adapter.decode_client_wait_result wait_request
+       rpc_failure
+   with
+  | Ok (Error (Client.Rpc { code = "unavailable" })) -> ()
+  | _ -> failwith "structured RPC error was not typed");
+  (match
+     Supervisor.Protocol_adapter.decode_client_wait_result wait_request
+       (Error { Bridge.status = Not_ready; message = "retry" })
+   with
+  | Error { Bridge.status = Not_ready; _ } -> ()
+  | _ -> failwith "wait readiness status was converted into a terminal value");
+  (match
+     Supervisor.Protocol_adapter.decode_client_start_result start_request
+       (Ok
+          (Bytes.of_string
+             {|{"execution":{"namespace":"other","workflow_id":"workflow-1","run_id":"run-2"}}|}))
+   with
+  | Error { Bridge.status = Protocol; _ } -> ()
+  | _ -> failwith "mismatched start response was accepted");
+  (match
+     Supervisor.Protocol_adapter.decode_client_wait_result wait_request
+       (Error
+          {
+            Bridge.status = Already_started;
+            message = {|{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":null}|};
+          })
+   with
+  | Error { Bridge.status = Protocol; _ } -> ()
+  | _ -> failwith "impossible wait error status was accepted");
+  (match
+     Supervisor.Protocol_adapter.decode_client_start_result start_request
+       (Error { Bridge.status = Connection; message = "secret native text" })
+   with
+  | Error { Bridge.status = Protocol; message } ->
+      if contains_substring message "secret native text" then
+        failwith "malformed native error exposed raw text"
+  | _ -> failwith "malformed native error was not rejected")
+
 (** The production supervisor rejects polling before worker construction,
     validates completions before entering Rust, and closes every worker
     operation at the mailbox admission boundary after shutdown. *)
@@ -219,13 +328,17 @@ let test_native_client_lifecycle_guards () =
   let supervisor = Result.get_ok (Supervisor.create ~capacity:4 ()) in
   (* These are semantically complete documents so the native adapter reaches
      its connection-state guard instead of stopping at request validation. *)
-  let start_request =
-    Bytes.of_string
-      {|{"namespace":"default","workflow_id":"workflow-1","workflow_type":"Smoke","task_queue":"queue","input":[]}|}
+  let start_request : Client.start_request =
+    {
+      namespace = "default";
+      workflow_id = "workflow-1";
+      workflow_type = "Smoke";
+      task_queue = "queue";
+      input = [];
+    }
   in
-  let wait_request =
-    Bytes.of_string
-      {|{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"}|}
+  let wait_request : Client.wait_request =
+    { namespace = "default"; workflow_id = "workflow-1"; run_id = "run-1" }
   in
   (match
      Supervisor.perform supervisor
@@ -246,5 +359,6 @@ let () =
   test_decode_failure_retires_native_lease ();
   test_protocol_serialization ();
   test_protocol_failures_are_typed ();
+  test_client_protocol_adapter ();
   test_native_lifecycle_guards ();
   test_native_client_lifecycle_guards ()

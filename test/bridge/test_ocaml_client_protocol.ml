@@ -33,6 +33,16 @@ let payload data : Protocol.payload =
 let execution : Protocol.execution =
   { namespace = "default"; workflow_id = "workflow-1"; run_id = "run-1" }
 
+(** Start requests use the same workflow identity as the response fixtures. *)
+let start_request : Protocol.start_request =
+  {
+    namespace = execution.namespace;
+    workflow_id = execution.workflow_id;
+    workflow_type = "Smoke";
+    task_queue = "queue";
+    input = [];
+  }
+
 (** The canonical payload wrapper for the bytes [ok]. *)
 let ok_payload_json =
   {|{"metadata":{"encoding":{"encoding":"base64","data":"YmluYXJ5L3BsYWlu"}},"data":{"encoding":"base64","data":"b2s="}}|}
@@ -62,9 +72,12 @@ let test_terminal_outcomes () =
     ]
   in
   List.iter
-    (fun document -> ignore (unwrap (Protocol.decode_wait_response document)))
+    (fun document ->
+      ignore (unwrap (Protocol.decode_wait_response ~request:execution document)))
     documents;
-  let completed = unwrap (Protocol.decode_wait_response (List.hd documents)) in
+  let completed =
+    unwrap (Protocol.decode_wait_response ~request:execution (List.hd documents))
+  in
   match completed.outcome with
   | Protocol.Completed { result = [ value ]; successor = None } ->
       if not (Bytes.equal value.data (Bytes.of_string "ok")) then
@@ -79,7 +92,9 @@ let test_successor_identity_validation () =
     ^ suffix ^ "}}"
   in
   List.iter
-    (fun suffix -> require_error (Protocol.decode_wait_response (response suffix)))
+    (fun suffix ->
+      require_error
+        (Protocol.decode_wait_response ~request:execution (response suffix)))
     [
       {|{"namespace":"other","workflow_id":"workflow-1","run_id":"run-2"}|};
       {|{"namespace":"default","workflow_id":"other","run_id":"run-2"}|};
@@ -89,13 +104,7 @@ let test_successor_identity_validation () =
 (** Confirms request encoders validate identifiers before sending bytes to Rust. *)
 let test_request_validation () =
   let valid_start : Protocol.start_request =
-    {
-      namespace = "default";
-      workflow_id = "workflow-1";
-      workflow_type = "Smoke";
-      task_queue = "queue";
-      input = [ payload (Bytes.of_string "input") ];
-    }
+    { start_request with input = [ payload (Bytes.of_string "input") ] }
   in
   let encoded_start = unwrap (Protocol.encode_start_request valid_start) in
   require_fragment "start request" "{" encoded_start;
@@ -123,16 +132,29 @@ let test_closed_response_shape () =
   let valid =
     {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"}}|}
   in
-  ignore (unwrap (Protocol.decode_start_response valid));
+  ignore (unwrap (Protocol.decode_start_response ~request:start_request valid));
   require_error
-    (Protocol.decode_start_response
+    (Protocol.decode_start_response ~request:start_request
        {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"},"extra":true}|});
   require_error
-    (Protocol.decode_start_response
+    (Protocol.decode_start_response ~request:start_request
        {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","run_id":"run-2"}}|});
   require_error
-    (Protocol.decode_wait_response
+    (Protocol.decode_wait_response ~request:execution
        {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"},"outcome":{"kind":"cancelled","details":[],"extra":true}}|})
+
+(** Ensures successful responses cannot be attributed to a different execution,
+    even when their JSON shape and identifiers are individually valid. *)
+let test_response_execution_correlation () =
+  let response =
+    {|{"execution":{"namespace":"default","workflow_id":"other-workflow","run_id":"run-1"}}|}
+  in
+  require_error (Protocol.decode_start_response ~request:start_request response);
+  let wait_response =
+    {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"},"outcome":{"kind":"cancelled","details":[]}}|}
+  in
+  require_error
+    (Protocol.decode_wait_response ~request:execution wait_response)
 
 (** Decodes structured native errors and rejects categories or codes outside
     the bilateral closed vocabulary. *)
@@ -162,10 +184,24 @@ let test_client_errors () =
     (fun document -> require_error (Protocol.decode_client_error document))
     [
       {|{"kind":"rpc","code":"not-a-real-code"}|};
+      {|{"kind":"rpc","code":"ok"}|};
       {|{"kind":"protocol","code":"unsupported-future-code"}|};
       {|{"kind":"unknown","code":"internal"}|};
       {|{"kind":"rpc","code":"internal","extra":true}|};
     ]
+
+(** Operation-specific error decoders retain the closed error body while
+    correlating identities and rejecting impossible categories. *)
+let test_operation_error_correlation () =
+  let already_started =
+    {|{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":null}|}
+  in
+  ignore (unwrap (Protocol.decode_start_error ~request:start_request already_started));
+  require_error
+    (Protocol.decode_start_error ~request:start_request
+       {|{"kind":"already_started","workflow_id":"other-workflow","existing_run_id":null}|});
+  require_error
+    (Protocol.decode_wait_error ~request:execution already_started)
 
 (** Runs one protocol test with a stable CI-visible name. *)
 let run name test =
@@ -181,4 +217,6 @@ let () =
   run "client successor identity" test_successor_identity_validation;
   run "client request validation" test_request_validation;
   run "client closed response shape" test_closed_response_shape;
-  run "client structured errors" test_client_errors
+  run "client response correlation" test_response_execution_correlation;
+  run "client structured errors" test_client_errors;
+  run "client operation error correlation" test_operation_error_correlation

@@ -4,6 +4,23 @@ use ocaml_temporal_core_bridge::activity_protocol::{
     encode_completion, encode_task,
 };
 
+/// A complete start-task fixture exercises every nullable field, the retry
+/// policy, priority, headers, and both payload collection shapes.
+const VALID_START_TASK: &str = r#"{"task_token":"AAEC/v8=","variant":{"kind":"start","workflow_namespace":"default","workflow_type":"example.workflow","workflow_execution":{"workflow_id":"workflow-1","run_id":"run-1"},"activity_id":"activity-1","activity_type":"example.activity","header_fields":{"trace":{"metadata":{},"data":{"encoding":"base64","data":"aGVhZGVy"}}},"input":[{"metadata":{"encoding":{"encoding":"base64","data":"anNvbi9wbGFpbg=="}},"data":{"encoding":"base64","data":"eyJ2YWx1ZSI6MX0="}}],"heartbeat_details":[],"scheduled_time":{"seconds":10,"nanoseconds":20},"current_attempt_scheduled_time":null,"started_time":{"seconds":11,"nanoseconds":0},"attempt":1,"schedule_to_close_timeout":{"seconds":60,"nanoseconds":0},"start_to_close_timeout":{"seconds":30,"nanoseconds":0},"heartbeat_timeout":null,"retry_policy":{"initial_interval":{"seconds":1,"nanoseconds":0},"backoff_coefficient_bits":"4611686018427387904","maximum_interval":{"seconds":60,"nanoseconds":0},"maximum_attempts":3,"non_retryable_error_types":["InvalidInput"]},"priority":{"priority_key":2,"fairness_key":"tenant","fairness_weight_bits":1065353216},"standalone_run_id":""}}"#;
+
+/// Replaces exactly one fixture fragment so each malformed document targets a
+/// single semantic rule and fails loudly if the fixture is later reshaped.
+fn replace_once(source: &str, before: &str, after: &str) -> String {
+    let offset = source
+        .find(before)
+        .unwrap_or_else(|| panic!("missing test fragment {before}"));
+    let mut output = String::with_capacity(source.len() + after.len() - before.len());
+    output.push_str(&source[..offset]);
+    output.push_str(after);
+    output.push_str(&source[offset + before.len()..]);
+    output
+}
+
 /// Activity task tokens survive canonical JSON and return to Core unchanged.
 #[test]
 fn activity_completion_preserves_opaque_task_token() {
@@ -55,4 +72,110 @@ fn activity_cancellation_task_round_trips() {
 
     let encoded = encode_task(&task).expect("task should encode");
     assert_eq!(decode_task(&encoded), Ok(task));
+}
+
+/// A fully populated start task can cross both directions without changing
+/// the typed value, including exact retry-policy bit strings and payloads.
+#[test]
+fn activity_start_task_round_trips() {
+    let task = decode_task(VALID_START_TASK).expect("valid start task should decode");
+    let encoded = encode_task(&task).expect("valid start task should encode");
+    assert_eq!(decode_task(&encoded), Ok(task));
+}
+
+/// Rust rejects the same nested values that the OCaml adapter rejects before
+/// either side can invoke an activity with an unsafe execution context.
+#[test]
+fn activity_start_rejects_nested_semantic_mismatches() {
+    let oversized_fairness_key = format!("\"fairness_key\":\"{}\"", "x".repeat(65));
+    let oversized_standalone_run_id = format!("\"standalone_run_id\":\"{}\"", "x".repeat(65_537));
+    let oversized_non_retryable_type = format!("\"{}\"", "x".repeat(65_537));
+    let malformed = [
+        (
+            "negative retry initial interval",
+            replace_once(
+                VALID_START_TASK,
+                "\"initial_interval\":{\"seconds\":1",
+                "\"initial_interval\":{\"seconds\":-1",
+            ),
+        ),
+        (
+            "retry maximum interval nanoseconds",
+            replace_once(
+                VALID_START_TASK,
+                "\"maximum_interval\":{\"seconds\":60,\"nanoseconds\":0}",
+                "\"maximum_interval\":{\"seconds\":60,\"nanoseconds\":1000000000}",
+            ),
+        ),
+        (
+            "noncanonical retry coefficient",
+            replace_once(
+                VALID_START_TASK,
+                "\"backoff_coefficient_bits\":\"4611686018427387904\"",
+                "\"backoff_coefficient_bits\":\"01\"",
+            ),
+        ),
+        (
+            "retry coefficient outside u64",
+            replace_once(
+                VALID_START_TASK,
+                "\"backoff_coefficient_bits\":\"4611686018427387904\"",
+                "\"backoff_coefficient_bits\":\"18446744073709551616\"",
+            ),
+        ),
+        (
+            "empty header key",
+            replace_once(VALID_START_TASK, "\"trace\":", "\"\":"),
+        ),
+        (
+            "fairness key exceeds Core limit",
+            replace_once(
+                VALID_START_TASK,
+                "\"fairness_key\":\"tenant\"",
+                &oversized_fairness_key,
+            ),
+        ),
+        (
+            "standalone run ID exceeds text limit",
+            replace_once(
+                VALID_START_TASK,
+                "\"standalone_run_id\":\"\"",
+                &oversized_standalone_run_id,
+            ),
+        ),
+        (
+            "non-retryable error type exceeds text limit",
+            replace_once(
+                VALID_START_TASK,
+                "\"InvalidInput\"",
+                &oversized_non_retryable_type,
+            ),
+        ),
+        (
+            "maximum attempts outside signed i32",
+            replace_once(
+                VALID_START_TASK,
+                "\"maximum_attempts\":3",
+                "\"maximum_attempts\":2147483648",
+            ),
+        ),
+    ];
+
+    for (name, json) in malformed {
+        assert!(decode_task(&json).is_err(), "{name} should be rejected");
+    }
+}
+
+/// The signed int32 retry-attempt domain is bilateral: both endpoints remain
+/// accepted even though a future semantic policy may narrow their meaning.
+#[test]
+fn retry_maximum_attempts_accepts_signed_i32_boundaries() {
+    for value in ["-2147483648", "2147483647"] {
+        let json = replace_once(
+            VALID_START_TASK,
+            "\"maximum_attempts\":3",
+            &format!("\"maximum_attempts\":{value}"),
+        );
+        decode_task(&json).expect("signed i32 boundary should decode");
+    }
 }

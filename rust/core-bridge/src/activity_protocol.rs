@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{self, MAX_PAYLOAD_BYTES, ProtocolError};
+use crate::protocol::{self, MAX_PAYLOAD_BYTES, MAX_STRING_BYTES, ProtocolError};
 use crate::workflow_protocol::{
     self, CoreConversionError, Duration, Failure, Payload, Timestamp, WorkflowExecution,
     WorkflowPriority,
@@ -215,7 +215,14 @@ pub fn encode_completion(value: &ActivityCompletion) -> Result<String, ProtocolE
     Ok(output)
 }
 
-/// Enforces token, identifier, time, and failure invariants.
+/// Enforces the complete semantic contract for an activity task.
+///
+/// The foundation JSON decoder deliberately accepts larger strings so that a
+/// maximum-size base64 payload can be transported.  Every ordinary text field
+/// is therefore checked here as well, at the same boundary where the OCaml
+/// adapter applies its 64 KiB safety limit.  Keeping this validation on the
+/// Rust side is important for tasks originating in Core, not only for JSON
+/// received from OCaml.
 fn validate_task(value: &ActivityTask) -> Result<(), ProtocolError> {
     decode_token(&value.task_token)?;
     if let ActivityTaskVariant::Start(start) = &value.variant {
@@ -235,36 +242,120 @@ fn validate_task(value: &ActivityTask) -> Result<(), ProtocolError> {
         ] {
             workflow_protocol::identifier(field, path)?;
         }
-        for time in [
-            start.scheduled_time,
-            start.current_attempt_scheduled_time,
-            start.started_time,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            workflow_protocol::validate_time(
-                time.seconds,
-                time.nanoseconds,
-                false,
-                "$.variant.time",
-            )?;
+        for (time, path) in [
+            (start.scheduled_time, "$.variant.scheduled_time"),
+            (
+                start.current_attempt_scheduled_time,
+                "$.variant.current_attempt_scheduled_time",
+            ),
+            (start.started_time, "$.variant.started_time"),
+        ] {
+            if let Some(time) = time {
+                workflow_protocol::validate_time(time.seconds, time.nanoseconds, false, path)?;
+            }
         }
-        for duration in [
-            start.schedule_to_close_timeout,
-            start.start_to_close_timeout,
-            start.heartbeat_timeout,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            workflow_protocol::validate_time(
-                duration.seconds,
-                duration.nanoseconds,
-                true,
-                "$.variant.timeout",
-            )?;
+        for (duration, path) in [
+            (
+                start.schedule_to_close_timeout,
+                "$.variant.schedule_to_close_timeout",
+            ),
+            (
+                start.start_to_close_timeout,
+                "$.variant.start_to_close_timeout",
+            ),
+            (start.heartbeat_timeout, "$.variant.heartbeat_timeout"),
+        ] {
+            if let Some(duration) = duration {
+                workflow_protocol::validate_time(
+                    duration.seconds,
+                    duration.nanoseconds,
+                    true,
+                    path,
+                )?;
+            }
         }
+        for key in start.header_fields.keys() {
+            workflow_protocol::identifier(key, "$.variant.header_fields.<key>")?;
+        }
+        if let Some(retry_policy) = &start.retry_policy {
+            validate_retry_policy(retry_policy)?;
+        }
+        if let Some(priority) = &start.priority {
+            // Core imposes a narrower 64-byte limit on fairness groups than
+            // the ordinary protocol string limit used for other text.
+            if priority.fairness_key.len() > 64 {
+                return Err(ProtocolError::invalid(
+                    "$.variant.priority.fairness_key",
+                    "fairness key exceeds Core's 64-byte limit",
+                ));
+            }
+        }
+        validate_text(&start.standalone_run_id, "$.variant.standalone_run_id")?;
+    }
+    Ok(())
+}
+
+/// Validates the nested retry policy without converting its exact bit string
+/// through a floating-point value.  The OCaml adapter treats this field as a
+/// canonical unsigned 64-bit decimal representation, so leading zeroes and
+/// values outside the `u64` range are rejected on both sides of the boundary.
+fn validate_retry_policy(value: &RetryPolicy) -> Result<(), ProtocolError> {
+    if let Some(duration) = value.initial_interval {
+        workflow_protocol::validate_time(
+            duration.seconds,
+            duration.nanoseconds,
+            true,
+            "$.variant.retry_policy.initial_interval",
+        )?;
+    }
+    validate_uint64_decimal(
+        &value.backoff_coefficient_bits,
+        "$.variant.retry_policy.backoff_coefficient_bits",
+    )?;
+    if let Some(duration) = value.maximum_interval {
+        workflow_protocol::validate_time(
+            duration.seconds,
+            duration.nanoseconds,
+            true,
+            "$.variant.retry_policy.maximum_interval",
+        )?;
+    }
+    // `i32` is the intentional wire domain here.  Temporal Core uses zero for
+    // unlimited retries and the OCaml adapter preserves all signed int32
+    // values; stronger semantic restrictions require a coordinated protocol
+    // change rather than a Rust-only rejection.
+    for (index, error_type) in value.non_retryable_error_types.iter().enumerate() {
+        validate_text(
+            error_type,
+            &format!("$.variant.retry_policy.non_retryable_error_types[{index}]"),
+        )?;
+    }
+    Ok(())
+}
+
+/// Applies the ordinary protocol string ceiling to a non-identifier string.
+fn validate_text(value: &str, path: &str) -> Result<(), ProtocolError> {
+    if value.len() > MAX_STRING_BYTES {
+        Err(ProtocolError::invalid(
+            path,
+            "decoded JSON string limit exceeded",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Validates the canonical unsigned decimal form used for exact `u64` bits.
+fn validate_uint64_decimal(value: &str, path: &str) -> Result<(), ProtocolError> {
+    validate_text(value, path)?;
+    let parsed = value.parse::<u64>().map_err(|_| {
+        ProtocolError::invalid(path, "value is not canonical unsigned 64-bit decimal")
+    })?;
+    if parsed.to_string() != value {
+        return Err(ProtocolError::invalid(
+            path,
+            "value is not canonical unsigned 64-bit decimal",
+        ));
     }
     Ok(())
 }

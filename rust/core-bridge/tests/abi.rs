@@ -11,7 +11,8 @@ use ocaml_temporal_core_bridge::{
     ocaml_temporal_core_v1_worker_reject_activity_json,
     ocaml_temporal_core_v1_worker_reject_workflow_json,
     ocaml_temporal_core_v1_worker_try_poll_activity,
-    ocaml_temporal_core_v1_worker_try_poll_workflow, test_invoke_panic,
+    ocaml_temporal_core_v1_worker_try_poll_workflow, ocaml_temporal_core_v1_worker_wait_activity,
+    ocaml_temporal_core_v1_worker_wait_workflow, test_invoke_panic,
 };
 
 /// Produces writable initialized storage matching the C caller contract.
@@ -127,6 +128,20 @@ fn task_bridge_exports_reject_null_runtime_handles() {
                 unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
                 STATUS_OK
             );
+            unsafe { ocaml_temporal_core_v1_worker_wait_workflow(ptr::null_mut(), &mut result) }
+        },
+        {
+            assert_eq!(
+                unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+                STATUS_OK
+            );
+            unsafe { ocaml_temporal_core_v1_worker_wait_activity(ptr::null_mut(), &mut result) }
+        },
+        {
+            assert_eq!(
+                unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+                STATUS_OK
+            );
             unsafe {
                 ocaml_temporal_core_v1_worker_complete_workflow_json(
                     ptr::null_mut(),
@@ -231,6 +246,42 @@ fn task_rejection_requires_retained_delivery_before_worker_state() {
             )
         },
         STATUS_PROTOCOL
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
+}
+
+/// Verifies readiness waits reject a missing worker without entering a native
+/// condvar wait, preserving the owner-domain lifecycle contract.
+#[test]
+fn readiness_waits_require_a_running_worker() {
+    let mut runtime = ptr::null_mut();
+    let mut result = empty_result();
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_worker_wait_workflow(runtime, &mut result) },
+        ocaml_temporal_core_bridge::STATUS_INVALID_STATE
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_worker_wait_activity(runtime, &mut result) },
+        ocaml_temporal_core_bridge::STATUS_INVALID_STATE
     );
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_result_free(&mut result) },

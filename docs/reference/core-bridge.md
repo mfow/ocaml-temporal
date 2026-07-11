@@ -137,23 +137,30 @@ allocation made by the other side.
 
 ### Private OCaml worker operations
 
-`Temporal_core_bridge.Native_bridge` exposes six private wrappers over the
-poll, completion, and rejection symbols. They are used by the native worker adapter and
-are not part of the public workflow-authoring API:
+`Temporal_core_bridge.Native_bridge` exposes eight private wrappers over the
+poll, readiness, completion, and rejection symbols. They are used by the
+native worker adapter and are not part of the public workflow-authoring API:
 
 | OCaml operation | Native behavior | Successful value |
 | --- | --- | --- |
 | `worker_try_poll_workflow` | Drain one already-ready workflow activation without waiting | semantic workflow JSON bytes |
+| `worker_wait_workflow` | Wait for workflow readiness without consuming a task | `unit` wake signal |
 | `worker_complete_workflow_json` | Validate and complete one leased workflow activation | `unit` |
 | `worker_reject_workflow_json` | Retire the lease when OCaml cannot decode the exact Rust-produced activation document | `unit` |
 | `worker_try_poll_activity` | Drain one already-ready remote activity task without waiting | semantic activity JSON bytes |
+| `worker_wait_activity` | Wait for remote-activity readiness without consuming a task | `unit` wake signal |
 | `worker_complete_activity_json` | Validate and complete one leased activity task | `unit` |
 | `worker_reject_activity_json` | Retire the lease when OCaml cannot decode the exact Rust-produced activity document | `unit` |
 
 The two poll functions return `Error { status = Not_ready; _ }` when their
 independent Rust ready queues are empty. This is normal scheduling state, not a
-worker defect; the native worker loop will later combine these non-blocking
-drains with the readiness wait described below. Completion functions copy the
+worker defect. A readiness wait returns immediately when its queue is already
+populated, wakes when its lane publishes a task or fatal error, and returns an
+invalid-state error after normal shutdown has drained queued messages. A quiet
+lane returns `Not_ready` after a bounded 100 ms wait. That bound is intentional:
+the supervisor mailbox must regain control periodically so a queued shutdown
+operation cannot be stranded behind a blocking readiness handler. Completion
+functions copy the
 caller-provided OCaml `bytes` into temporary C storage, release the OCaml
 runtime lock for the synchronous Rust submission, then free that copy before
 returning. Rust validates the complete JSON document and checks the run ID or
@@ -188,6 +195,14 @@ lifecycle changes. A poll, completion, worker shutdown, and runtime shutdown
 therefore cannot race native graph state. The pure protocol conversion module
 is visible only from the private supervisor library so both serialization
 directions can be tested without constructing a Core worker.
+
+The two Rust readiness signals use one mutex-protected pending count per lane.
+The poll task holds that mutex while it sends a message and increments the
+count; the supervisor holds it while receiving and decrementing. This makes a
+send and its wake notification one linearizable operation and prevents a
+notification-before-wait or send/receive reordering race. Shutdown closes both
+signals before asking Core to wake its polls, while in-flight poll results may
+still be queued and are always drained before the terminal state is reported.
 
 These wrappers deliberately return the same owned-response shape as lifecycle
 operations. The OCaml `decode` helper copies success or diagnostic bytes and
@@ -264,16 +279,19 @@ disabled. Each lane writes without waiting to its own ready queue. Core's
 configured outstanding-task permits bound the number of queued tasks; using a
 second bounded send would deadlock shutdown if the supervisor joined a lane
 while that lane waited for the supervisor to drain its full queue. The OCaml
-supervisor takes ready work through non-blocking ABI operations; no Tokio thread
-enters OCaml and no long Core poll occupies the supervisor Domain. Keeping the
-lanes independent prevents an idle activity poll from delaying workflow
-completion, or vice versa.
+supervisor takes ready work through non-blocking ABI operations and uses the
+bounded readiness waits only from its owner-domain mailbox handler; the C stubs
+release the OCaml runtime lock while Rust waits. No Tokio thread enters OCaml
+and no long Core poll occupies the supervisor Domain. Keeping the lanes
+independent prevents an idle activity poll from delaying workflow completion,
+or vice versa.
 
-ABI version 1 has no readiness-wait or readiness-event symbol. Until one is
-added, the supervisor exposes only nonblocking `Try_poll_workflow` and
-`Try_poll_activity`. Callers may treat `Ok None` as a yield point, but must not
-turn it into a blocking condition wait on a workflow scheduler fiber. The
-supervisor does not invent periodic sleeping or a second owner for this gap.
+ABI version 1 includes private readiness-wait symbols for the two independent
+poll lanes. The supervisor may invoke them only from the owner-domain mailbox
+handler; the C boundary releases the OCaml runtime lock while Rust waits and
+reacquires it before returning. Callers must not turn a readiness wait into a
+blocking condition wait on a workflow scheduler fiber or allow a second owner
+to access the native worker graph.
 
 One mutex-protected ledger is the authority for every task Core expects the
 language runtime to complete. A task enters the ledger before its ready message
@@ -300,10 +318,11 @@ failure and retires both the ledger debt and retained semantic state even if
 Core reports that generated failure as unsuccessful. This prevents shutdown
 from waiting forever while keeping the original decode failure primary.
 
-Shutdown first closes ledger admission, then asks Core to wake both polls, then
-joins both lane tasks. Existing ready and leased work remains completable while
-the worker drains. Core finalization is refused until the ledger is empty, and
-only then consumes the worker before client and runtime destruction. The
+Shutdown first closes ledger admission and both readiness signals, then asks
+Core to wake both polls and joins the lane tasks. Existing ready and leased
+work remains completable while the worker drains. Core finalization is refused
+until the ledger is empty, and only then consumes the worker before client and
+runtime destruction. The
 garbage-collection fallback cannot obtain missing language completions; after
 waking and joining the lanes it force-drops an undrained worker on the dedicated
 cleanup thread. This preserves memory ownership and collector progress, while

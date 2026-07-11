@@ -8,6 +8,37 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-12: Wakeable native worker readiness seam
+
+Status: focused Rust readiness, C ABI, and OCaml private-wrapper tests are
+implemented; live worker execution and the Docker Compose acceptance path
+remain follow-up work.
+
+The private bridge now has workflow and remote-activity readiness operations in
+addition to its non-blocking drains. Each Rust poll lane uses a mutex-protected
+pending count and condition variable. A producer holds the mutex while sending
+the queue message and recording the count; the owner Domain holds it while
+receiving and retiring the count. This makes queue publication and wakeup
+linearizable, so notification-before-wait and send/receive races cannot lose a
+task. Lane errors and shutdown close or fail the signal and wake a waiter; any
+queued messages are drained before terminal state is reported.
+
+The C stubs release the OCaml runtime lock for the native waits. They are
+bounded at 100 ms and return `Not_ready` when Core is quiet, allowing a
+supervisor mailbox to regain control and process shutdown instead of blocking
+its reserved terminal message indefinitely. The OCaml wrappers keep the seam
+private and return typed `result` values; they do not expose condition
+variables, callbacks, Rust handles, or effect constructors.
+
+Evidence:
+
+- Rust unit tests cover notification before wait, concurrent queue publication
+  and draining, shutdown wake, and persistent lane-error wakeups.
+- Rust ABI tests and the C harness cover both wait symbols with null handles
+  and no-worker lifecycle states, including normal result ownership cleanup.
+- The OCaml bridge test exercises typed invalid-state results for both private
+  waits and the existing two-Domain lock-release conformance probe.
+
 ## 2026-07-12: Pure OCaml native execution translation
 
 Status: focused native execution tests pass locally; the supervisor scheduling

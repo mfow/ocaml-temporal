@@ -84,6 +84,11 @@ val worker_start : runtime -> worker_config -> (unit, error) result
     document copied into the OCaml heap. *)
 val worker_try_poll_workflow : runtime -> (bytes, error) result
 
+(** Waits for workflow readiness without consuming a task. The native wait is
+    bounded and releases the OCaml runtime lock; [Not_ready] requests a retry
+    so the supervisor mailbox can process lifecycle messages. *)
+val worker_wait_workflow : runtime -> (unit, error) result
+
 (** Validates and completes one previously leased workflow activation. The
     completion JSON must identify the exact run returned by the poll operation.
     Rust retains no input bytes after the call returns. *)
@@ -98,6 +103,10 @@ val worker_reject_workflow_json : runtime -> bytes -> (unit, error) result
 (** Takes one ready remote activity task without waiting. Successful bytes are
     a closed semantic activity-task JSON document. *)
 val worker_try_poll_activity : runtime -> (bytes, error) result
+
+(** Waits for remote-activity readiness without consuming a task. It has the
+    same bounded lock-release semantics as [worker_wait_workflow]. *)
+val worker_wait_activity : runtime -> (unit, error) result
 
 (** Validates and completes one previously leased remote activity task. The
     opaque task token in the JSON must match the poll result exactly. *)

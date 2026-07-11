@@ -1,4 +1,4 @@
-use crate::worker_bridge::{PollLaneError, PollLanes, WorkerBridgeError};
+use crate::worker_bridge::{PollLaneError, PollLanes, ReadinessWait, WorkerBridgeError};
 use crate::{activity_protocol, client_protocol, workflow_protocol};
 use serde::Deserialize;
 use std::collections::{HashMap, hash_map::Entry};
@@ -415,6 +415,30 @@ impl Runtime {
         Ok(encoded.into_bytes())
     }
 
+    /// Waits for workflow-lane readiness without consuming the queued task.
+    ///
+    /// The native C stub invokes this while the OCaml runtime lock is released.
+    /// A bounded timeout keeps a supervisor mailbox responsive to lifecycle
+    /// commands when Core is quiet; callers retry after `STATUS_NOT_READY`.
+    fn wait_workflow(&self) -> Operation {
+        let worker = self.worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        match worker.wait_workflow() {
+            ReadinessWait::Ready => Ok(Vec::new()),
+            ReadinessWait::TimedOut => Err(Failure {
+                status: STATUS_NOT_READY,
+                message: "Temporal workflow readiness wait timed out; retry".to_owned(),
+            }),
+            ReadinessWait::Shutdown => Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal workflow readiness wait ended during worker shutdown".to_owned(),
+            }),
+            ReadinessWait::Error(error) => Err(poll_lane_failure(error)),
+        }
+    }
+
     /// Strictly validates and submits one leased workflow completion.
     fn complete_workflow(&mut self, input: &[u8]) -> Operation {
         let text = decode_semantic_input(input)?;
@@ -484,6 +508,29 @@ impl Runtime {
                 self.reject_activity_delivery(&task.task_token)?;
                 Err(protocol_failure(error))
             }
+        }
+    }
+
+    /// Waits for remote-activity-lane readiness without consuming its task.
+    ///
+    /// As with workflow readiness, this is a blocking native call with a
+    /// bounded duration so the owner supervisor can process shutdown messages.
+    fn wait_activity(&self) -> Operation {
+        let worker = self.worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        match worker.wait_activity() {
+            ReadinessWait::Ready => Ok(Vec::new()),
+            ReadinessWait::TimedOut => Err(Failure {
+                status: STATUS_NOT_READY,
+                message: "Temporal activity readiness wait timed out; retry".to_owned(),
+            }),
+            ReadinessWait::Shutdown => Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal activity readiness wait ended during worker shutdown".to_owned(),
+            }),
+            ReadinessWait::Error(error) => Err(poll_lane_failure(error)),
         }
     }
 
@@ -1328,6 +1375,34 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_try_poll_workflow(
     }
 }
 
+/// Wait for workflow-lane readiness without consuming the queued activation.
+///
+/// The caller must release the OCaml runtime lock around this operation. The
+/// wait is bounded so a supervisor mailbox can regain control and process a
+/// shutdown request even when Core has no task to deliver.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output` must
+/// satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_wait_workflow(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_ref()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .wait_workflow()
+        })
+    }
+}
+
 /// Validate and submit one workflow completion JSON document.
 ///
 /// # Safety
@@ -1405,6 +1480,34 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_try_poll_activity(
                     message: "runtime pointer is null".to_owned(),
                 })?
                 .try_poll_activity()
+        })
+    }
+}
+
+/// Wait for remote-activity-lane readiness without consuming the queued task.
+///
+/// The C binding releases the OCaml runtime lock while this bounded native wait
+/// runs. A timeout is returned as `STATUS_NOT_READY` so the owner supervisor
+/// can service other mailbox messages and retry.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output` must
+/// satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_wait_activity(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_ref()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .wait_activity()
         })
     }
 }

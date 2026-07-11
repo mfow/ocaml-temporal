@@ -305,6 +305,15 @@ CAMLprim value ocaml_temporal_worker_try_poll_workflow(value runtime) {
                         ocaml_temporal_core_v1_worker_try_poll_workflow);
 }
 
+/* Wait for native workflow readiness with the OCaml runtime lock released. The
+ * Rust wait is bounded so this call cannot strand the supervisor mailbox while
+ * a separate shutdown request is waiting to be handled. A successful wait only
+ * signals readiness; the owner must still call the non-blocking drain above. */
+CAMLprim value ocaml_temporal_worker_wait_workflow(value runtime) {
+  return invoke_runtime(runtime,
+                        ocaml_temporal_core_v1_worker_wait_workflow);
+}
+
 /* Copy a semantic workflow completion before releasing the OCaml runtime lock.
  * Rust validates the document and checks its run-id lease; the bridge never
  * retains the temporary C copy after the call returns. */
@@ -328,6 +337,13 @@ CAMLprim value ocaml_temporal_worker_reject_workflow_json(value runtime,
  * ready workflow activation. */
 CAMLprim value ocaml_temporal_worker_try_poll_activity(value runtime) {
   return invoke_runtime(runtime, ocaml_temporal_core_v1_worker_try_poll_activity);
+}
+
+/* Wait for native remote-activity readiness under the same released-lock and
+ * bounded-time contract as workflow readiness. */
+CAMLprim value ocaml_temporal_worker_wait_activity(value runtime) {
+  return invoke_runtime(runtime,
+                        ocaml_temporal_core_v1_worker_wait_activity);
 }
 
 /* Copy a semantic activity completion before entering the blocking section.

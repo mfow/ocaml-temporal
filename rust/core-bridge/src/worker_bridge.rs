@@ -6,7 +6,8 @@
 //! ad-hoc state machines.
 
 use std::collections::{HashMap, hash_map::Entry};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 use temporalio_common::protos::coresdk::{
     ActivityTaskCompletion,
     activity_result::ActivityExecutionResult,
@@ -18,6 +19,7 @@ use temporalio_common::protos::temporal::api::enums::v1::WorkflowTaskFailedCause
 use temporalio_common::worker::WorkerTaskTypes;
 use temporalio_sdk_core::{PollError, Worker};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
 /// Maximum UTF-8 byte length accepted for a workflow run identifier.
@@ -66,6 +68,192 @@ pub enum WorkerBridgeError {
 /// One task or terminal lane error waiting for the OCaml supervisor.
 pub type ReadyTask<T> = Result<T, PollLaneError>;
 
+/// Result of waiting for one poll lane's next owner-domain action.
+///
+/// `Ready` means that at least one message is queued and the caller should use
+/// the corresponding non-blocking drain operation. `Shutdown` is returned only
+/// after the lane is closed and its queued messages have been drained. `Error`
+/// preserves a fatal lane error when no earlier queued message remains. The
+/// wait is deliberately synchronous because its C caller releases the OCaml
+/// runtime lock and invokes it only from the dedicated supervisor owner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReadinessWait {
+    /// At least one task or queued lane error is ready to be drained.
+    Ready,
+    /// The lane closed normally and has no queued messages left.
+    Shutdown,
+    /// The lane stopped with a fatal bridge error after its queued messages.
+    Error(PollLaneError),
+    /// No event arrived before the bounded supervisor-mailbox wait elapsed.
+    ///
+    /// A timeout is intentional: the supervisor must regain its mailbox loop
+    /// periodically so a queued shutdown command can run even while no Core
+    /// task is available to wake this lane.
+    TimedOut,
+}
+
+/// Maximum time one owner-domain readiness call may hold the supervisor loop.
+///
+/// This bound is a liveness guard rather than a workflow timer. It leaves the
+/// supervisor mailbox responsive to lifecycle messages while still avoiding a
+/// polling spin when Core is quiet.
+pub const READINESS_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Shared wake state for one Rust-owned poll queue.
+///
+/// The state mutex is held across the unbounded-channel send and pending-count
+/// update. The owner-domain drain holds the same mutex across `try_recv` and
+/// decrement. This ordering makes the count and queue linearizable: a waiter
+/// can never observe a queued message with a zero count, and a drain can never
+/// decrement a count before the producer increments it. The condition variable
+/// is only a wake mechanism; every waiter rechecks the state predicate while
+/// holding the mutex, so notifications cannot be lost before a wait begins.
+struct Readiness {
+    state: Mutex<ReadinessState>,
+    wake: Condvar,
+}
+
+/// Mutable predicate protected by [`Readiness::state`].
+#[derive(Debug, Default)]
+struct ReadinessState {
+    /// Number of channel messages that have been committed by a producer but
+    /// not yet consumed by the owner Domain.
+    pending: usize,
+    /// A fatal poll-lane error. It remains visible after its error message is
+    /// drained so later waits cannot block after the lane has failed.
+    error: Option<PollLaneError>,
+    /// No new Core poll result is expected after this flag is set. In-flight
+    /// polls may still enqueue messages while the flag is true; pending work
+    /// always takes precedence over this terminal state.
+    closed: bool,
+}
+
+impl Readiness {
+    /// Creates an open signal with no queued work.
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ReadinessState::default()),
+            wake: Condvar::new(),
+        }
+    }
+
+    /// Atomically publishes one queue message and its pending-count update.
+    ///
+    /// The producer sends while holding the state mutex. `UnboundedSender::send`
+    /// is non-blocking, so this short critical section cannot stall Tokio or
+    /// the OCaml owner; it only establishes the queue/count ordering required
+    /// by the wait predicate.
+    fn enqueue<T>(
+        &self,
+        sender: &mpsc::UnboundedSender<ReadyTask<T>>,
+        message: ReadyTask<T>,
+    ) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if sender.send(message).is_err() {
+            // The owner has gone away. No future caller can drain this lane,
+            // but marking it closed also prevents a defensive waiter from
+            // sleeping forever if it is still holding the runtime graph.
+            state.closed = true;
+            self.wake.notify_all();
+            return false;
+        }
+        // Core's outstanding-task permits keep this count far below `usize::MAX`
+        // in normal operation. Saturation is still safer than panicking in a
+        // background lane if a future producer violates that assumption.
+        state.pending = state.pending.saturating_add(1);
+        self.wake.notify_all();
+        true
+    }
+
+    /// Consumes one queue message while atomically retiring its pending count.
+    ///
+    /// Only the owner Domain calls this method, but the producer uses the same
+    /// mutex while publishing, which prevents a send/receive reordering race.
+    fn take<T>(
+        &self,
+        receiver: &mut mpsc::UnboundedReceiver<ReadyTask<T>>,
+    ) -> Option<ReadyTask<T>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match receiver.try_recv() {
+            Ok(message) => {
+                // A successful receive is paired with exactly one successful
+                // enqueue while this mutex was held. Keep release builds
+                // defensive in case a future channel implementation changes
+                // that invariant.
+                debug_assert!(state.pending > 0);
+                state.pending = state.pending.saturating_sub(1);
+                Some(message)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                state.closed = true;
+                self.wake.notify_all();
+                None
+            }
+        }
+    }
+
+    /// Records a fatal poll-lane error and wakes the owner immediately.
+    fn fail(&self, error: PollLaneError) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.error = Some(error);
+        self.wake.notify_all();
+    }
+
+    /// Marks the lane as normally closed while retaining queued work for drain.
+    fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.closed = true;
+        self.wake.notify_all();
+    }
+
+    /// Blocks until work, a fatal error, or terminal closure is observable.
+    fn wait(&self) -> ReadinessWait {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let deadline = Instant::now() + READINESS_WAIT_TIMEOUT;
+        loop {
+            // Queued messages always win over terminal flags: the supervisor
+            // must drain all messages before it reports shutdown or failure.
+            if state.pending > 0 {
+                return ReadinessWait::Ready;
+            }
+            if let Some(error) = state.error.clone() {
+                return ReadinessWait::Error(error);
+            }
+            if state.closed {
+                return ReadinessWait::Shutdown;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return ReadinessWait::TimedOut;
+            }
+            let (next_state, timeout) = self
+                .wake
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+            if timeout.timed_out() {
+                return ReadinessWait::TimedOut;
+            }
+        }
+    }
+}
+
 /// Rust-owned pair of guarded Core poll lanes for one worker.
 ///
 /// Exactly one Tokio task invokes each Core poll API. The channels are only
@@ -77,6 +265,8 @@ pub struct PollLanes {
     ledger: Arc<Mutex<TaskLedger>>,
     workflow_ready: mpsc::UnboundedReceiver<ReadyTask<WorkflowActivation>>,
     activity_ready: mpsc::UnboundedReceiver<ReadyTask<ActivityTask>>,
+    workflow_signal: Arc<Readiness>,
+    activity_signal: Arc<Readiness>,
     workflow_lane: Option<JoinHandle<()>>,
     activity_lane: Option<JoinHandle<()>>,
     shutdown_started: bool,
@@ -93,22 +283,28 @@ impl PollLanes {
         // joining poll lanes during shutdown.
         let (workflow_sender, workflow_ready) = mpsc::unbounded_channel();
         let (activity_sender, activity_ready) = mpsc::unbounded_channel();
+        let workflow_signal = Arc::new(Readiness::new());
+        let activity_signal = Arc::new(Readiness::new());
 
         let workflow_lane = handle.spawn(run_workflow_lane(
             Arc::clone(&worker),
             Arc::clone(&ledger),
             workflow_sender,
+            Arc::clone(&workflow_signal),
         ));
         let activity_lane = handle.spawn(run_activity_lane(
             Arc::clone(&worker),
             Arc::clone(&ledger),
             activity_sender,
+            Arc::clone(&activity_signal),
         ));
         Self {
             worker,
             ledger,
             workflow_ready,
             activity_ready,
+            workflow_signal,
+            activity_signal,
             workflow_lane: Some(workflow_lane),
             activity_lane: Some(activity_lane),
             shutdown_started: false,
@@ -117,7 +313,7 @@ impl PollLanes {
 
     /// Takes one ready activation without waiting for Core or a channel lock.
     pub fn try_take_workflow(&mut self) -> Option<ReadyTask<WorkflowActivation>> {
-        let ready = self.workflow_ready.try_recv().ok()?;
+        let ready = self.workflow_signal.take(&mut self.workflow_ready)?;
         if let Ok(activation) = &ready {
             let mut ledger = self
                 .ledger
@@ -137,7 +333,7 @@ impl PollLanes {
 
     /// Takes one ready remote activity without blocking the supervisor Domain.
     pub fn try_take_activity(&mut self) -> Option<ReadyTask<ActivityTask>> {
-        let ready = self.activity_ready.try_recv().ok()?;
+        let ready = self.activity_signal.take(&mut self.activity_ready)?;
         if let Ok(task) = &ready {
             let mut ledger = self
                 .ledger
@@ -167,8 +363,23 @@ impl PollLanes {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .begin_draining();
+        // Wake any supervisor wait immediately. In-flight Core polls may still
+        // enqueue tasks; `Readiness::wait` prioritizes those pending messages
+        // before returning the terminal shutdown state.
+        self.workflow_signal.close();
+        self.activity_signal.close();
         self.worker.initiate_shutdown();
         self.shutdown_started = true;
+    }
+
+    /// Waits for the next workflow-lane message without holding the OCaml lock.
+    pub fn wait_workflow(&self) -> ReadinessWait {
+        self.workflow_signal.wait()
+    }
+
+    /// Waits for the next activity-lane message without holding the OCaml lock.
+    pub fn wait_activity(&self) -> ReadinessWait {
+        self.activity_signal.wait()
     }
 
     /// Waits until both guarded poll futures have observed Core shutdown.
@@ -332,13 +543,19 @@ async fn run_workflow_lane(
     worker: Arc<Worker>,
     ledger: Arc<Mutex<TaskLedger>>,
     sender: mpsc::UnboundedSender<ReadyTask<WorkflowActivation>>,
+    signal: Arc<Readiness>,
 ) {
     loop {
         let activation = match worker.poll_workflow_activation().await {
             Ok(activation) => activation,
-            Err(PollError::ShutDown) => return,
+            Err(PollError::ShutDown) => {
+                signal.close();
+                return;
+            }
             Err(error) => {
-                let _ = sender.send(Err(PollLaneError::Core(error.to_string())));
+                let error = PollLaneError::Core(error.to_string());
+                let _ = signal.enqueue(&sender, Err(error.clone()));
+                signal.fail(error);
                 return;
             }
         };
@@ -351,7 +568,7 @@ async fn run_workflow_lane(
             Ok(_) => Err(PollLaneError::DuplicateIdentity),
             Err(error) => Err(PollLaneError::Admission(error)),
         };
-        if sender.send(message).is_err() {
+        if !signal.enqueue(&sender, message) {
             return;
         }
     }
@@ -362,13 +579,19 @@ async fn run_activity_lane(
     worker: Arc<Worker>,
     ledger: Arc<Mutex<TaskLedger>>,
     sender: mpsc::UnboundedSender<ReadyTask<ActivityTask>>,
+    signal: Arc<Readiness>,
 ) {
     loop {
         let task = match worker.poll_activity_task().await {
             Ok(task) => task,
-            Err(PollError::ShutDown) => return,
+            Err(PollError::ShutDown) => {
+                signal.close();
+                return;
+            }
             Err(error) => {
-                let _ = sender.send(Err(PollLaneError::Core(error.to_string())));
+                let error = PollLaneError::Core(error.to_string());
+                let _ = signal.enqueue(&sender, Err(error.clone()));
+                signal.fail(error);
                 return;
             }
         };
@@ -376,10 +599,8 @@ async fn run_activity_lane(
             Some(activity_task::Variant::Start(_)) => ActivityAdmission::Start,
             Some(activity_task::Variant::Cancel(_)) => ActivityAdmission::Cancel,
             None => {
-                if sender
-                    .send(Err(PollLaneError::InvalidActivityVariant))
-                    .is_err()
-                {
+                let error = PollLaneError::InvalidActivityVariant;
+                if !signal.enqueue(&sender, Err(error.clone())) {
                     return;
                 }
                 continue;
@@ -394,7 +615,7 @@ async fn run_activity_lane(
             Ok(Admission::Duplicate) => Err(PollLaneError::DuplicateIdentity),
             Err(error) => Err(PollLaneError::Admission(error)),
         };
-        if sender.send(message).is_err() {
+        if !signal.enqueue(&sender, message) {
             return;
         }
     }
@@ -671,5 +892,88 @@ impl Default for TaskLedger {
     /// Uses the same empty open state as [`TaskLedger::new`].
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::{PollLaneError, Readiness, ReadinessWait, ReadyTask};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    /// Confirms a notification committed before waiting is observed immediately.
+    #[test]
+    fn notification_before_wait_returns_ready() {
+        let signal = Readiness::new();
+        let (sender, mut receiver) = mpsc::unbounded_channel::<ReadyTask<()>>();
+
+        assert!(signal.enqueue(&sender, Ok(())));
+        assert_eq!(signal.wait(), ReadinessWait::Ready);
+        assert!(signal.take(&mut receiver).is_some());
+    }
+
+    /// Confirms queued work cannot be received before its pending count exists.
+    ///
+    /// The producer runs on another OS thread to exercise the same ordering as
+    /// a Tokio poll lane racing an owner-domain drain.
+    #[test]
+    fn queued_work_has_a_linearizable_send_and_receive_order() {
+        let signal = Arc::new(Readiness::new());
+        let (sender, mut receiver) = mpsc::unbounded_channel::<ReadyTask<usize>>();
+        let producer_signal = Arc::clone(&signal);
+        let producer = thread::spawn(move || {
+            for value in 0..128 {
+                assert!(producer_signal.enqueue(&sender, Ok(value)));
+            }
+        });
+
+        let mut received = Vec::new();
+        while received.len() < 128 {
+            assert_eq!(signal.wait(), ReadinessWait::Ready);
+            while let Some(Ok(value)) = signal.take(&mut receiver) {
+                received.push(value);
+            }
+        }
+        producer.join().expect("producer must not panic");
+        received.sort_unstable();
+        assert_eq!(received, (0..128).collect::<Vec<_>>());
+    }
+
+    /// Confirms closing a quiet lane wakes a waiter instead of leaving it
+    /// blocked until the bounded timeout expires.
+    #[test]
+    fn shutdown_wakes_a_waiting_owner() {
+        let signal = Arc::new(Readiness::new());
+        let waiter_signal = Arc::clone(&signal);
+        let waiter = thread::spawn(move || waiter_signal.wait());
+        thread::sleep(Duration::from_millis(10));
+        signal.close();
+
+        assert_eq!(
+            waiter.join().expect("waiter must not panic"),
+            ReadinessWait::Shutdown
+        );
+    }
+
+    /// Confirms a quiet lane returns control to its supervisor after the
+    /// documented bound instead of waiting forever for an event.
+    #[test]
+    fn quiet_lane_wait_is_bounded() {
+        let signal = Readiness::new();
+
+        assert_eq!(signal.wait(), ReadinessWait::TimedOut);
+    }
+
+    /// Confirms a fatal lane error remains observable after its wakeup.
+    #[test]
+    fn lane_error_wakes_and_remains_terminal() {
+        let signal = Readiness::new();
+        let error = PollLaneError::Core("poll failed".to_owned());
+        signal.fail(error.clone());
+
+        assert_eq!(signal.wait(), ReadinessWait::Error(error.clone()));
+        assert_eq!(signal.wait(), ReadinessWait::Error(error));
     }
 }

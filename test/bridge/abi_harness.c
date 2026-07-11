@@ -69,15 +69,23 @@ int main(void) {
   assert(ocaml_temporal_core_v1_result_free(&result) ==
          OCAML_TEMPORAL_CORE_STATUS_OK);
 
-  /* Poll and completion symbols are safe to call before a worker exists. The
-   * status is explicit and every result still follows the ordinary ownership
-   * contract, which lets the OCaml wrapper exercise the same cleanup path for
-   * expected lifecycle errors and successful JSON documents. */
+  /* Poll, readiness, and completion symbols are safe to call before a worker
+   * exists. The status is explicit and every result still follows the ordinary
+   * ownership contract, which lets the OCaml wrapper exercise the same cleanup
+   * path for expected lifecycle errors and successful JSON documents. */
   assert(ocaml_temporal_core_v1_worker_try_poll_workflow(runtime, &result) ==
          OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE);
   assert(ocaml_temporal_core_v1_result_free(&result) ==
          OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_worker_wait_workflow(runtime, &result) ==
+         OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
   assert(ocaml_temporal_core_v1_worker_try_poll_activity(runtime, &result) ==
+         OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_worker_wait_activity(runtime, &result) ==
          OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE);
   assert(ocaml_temporal_core_v1_result_free(&result) ==
          OCAML_TEMPORAL_CORE_STATUS_OK);

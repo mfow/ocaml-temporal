@@ -76,3 +76,10 @@ fn nonblocking_close_joins_aborted_start_tasks_before_core_drop() {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+// Keep transition coverage in its own support file while reusing this module's
+// existing private `abi.rs` test context.  The production module declaration
+// already loads this support file, so no runtime code is changed just to make
+// the additional unit tests visible.
+#[path = "pending_start_transitions.rs"]
+mod pending_start_transitions;

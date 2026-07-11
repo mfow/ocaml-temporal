@@ -1,0 +1,26 @@
+{
+  "run_id": "child-run",
+  "timestamp": {"seconds": 0, "nanoseconds": 0},
+  "is_replaying": false,
+  "history_length": 1,
+  "jobs": [{
+    "kind": "initialize_workflow",
+    "workflow_id": "child-1",
+    "workflow_type": "child_workflow",
+    "arguments": [],
+    "randomness_seed": "42",
+    "attempt": 1,
+    "context": {
+      "headers": {},
+      "identity": "parent-worker",
+      "parent_workflow": {"namespace": "default", "workflow_id": "parent-1", "run_id": "parent-run"},
+      "workflow_execution_timeout": null,
+      "workflow_run_timeout": null,
+      "workflow_task_timeout": null,
+      "first_execution_run_id": "child-first-run",
+      "start_time": null,
+      "root_workflow": {"workflow_id": "root-1", "run_id": "root-run"},
+      "priority": null
+    }
+  }]
+}

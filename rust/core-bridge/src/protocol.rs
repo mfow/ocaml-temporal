@@ -10,18 +10,24 @@ use serde::{Deserialize, Deserializer, de};
 
 /// Compatibility number checked once during SDK startup.
 pub const COMPATIBILITY_VERSION: u32 = 1;
-/// Maximum bytes in one complete control document.
-pub const MAX_DOCUMENT_BYTES: usize = 1_048_576;
-/// Maximum JSON nesting, counting the outer value as depth one.
-pub const MAX_DEPTH: usize = 16;
+/// Maximum bytes in one complete control document. This accommodates Core's
+/// default 128 MiB inbound gRPC ceiling after base64 expansion while retaining
+/// a finite pre-parse allocation boundary.
+pub const MAX_DOCUMENT_BYTES: usize = 192 * 1024 * 1024;
+/// Maximum JSON nesting, counting the outer value as depth one. This matches
+/// serde_json's stack-safety recursion guard.
+pub const MAX_DEPTH: usize = 128;
 /// Maximum UTF-8 bytes in one decoded string.
 pub const MAX_STRING_BYTES: usize = 65_536;
-/// Maximum members/elements in one JSON collection.
-pub const MAX_COLLECTION_ITEMS: usize = 256;
-/// Maximum values in one complete JSON tree.
-pub const MAX_NODES: usize = 4_096;
-/// Maximum decoded bytes in one opaque payload.
-pub const MAX_PAYLOAD_BYTES: usize = 262_144;
+/// Document-derived ceiling for members/elements in one JSON collection. It
+/// cannot reject a collection that otherwise fits within the byte boundary.
+pub const MAX_COLLECTION_ITEMS: usize = MAX_DOCUMENT_BYTES;
+/// Document-derived ceiling for values in one complete JSON tree.
+pub const MAX_NODES: usize = MAX_DOCUMENT_BYTES;
+/// Maximum decoded bytes in one opaque payload byte field. The limit matches
+/// pinned Core's default inbound gRPC ceiling; server namespace blob limits
+/// remain separate and are generally much smaller.
+pub const MAX_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
 /// Maximum canonical padded base64 bytes for one maximum-sized payload.
 const MAX_PAYLOAD_BASE64_BYTES: usize = MAX_PAYLOAD_BYTES.div_ceil(3) * 4;
 
@@ -123,7 +129,7 @@ pub struct ProtocolError {
 
 impl ProtocolError {
     /// Constructs a safe validation failure.
-    fn invalid(path: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(path: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             code: "invalid_message",
             path: path.into(),
@@ -245,6 +251,80 @@ pub fn encode(envelope: &Envelope) -> Result<String, ProtocolError> {
         return Err(ProtocolError::invalid(
             "$",
             "outgoing envelope did not round trip",
+        ));
+    }
+    Ok(output)
+}
+
+/// Strictly decodes one operation-specific object using the shared limits.
+///
+/// The caller must still enforce a closed semantic shape before using the
+/// returned value to change workflow or Core state.
+pub fn decode_object(input: &str) -> Result<JsonValue, ProtocolError> {
+    let value = parse_strict(input)?;
+    if matches!(value, JsonValue::Object(_)) {
+        Ok(value)
+    } else {
+        Err(ProtocolError::invalid(
+            "$",
+            "operation body must be a JSON object",
+        ))
+    }
+}
+
+/// Validates, normalizes, and independently reparses an outgoing object.
+pub fn encode_object(value: &JsonValue) -> Result<String, ProtocolError> {
+    if !matches!(value, JsonValue::Object(_)) {
+        return Err(ProtocolError::invalid(
+            "$",
+            "operation body must be a JSON object",
+        ));
+    }
+    let mut nodes = 0;
+    validate_tree(value, 1, &mut nodes, MAX_STRING_BYTES)?;
+    let output = render_json(value)?;
+    let reparsed = decode_object(&output)?;
+    if render_json(&reparsed)? != output {
+        return Err(ProtocolError::invalid(
+            "$",
+            "outgoing object did not round trip",
+        ));
+    }
+    Ok(output)
+}
+
+/// Decodes a semantic object while allowing maximum-size encoded payload data.
+///
+/// Semantic callers must immediately validate a closed shape and apply
+/// [`MAX_STRING_BYTES`] to every string except canonical base64 payload data.
+pub fn decode_payload_object(input: &str) -> Result<JsonValue, ProtocolError> {
+    let value = parse_strict_with_string_limit(input, MAX_PAYLOAD_BASE64_BYTES)?;
+    if matches!(value, JsonValue::Object(_)) {
+        Ok(value)
+    } else {
+        Err(ProtocolError::invalid(
+            "$",
+            "operation body must be a JSON object",
+        ))
+    }
+}
+
+/// Normalizes and reparses a semantically validated object with payload data.
+pub fn encode_payload_object(value: &JsonValue) -> Result<String, ProtocolError> {
+    if !matches!(value, JsonValue::Object(_)) {
+        return Err(ProtocolError::invalid(
+            "$",
+            "operation body must be a JSON object",
+        ));
+    }
+    let mut nodes = 0;
+    validate_tree(value, 1, &mut nodes, MAX_PAYLOAD_BASE64_BYTES)?;
+    let output = render_json(value)?;
+    let reparsed = decode_payload_object(&output)?;
+    if render_json(&reparsed)? != output {
+        return Err(ProtocolError::invalid(
+            "$",
+            "outgoing object did not round trip",
         ));
     }
     Ok(output)

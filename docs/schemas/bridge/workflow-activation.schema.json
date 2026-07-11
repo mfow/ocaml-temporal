@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/workflow-activation.schema.json",
+  "title": "Workflow activation",
+  "description": "A closed semantic activation sent from the Rust Temporal Core bridge to the private OCaml workflow runtime.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "timestamp", "is_replaying", "history_length", "jobs"],
+  "properties": {
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "timestamp": {"oneOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+    "is_replaying": {"type": "boolean"},
+    "history_length": {"$ref": "#/$defs/u32"},
+    "jobs": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/job"}},
+    "metadata": {"$ref": "#/$defs/activation_metadata"}
+  },
+  "$defs": {
+    "payload": {"$ref": "temporal-payload.schema.json"},
+    "failure": {"$ref": "temporal-failure.schema.json"},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "u32": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "u64_decimal": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,19})$"},
+    "timestamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seconds", "nanoseconds"],
+      "properties": {
+        "seconds": {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+        "nanoseconds": {"type": "integer", "minimum": 0, "maximum": 999999999}
+      }
+    },
+    "duration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seconds", "nanoseconds"],
+      "properties": {
+        "seconds": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+        "nanoseconds": {"type": "integer", "minimum": 0, "maximum": 999999999}
+      }
+    },
+    "initialize_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["headers", "identity", "parent_workflow", "workflow_execution_timeout", "workflow_run_timeout", "workflow_task_timeout", "first_execution_run_id", "start_time", "root_workflow", "priority"],
+      "properties": {
+        "headers": {"type": "object", "maxProperties": 201326592, "additionalProperties": {"$ref": "#/$defs/payload"}},
+        "identity": {"type": "string", "maxLength": 65536},
+        "parent_workflow": {"oneOf": [{"$ref": "#/$defs/namespaced_workflow_execution"}, {"type": "null"}]},
+        "workflow_execution_timeout": {"oneOf": [{"$ref": "#/$defs/duration"}, {"type": "null"}]},
+        "workflow_run_timeout": {"oneOf": [{"$ref": "#/$defs/duration"}, {"type": "null"}]},
+        "workflow_task_timeout": {"oneOf": [{"$ref": "#/$defs/duration"}, {"type": "null"}]},
+        "first_execution_run_id": {"$ref": "#/$defs/identifier"},
+        "start_time": {"oneOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "root_workflow": {"oneOf": [{"$ref": "#/$defs/workflow_execution"}, {"type": "null"}]},
+        "priority": {"oneOf": [{"$ref": "#/$defs/workflow_priority"}, {"type": "null"}]}
+      }
+    },
+    "workflow_execution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["workflow_id", "run_id"],
+      "properties": {"workflow_id": {"$ref": "#/$defs/identifier"}, "run_id": {"$ref": "#/$defs/identifier"}}
+    },
+    "namespaced_workflow_execution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["namespace", "workflow_id", "run_id"],
+      "properties": {"namespace": {"$ref": "#/$defs/identifier"}, "workflow_id": {"$ref": "#/$defs/identifier"}, "run_id": {"$ref": "#/$defs/identifier"}}
+    },
+    "workflow_priority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["priority_key", "fairness_key", "fairness_weight_bits"],
+      "properties": {
+        "priority_key": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
+        "fairness_key": {"type": "string", "maxLength": 64},
+        "fairness_weight_bits": {"$ref": "#/$defs/u32"}
+      }
+    },
+    "deployment_version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deployment_name", "build_id"],
+      "properties": {
+        "deployment_name": {"type": "string", "maxLength": 65536},
+        "build_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "activation_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available_internal_flags", "history_size_bytes", "continue_as_new_suggested", "deployment_version_for_current_task", "last_sdk_version", "suggest_continue_as_new_reasons", "target_worker_deployment_version_changed"],
+      "properties": {
+        "available_internal_flags": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/u32"}},
+        "history_size_bytes": {"$ref": "#/$defs/u64_decimal"},
+        "continue_as_new_suggested": {"type": "boolean"},
+        "deployment_version_for_current_task": {"oneOf": [{"$ref": "#/$defs/deployment_version"}, {"type": "null"}]},
+        "last_sdk_version": {"type": "string", "maxLength": 65536},
+        "suggest_continue_as_new_reasons": {"type": "array", "maxItems": 201326592, "items": {"enum": ["unspecified", "history_size_too_large", "too_many_history_events", "too_many_updates"]}},
+        "target_worker_deployment_version_changed": {"type": "boolean"}
+      }
+    },
+    "activity_resolution": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "payload"],
+          "properties": {"kind": {"const": "completed"}, "payload": {"oneOf": [{"$ref": "#/$defs/payload"}, {"type": "null"}]}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {"kind": {"const": "failed"}, "failure": {"$ref": "#/$defs/failure"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {"kind": {"const": "cancelled"}, "failure": {"$ref": "#/$defs/failure"}}
+        }
+      ]
+    },
+    "job": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "workflow_id", "workflow_type", "arguments", "randomness_seed", "attempt"],
+          "properties": {
+            "kind": {"const": "initialize_workflow"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "workflow_type": {"$ref": "#/$defs/identifier"},
+            "arguments": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}},
+            "randomness_seed": {"$ref": "#/$defs/u64_decimal"},
+            "attempt": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+            "context": {"$ref": "#/$defs/initialize_context"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "result"],
+          "properties": {"kind": {"const": "resolve_activity"}, "seq": {"$ref": "#/$defs/u32"}, "result": {"$ref": "#/$defs/activity_resolution"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq"],
+          "properties": {"kind": {"const": "fire_timer"}, "seq": {"$ref": "#/$defs/u32"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "reason"],
+          "properties": {"kind": {"const": "cancel_workflow"}, "reason": {"type": "string", "maxLength": 65536}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "message", "reason"],
+          "properties": {
+            "kind": {"const": "remove_from_cache"},
+            "message": {"type": "string", "maxLength": 65536},
+            "reason": {"enum": ["unspecified", "cache_full", "cache_miss", "nondeterminism", "lang_fail", "lang_requested", "task_not_found", "unhandled_command", "fatal", "pagination_or_history_fetch", "workflow_execution_ending"]}
+          }
+        }
+      ]
+    }
+  }
+}

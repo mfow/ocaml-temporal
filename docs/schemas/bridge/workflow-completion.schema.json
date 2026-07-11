@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/workflow-completion.schema.json",
+  "title": "Workflow completion",
+  "description": "A closed semantic command batch sent from the private OCaml workflow runtime to the Rust Temporal Core bridge.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "commands"],
+  "properties": {
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "commands": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/command"}}
+  },
+  "$defs": {
+    "payload": {"$ref": "temporal-payload.schema.json"},
+    "failure": {"$ref": "temporal-failure.schema.json"},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "u32": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "duration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seconds", "nanoseconds"],
+      "properties": {
+        "seconds": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+        "nanoseconds": {"type": "integer", "minimum": 0, "maximum": 999999999}
+      }
+    },
+    "nullable_duration": {"oneOf": [{"$ref": "#/$defs/duration"}, {"type": "null"}]},
+    "nullable_payload": {"oneOf": [{"$ref": "#/$defs/payload"}, {"type": "null"}]},
+    "command": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "activity_id", "activity_type", "task_queue", "arguments", "schedule_to_close_timeout", "schedule_to_start_timeout", "start_to_close_timeout", "heartbeat_timeout", "cancellation_type", "do_not_eagerly_execute"],
+          "properties": {
+            "kind": {"const": "schedule_activity"},
+            "seq": {"$ref": "#/$defs/u32"},
+            "activity_id": {"$ref": "#/$defs/identifier"},
+            "activity_type": {"$ref": "#/$defs/identifier"},
+            "task_queue": {"$ref": "#/$defs/identifier"},
+            "arguments": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}},
+            "schedule_to_close_timeout": {"$ref": "#/$defs/nullable_duration"},
+            "schedule_to_start_timeout": {"$ref": "#/$defs/nullable_duration"},
+            "start_to_close_timeout": {"$ref": "#/$defs/nullable_duration"},
+            "heartbeat_timeout": {"$ref": "#/$defs/nullable_duration"},
+            "cancellation_type": {"enum": ["try_cancel", "wait_cancellation_completed", "abandon"]},
+            "do_not_eagerly_execute": {"type": "boolean"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq"],
+          "properties": {"kind": {"const": "request_cancel_activity"}, "seq": {"$ref": "#/$defs/u32"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "start_to_fire_timeout"],
+          "properties": {"kind": {"const": "start_timer"}, "seq": {"$ref": "#/$defs/u32"}, "start_to_fire_timeout": {"$ref": "#/$defs/duration"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq"],
+          "properties": {"kind": {"const": "cancel_timer"}, "seq": {"$ref": "#/$defs/u32"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "result"],
+          "properties": {"kind": {"const": "complete_workflow"}, "result": {"$ref": "#/$defs/nullable_payload"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {"kind": {"const": "fail_workflow"}, "failure": {"$ref": "#/$defs/failure"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {"kind": {"const": "cancel_workflow"}}
+        }
+      ]
+    }
+  }
+}

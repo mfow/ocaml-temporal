@@ -12,7 +12,9 @@ rust-version = "1.94"
 base64 = "0.22.1"
 serde = "1.0.228"
 serde_json = "1.0.150"
+prost-wkt-types = "0.7.1"
 temporalio-sdk-core = { git = "https://github.com/temporalio/sdk-core.git", rev = "95e97686a079dcfe6c42e3254b2f3f5e3d97408f", default-features = false, features = ["tls-ring"] }
+temporalio-protos = { git = "https://github.com/temporalio/sdk-core.git", rev = "95e97686a079dcfe6c42e3254b2f3f5e3d97408f" }
 
 [profile.release]
 lto = "thin"

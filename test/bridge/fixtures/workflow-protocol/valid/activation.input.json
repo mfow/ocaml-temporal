@@ -1,0 +1,14 @@
+{
+  "jobs": [
+    {"arguments":[{"data":{"data":"ImhpIg==","encoding":"base64"},"metadata":{"encoding":{"data":"anNvbi9wbGFpbg==","encoding":"base64"}}}],"attempt":1,"kind":"initialize_workflow","randomness_seed":"18446744073709551615","workflow_id":"order-42","workflow_type":"process_order"},
+    {"kind":"resolve_activity","result":{"kind":"completed","payload":{"data":{"encoding":"base64","data":"b2s="},"metadata":{}}},"seq":1},
+    {"kind":"resolve_activity","seq":2,"result":{"failure":{"cause":null,"encoded_attributes":null,"info":{"details":[],"kind":"application","non_retryable":true,"type":"BadInput"},"message":"invalid input","source":"test-sdk","stack_trace":""},"kind":"failed"}},
+    {"result":{"kind":"cancelled","failure":{"message":"activity cancelled","source":"server","stack_trace":"","encoded_attributes":null,"cause":{"message":"cancel requested","source":"server","stack_trace":"","encoded_attributes":null,"cause":null,"info":{"kind":"canceled","details":[],"identity":"client"}},"info":{"kind":"activity","scheduled_event_id":10,"started_event_id":11,"identity":"worker","activity_type":"lookup","activity_id":"lookup-3","retry_state":"cancel_requested"}}},"seq":3,"kind":"resolve_activity"},
+    {"seq":4,"kind":"fire_timer"},
+    {"reason":"operator request","kind":"cancel_workflow"}
+  ],
+  "timestamp": {"nanoseconds":123456789,"seconds":1720000000},
+  "run_id":"01234567-89ab-cdef-0123-456789abcdef",
+  "is_replaying":false,
+  "history_length":12
+}

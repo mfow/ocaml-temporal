@@ -86,8 +86,10 @@ let test_payloads () =
     (Bytes.length
        (unwrap
           (Protocol.decode_payload (unwrap (Protocol.encode_payload all_bytes)))));
+  (* Exercise the normal Temporal blob-limit scale without allocating the
+     bridge's 128 MiB transport safety maximum in every CI matrix cell. *)
   let maximum =
-    Bytes.init Protocol.max_payload_bytes (fun index ->
+    Bytes.init (2 * 1024 * 1024) (fun index ->
         Char.chr (index land 255))
   in
   check_true "maximum payload round trip"
@@ -117,7 +119,7 @@ let test_resource_limits () =
   let prefix =
     {|{"kind":"request","correlation_id":"0123456789abcdef0123456789abcdef","operation":"worker.poll","body":|}
   in
-  let deep = prefix ^ String.make 17 '[' ^ String.make 17 ']' ^ "}" in
+  let deep = prefix ^ String.make 129 '[' ^ String.make 129 ']' ^ "}" in
   let long_string =
     prefix ^ "{\"value\":\"" ^ String.make 65_537 'a' ^ "\"}}"
   in
@@ -135,12 +137,19 @@ let test_resource_limits () =
   require_error (Protocol.decode deep);
   require_error (Protocol.decode long_string);
   require_error (Protocol.decode escaped_long_string);
-  require_error (Protocol.decode long_array);
-  require_error
-    (Protocol.decode (String.make (Protocol.max_document_bytes + 1) ' '));
-  require_error
-    (Protocol.encode_payload
-       (Bytes.make (Protocol.max_payload_bytes + 1) '\000'))
+  ignore (unwrap (Protocol.decode long_array));
+  check_int "document safety limit" (192 * 1024 * 1024)
+    Protocol.max_document_bytes;
+  check_int "payload safety limit" (128 * 1024 * 1024)
+    Protocol.max_payload_bytes;
+  let maximum_base64_bytes =
+    (Protocol.max_payload_bytes + 2) / 3 * 4
+  in
+  check_int "maximum base64 bytes" 178_956_972 maximum_base64_bytes;
+  check_true "document admits one maximum base64 field"
+    (Protocol.max_document_bytes > maximum_base64_bytes);
+  check_true "document remains an aggregate bound"
+    (Protocol.max_document_bytes < maximum_base64_bytes * 2)
 
 (** Verifies the single startup compatibility gate and outgoing self-validation
     of typed values constructed by internal callers. *)
@@ -157,6 +166,16 @@ let test_compatibility_and_outgoing_validation () =
   in
   require_error (Protocol.encode invalid)
 
+(** Proves operation-specific modules can reuse strict duplicate-aware object
+    parsing without accepting an envelope-shaped value. *)
+let test_strict_object_boundary () =
+  require_error (Protocol.decode_object {|{"outer":{"value":1,"value":2}}|});
+  let value = unwrap (Protocol.decode_object {| {"z":2,"a":{"y":1}} |}) in
+  check_string "normalized strict object" {|{"a":{"y":1},"z":2}|}
+    (unwrap (Protocol.encode_object value));
+  require_error (Protocol.decode_object {|[]|});
+  require_error (Protocol.encode_object (`List []))
+
 (** Runs one test and identifies its name without exposing protocol inputs. *)
 let run name test =
   try
@@ -172,4 +191,5 @@ let () =
   run "payloads" test_payloads;
   run "resource limits" test_resource_limits;
   run "compatibility and outgoing validation"
-    test_compatibility_and_outgoing_validation
+    test_compatibility_and_outgoing_validation;
+  run "strict object boundary" test_strict_object_boundary

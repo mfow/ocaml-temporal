@@ -42,6 +42,50 @@ Evidence:
 This evidence is for the synthetic interpreter. It does not claim that Core can
 yet poll or complete these commands against a live Temporal Server.
 
+## 2026-07-11: Bilateral workflow semantic protocol
+
+Status: focused OCaml and Rust conformance and Core-conversion tests verified
+locally; full native and GitHub Actions verification follows the milestone
+commit.
+
+The private boundary now has closed semantic JSON documents for the first
+workflow activation/completion slice. Both languages implement typed payload,
+time, initialization, activation metadata, activity resolution, failure,
+eviction, activity/timer command, and terminal workflow command values. Rust
+alone converts the official pinned Core protobuf types. Ordinary root and child
+initialization, parent/root execution identity, priority, and top-level
+activation metadata are preserved; unrepresented
+non-default Core fields fail with a typed conversion error.
+
+Evidence:
+
+- Shared fixtures normalize identically in Rust and OCaml for all supported
+  jobs and commands, eviction, failures, maximum unsigned randomness seeds, and
+  realistic first-task initialization.
+- A deliberately reversed payload/header metadata fixture proves canonical
+  lexicographic map ordering in both implementations.
+- Malformed fixtures prove duplicate/unknown/missing fields, numeric bounds,
+  canonical base64, duration, activity timeout, terminal ordering, and eviction
+  invariants fail closed.
+- Bilateral regressions prove official Core eviction keeps its absent
+  timestamp, initialization is unique and first, sequence zero remains valid,
+  identifier validation does not invent a 255-byte server limit, structured
+  failure fields remain schema-exact, and invalid header keys fail closed.
+- Two 2 MiB opaque byte fields round-trip together in both implementations.
+  Arithmetic tests verify the 128 MiB per-field and 192 MiB aggregate document
+  safety ceilings without allocating either maximum in every CI matrix cell.
+- Activations containing 300 small jobs prove collection accounting no longer
+  imposes the former 256-item policy. Recursive failure tests accept 32 causes
+  while rejecting input beyond the shared 128-level parser stack-safety bound.
+- Rust tests convert realistic official Core root and child activations and semantic
+  completions without loss, and reject unsupported fields, absent oneofs, and
+  invalid eviction acknowledgements.
+- Four Draft 2020-12 schemas document the closed activation, completion,
+  payload, and recursive failure contracts; runtime validators remain
+  authoritative for byte limits and duplicate-key evidence.
+- Direct `temporalio-protos` and `prost-wkt-types` declarations reuse the
+  already locked permissive Core dependency graph and add no package.
+
 ## 2026-07-11: One-shot quality and security scans
 
 Status: focused contract and scanner checks verified locally; complete GitHub

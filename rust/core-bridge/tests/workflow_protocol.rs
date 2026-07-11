@@ -667,3 +667,93 @@ fn accepts_batched_default_temporal_payloads() {
         completion
     );
 }
+
+/// Removes one member from a fixture object selected by JSON Pointer.
+fn fixture_without_field(document: &str, object_pointer: &str, field: &str) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(document).unwrap();
+    value
+        .pointer_mut(object_pointer)
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("test pointer must select an object")
+        .remove(field)
+        .expect("test field must exist");
+    serde_json::to_string(&value).unwrap()
+}
+
+/// Proves every schema-required nullable field must be explicitly present;
+/// omission cannot be silently normalized into JSON null by Serde.
+#[test]
+fn rejects_omitted_required_nullable_fields() {
+    let completion = fixture(&["valid", "completion.input.json"]);
+    for field in [
+        "schedule_to_close_timeout",
+        "schedule_to_start_timeout",
+        "start_to_close_timeout",
+        "heartbeat_timeout",
+    ] {
+        assert!(
+            workflow_protocol::decode_completion(&fixture_without_field(
+                &completion,
+                "/commands/0",
+                field,
+            ))
+            .is_err(),
+            "schedule_activity.{field} omission must fail",
+        );
+    }
+    assert!(
+        workflow_protocol::decode_completion(&fixture_without_field(
+            &completion,
+            "/commands/4",
+            "result",
+        ))
+        .is_err()
+    );
+
+    let activation = fixture(&["valid", "activation.input.json"]);
+    for (pointer, field) in [
+        ("", "timestamp"),
+        ("/jobs/1/result", "payload"),
+        ("/jobs/2/result/failure", "encoded_attributes"),
+        ("/jobs/2/result/failure", "cause"),
+    ] {
+        assert!(
+            workflow_protocol::decode_activation(&fixture_without_field(
+                &activation,
+                pointer,
+                field,
+            ))
+            .is_err(),
+            "activation field {pointer}/{field} omission must fail",
+        );
+    }
+
+    let initialize = fixture(&["valid", "realistic-initialize.input.json"]);
+    for field in [
+        "parent_workflow",
+        "workflow_execution_timeout",
+        "workflow_run_timeout",
+        "workflow_task_timeout",
+        "start_time",
+        "root_workflow",
+        "priority",
+    ] {
+        assert!(
+            workflow_protocol::decode_activation(&fixture_without_field(
+                &initialize,
+                "/jobs/0/context",
+                field,
+            ))
+            .is_err(),
+            "initialize context field {field} omission must fail",
+        );
+    }
+    assert!(
+        workflow_protocol::decode_activation(&fixture_without_field(
+            &initialize,
+            "/metadata",
+            "deployment_version_for_current_task",
+        ))
+        .is_err()
+    );
+}

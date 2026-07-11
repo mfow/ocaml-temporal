@@ -65,6 +65,12 @@ chains beyond 16 levels and reject depth beyond that shared stack-safety bound.
 An iterative or configurable depth implementation is deferred rather than
 disabling the Rust parser's recursion protection.
 
+Schema-required nullable fields remain distinct from optional compatibility
+extensions. Rust uses an explicit deserializer on every required `Option`
+field so Serde cannot conflate omission with JSON `null`; OCaml's exact-object
+decoders enforce the same rule. Only initialization `context` and activation
+`metadata` may be omitted as documented compatibility extensions.
+
 Shared positive and malformed fixtures are decoded and normalized by both
 implementations. A realistic initialization fixture deliberately reverses map
 keys and carries the ordinary metadata above. Draft 2020-12 schemas document

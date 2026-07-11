@@ -77,6 +77,9 @@ Evidence:
 - Activations containing 300 small jobs prove collection accounting no longer
   imposes the former 256-item policy. Recursive failure tests accept 32 causes
   while rejecting input beyond the shared 128-level parser stack-safety bound.
+- Required-nullable regressions cover activation timestamps, initialization
+  context, metadata, activity results, recursive failures, schedule-activity
+  timeouts, and workflow results so omission cannot be accepted as null.
 - Rust tests convert realistic official Core root and child activations and semantic
   completions without loss, and reject unsupported fields, absent oneofs, and
   invalid eviction acknowledgements.

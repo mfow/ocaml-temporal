@@ -348,6 +348,16 @@ let test_batched_default_temporal_payloads () =
   let encoded = unwrap (Protocol.encode_completion completion) in
   ignore (unwrap (Protocol.decode_completion encoded))
 
+(** Proves required-nullable members are not interchangeable with omission on
+    the OCaml side of the bilateral contract. *)
+let test_required_nullable_fields () =
+  require_error
+    (Protocol.decode_completion
+       {|{"run_id":"run-required-null","commands":[{"kind":"complete_workflow"}]}|});
+  require_error
+    (Protocol.decode_completion
+       {|{"run_id":"run-required-null","commands":[{"kind":"schedule_activity","seq":0,"activity_id":"activity","activity_type":"activity","task_queue":"queue","arguments":[],"schedule_to_start_timeout":null,"start_to_close_timeout":null,"heartbeat_timeout":null,"cancellation_type":"try_cancel","do_not_eagerly_execute":false}]}|})
+
 (** Runs one test with a stable name suitable for CI logs. *)
 let run name test =
   try
@@ -369,4 +379,5 @@ let () =
   run "failure field semantics" test_failure_field_semantics;
   run "recursive failure depth" test_recursive_failure_depth;
   run "initialize header keys" test_initialize_header_keys;
-  run "batched default Temporal payloads" test_batched_default_temporal_payloads
+  run "batched default Temporal payloads" test_batched_default_temporal_payloads;
+  run "required nullable fields" test_required_nullable_fields

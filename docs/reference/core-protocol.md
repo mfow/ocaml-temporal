@@ -60,6 +60,10 @@ escape their boundaries.
 
 Both incoming and outgoing paths enforce:
 
+Required-nullable fields must be explicitly present. Omission is malformed and
+is never normalized into JSON `null`; only fields documented as compatibility
+extensions may be absent.
+
 | Resource | Limit |
 |---|---:|
 | Complete UTF-8 document | 201,326,592 bytes (192 MiB) |

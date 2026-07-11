@@ -11,6 +11,19 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::protocol::{self, JsonValue, MAX_PAYLOAD_BYTES, MAX_STRING_BYTES, ProtocolError};
 
+/// Decodes an explicitly present nullable field.
+///
+/// Serde otherwise maps both an omitted `Option` field and JSON `null` to
+/// `None`. The private protocol distinguishes those cases: fields declared
+/// required by the schema must appear, even when their value is null.
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 /// Opaque Temporal payload with binary-safe metadata and body bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payload {
@@ -173,20 +186,27 @@ pub struct InitializeContext {
     /// Identity of the client that started this execution.
     pub identity: String,
     /// Parent execution for a child workflow, otherwise absent.
+    #[serde(deserialize_with = "required_nullable")]
     pub parent_workflow: Option<NamespacedWorkflowExecution>,
     /// Timeout across retries and continue-as-new runs.
+    #[serde(deserialize_with = "required_nullable")]
     pub workflow_execution_timeout: Option<Duration>,
     /// Timeout for this individual workflow run.
+    #[serde(deserialize_with = "required_nullable")]
     pub workflow_run_timeout: Option<Duration>,
     /// Timeout for one workflow task.
+    #[serde(deserialize_with = "required_nullable")]
     pub workflow_task_timeout: Option<Duration>,
     /// First run in this execution chain.
     pub first_execution_run_id: String,
     /// Time at which the execution-start event was written.
+    #[serde(deserialize_with = "required_nullable")]
     pub start_time: Option<Timestamp>,
     /// Root execution for a child workflow, otherwise absent.
+    #[serde(deserialize_with = "required_nullable")]
     pub root_workflow: Option<WorkflowExecution>,
     /// Workflow scheduling priority, when supplied by Core.
+    #[serde(deserialize_with = "required_nullable")]
     pub priority: Option<WorkflowPriority>,
 }
 
@@ -215,6 +235,7 @@ pub struct ActivationMetadata {
     pub available_internal_flags: Vec<u32>,
     pub history_size_bytes: String,
     pub continue_as_new_suggested: bool,
+    #[serde(deserialize_with = "required_nullable")]
     pub deployment_version_for_current_task: Option<WorkerDeploymentVersion>,
     pub last_sdk_version: String,
     pub suggest_continue_as_new_reasons: Vec<SuggestContinueAsNewReason>,
@@ -266,7 +287,9 @@ pub struct Failure {
     pub message: String,
     pub source: String,
     pub stack_trace: String,
+    #[serde(deserialize_with = "required_nullable")]
     pub encoded_attributes: Option<Payload>,
+    #[serde(deserialize_with = "required_nullable")]
     pub cause: Option<Box<Failure>>,
     pub info: FailureInfo,
 }
@@ -275,9 +298,16 @@ pub struct Failure {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActivityResolution {
-    Completed { payload: Option<Payload> },
-    Failed { failure: Failure },
-    Cancelled { failure: Failure },
+    Completed {
+        #[serde(deserialize_with = "required_nullable")]
+        payload: Option<Payload>,
+    },
+    Failed {
+        failure: Failure,
+    },
+    Cancelled {
+        failure: Failure,
+    },
 }
 
 /// Why Core requested removal of a workflow from the language cache.
@@ -332,6 +362,7 @@ pub enum ActivationJob {
 pub struct Activation {
     pub run_id: String,
     /// Core omits time only on its synthetic cache-eviction activation.
+    #[serde(deserialize_with = "required_nullable")]
     pub timestamp: Option<Timestamp>,
     pub is_replaying: bool,
     pub history_length: u32,
@@ -359,9 +390,13 @@ pub enum CompletionCommand {
         activity_type: String,
         task_queue: String,
         arguments: Vec<Payload>,
+        #[serde(deserialize_with = "required_nullable")]
         schedule_to_close_timeout: Option<Duration>,
+        #[serde(deserialize_with = "required_nullable")]
         schedule_to_start_timeout: Option<Duration>,
+        #[serde(deserialize_with = "required_nullable")]
         start_to_close_timeout: Option<Duration>,
+        #[serde(deserialize_with = "required_nullable")]
         heartbeat_timeout: Option<Duration>,
         cancellation_type: ActivityCancellationType,
         do_not_eagerly_execute: bool,
@@ -377,6 +412,7 @@ pub enum CompletionCommand {
         seq: u32,
     },
     CompleteWorkflow {
+        #[serde(deserialize_with = "required_nullable")]
         result: Option<Payload>,
     },
     FailWorkflow {

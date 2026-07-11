@@ -19,16 +19,16 @@ module Tag : sig
   (** Stable operation identifier such as [runtime_create] or [activate]. *)
   val operation : string Logs.Tag.def
 
-  (** Elapsed wall-clock time in milliseconds, clamped to be non-negative. *)
+  (** Finite elapsed wall-clock milliseconds. Invalid values become zero. *)
   val duration_ms : float Logs.Tag.def
 
   (** Registered Temporal workflow type, truncated to a bounded tag length. *)
   val workflow_type : string Logs.Tag.def
 
-  (** Number of jobs supplied in one activation. *)
+  (** Non-negative number of jobs supplied in one activation. *)
   val job_count : int Logs.Tag.def
 
-  (** Number of commands produced in one activation. *)
+  (** Non-negative number of commands produced in one activation. *)
   val command_count : int Logs.Tag.def
 
   (** Stable lowercase bridge status name; never the raw bridge diagnostic. *)
@@ -39,7 +39,8 @@ module Tag : sig
 end
 
 (** [tags ~operation ()] constructs metadata shared by current SDK boundaries.
-    String values are bounded before they reach an application reporter. *)
+    String values are bounded before they reach an application reporter.
+    Negative counts and negative, NaN, or infinite durations become zero. *)
 val tags :
   operation:string ->
   ?duration_ms:float ->

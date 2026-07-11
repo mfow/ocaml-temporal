@@ -26,6 +26,9 @@ Evidence:
 - Focused tests first failed because the observability module did not exist,
   then passed for stable source and tag names, severity, latency, privacy, and
   reporter-exception containment after the implementation was added.
+- A focused boundary test then failed for negative and non-finite metadata and
+  passed after the common tag constructor normalized invalid durations and
+  counts to zero.
 - Repository smoke tests first failed because `logs` was absent from package
   metadata, then passed after Dune, OPAM, and the locked dependency closure
   declared it.

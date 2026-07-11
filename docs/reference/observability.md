@@ -33,7 +33,7 @@ Reporters receive typed structural tags independently from message prose:
 | Tag | Type | Meaning |
 |---|---|---|
 | `temporal.operation` | string | Stable operation identifier |
-| `temporal.duration_ms` | float | Non-negative elapsed milliseconds |
+| `temporal.duration_ms` | float | Finite non-negative elapsed milliseconds |
 | `temporal.workflow_type` | string | Registered workflow type |
 | `temporal.job_count` | int | Jobs supplied in one activation |
 | `temporal.command_count` | int | Commands emitted by one activation |
@@ -46,6 +46,11 @@ clock moves backwards. It is diagnostic metadata only: workflow code never
 uses it to choose commands or results. Future modules should reuse the source
 and tag definitions in `Temporal_base.Observability` instead of inventing
 near-duplicate names.
+
+The shared tag constructor normalizes negative counts to zero. Negative,
+`NaN`, and infinite durations also become zero. This defensive boundary keeps
+reporter and metrics backends free from impossible values if a future internal
+caller supplies malformed metadata; valid numeric values are preserved.
 
 ## Application setup and filtering
 

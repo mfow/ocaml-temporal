@@ -349,6 +349,18 @@ pub fn decode_start_request(input: &str) -> Result<StartWorkflowRequest, protoco
     Ok(request)
 }
 
+/// Compares two validated start requests using every logical field, including
+/// workflow type, task queue, and binary payloads.  The ABI uses this when a
+/// caller retries a pending request ID: only an exact semantic retry may reuse
+/// the existing ticket, while a changed request is rejected as a protocol
+/// error instead of being silently aliased to another start.
+pub(crate) fn same_start_request(
+    left: &StartWorkflowRequest,
+    right: &StartWorkflowRequest,
+) -> bool {
+    left == right
+}
+
 /// Decodes one opaque start ticket returned by the asynchronous begin call.
 pub(crate) fn decode_start_ticket(input: &str) -> Result<String, protocol::ProtocolError> {
     protocol::decode_object(input)?;
@@ -896,6 +908,21 @@ mod tests {
         })
         .to_string();
         assert!(decode_start_request(&json).is_err());
+    }
+
+    #[test]
+    /// A reused request ID may alias only an identical semantic request.
+    fn pending_request_matching_checks_all_start_fields() {
+        let original = decode_start_request(&start_json()).expect("start request decodes");
+        let mut changed = original.clone();
+        changed.task_queue = "other-queue".to_owned();
+
+        assert!(same_start_request(&original, &original));
+        assert!(!same_start_request(&original, &changed));
+
+        changed.task_queue = original.task_queue.clone();
+        changed.input[0].data.push(0);
+        assert!(!same_start_request(&original, &changed));
     }
 
     #[test]

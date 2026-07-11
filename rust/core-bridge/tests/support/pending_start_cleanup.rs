@@ -52,9 +52,14 @@ fn nonblocking_close_joins_aborted_start_tasks_before_core_drop() {
     runtime.pending_starts.insert(
         "ticket".to_owned(),
         PendingStart {
-            request_id: "request".to_owned(),
-            namespace: "default".to_owned(),
-            workflow_id: "workflow".to_owned(),
+            request: Arc::new(client_protocol::StartWorkflowRequest {
+                request_id: "request".to_owned(),
+                namespace: "default".to_owned(),
+                workflow_id: "workflow".to_owned(),
+                workflow_type: "workflow".to_owned(),
+                task_queue: "queue".to_owned(),
+                input: Vec::new(),
+            }),
             receiver,
             task,
         },

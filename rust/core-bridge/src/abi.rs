@@ -5,6 +5,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{
     Receiver, RecvTimeoutError, SyncSender, TryRecvError, channel, sync_channel,
@@ -211,12 +212,12 @@ pub struct Runtime {
 /// when a terminal result is observed, then joins the task before releasing
 /// the connection clone it captured.
 struct PendingStart {
-    /// Stable logical identifier sent unchanged to Temporal.
-    request_id: String,
-    /// Namespace retained to reject accidental cross-namespace ID reuse.
-    namespace: String,
-    /// Workflow ID retained for an explicit `Unknown` outcome.
-    workflow_id: String,
+    /// Complete validated request retained for exact retry matching and for
+    /// the request/workflow identifiers used by an `Unknown` outcome.  Keeping
+    /// the typed value (rather than only namespace and workflow ID) prevents a
+    /// caller from accidentally reusing one request ID for a different task
+    /// queue, workflow type, or payload and silently receiving the old ticket.
+    request: Arc<client_protocol::StartWorkflowRequest>,
     /// One-shot result channel serviced only by the owner Domain.
     receiver: Receiver<
         std::result::Result<
@@ -396,18 +397,20 @@ impl Runtime {
             .tokio_handle();
 
         // A caller that retries a begin request with the same logical ID must
-        // observe the existing ticket. Reusing an ID for a different workflow
-        // is rejected rather than silently aliasing the other operation.
+        // observe the existing ticket only when every validated request field
+        // is identical. Reusing an ID for a changed workflow request is
+        // rejected rather than silently aliasing the other operation.
+        let request = Arc::new(request);
         if let Some((ticket, pending)) = self
             .pending_starts
             .iter()
-            .find(|(_, pending)| pending.request_id == request.request_id)
+            .find(|(_, pending)| pending.request.request_id == request.request_id)
         {
-            if pending.namespace != request.namespace || pending.workflow_id != request.workflow_id
-            {
+            if !client_protocol::same_start_request(pending.request.as_ref(), request.as_ref()) {
                 return Err(Failure {
                     status: STATUS_PROTOCOL,
-                    message: "start request_id is already pending for another execution".to_owned(),
+                    message: "start request_id is already pending for a different request"
+                        .to_owned(),
                 });
             }
             return Ok(client_protocol::encode_start_ticket(ticket)
@@ -421,9 +424,6 @@ impl Runtime {
             });
         }
 
-        let request_id = request.request_id.clone();
-        let namespace = request.namespace.clone();
-        let workflow_id = request.workflow_id.clone();
         let ticket = loop {
             let candidate = Uuid::new_v4().to_string();
             if !self.pending_starts.contains_key(&candidate) {
@@ -434,8 +434,10 @@ impl Runtime {
             .map_err(protocol_failure)?
             .into_bytes();
         let (sender, receiver) = channel();
+        let task_request = Arc::clone(&request);
         let task = handle.spawn(async move {
-            let result = client_protocol::start_workflow(connection, request).await;
+            let result =
+                client_protocol::start_workflow(connection, task_request.as_ref().clone()).await;
             // A closed receiver means the owner is shutting down or has
             // already consumed the terminal result. Dropping this send is
             // intentional; task ownership remains entirely on the Tokio side.
@@ -445,9 +447,7 @@ impl Runtime {
         self.pending_starts.insert(
             ticket.clone(),
             PendingStart {
-                request_id,
-                namespace,
-                workflow_id,
+                request,
                 receiver,
                 task,
             },
@@ -535,14 +535,14 @@ impl Runtime {
             Some(Ok(response)) => client_protocol::StartWorkflowOutcome::Accepted(response),
             Some(Err(error)) if error.uncertain_start() => {
                 client_protocol::StartWorkflowOutcome::Unknown {
-                    request_id: pending.request_id,
-                    workflow_id: pending.workflow_id,
+                    request_id: pending.request.request_id.clone(),
+                    workflow_id: pending.request.workflow_id.clone(),
                 }
             }
             Some(Err(error)) => client_protocol::StartWorkflowOutcome::Rejected(error),
             None => client_protocol::StartWorkflowOutcome::Unknown {
-                request_id: pending.request_id,
-                workflow_id: pending.workflow_id,
+                request_id: pending.request.request_id.clone(),
+                workflow_id: pending.request.workflow_id.clone(),
             },
         };
         client_protocol::encode_start_outcome(&outcome)

@@ -9,8 +9,8 @@ capability in the parity matrix are verified.
 
 | Phase | Deliverable | Runtime evidence | Status |
 |---|---|---|---|
-| 1 | Repository foundation, typed public definitions, codecs, deterministic futures, effect scheduler, and synthetic activations | `make verify` runs from Docker Compose and deterministic command tests pass | Ready |
-| 2 | Rust static library, OCaml C stubs, Temporal Core workflow poll/completion loop, PostgreSQL and Temporal Compose services | A Dune-built OCaml executable completes a workflow against the Compose cluster | Planned |
+| 1 | Repository foundation, typed public definitions, codecs, deterministic futures, effect scheduler, and synthetic activations | `make verify` runs from Docker Compose and deterministic command tests pass | Complete |
+| 2 | Rust static library, OCaml C stubs, Temporal Core workflow poll/completion loop, PostgreSQL and Temporal Compose services | A Dune-built OCaml executable completes a workflow against the Compose cluster | In progress |
 | 3 | Durable timers, remote activities, typed options, failures, retries, and cancellation | Cross-language activity integration tests and worker-restart replay tests pass | Planned |
 | 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes) | Parent workflows fan out to activities and children, await one/all, and cancel safely | Planned |
 | 5 | Signals, queries, updates, validators, conditions, and handler policies | CLI-driven interactive workflow tests pass, including mode violations | Planned |
@@ -23,7 +23,7 @@ capability in the parity matrix are verified.
 ## Plan documents
 
 1. [Foundation and deterministic runtime](superpowers/plans/2026-07-11-foundation-and-deterministic-runtime.md)
-2. Core bridge and first real workflow (written after Phase 1 evidence is committed)
+2. [Core bridge and first real workflow](superpowers/plans/2026-07-11-core-bridge-and-first-real-workflow.md)
 3. Activities, timers, and replay (written after Phase 2 evidence is committed)
 4. Child workflows and structured concurrency (written after Phase 3 evidence is committed)
 5. Interactive and advanced features (split further at the preceding review gate)

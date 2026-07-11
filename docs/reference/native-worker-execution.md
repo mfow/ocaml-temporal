@@ -66,8 +66,8 @@ adapter directly because supervisor operations may block their producer Domain.
    completion. Activity commands retain their complete Core fields and are
    validated before submission. Child-workflow commands remain explicit
    `unsupported` errors because the first semantic protocol has no child
-   command variant; no task queue, timeout, ID, or cancellation default is
-   invented for that unsupported path.
+   command variant; no replacement command is fabricated for that unsupported
+   path.
 7. The completion is submitted through the same supervisor. The run entry is
    removed only after the supervisor confirms completion retirement. Terminal
    commands remove the run; a cache-removal activation also removes it after

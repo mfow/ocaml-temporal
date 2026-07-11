@@ -220,7 +220,10 @@ A completion is a closed object sent from OCaml to Rust. Its ordered commands
 cover scheduling and requesting cancellation of remote activities, starting
 and cancelling timers, and completing, failing, or cancelling the workflow.
 Scheduled activities require at least a schedule-to-close or start-to-close
-timeout. A terminal workflow command may occur at most once and must be last.
+timeout. The completion schema records this as an `anyOf` constraint in
+addition to the per-field nullable types; runtime validation remains
+authoritative for duplicate members and UTF-8 byte limits. A terminal workflow
+command may occur at most once and must be last.
 When acknowledging an eviction, the completion command list must be empty and
 the run ID must match the activation.
 

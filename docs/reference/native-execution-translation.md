@@ -2,8 +2,9 @@
 
 This document describes the private, pure-OCaml adapter between the checked
 workflow protocol and the deterministic workflow runtime. Workflow authors do
-not call it directly. A future worker loop will use it after Rust has decoded a
-Core activation and before it submits the resulting completion back to Rust.
+not call it directly. The private native-worker adapter uses it after Rust has
+decoded a Core activation and before it submits the resulting completion back
+to Rust; production supervisor wiring remains a separate integration step.
 
 ## Where the adapter sits
 
@@ -76,7 +77,7 @@ the complete result before returning it to the bridge.
 | Runtime command | Protocol command | Notes |
 | --- | --- | --- |
 | `Request_cancel_activity` | `Request_cancel_activity` | The sequence is range-checked. |
-| `Schedule_activity` | `Schedule_activity` | Activity ID, type, task queue, argument payloads, timeout policies, cancellation policy, and eager-execution flag are validated and copied without defaults at this boundary. |
+| `Schedule_activity` | `Schedule_activity` | Activity ID, type, task queue, argument payloads, timeout policies, cancellation policy, and eager-execution flag are validated and copied. Defaults are applied by the workflow context before this boundary; the translator never invents them. |
 | `Start_timer` | `Start_timer` | Non-negative milliseconds are split into exact seconds and nanoseconds; no floating-point conversion is used. |
 | `Cancel_timer` | `Cancel_timer` | The sequence is range-checked. |
 | `Complete_workflow` with the canonical unit/null payload | `Complete_workflow { result = None }` | The nullable protocol result is preserved. |
@@ -107,8 +108,11 @@ start-to-close timeout so existing workflows remain valid. All supplied
 timeouts are exact non-negative milliseconds and are converted to normalized
 protocol durations without floating-point arithmetic. Cancellation defaults to
 `Try_cancel`, and `do_not_eagerly_execute` defaults to `false`. Invalid IDs,
-queues, payload metadata, negative durations, and missing required timeout
-policies return typed translation errors before a completion is emitted.
+queues, payload metadata, negative durations in an internal command, and missing
+required timeout policies return typed translation errors before a completion is
+emitted. The public `Temporal.Duration.of_ms` constructor rejects a negative
+value earlier with `Invalid_argument`, because a negative duration is a
+programmer configuration defect rather than an operational workflow failure.
 
 These errors are a planned compatibility boundary, not a hidden drop path.
 Activity scheduling is enabled because the runtime, protocol, and translator

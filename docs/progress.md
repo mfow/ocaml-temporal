@@ -23,8 +23,10 @@ execution queue; and omitting both schedule-to-close and start-to-close uses a
 identifiers before allocating a command, while the native translator validates
 the complete record again at the Rust/Core boundary and copies payload bytes.
 Invalid identifiers, missing required timeout coverage, negative durations,
-and malformed payloads become typed bridge or workflow errors rather than
-silently changing the command.
+and malformed payloads are rejected before a completion can be emitted rather
+than silently changing the command. Public negative durations are rejected by
+`Temporal.Duration.of_ms`; malformed internal command records are reported as
+typed bridge errors by the translator.
 
 Evidence: `dune build --root . @install`, `dune runtest --root . test/runtime`,
 and the focused activation, native-translation, and native-worker executables

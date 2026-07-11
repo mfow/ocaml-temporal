@@ -239,3 +239,35 @@ Evidence:
 End-to-end Temporal/PostgreSQL Compose tests will be a separate Phase 2 job.
 Their architecture matrix will be enabled only after every runtime image is
 verified to publish the corresponding native manifest.
+
+## 2026-07-11: Pinned Rust and Temporal Core build foundation
+
+Status: locally verified; native CI matrix pending.
+
+The development image now copies Rust 1.94.1 from a digest-pinned official
+multi-architecture image and installs only Core's protobuf build tools. The
+Apache-2.0 project bridge builds as a 21 MiB native static archive while the
+final process architecture remains OCaml-owned. Temporal Core is a direct
+Cargo dependency pinned to immutable commit
+`95e97686a079dcfe6c42e3254b2f3f5e3d97408f`, with defaults disabled and the
+`tls-ring` feature selected.
+
+Local evidence:
+
+- The toolchain smoke test first failed with no `rustc`, then passed with the
+  pinned Rust 1.94.1 compiler, locked Cargo graph, and non-empty static archive.
+- `cargo metadata --locked --offline` resolved 320 packages including the
+  project bridge, and the fail-closed SPDX policy accepted the complete graph.
+- Policy fixtures accepted compound permissive expressions and rejected GPL,
+  LGPL, AGPL, MPL, missing, unknown, and malformed license metadata.
+- The production Rust source is separate from its integration test under
+  `rust/core-bridge/tests/`; the revision test passes.
+- Action workflow lint, Rust format checking, repository formatting, Python
+  syntax checking, and `git diff --check` pass.
+
+The Cargo scanner is intentionally absent from the Makefile. The single
+standalone GitHub Actions license job streams locked metadata from the build
+container to a network-disabled, read-only, digest-pinned official Python
+container. Every OCaml/compiler architecture cell runs the Rust build, Clippy,
+and Rust tests through `make verify`; GitHub Actions is the compatibility gate
+for OCaml 5.3 through 5.5 and native amd64/arm64.

@@ -23,6 +23,26 @@ jobs:
         uses: actions/checkout@v7
       - name: Audit dependency licenses
         run: make license-check OCAML_VERSION=5.2
+      - name: Test Cargo license policy
+        run: |
+          docker run --rm --network none \
+            --volume "$PWD:/workspace:ro" \
+            --workdir /workspace \
+            python:3.14-slim-bookworm@sha256:4ff4b92a68355dbdb52584ab3391dff8d371a61d4e063468bfd0130e3189c6d9 \
+            sh test/smoke/test_cargo_license_policy.sh
+      - name: Audit locked Cargo dependency licenses
+        shell: bash
+        run: |
+          set -o pipefail
+          OCAML_IMAGE=ocaml/opam:debian-12-ocaml-5.2 \
+            docker compose --progress quiet run --rm --build \
+              --user "$(id -u):$(id -g)" -T dev \
+              cargo metadata --manifest-path rust/Cargo.toml --locked --format-version 1 \
+            | docker run --rm --interactive --network none \
+                --volume "$PWD:/workspace:ro" \
+                --workdir /workspace \
+                python:3.14-slim-bookworm@sha256:4ff4b92a68355dbdb52584ab3391dff8d371a61d4e063468bfd0130e3189c6d9 \
+                python3 scripts/check-cargo-licenses.py --metadata -
 
   verify:
     name: OCaml ${{ matrix.ocaml }} / ${{ matrix.runner }}

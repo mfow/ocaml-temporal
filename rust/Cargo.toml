@@ -1,0 +1,17 @@
+[workspace]
+members = ["core-bridge"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/mfow/ocaml-temporal"
+rust-version = "1.94"
+
+[workspace.dependencies]
+temporalio-sdk-core = { git = "https://github.com/temporalio/sdk-core.git", rev = "95e97686a079dcfe6c42e3254b2f3f5e3d97408f", default-features = false, features = ["tls-ring"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

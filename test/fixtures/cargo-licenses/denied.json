@@ -1,0 +1,11 @@
+{
+  "packages": [
+    {"name": "gpl", "version": "1", "license": "GPL-3.0-only"},
+    {"name": "lgpl", "version": "1", "license": "LGPL-2.1-or-later"},
+    {"name": "agpl", "version": "1", "license": "AGPL-3.0-only"},
+    {"name": "mpl", "version": "1", "license": "MPL-2.0"},
+    {"name": "missing", "version": "1", "license": null},
+    {"name": "unknown", "version": "1", "license": "MadeUp-1.0"},
+    {"name": "bad-expression", "version": "1", "license": "MIT AND (Apache-2.0 OR)"}
+  ]
+}

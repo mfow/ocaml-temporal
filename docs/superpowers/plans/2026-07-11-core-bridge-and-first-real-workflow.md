@@ -33,7 +33,7 @@ Temporal Server, PostgreSQL, and the Temporal CLI.
 - Every ABI function is panic-contained and returns an explicit status/error.
 - Buffer allocation and freeing happen on the same side of the ABI.
 - Core and every Cargo dependency are locked; unknown or prohibited licenses
-  fail `make license-check`.
+  fail the standalone GitHub Actions license job.
 - Expected workflow failures remain `result` values. Exceptions are caught
   only at the worker defect boundary.
 - Core protobuf field compatibility is proven by cross-language fixtures;
@@ -92,11 +92,14 @@ policy/toolchain tests.
   SPDX `AND`, `OR`, parentheses, and approved exceptions conservatively;
   require a documented chosen permissive branch for dual-licensed packages.
 - [ ] Integrate `cargo fmt --check`, `cargo clippy --locked -- -D warnings`,
-  and `cargo test --locked` into the build/test Make target. Extend the single
-  standalone GitHub Actions license job with the Cargo audit; do not duplicate
-  license work across the compiler/architecture matrix.
-- [ ] Run focused tests and `make verify` for OCaml 5.2 through 5.5, update the
-  dependency inventory, and confirm all amd64/arm64 CI cells before committing.
+  and `cargo test --locked` into the build/test Make target. Run the Cargo
+  scanner from a separate pinned official Python image entirely inside the
+  single standalone GitHub Actions license job; do not put it in the Makefile
+  or duplicate it across the compiler/architecture matrix.
+- [ ] Run focused tests and `make verify` locally on OCaml 5.2, update the
+  dependency inventory, push, and use the amd64/arm64 GitHub matrix as the
+  compatibility gate for OCaml 5.3 through 5.5. Reproduce another compiler
+  locally only if its CI cell fails.
 
 ### Task 2: Versioned, panic-safe Rust C ABI
 

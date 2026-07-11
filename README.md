@@ -40,13 +40,17 @@ make verify
 make license-check
 ```
 
-All commands run through Docker Compose. `make license-check` is the separate
-dependency audit, and `make clean` removes Compose services and Dune build
-output. The default development image uses OCaml 5.2; use, for example,
-`make verify OCAML_VERSION=5.5` to run the same gate on another supported
-version. GitHub Actions builds and tests OCaml 5.2, 5.3, 5.4, and 5.5 on native
-amd64 and arm64 runners for every pull request and every push to `master`. Its
-dependency-license audit runs once in a separate job.
+All build and test commands run through Docker Compose. `make verify` checks
+the OCaml code plus the pinned Rust toolchain, static library, formatting,
+Clippy, and Rust tests. `make license-check` is the local OPAM audit, and
+`make clean` removes Compose services and build output. GitHub Actions performs
+the locked Cargo audit once in its standalone license job using a separate
+pinned official Python container; it is not repeated for every OCaml version
+and architecture. The default development image uses OCaml 5.2; use, for
+example, `make verify OCAML_VERSION=5.5` to run the build gate on another
+supported version. GitHub Actions builds and tests OCaml 5.2, 5.3, 5.4, and
+5.5 on native amd64 and arm64 runners for every pull request and every push to
+`master`.
 
 ## Workflow style
 

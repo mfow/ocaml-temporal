@@ -1,8 +1,12 @@
 # Dependency and License Inventory
 
-All project and build dependencies are checked before a milestone commit. The
-default `make license-check` reads `temporal.opam.locked`, asks OPAM for each
-package's exact license metadata, and rejects missing or unapproved values.
+All project and build dependencies are checked before a milestone commit.
+`make license-check` reads `temporal.opam.locked`, asks OPAM for each package's
+exact license metadata, and rejects missing or unapproved values. The
+standalone GitHub Actions license job streams `cargo metadata --locked` into
+the repository scanner running in a separate official Python container. Cargo
+license scanning deliberately does not run in the compiler/architecture
+matrix or from the Makefile.
 
 ## Policy
 
@@ -50,16 +54,47 @@ tools are not linked into or redistributed with the future worker artifact.
 Release containers will use a separate minimal runtime stage and will receive
 their own package/SBOM audit before publication.
 
+The image copies Rust 1.94.1, Cargo, Clippy, and rustfmt from the official
+multi-architecture `rust:1.94-bookworm` image at manifest digest
+`sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55`.
+That manifest contains native `linux/amd64` and `linux/arm64/v8` images. Rust
+is dual-licensed Apache-2.0 OR MIT. Debian's `protobuf-compiler` and
+`libprotobuf-dev` packages are installed as build-only tools required by
+Temporal Core's generated protobuf crates and standard Google protobuf
+definitions; Protocol Buffers is BSD-3-Clause. Neither tool is intended for
+the eventual minimal runtime image. The Cargo license policy script runs in a
+separate official `python:3.14-slim-bookworm` image pinned at manifest digest
+`sha256:4ff4b92a68355dbdb52584ab3391dff8d371a61d4e063468bfd0130e3189c6d9`
+in the standalone GitHub Actions audit job. Its scanner container has no
+network access and mounts the source read-only. Python is not installed in the
+development or eventual runtime image.
+
 `ocamlformat` is deliberately absent. Version 0.28.1 is MIT licensed, but its
 build closure includes ordinary GPL packages (`menhir` and `fix`), which this
 project's all-dependencies policy prohibits. `make lint` and `make fmt`
 currently enforce repository-owned whitespace rules instead.
 
-## Planned Temporal Core dependency
+## Locked Cargo closure
 
-Temporal Core is not yet part of the locked build. Phase 2 begins from
-immutable upstream commit `95e97686a079dcfe6c42e3254b2f3f5e3d97408f`, whose
-root license is MIT. No Core or Cargo package is approved for redistribution
-until `Cargo.lock`, a complete transitive license inventory, native-library
-review, and the executable license gate are committed. See
+`rust/Cargo.lock` locks 319 dependencies rooted at Temporal Core commit
+`95e97686a079dcfe6c42e3254b2f3f5e3d97408f`; metadata contains 320 packages
+including the project bridge itself. The Core dependency disables default
+features and currently enables only `tls-ring`. The project bridge is
+Apache-2.0 and emits a native `staticlib`.
+
+The Cargo scanner parses SPDX `AND`, `OR`, `WITH`, and parentheses rather than
+matching substrings. For an `OR`, it prints the exact approved branch selected;
+every `AND` branch must be approved. It also understands Cargo's historical
+slash-as-OR spelling. GPL, LGPL, AGPL, MPL, missing, malformed, and unknown
+licenses fail policy fixtures. Approved permissive identifiers found in the
+closure include MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0, 0BSD, MIT-0,
+CC0-1.0, Unlicense, and CDLA-Permissive-2.0. The Apache LLVM exception is an
+exact approved exception.
+
+Six first-party packages inherit the upstream workspace `LICENSE.txt` rather
+than publishing a Cargo `license` expression: `temporalio-client`,
+`temporalio-common`, `temporalio-common-wasm`, `temporalio-macros`,
+`temporalio-protos`, and `temporalio-sdk-core`. The scanner permits this only
+for those exact package names, the immutable Core git revision, and a file
+named `LICENSE.txt`; the reviewed upstream license is MIT. See
 [ADR 0001](decisions/0001-temporal-core-c-boundary.md).

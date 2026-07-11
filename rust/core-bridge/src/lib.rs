@@ -1,0 +1,13 @@
+//! Private native bridge used by the public OCaml library.
+//!
+//! The versioned C ABI is introduced in the next implementation slice. The
+//! crate is already a static library so the final process remains an OCaml
+//! executable which links this implementation detail.
+
+/// Immutable Temporal Core revision linked by this bridge.
+pub const TEMPORAL_CORE_REVISION: &str = "95e97686a079dcfe6c42e3254b2f3f5e3d97408f";
+
+/// Identifies the Core crate pinned in the locked Cargo build graph.
+pub fn temporal_core_revision() -> &'static str {
+    TEMPORAL_CORE_REVISION
+}

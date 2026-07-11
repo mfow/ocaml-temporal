@@ -1,6 +1,7 @@
 _build/
 .opam-switch/
 target/
+__pycache__/
 *.coverage
 *.merlin
 .DS_Store

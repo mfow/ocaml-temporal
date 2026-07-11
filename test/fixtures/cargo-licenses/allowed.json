@@ -1,0 +1,16 @@
+{
+  "packages": [
+    {"name": "simple", "version": "1.0.0", "license": "MIT"},
+    {"name": "dual", "version": "1.0.0", "license": "MIT OR Apache-2.0"},
+    {"name": "compound", "version": "1.0.0", "license": "(MIT OR Apache-2.0) AND Unicode-3.0"},
+    {"name": "legacy", "version": "1.0.0", "license": "MIT/Apache-2.0"},
+    {"name": "exception", "version": "1.0.0", "license": "Apache-2.0 WITH LLVM-exception OR MIT"},
+    {
+      "name": "temporalio-sdk-core",
+      "version": "0.5.0",
+      "license": null,
+      "license_file": "/cargo/git/checkouts/sdk-core/LICENSE.txt",
+      "source": "git+https://github.com/temporalio/sdk-core.git?rev=95e97686a079dcfe6c42e3254b2f3f5e3d97408f#95e97686a079dcfe6c42e3254b2f3f5e3d97408f"
+    }
+  ]
+}

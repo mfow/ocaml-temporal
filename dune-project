@@ -1,7 +1,7 @@
 (lang dune 3.17)
 (name temporal)
 (generate_opam_files false)
-(source (github ocaml-temporal/ocaml-temporal))
+(source (github mfow/ocaml-temporal))
 (license Apache-2.0)
 (authors "OCaml Temporal contributors")
 (maintainers "OCaml Temporal contributors")

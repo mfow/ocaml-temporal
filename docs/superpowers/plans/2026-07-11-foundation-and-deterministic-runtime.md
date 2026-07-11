@@ -106,7 +106,7 @@ Use this Dune project header:
 (lang dune 3.17)
 (name temporal)
 (generate_opam_files false)
-(source (github ocaml-temporal/ocaml-temporal))
+(source (github mfow/ocaml-temporal))
 (license Apache-2.0)
 (authors "OCaml Temporal contributors")
 (maintainers "OCaml Temporal contributors")
@@ -130,9 +130,9 @@ description: "A typed OCaml 5 workflow SDK backed by Temporal Core"
 maintainer: "OCaml Temporal contributors"
 authors: "OCaml Temporal contributors"
 license: "Apache-2.0"
-homepage: "https://github.com/ocaml-temporal/ocaml-temporal"
-bug-reports: "https://github.com/ocaml-temporal/ocaml-temporal/issues"
-dev-repo: "git+https://github.com/ocaml-temporal/ocaml-temporal.git"
+homepage: "https://github.com/mfow/ocaml-temporal"
+bug-reports: "https://github.com/mfow/ocaml-temporal/issues"
+dev-repo: "git+https://github.com/mfow/ocaml-temporal.git"
 depends: [
   "ocaml" {>= "5.2"}
   "dune" {>= "3.17"}

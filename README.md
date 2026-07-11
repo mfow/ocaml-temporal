@@ -1,10 +1,10 @@
-# OCaml Temporal
+# OCaml Temporal SDK
 
 [![Build](https://github.com/mfow/ocaml-temporal/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/mfow/ocaml-temporal/actions/workflows/build.yml)
 
 > **Community-maintained and unofficial. Not affiliated with or endorsed by Temporal Technologies, Inc.**
 
-OCaml Temporal is a pre-release SDK for writing durable Temporal workflows in
+OCaml Temporal SDK is a pre-release SDK for writing and managing durable Temporal workflows, activities and in
 modern OCaml 5. Workflow code uses ordinary functions, explicit `result`
 values, typed codecs and futures, and private algebraic effects for
 direct-style suspension.
@@ -98,15 +98,9 @@ not a claim that a production worker can connect yet.
 - [Dependency and license inventory](docs/dependencies.md)
 - [Verified progress](docs/progress.md)
 
-Temporal payloads are opaque bytes with encoding metadata. JSON is not required
-by Temporal. This library keeps an optional `json/plain` string codec because
-it interoperates with standard data converters in other Temporal SDKs; raw
-bytes use `binary/plain`, and applications can define other deterministic
-codecs.
-
 ## Status and compatibility
 
-The project is not yet released and its API may change before `0.1.0`. The
+The project is a work in progress and its API may change before `0.1.0`. The
 compatibility floor is OCaml 5.2; the test matrix also exercises OCaml 5.5.
 Temporal Core will be pinned by immutable commit and upgraded only with replay
 and cross-language compatibility evidence.
@@ -120,6 +114,8 @@ standing exception is the narrowly reviewed OCaml linking exception documented
 in the dependency inventory.
 
 ## AI disclosure
+
+AI coding tools were used to generate substantial portions of this project. All committed code in published releases has been reviewed by the maintainer, who accepts responsibility for its correctness, security, licensing and ongoing maintenance. No unreviewed model output is released.
 
 AI models used to help build this project:
 

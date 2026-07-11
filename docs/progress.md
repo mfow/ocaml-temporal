@@ -485,3 +485,39 @@ Native desktop evidence:
 The native jobs deliberately avoid Docker and validate the actual host
 compiler, architecture, Rust target, OCaml tests, Rust tests, Clippy, rustfmt,
 and fresh installed-package consumer.
+
+## 2026-07-11: Private owner-Domain mailbox processor
+
+Status: verified locally; cross-platform pull-request evidence pending.
+
+A new Dune-private library provides the typed, bounded FIFO processor needed by
+the future runtime/client/worker supervisor. A functor accepts a GADT request
+language, `post` admits unit requests, and `call` preserves each request's
+result type through an existential job and typed one-shot reply. The library
+has no `public_name`, adds no dependency, and exposes no Eio, Temporal, Rust,
+mutex, condition, continuation, or owner-Domain type.
+
+One spawned Domain invokes the rank-2 handler sequentially. A mutex-protected
+bounded queue establishes admission order and real producer backpressure.
+Normal close rejects new work and drains admitted work. An unexpected handler
+exception is contained, reported to the active call and join, and propagated to
+all queued calls while queued posts are deterministically discarded. Blocking
+operations are explicitly excluded from cooperative scheduler Domains; a
+future adapter must offload them to a blocking bridge.
+
+Local evidence:
+
+- The focused suite first failed because `temporal_mailbox_processor` did not
+  exist, then passed FIFO, typed-call, eight-Domain exactly-once delivery and
+  per-producer order, bounded backpressure, close/drain/rejection, terminal
+  handler failure, queued-waiter release, and clean join scenarios.
+- One hundred forced focused repetitions passed, including capacity waiters
+  woken by both close and terminal handler failure.
+- `make native-verify` passed on the locally available OCaml 5.4.1 and Rust
+  1.96.0 toolchains, covering the complete OCaml suite, native install build,
+  fresh installed-package consumer, Rust tests, rustfmt, and Clippy with
+  warnings denied.
+- Repository and install checks enforce the lack of `public_name` and reject
+  mailbox artifacts in the staged `temporal-sdk` package.
+- The design and synchronization evidence are recorded in
+  [ADR 0003](decisions/0003-private-mailbox-processor.md).

@@ -1,0 +1,4 @@
+(library
+ (name temporal_mailbox_processor)
+ (wrapped false)
+ (libraries threads))

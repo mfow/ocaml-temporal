@@ -74,3 +74,19 @@ and bridge, read the [documentation guide](../README.md) first.
 - Rust panics, decode errors, and Core failures become explicit bridge errors.
 - Foreign runtime threads never call arbitrary OCaml closures.
 - Blocking FFI calls occur only while the OCaml runtime lock is released.
+
+## Supervisor mailbox
+
+- One mailbox owner Domain invokes every handler; producers never execute a
+  handler while admitting or awaiting work.
+- The bounded FIFO order is the total order of successful enqueue mutations
+  under the mailbox mutex. One producer's program order is preserved;
+  concurrent producers have no stronger order before those mutations.
+- Queue and lifecycle state are data-race free. Every condition wait rechecks
+  its protected predicate after waking.
+- Normal close rejects new work and drains all admitted work before the owner
+  stops. An unexpected handler exception rejects new work, discards queued
+  posts, and settles the active and queued calls with the same failure.
+- Blocking mailbox entry points run only on ordinary producer Domains. Future
+  Eio or workflow-effect adapters must offload them rather than blocking a
+  cooperative scheduler Domain.

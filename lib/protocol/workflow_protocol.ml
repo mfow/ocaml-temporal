@@ -1276,3 +1276,31 @@ let encode_completion value =
   | Ok output ->
       let* _ = decode_completion output in
       Ok output
+
+(** Private aliases make the canonical semantic codecs reusable without
+    copying validation logic into each protocol adapter. *)
+module Internal = struct
+  let invalid = invalid
+  let of_control_error = of_control_error
+  let exact_object = exact_object
+  let field = field
+  let string = string
+  let bool = bool
+  let uint32 = uint32
+  let int32 = int32
+  let identifier = identifier
+  let uint64_decimal = uint64_decimal
+  let list = list
+  let nullable = nullable
+  let bytes_wrapper = bytes_wrapper
+  let bytes_wrapper_json = bytes_wrapper_json
+  let payload = payload
+  let payload_json = payload_json
+  let timestamp = timestamp
+  let duration = duration
+  let time_json = time_json
+  let workflow_execution = workflow_execution
+  let workflow_priority = workflow_priority
+  let failure = failure
+  let failure_json = failure_json
+end

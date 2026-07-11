@@ -222,10 +222,14 @@ to and from official Core protobuf values.
 
 Draft 2020-12 schemas live under [`docs/schemas/bridge`](../schemas/bridge/).
 Shared positive and malformed fixtures under `test/bridge/fixtures/protocol`
-drive the envelope tests. The bilateral activation/completion fixtures live
-under `test/bridge/fixtures/workflow-protocol`; their schemas are
-`workflow-activation.schema.json`, `workflow-completion.schema.json`,
-`temporal-payload.schema.json`, and `temporal-failure.schema.json`. Runtime
+drive the envelope tests. Bilateral activation/completion fixtures live under
+`test/bridge/fixtures/workflow-protocol`; their schemas are
+`workflow-activation.schema.json` and `workflow-completion.schema.json`.
+Remote activity documents are described by `activity-task.schema.json` and
+`activity-completion.schema.json`. Both protocol families reference
+`temporal-payload.schema.json` and `temporal-failure.schema.json`. The OCaml
+adapter's ownership, typed representation, and validation behavior are described
+in the [activity protocol reference](activity-protocol.md). Runtime
 validators remain authoritative for
 duplicate keys, decoded payload length, aggregate node count, normalization,
 privacy-safe errors, and every UTF-8 byte limit. JSON Schema `maxLength` counts

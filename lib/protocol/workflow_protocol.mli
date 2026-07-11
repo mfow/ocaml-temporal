@@ -204,3 +204,89 @@ val decode_completion : string -> (completion, error) result
 
 val encode_completion : completion -> (string, error) result
 (** Validates, normalizes, and semantically reparses an outgoing completion. *)
+
+(** Private codec building blocks shared by the closed semantic protocol
+    adapters. They are exposed only from the internal protocol library so each
+    adapter applies identical payload, failure, numeric, and time rules. *)
+module Internal : sig
+  val invalid : string -> string -> error
+  (** Constructs a privacy-safe semantic validation failure. *)
+
+  val of_control_error : string -> Control_protocol.error -> error
+  (** Converts a strict-JSON foundation failure without exposing input data. *)
+
+  val exact_object :
+    string -> string list -> Yojson.Safe.t -> ((string * Yojson.Safe.t) list, error) result
+  (** Requires an object to contain exactly the named members. *)
+
+  val field :
+    string -> string -> (string * Yojson.Safe.t) list -> (Yojson.Safe.t, error) result
+  (** Reads one required object member. *)
+
+  val string : string -> Yojson.Safe.t -> (string, error) result
+  (** Reads bounded UTF-8 text. *)
+
+  val bool : string -> Yojson.Safe.t -> (bool, error) result
+  (** Reads a JSON Boolean. *)
+
+  val uint32 : string -> Yojson.Safe.t -> (int64, error) result
+  (** Reads an unsigned protobuf 32-bit integer without platform narrowing. *)
+
+  val int32 : string -> Yojson.Safe.t -> (int, error) result
+  (** Reads a signed protobuf 32-bit integer. *)
+
+  val identifier : string -> Yojson.Safe.t -> (string, error) result
+  (** Reads a nonempty Temporal identifier within the protocol safety limit. *)
+
+  val uint64_decimal : string -> Yojson.Safe.t -> (string, error) result
+  (** Reads canonical unsigned 64-bit decimal text. *)
+
+  val list :
+    string ->
+    (string -> Yojson.Safe.t -> ('a, error) result) ->
+    Yojson.Safe.t ->
+    ('a list, error) result
+  (** Reads a list while retaining indexed error paths. *)
+
+  val nullable :
+    string ->
+    (string -> Yojson.Safe.t -> ('a, error) result) ->
+    Yojson.Safe.t ->
+    ('a option, error) result
+  (** Reads an explicitly present nullable member. *)
+
+  val bytes_wrapper : string -> Yojson.Safe.t -> (bytes, error) result
+  (** Decodes the canonical base64 object used by binary protocol fields. *)
+
+  val bytes_wrapper_json : bytes -> (Yojson.Safe.t, error) result
+  (** Encodes binary data into the canonical base64 object. *)
+
+  val payload : string -> Yojson.Safe.t -> (payload, error) result
+  (** Decodes a canonical Temporal payload. *)
+
+  val payload_json : payload -> (Yojson.Safe.t, error) result
+  (** Encodes and validates a canonical Temporal payload. *)
+
+  val timestamp : string -> Yojson.Safe.t -> (timestamp, error) result
+  (** Decodes exact protobuf timestamp components. *)
+
+  val duration : string -> Yojson.Safe.t -> (duration, error) result
+  (** Decodes a normalized nonnegative protobuf duration. *)
+
+  val time_json : int64 -> int -> Yojson.Safe.t
+  (** Encodes exact seconds and nanoseconds without floating point. *)
+
+  val workflow_execution :
+    string -> Yojson.Safe.t -> (workflow_execution, error) result
+  (** Decodes a workflow/run identity pair. *)
+
+  val workflow_priority :
+    string -> Yojson.Safe.t -> (workflow_priority, error) result
+  (** Decodes matching priority including exact floating-point weight bits. *)
+
+  val failure : string -> Yojson.Safe.t -> (failure, error) result
+  (** Decodes the supported recursive Temporal failure model. *)
+
+  val failure_json : failure -> (Yojson.Safe.t, error) result
+  (** Encodes the supported recursive Temporal failure model. *)
+end

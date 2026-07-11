@@ -19,7 +19,9 @@ project intends to build. Start with these documents:
    tags, levels, application setup, and privacy rules.
 8. [SDK instance supervisor decision](decisions/0004-sdk-instance-supervisor.md)
    explains how one owner Domain serializes the complete native handle graph.
-9. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
+9. [Local Temporal stack](reference/local-temporal-stack.md) explains the
+   PostgreSQL/Temporal Server substrate and its Make commands.
+10. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
    describes the long-term design. Unimplemented APIs in that document are
    targets, not claims about the current package.
 

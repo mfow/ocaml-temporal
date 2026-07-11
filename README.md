@@ -43,6 +43,7 @@ make test-unit
 make test-runtime
 make verify
 make license-check
+make test-temporal-integration
 ```
 
 All build and test commands run through Docker Compose. `make verify` checks
@@ -58,6 +59,12 @@ supported version. GitHub Actions builds and tests OCaml 5.2, 5.3, 5.4, and
 push to `master`. Separate native jobs build and test the complete OCaml-to-Rust
 link on Windows x64 and macOS ARM64 with OCaml 5.5. These jobs use
 `make native-verify`; the Compose commands remain the supported local default.
+
+The explicit `make test-temporal-integration` smoke starts a real Temporal
+Server backed by PostgreSQL, checks both SQL schemas and the frontend gRPC
+health API, and then removes its test data. It does not yet execute an OCaml
+workflow; see the [local stack reference](docs/reference/local-temporal-stack.md)
+for lifecycle commands and current scope.
 
 ## Logging
 
@@ -106,6 +113,7 @@ not a claim that a production worker can connect yet.
 - [Runtime invariants](docs/reference/runtime-invariants.md)
 - [Native Core bridge and ownership](docs/reference/core-bridge.md)
 - [Logging and observability](docs/reference/observability.md)
+- [Local Temporal and PostgreSQL stack](docs/reference/local-temporal-stack.md)
 - [Temporal Core boundary decision](docs/decisions/0001-temporal-core-c-boundary.md)
 - [Dependency and license inventory](docs/dependencies.md)
 - [Verified progress](docs/progress.md)

@@ -6,6 +6,7 @@
   ../../dune-project
   ../../lib/core_bridge/dune
   ../../lib/mailbox_processor/dune
+  ../../scripts/build-rust-bridge.sh
   ../../temporal-sdk.opam
   ../../temporal-sdk.opam.locked)
  (action

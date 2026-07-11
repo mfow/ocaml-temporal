@@ -9,3 +9,90 @@ services:
     volumes:
       - .:/workspace
     init: true
+
+  postgresql:
+    profiles: [temporal]
+    image: postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    expose:
+      - "5432"
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    networks:
+      - temporal-network
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U temporal -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+    stop_grace_period: 30s
+
+  temporal-schema:
+    profiles: [temporal]
+    image: temporalio/admin-tools:1.31.0@sha256:3e68adcd54195a7c1222e99f2dbc32a4fdbf44ad69e3bb48e21e85c4bf417c2e
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgresql
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      SQL_PASSWORD: temporal
+    volumes:
+      - ./scripts/setup-temporal-postgres.sh:/scripts/setup-temporal-postgres.sh:ro
+    networks:
+      - temporal-network
+    entrypoint: [/bin/sh, /scripts/setup-temporal-postgres.sh]
+    restart: "no"
+
+  temporal:
+    profiles: [temporal]
+    image: temporalio/server:1.31.0@sha256:b021b3b58c3f169634cdbb0451fcc0e69e8190b40454323362c7c52bbd4ff7b9
+    depends_on:
+      temporal-schema:
+        condition: service_completed_successfully
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgresql
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      SQL_PASSWORD: temporal
+      BIND_ON_IP: 0.0.0.0
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    ports:
+      - "${TEMPORAL_FRONTEND_PORT:-7233}:7233"
+    volumes:
+      - ./config/temporal/development-sql.yaml:/etc/temporal/config/dynamicconfig/development-sql.yaml:ro
+    networks:
+      - temporal-network
+    healthcheck:
+      test: [CMD-SHELL, "nc -z localhost 7233"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    restart: on-failure:5
+    stop_grace_period: 30s
+
+  temporal-admin-tools:
+    profiles: [temporal]
+    image: temporalio/admin-tools:1.31.0@sha256:3e68adcd54195a7c1222e99f2dbc32a4fdbf44ad69e3bb48e21e85c4bf417c2e
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+    volumes:
+      - ./scripts/check-temporal-stack.sh:/scripts/check-temporal-stack.sh:ro
+    networks:
+      - temporal-network
+
+networks:
+  temporal-network:
+    driver: bridge
+
+volumes:
+  temporal-postgres-data:

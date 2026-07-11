@@ -1,4 +1,5 @@
 COMPOSE := docker compose
+TEMPORAL_COMPOSE := $(COMPOSE) --profile temporal
 SERVICE ?= dev
 OCAML_VERSION ?= 5.2
 OCAML_IMAGE ?= ocaml/opam:debian-12-ocaml-$(OCAML_VERSION)
@@ -19,7 +20,7 @@ NATIVE_ARCH ?=
 NATIVE_RUST_HOST ?=
 NATIVE_ENV := CARGO_TARGET_DIR="$(NATIVE_CARGO_TARGET_DIR)"
 
-.PHONY: version-check build test test-unit test-runtime test-rust test-bridge test-install lint lint-rust fmt license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build test test-unit test-runtime test-rust test-bridge test-install test-temporal-config test-temporal-integration temporal-start temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -32,6 +33,7 @@ build:
 	$(CARGO) build --manifest-path $(CARGO_MANIFEST) --locked
 
 test:
+	$(MAKE) test-temporal-config
 	$(RUN) dune runtest
 	$(MAKE) test-rust
 	$(MAKE) test-bridge
@@ -46,6 +48,40 @@ test-bridge:
 
 test-install:
 	$(COMPOSE_RUN) sh test/bridge/test_install.sh
+
+test-temporal-config:
+	sh test/smoke/test_temporal_compose_config.sh
+
+# The live stack is intentionally separate from unit verification. Native
+# Windows and macOS jobs build the SDK directly and never start Linux services.
+temporal-start:
+	$(TEMPORAL_COMPOSE) up --detach --wait postgresql temporal
+	$(MAKE) temporal-health
+
+temporal-health:
+	$(TEMPORAL_COMPOSE) exec -T postgresql pg_isready -U temporal -d postgres
+	$(TEMPORAL_COMPOSE) exec -T postgresql psql -v ON_ERROR_STOP=1 -U temporal -d temporal -tAc 'SELECT 1 FROM schema_version LIMIT 1'
+	$(TEMPORAL_COMPOSE) exec -T postgresql psql -v ON_ERROR_STOP=1 -U temporal -d temporal_visibility -tAc 'SELECT 1 FROM schema_version LIMIT 1'
+	$(TEMPORAL_COMPOSE) run --rm --no-deps --entrypoint /bin/sh temporal-admin-tools /scripts/check-temporal-stack.sh
+
+temporal-status:
+	$(TEMPORAL_COMPOSE) ps
+
+temporal-logs:
+	$(TEMPORAL_COMPOSE) logs --no-color --tail 200 postgresql temporal-schema temporal
+
+temporal-stop:
+	$(TEMPORAL_COMPOSE) down --remove-orphans
+
+temporal-clean:
+	$(TEMPORAL_COMPOSE) down --volumes --remove-orphans
+
+test-temporal-integration: test-temporal-config
+	@set -eu; \
+	$(MAKE) temporal-clean; \
+	trap '$(MAKE) temporal-clean' EXIT HUP INT TERM; \
+	$(MAKE) temporal-start; \
+	$(MAKE) temporal-health
 
 test-unit:
 	$(RUN) dune runtest test/unit test/smoke
@@ -71,7 +107,7 @@ license-check:
 audit: license-check
 
 clean:
-	$(COMPOSE) down --remove-orphans
+	$(TEMPORAL_COMPOSE) down --remove-orphans
 	rm -rf _build
 
 verify: version-check lint test

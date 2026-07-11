@@ -593,3 +593,47 @@ Local evidence:
   mailbox artifacts in the staged `temporal-sdk` package.
 - The design and synchronization evidence are recorded in
   [ADR 0003](decisions/0003-private-mailbox-processor.md).
+
+## 2026-07-11: Real Temporal Server and PostgreSQL Compose substrate
+
+Status: verified locally; OCaml workflow connectivity remains pending.
+
+The opt-in `temporal` Compose profile now runs the supported official Temporal
+Server 1.31.0 image against PostgreSQL 16.13. A separate official admin-tools
+container initializes the primary and visibility schemas. Exact OCI manifest
+digests are pinned, and all selected indexes publish native Linux amd64 and
+arm64 images.
+
+The Make interface provides start, health, status, diagnostics, stop, clean,
+and clean-volume integration-smoke targets. Health validation goes beyond a
+port probe: it queries both Temporal schema-version tables, invokes the
+frontend's gRPC cluster-health API, and verifies the test namespace.
+
+Local evidence:
+
+- The configuration smoke first failed against the development-only Compose
+  file, then passed against Compose's normalized model with the exact images,
+  dependency conditions, health checks, named volume, and Make targets.
+- `make test-temporal-integration` pulled the pinned ARM64 images, initialized
+  empty PostgreSQL storage, observed both containers as healthy, received
+  `SERVING` from `temporal operator cluster health`, registered and described
+  `temporal-sdk-test`, and removed all test containers and data.
+- Inspection inside the pinned server container found `nc` at `/usr/bin/nc`
+  and the exact configured `postgres12`, port, seed host, user, and dynamic
+  configuration path in its environment. Startup then reported `go-arch` as
+  `arm64`, loaded both file-based dynamic settings, created the PostgreSQL
+  `temporal_visibility` manager, and opened the frontend listener on port 7233.
+- A separate `temporal-start`, `temporal-stop`, `temporal-start` sequence
+  reused the retained PostgreSQL volume successfully. On the second start the
+  schema job detected primary schema version 1.19 and visibility version 1.14,
+  skipped the older 0.0 setup, found zero updates for both databases, and the
+  repeated cluster-health and namespace checks passed. This verifies
+  idempotent schema update and namespace handling against the pinned images.
+- The stack exposes only Temporal's gRPC frontend; PostgreSQL remains private
+  to the Compose network.
+
+This milestone is the substrate for the later separate OCaml test-client,
+workflow worker, and mock-activity containers. No live OCaml workflow path is
+claimed yet. Operational details and Kubernetes correspondence are documented
+in the [local stack reference](reference/local-temporal-stack.md) and
+[ADR 0005](decisions/0005-temporal-postgres-compose-stack.md).

@@ -44,5 +44,23 @@ if ! grep -F 'schema_version' "$makefile" >/dev/null; then
   exit 1
 fi
 
+# The expensive live stack belongs in exactly one standalone CI job. It is
+# deliberately not copied into the OCaml compiler/architecture matrix.
+workflow="$root/.github/workflows/build.yml"
+if [ "$(grep -Fc '  temporal-integration:' "$workflow")" -ne 1 ]; then
+  echo "GitHub Actions must define one standalone Temporal integration job" >&2
+  exit 1
+fi
+require_workflow_text() {
+  needle=$1
+  if ! grep -F -- "$needle" "$workflow" >/dev/null; then
+    echo "GitHub Actions Temporal integration job is missing: $needle" >&2
+    exit 1
+  fi
+}
+require_workflow_text 'name: Temporal/PostgreSQL integration smoke (OCaml 5.5)'
+require_workflow_text 'OCAML_VERSION: "5.5"'
+require_workflow_text 'run: make test-temporal-integration'
+
 test -x "$root/scripts/setup-temporal-postgres.sh"
 test -x "$root/scripts/check-temporal-stack.sh"

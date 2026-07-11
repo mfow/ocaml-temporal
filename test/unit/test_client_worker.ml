@@ -43,6 +43,18 @@ let unit_activity calls =
       Atomic.incr calls;
       Ok ())
 
+(** Definitions that return an expected failure. A worker must acknowledge
+    these failures to the backend and continue serving later tasks. *)
+let failing_workflow =
+  Temporal.Workflow.define ~name:"unit.failing-workflow"
+    ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+      Error (Temporal.Error.defect ~message:"synthetic workflow failure"))
+
+let failing_activity =
+  Temporal.Activity.define ~name:"unit.failing-activity"
+    ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+      Error (Temporal.Error.defect ~message:"synthetic activity failure"))
+
 (** Duplicate workflow names are rejected before a worker backend is started. *)
 let test_duplicate_workflows () =
   let calls = Atomic.make 0 in
@@ -97,6 +109,28 @@ let test_worker_registration_and_dispatch () =
   unwrap (Temporal.Worker.shutdown worker);
   unwrap (Temporal.Worker.shutdown worker)
 
+(** A task-level workflow or activity failure is not a worker-level failure:
+    later successful tasks must still be dispatched after failure completion. *)
+let test_worker_continues_after_task_failure () =
+  let workflow_calls = Atomic.make 0 in
+  let activity_calls = Atomic.make 0 in
+  let worker =
+    unwrap
+      (Temporal.Worker.create ~target_url:"mock://dispatch"
+         ~namespace:"unit-test" ~task_queue:"unit-test"
+         ~workflows:
+           [ Temporal.Worker.workflow failing_workflow;
+             Temporal.Worker.workflow (unit_workflow workflow_calls) ]
+         ~activities:
+           [ Temporal.Worker.activity failing_activity;
+             Temporal.Worker.activity (unit_activity activity_calls) ]
+         ())
+  in
+  unwrap (Temporal.Worker.run worker);
+  assert (Atomic.get workflow_calls = 1);
+  assert (Atomic.get activity_calls = 1);
+  unwrap (Temporal.Worker.shutdown worker)
+
 (** A client start returns the server-issued run id and [wait] decodes the
     terminal payload using the definition's output codec. *)
 let test_typed_start_and_wait_handle () =
@@ -149,6 +183,7 @@ let () =
   test_duplicate_activities ();
   test_remote_registration_is_rejected ();
   test_worker_registration_and_dispatch ();
+  test_worker_continues_after_task_failure ();
   test_typed_start_and_wait_handle ();
   test_client_validation_errors ();
   test_worker_validation_errors ()

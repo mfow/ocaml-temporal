@@ -187,31 +187,40 @@ let dispatch_activity worker task =
           | Ok output -> Codec.encode (Temporal_base.Definition.output definition) output))
 
 (** Completes a workflow task even when dispatch produced a typed failure. The
-    backend receives the failure so Core cannot be left waiting for a response. *)
+    backend receives the failure so Core cannot be left waiting for a response;
+    once that acknowledgement succeeds, the worker keeps polling because a
+    failed workflow task is not a worker-level transport failure. *)
 let complete_workflow worker task =
   match dispatch_workflow worker task with
   | Ok output ->
-      Backend.worker_complete_workflow worker.backend
-        (Backend.Workflow_completed { task_token = task.task_token; output })
+      Result.map
+        (fun () -> ())
+        (Backend.worker_complete_workflow worker.backend
+           (Backend.Workflow_completed { task_token = task.task_token; output }))
   | Error error ->
       Result.bind
         (Backend.worker_complete_workflow worker.backend
            (Backend.Workflow_failed
               { task_token = task.task_token; error }))
-        (fun () -> Error error)
+        (fun () -> Ok ())
 
-(** Completes an activity task even when local decoding or execution failed. *)
+(** Completes an activity task even when local decoding or execution failed.
+    Activity failures are ordinary Temporal outcomes; after the backend
+    accepts the failure, the worker remains available for later tasks and
+    retries. *)
 let complete_activity worker task =
   match dispatch_activity worker task with
   | Ok output ->
-      Backend.worker_complete_activity worker.backend
-        (Backend.Activity_completed { task_token = task.task_token; output })
+      Result.map
+        (fun () -> ())
+        (Backend.worker_complete_activity worker.backend
+           (Backend.Activity_completed { task_token = task.task_token; output }))
   | Error error ->
       Result.bind
         (Backend.worker_complete_activity worker.backend
            (Backend.Activity_failed
               { task_token = task.task_token; error }))
-        (fun () -> Error error)
+        (fun () -> Ok ())
 
 (** Polls both streams until each reports shutdown. Core-backed adapters may
     block inside their poll calls; this loop never waits on an OCaml lock. *)

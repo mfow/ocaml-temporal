@@ -517,10 +517,12 @@ module Native_backend = struct
     | Start_worker : Bridge.worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation
+    | Wait_workflow : unit operation
     | Complete_workflow :
         Temporal_protocol.Workflow_protocol.completion -> unit operation
     | Try_poll_activity :
         Temporal_protocol.Activity_protocol.task option operation
+    | Wait_activity : unit operation
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
     | Shutdown_worker : unit operation
@@ -571,6 +573,7 @@ module Native_backend = struct
         Protocol_adapter.workflow_poll_result
           ~reject:(Bridge.worker_reject_workflow_json runtime)
           (Bridge.worker_try_poll_workflow runtime)
+    | Wait_workflow -> Bridge.worker_wait_workflow runtime
     | Complete_workflow completion ->
         Result.bind
           (Protocol_adapter.encode_workflow_completion completion)
@@ -579,6 +582,7 @@ module Native_backend = struct
         Protocol_adapter.activity_poll_result
           ~reject:(Bridge.worker_reject_activity_json runtime)
           (Bridge.worker_try_poll_activity runtime)
+    | Wait_activity -> Bridge.worker_wait_activity runtime
     | Complete_activity completion ->
         Result.bind
           (Protocol_adapter.encode_activity_completion completion)
@@ -632,10 +636,12 @@ module Native = struct
     | Start_worker : worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation
+    | Wait_workflow : unit operation
     | Complete_workflow :
         Temporal_protocol.Workflow_protocol.completion -> unit operation
     | Try_poll_activity :
         Temporal_protocol.Activity_protocol.task option operation
+    | Wait_activity : unit operation
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
     | Shutdown_worker : unit operation

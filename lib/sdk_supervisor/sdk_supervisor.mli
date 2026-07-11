@@ -229,6 +229,10 @@ module Native : sig
         Temporal_protocol.Workflow_protocol.activation option operation
         (** Takes and validates one already-ready workflow activation. [None]
             means the native lane was empty at that instant. *)
+    | Wait_workflow : unit operation
+        (** Waits for workflow readiness through the native event mechanism. The
+            bridge releases the OCaml runtime lock while this bounded wait is in
+            progress, so it never blocks an OCaml workflow scheduler. *)
     | Complete_workflow :
         Temporal_protocol.Workflow_protocol.completion -> unit operation
         (** Validates and submits one typed workflow completion. *)
@@ -236,6 +240,9 @@ module Native : sig
         Temporal_protocol.Activity_protocol.task option operation
         (** Takes and validates one already-ready remote activity task. [None]
             means the native lane was empty at that instant. *)
+    | Wait_activity : unit operation
+        (** Waits for activity readiness with the same runtime-lock-free bridge
+            contract as [Wait_workflow]. *)
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
         (** Validates and submits one typed remote activity completion. *)

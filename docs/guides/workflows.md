@@ -285,22 +285,20 @@ let worker_result =
 ```
 
 The public lifecycle surface is intentionally independent of native handles or
-Temporal protobufs. The live Core poll/start adapter is still being wired; the
-current unit tests use a private deterministic backend seam to prove
-registration, typed encoding/decoding, exact-run handles, and idempotent
-shutdown. That seam is not the native adapter contract: Core activations and
-completions require separate semantic types and an explicit admission,
-shutdown, and finalization lifecycle.
+Temporal protobufs. HTTP(S) clients now route start and exact-run waits through
+the private Rust/Core supervisor, with bounded native waits and typed JSON
+validation at the OCaml boundary. The `mock://` endpoint remains a private,
+deterministic seam for unit tests. Native worker polling and completion are
+being connected separately; they use distinct activation/task types and an
+explicit admission, shutdown, and finalization lifecycle.
 
 ## Current integration boundary
 
-The repository currently proves this API against a synthetic activation
+The workflow interpreter is still tested against a synthetic activation
 interpreter. It can deterministically emit activity, child-workflow, and timer
 commands, apply explicitly ordered resolution jobs, suspend and resume OCaml
 continuations, aggregate futures, tear down cache entries, and replay the same
-input to the same command bytes.
-
-It does **not yet connect to Temporal Server**. The next phase links the native
-OCaml worker to the pinned Rust Temporal Core SDK and replaces synthetic jobs
-with serialized Core workflow activations. The public workflow style is
-designed to remain the same across that integration.
+input to the same command bytes. The public client path is connected to the
+pinned Rust Temporal Core SDK, but the two-process worker acceptance path is
+not yet enabled; it will replace synthetic jobs with serialized Core workflow
+activations while preserving the same public workflow style.

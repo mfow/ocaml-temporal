@@ -1,7 +1,7 @@
 (** Exercises the public client and worker surface without a live Temporal
-    server. The production adapter treats the in-memory backend as a private
-    test transport; these assertions therefore cover typed API behavior while
-    the Rust poll/complete implementation is developed independently. *)
+    server. The [mock://] endpoint remains a deterministic unit-test seam;
+    HTTP(S) clients now route through the private Rust/Core supervisor, while
+    this file deliberately avoids requiring a running server. *)
 
 (** Converts an expected SDK failure into a readable unit-test diagnostic. *)
 let unwrap = function
@@ -19,6 +19,35 @@ let expect_error category = function
         (Printf.sprintf "expected %s, got %s" category
            (Temporal.Error.kind error))
   | Ok _ -> failwith (Printf.sprintf "expected %s error" category)
+
+(** Finds [needle] in [source] without relying on optional string extensions.
+    The helper is intentionally small because it is only used for stable error
+    fragments in this test executable. *)
+let contains_substring source needle =
+  let source_length = String.length source in
+  let needle_length = String.length needle in
+  let rec search index =
+    if index + needle_length > source_length then false
+    else if String.sub source index needle_length = needle then true
+    else search (index + 1)
+  in
+  if needle_length = 0 then true else search 0
+
+(** Requires an expected category and a stable diagnostic fragment. Messages are
+    intentionally checked only at the fragment level so wording can improve
+    without making the test depend on incidental punctuation. *)
+let expect_error_message_contains category fragment = function
+  | Error error
+    when Temporal.Error.kind error = category
+         && contains_substring (Temporal.Error.message error) fragment ->
+      ()
+  | Error error ->
+      failwith
+        (Printf.sprintf "expected %s error containing %S, got %s: %s" category
+           fragment (Temporal.Error.kind error) (Temporal.Error.message error))
+  | Ok _ ->
+      failwith
+        (Printf.sprintf "expected %s error containing %S" category fragment)
 
 (** A string workflow used to prove that a client handle retains its input and
     output codecs across start and exact-run wait. *)
@@ -171,6 +200,14 @@ let test_client_validation_errors () =
        ~task_queue:"unit-test" ~id:"" ~input:"ignored");
   unwrap (Temporal.Client.shutdown client)
 
+(** An HTTP-shaped endpoint is deliberately handed to the native configuration
+    validator rather than the deterministic mock. The malformed host fails
+    before a runtime or network connection is allocated, proving the public
+    routing decision without needing Temporal Server in a unit test. *)
+let test_native_client_configuration_boundary () =
+  expect_error_message_contains "bridge" "native client configuration failed"
+    (Temporal.Client.create ~target_url:"http://" ~namespace:"unit-test" ())
+
 (** The worker task queue is required configuration and is passed through the
     private backend boundary before any worker graph is allocated. *)
 let test_worker_validation_errors () =
@@ -186,4 +223,5 @@ let () =
   test_worker_continues_after_task_failure ();
   test_typed_start_and_wait_handle ();
   test_client_validation_errors ();
+  test_native_client_configuration_boundary ();
   test_worker_validation_errors ()

@@ -167,6 +167,61 @@ fn rejected_activity_conversion_retires_the_inaccessible_token() {
     );
 }
 
+/// Decode drift may reject workflow and activity deliveries concurrently with
+/// shutdown. Retiring both exact leased identities must make the draining
+/// ledger finalizable without fabricating a completion from OCaml.
+#[test]
+fn rejected_language_deliveries_unblock_shutdown_drainage() {
+    let mut ledger = TaskLedger::new();
+    let token = b"decode-drift-activity";
+    assert_eq!(
+        ledger.admit_workflow("decode-drift-run"),
+        Ok(Admission::New)
+    );
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_workflow("decode-drift-run"), Ok(()));
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+    ledger.begin_draining();
+    assert!(!ledger.can_finalize());
+
+    assert_eq!(ledger.retire_rejected_workflow("decode-drift-run"), Ok(()));
+    assert_eq!(ledger.retire_rejected_activity(token), Ok(()));
+    assert!(ledger.can_finalize());
+}
+
+/// Rejection is correlated by exact native identity. A changed run ID or task
+/// token must not consume the genuine lease that remains owed during shutdown.
+#[test]
+fn changed_rejection_identities_do_not_retire_real_leases() {
+    let mut ledger = TaskLedger::new();
+    let token = b"real-activity-token";
+    assert_eq!(ledger.admit_workflow("real-run"), Ok(Admission::New));
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_workflow("real-run"), Ok(()));
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+
+    assert_eq!(
+        ledger.retire_rejected_workflow("changed-run"),
+        Err(CompleteError::UnknownWorkflow)
+    );
+    assert_eq!(
+        ledger.retire_rejected_activity(b"changed-activity-token"),
+        Err(CompleteError::UnknownActivity)
+    );
+    assert_eq!(ledger.outstanding(), 2);
+
+    assert_eq!(ledger.retire_rejected_workflow("real-run"), Ok(()));
+    assert_eq!(ledger.retire_rejected_activity(token), Ok(()));
+    ledger.begin_draining();
+    assert!(ledger.can_finalize());
+}
+
 /// The acceptance worker polls only workflows and remote activities; enabling
 /// local activities or Nexus would create unimplemented completion paths.
 #[test]

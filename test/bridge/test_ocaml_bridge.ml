@@ -62,6 +62,14 @@ let () =
   | Error { status = Protocol; message } ->
       assert (String.length message > 0)
   | _ -> failwith "malformed activity completion was accepted");
+  (match Bridge.worker_reject_workflow_json runtime Bytes.empty with
+  | Error { status = Protocol; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "malformed workflow rejection was accepted");
+  (match Bridge.worker_reject_activity_json runtime Bytes.empty with
+  | Error { status = Protocol; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "malformed activity rejection was accepted");
   unwrap (Bridge.worker_shutdown runtime);
   unwrap (Bridge.worker_shutdown runtime);
   unwrap (Bridge.client_disconnect runtime);

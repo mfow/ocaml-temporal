@@ -92,6 +92,16 @@ int main(void) {
              &result) == OCAML_TEMPORAL_CORE_STATUS_PROTOCOL);
   assert(ocaml_temporal_core_v1_result_free(&result) ==
          OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_worker_reject_workflow_json(
+             runtime, malformed_completion, sizeof(malformed_completion) - 1,
+             &result) == OCAML_TEMPORAL_CORE_STATUS_PROTOCOL);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_worker_reject_activity_json(
+             runtime, malformed_completion, sizeof(malformed_completion) - 1,
+             &result) == OCAML_TEMPORAL_CORE_STATUS_PROTOCOL);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
 
   /* Worker construction without its client parent is rejected without
    * mutating the runtime graph or retaining a partial worker. */

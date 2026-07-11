@@ -57,15 +57,50 @@ let activity_task_json =
 (** Empty native lanes are an ordinary nonblocking readiness result, while a
     real bridge failure must remain distinguishable from an idle poll. *)
 let test_nonblocking_readiness_results () =
+  let reject _ = failwith "empty and failed polls must not reject a lease" in
   expect "empty workflow lane" (Ok None)
-    (Supervisor.Protocol_adapter.workflow_poll_result
+    (Supervisor.Protocol_adapter.workflow_poll_result ~reject
        (Error { Bridge.status = Not_ready; message = "lane empty" }));
   expect "empty activity lane" (Ok None)
-    (Supervisor.Protocol_adapter.activity_poll_result
+    (Supervisor.Protocol_adapter.activity_poll_result ~reject
        (Error { Bridge.status = Not_ready; message = "lane empty" }));
   let failure = { Bridge.status = Worker; message = "poll lane stopped" } in
   expect "workflow poll failure" (Error failure)
-    (Supervisor.Protocol_adapter.workflow_poll_result (Error failure))
+    (Supervisor.Protocol_adapter.workflow_poll_result ~reject (Error failure))
+
+(** If OCaml rejects bytes that Rust already leased, the adapter returns those
+    exact bytes to the native rejection path before exposing the protocol
+    error. A rejection failure is appended without losing the original
+    [Protocol] classification or copying source JSON into the diagnostic. *)
+let test_decode_failure_retires_native_lease () =
+  let malformed = Bytes.of_string {|{"run_id":"private-run"}|} in
+  let rejected = ref None in
+  let reject input =
+    rejected := Some input;
+    Ok ()
+  in
+  (match
+     Supervisor.Protocol_adapter.workflow_poll_result ~reject (Ok malformed)
+   with
+  | Error { Bridge.status = Protocol; message } ->
+      if contains_substring message "private-run"
+      then failwith "workflow rejection error exposed source JSON"
+  | _ -> failwith "workflow decode failure did not remain Protocol");
+  expect "workflow rejection input" (Some malformed) !rejected;
+  let rejection_failure =
+    { Bridge.status = Worker; message = "native rejection failed safely" }
+  in
+  (match
+     Supervisor.Protocol_adapter.activity_poll_result
+       ~reject:(fun _ -> Error rejection_failure)
+       (Ok (Bytes.of_string {|{"task_token":"c2VjcmV0"}|}))
+   with
+  | Error { Bridge.status = Protocol; message } ->
+      if not (contains_substring message "native rejection failed safely")
+      then failwith "activity rejection failure was omitted";
+      if contains_substring message "c2VjcmV0"
+      then failwith "activity rejection error exposed task bytes"
+  | _ -> failwith "activity decode/rejection failure lost Protocol status")
 
 (** Valid poll documents become typed values, and typed completions become the
     exact canonical JSON documents accepted by the Rust bridge. *)
@@ -177,6 +212,7 @@ let test_native_lifecycle_guards () =
 
 let () =
   test_nonblocking_readiness_results ();
+  test_decode_failure_retires_native_lease ();
   test_protocol_serialization ();
   test_protocol_failures_are_typed ();
   test_native_lifecycle_guards ()

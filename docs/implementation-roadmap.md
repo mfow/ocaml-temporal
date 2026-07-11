@@ -46,6 +46,9 @@ cleaner and more maintainable OCaml design.
    translation deliberately rejects activity commands whose runtime shape lacks
    Core fields and child-workflow commands absent from the first semantic
    protocol; the richer records must be added before live support is claimed.
+   Poll decode failures use an exact-document
+   rejection ABI: Rust retains semantic handoff state and will not retire a
+   lease for a changed workflow activation or activity task.
 3. Activities, timers, and replay (written after Phase 2 evidence is committed)
 4. Child workflows and structured concurrency (written after Phase 3 evidence is committed)
 5. Interactive and advanced features (split further at the preceding review gate)

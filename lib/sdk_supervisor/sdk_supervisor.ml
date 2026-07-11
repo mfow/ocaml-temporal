@@ -261,10 +261,42 @@ module Protocol_adapter = struct
     | Ok activation -> Ok activation
     | Error error -> workflow_error "workflow activation decoding" error
 
+  (** Keeps the original protocol failure primary while recording a native
+      rejection failure with bounded structural status and diagnostic text. *)
+  let rejection_failed (protocol_error : Bridge.error) rejection_error =
+    let status =
+      match rejection_error.Bridge.status with
+      | Invalid_argument -> "invalid_argument"
+      | Abi_mismatch -> "abi_mismatch"
+      | Panic -> "panic"
+      | Internal -> "internal"
+      | Invalid_state -> "invalid_state"
+      | Configuration -> "configuration"
+      | Connection -> "connection"
+      | Worker -> "worker"
+      | Outstanding_tasks -> "outstanding_tasks"
+      | Not_ready -> "not_ready"
+      | Protocol -> "protocol"
+      | Unknown code -> Printf.sprintf "unknown(%d)" code
+    in
+    {
+      protocol_error with
+      message =
+        Printf.sprintf "%s; native lease rejection failed (%s): %s"
+          protocol_error.Bridge.message status rejection_error.Bridge.message;
+    }
+
   (** Converts a nonblocking native workflow poll into an optional typed
       activation. [Not_ready] is the empty-lane state, not a worker failure. *)
-  let workflow_poll_result = function
-    | Ok input -> Result.map Option.some (decode_workflow_activation input)
+  let workflow_poll_result ~reject = function
+    | Ok input -> (
+        match decode_workflow_activation input with
+        | Ok activation -> Ok (Some activation)
+        | Error protocol_error -> (
+            match reject input with
+            | Ok () -> Error protocol_error
+            | Error rejection_error ->
+                Error (rejection_failed protocol_error rejection_error)))
     | Error { Bridge.status = Not_ready; _ } -> Ok None
     | Error _ as error -> error
 
@@ -283,8 +315,15 @@ module Protocol_adapter = struct
 
   (** Converts a nonblocking native activity poll into an optional typed task
       while preserving every bridge failure other than an empty lane. *)
-  let activity_poll_result = function
-    | Ok input -> Result.map Option.some (decode_activity_task input)
+  let activity_poll_result ~reject = function
+    | Ok input -> (
+        match decode_activity_task input with
+        | Ok task -> Ok (Some task)
+        | Error protocol_error -> (
+            match reject input with
+            | Ok () -> Error protocol_error
+            | Error rejection_error ->
+                Error (rejection_failed protocol_error rejection_error)))
     | Error { Bridge.status = Not_ready; _ } -> Ok None
     | Error _ as error -> error
 
@@ -333,6 +372,7 @@ module Native_backend = struct
     | Start_worker config -> Bridge.worker_start runtime config
     | Try_poll_workflow ->
         Protocol_adapter.workflow_poll_result
+          ~reject:(Bridge.worker_reject_workflow_json runtime)
           (Bridge.worker_try_poll_workflow runtime)
     | Complete_workflow completion ->
         Result.bind
@@ -340,6 +380,7 @@ module Native_backend = struct
           (Bridge.worker_complete_workflow_json runtime)
     | Try_poll_activity ->
         Protocol_adapter.activity_poll_result
+          ~reject:(Bridge.worker_reject_activity_json runtime)
           (Bridge.worker_try_poll_activity runtime)
     | Complete_activity completion ->
         Result.bind

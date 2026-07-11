@@ -2,12 +2,14 @@ use std::ptr;
 
 use ocaml_temporal_core_bridge::{
     ABI_VERSION, Buffer, Result as AbiResult, STATUS_ABI_MISMATCH, STATUS_INVALID_ARGUMENT,
-    STATUS_OK, STATUS_PANIC, ocaml_temporal_core_v1_check_abi_version,
+    STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, ocaml_temporal_core_v1_check_abi_version,
     ocaml_temporal_core_v1_conformance_wait_ms, ocaml_temporal_core_v1_echo,
     ocaml_temporal_core_v1_result_free, ocaml_temporal_core_v1_runtime_dispose,
     ocaml_temporal_core_v1_runtime_free, ocaml_temporal_core_v1_runtime_new,
     ocaml_temporal_core_v1_worker_complete_activity_json,
     ocaml_temporal_core_v1_worker_complete_workflow_json,
+    ocaml_temporal_core_v1_worker_reject_activity_json,
+    ocaml_temporal_core_v1_worker_reject_workflow_json,
     ocaml_temporal_core_v1_worker_try_poll_activity,
     ocaml_temporal_core_v1_worker_try_poll_workflow, test_invoke_panic,
 };
@@ -148,12 +150,94 @@ fn task_bridge_exports_reject_null_runtime_handles() {
                 )
             }
         },
+        {
+            assert_eq!(
+                unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+                STATUS_OK
+            );
+            unsafe {
+                ocaml_temporal_core_v1_worker_reject_workflow_json(
+                    ptr::null_mut(),
+                    ptr::null(),
+                    0,
+                    &mut result,
+                )
+            }
+        },
+        {
+            assert_eq!(
+                unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+                STATUS_OK
+            );
+            unsafe {
+                ocaml_temporal_core_v1_worker_reject_activity_json(
+                    ptr::null_mut(),
+                    ptr::null(),
+                    0,
+                    &mut result,
+                )
+            }
+        },
     ];
     for status in statuses {
         assert_eq!(status, STATUS_INVALID_ARGUMENT);
     }
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+}
+
+/// A live runtime cannot reject a syntactically valid document until a poll
+/// has retained that exact semantic delivery, even before worker-state checks.
+#[test]
+fn task_rejection_requires_retained_delivery_before_worker_state() {
+    let mut runtime = ptr::null_mut();
+    let mut result = empty_result();
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    let workflow = br#"{"run_id":"unleased-run","timestamp":{"seconds":1,"nanoseconds":0},"is_replaying":false,"history_length":1,"jobs":[]}"#;
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_worker_reject_workflow_json(
+                runtime,
+                workflow.as_ptr(),
+                workflow.len(),
+                &mut result,
+            )
+        },
+        STATUS_PROTOCOL
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    let activity = br#"{"task_token":"AAEC","variant":{"kind":"cancel","reason":"worker_shutdown","details":null}}"#;
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_worker_reject_activity_json(
+                runtime,
+                activity.as_ptr(),
+                activity.len(),
+                &mut result,
+            )
+        },
+        STATUS_PROTOCOL
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
         STATUS_OK
     );
 }

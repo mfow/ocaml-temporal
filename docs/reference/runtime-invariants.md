@@ -84,6 +84,12 @@ and bridge, read the [documentation guide](../README.md) first.
 - The private supervisor validates native poll bytes before returning typed
   workflow or activity values to another Domain. It canonically encodes and
   reparses typed completions before entering C.
+- If OCaml cannot decode a successful poll, it returns the exact untouched
+  Rust document to the private rejection ABI. Rust requires full semantic
+  equality with retained handoff state before retiring the lease; changed IDs,
+  tokens, or content cannot consume real outstanding work. Rejection cleanup
+  removes ledger and semantic ownership together even when Core reports an
+  error, while the original OCaml protocol failure remains the primary result.
 - Native `Not_ready` is represented as `Ok None`. ABI version 1 has no
   readiness wait, so no workflow fiber or effect scheduler blocks on a native
   lock, condition variable, or timer while waiting for a poll lane.

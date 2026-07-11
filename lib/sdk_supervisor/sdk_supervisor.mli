@@ -89,11 +89,13 @@ module Native : sig
     (** Strictly validates one workflow activation returned by Rust. *)
 
     val workflow_poll_result :
+      reject:(bytes -> (unit, Temporal_core_bridge.Native_bridge.error) result) ->
       (bytes, Temporal_core_bridge.Native_bridge.error) result ->
       ( Temporal_protocol.Workflow_protocol.activation option,
         Temporal_core_bridge.Native_bridge.error )
       result
-    (** Maps native [Not_ready] to [None] and validates successful bytes. *)
+    (** Maps native [Not_ready] to [None]. If successful bytes fail semantic
+        validation, [reject] must retire their exact native lease first. *)
 
     val encode_workflow_completion :
       Temporal_protocol.Workflow_protocol.completion ->
@@ -108,11 +110,13 @@ module Native : sig
     (** Strictly validates one remote activity task returned by Rust. *)
 
     val activity_poll_result :
+      reject:(bytes -> (unit, Temporal_core_bridge.Native_bridge.error) result) ->
       (bytes, Temporal_core_bridge.Native_bridge.error) result ->
       ( Temporal_protocol.Activity_protocol.task option,
         Temporal_core_bridge.Native_bridge.error )
       result
-    (** Maps native [Not_ready] to [None] and validates successful bytes. *)
+    (** Maps native [Not_ready] to [None]. If successful bytes fail semantic
+        validation, [reject] must retire their exact native lease first. *)
 
     val encode_activity_completion :
       Temporal_protocol.Activity_protocol.completion ->

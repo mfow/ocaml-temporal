@@ -43,6 +43,16 @@ protocol values, canonically encode and reparse them, then submit copied bytes
 through the existing C stubs. Protocol failures use the bridge's typed
 `Protocol` status and diagnostics omit source JSON and payload bytes.
 
+Decode failure after a successful native poll now has a one-shot rejection
+path instead of leaking an inaccessible lease. OCaml returns the exact raw
+document to Rust while preserving its original protocol error. Rust strictly
+reparses it and requires the complete workflow activation or activity task to
+equal retained handoff state before generating a failure for Core. Altered
+identities or content are refused without consuming the real lease; repeated
+activity cancellation documents sharing a token are retained without
+overwriting one another. Ledger and semantic ownership are retired together so
+worker shutdown cannot wait forever after decoder drift.
+
 The pinned ABI does not yet provide a readiness event or wait symbol. This
 slice therefore adds only the safe nonblocking try-poll seam and does not put a
 timer, condition wait, or native blocking call in a workflow fiber. The owner
@@ -55,6 +65,9 @@ Focused tests cover canonical workflow/activity serialization, malformed
 incoming and outgoing protocol values, `Not_ready` handling, worker-before-
 start rejection, operation closure after shutdown, and the generic mailbox's
 existing concurrent-producer and shutdown-race invariants.
+Rust tests additionally cover exact-document correlation, changed run IDs and
+activity tokens, changed same-identity content, duplicate poll preservation,
+rejection cleanup, and shutdown drainage.
 
 ## 2026-07-12: Raw client start and exact-run wait adapter
 

@@ -2,7 +2,8 @@ use std::ptr;
 
 use ocaml_temporal_core_bridge::{
     ABI_VERSION, Buffer, Result as AbiResult, STATUS_ABI_MISMATCH, STATUS_INVALID_ARGUMENT,
-    STATUS_OK, STATUS_PANIC, ocaml_temporal_core_v1_check_abi_version, ocaml_temporal_core_v1_echo,
+    STATUS_OK, STATUS_PANIC, ocaml_temporal_core_v1_check_abi_version,
+    ocaml_temporal_core_v1_conformance_wait_ms, ocaml_temporal_core_v1_echo,
     ocaml_temporal_core_v1_result_free, test_invoke_panic,
 };
 
@@ -122,6 +123,28 @@ fn contains_rust_panics_as_owned_errors() {
     assert_eq!(status, STATUS_PANIC);
     assert_eq!(result.status, STATUS_PANIC);
     assert!(result.value.ptr.is_null());
+    assert!(!bytes(&result.error).is_empty());
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+}
+
+#[test]
+fn bounds_the_conformance_wait() {
+    let mut result = empty_result();
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_conformance_wait_ms(0, &mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_conformance_wait_ms(1_001, &mut result) },
+        STATUS_INVALID_ARGUMENT
+    );
     assert!(!bytes(&result.error).is_empty());
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_result_free(&mut result) },

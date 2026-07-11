@@ -53,6 +53,13 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_echo(
     const uint8_t *input, size_t input_len,
     ocaml_temporal_core_result *output);
 
+/*
+ * Bounded native wait used only to verify that bindings release their runtime
+ * lock. This is not a Temporal workflow timer.
+ */
+ocaml_temporal_core_status ocaml_temporal_core_v1_conformance_wait_ms(
+    uint32_t milliseconds, ocaml_temporal_core_result *output);
+
 ocaml_temporal_core_status ocaml_temporal_core_v1_result_free(
     ocaml_temporal_core_result *result);
 

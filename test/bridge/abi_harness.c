@@ -57,6 +57,11 @@ int main(void) {
   assert(ocaml_temporal_core_v1_result_free(&result) ==
          OCAML_TEMPORAL_CORE_STATUS_OK);
 
+  assert(ocaml_temporal_core_v1_conformance_wait_ms(0, &result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+
   assert(ocaml_temporal_core_v1_check_abi_version(
              OCAML_TEMPORAL_CORE_ABI_VERSION, NULL) ==
          OCAML_TEMPORAL_CORE_STATUS_INVALID_ARGUMENT);

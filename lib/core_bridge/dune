@@ -1,0 +1,25 @@
+(rule
+ (targets
+  libocaml_temporal_core_bridge.a
+  dllocaml_temporal_core_bridge.so)
+ (deps
+  (source_tree ../../rust)
+  ../../scripts/build-rust-bridge.sh
+  ../../scripts/copy-rust-bridge-artifacts.sh)
+ (action
+  (run
+   %{workspace_root}/scripts/build-rust-bridge.sh
+   %{workspace_root}
+   %{targets})))
+
+(library
+ (name temporal_core_bridge)
+ (public_name temporal.internal_core_bridge)
+ (modules native_bridge)
+ (foreign_stubs
+  (language c)
+  (names native_stubs)
+  (include_dirs ../../rust/core-bridge/include)
+  (flags :standard -Wall -Wextra -Werror))
+ (foreign_archives ocaml_temporal_core_bridge)
+ (c_library_flags -ldl -lpthread -lm))

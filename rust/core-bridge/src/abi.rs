@@ -1,5 +1,6 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
+use std::time::Duration;
 
 /// Version of the native ABI implemented by this crate.
 pub const ABI_VERSION: u32 = 1;
@@ -194,6 +195,35 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_echo(
             // SAFETY: The caller guarantees a readable input allocation of
             // `input_len` bytes and the null case was rejected above.
             Ok(std::slice::from_raw_parts(input, input_len).to_vec())
+        })
+    }
+}
+
+/// Wait on the native side for bridge conformance testing.
+///
+/// This bounded operation exists to prove that language bindings release
+/// their runtime lock around blocking ABI calls. It is not a workflow timer.
+///
+/// # Safety
+///
+/// `output` follows the same contract as
+/// [`ocaml_temporal_core_v1_check_abi_version`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_conformance_wait_ms(
+    milliseconds: u32,
+    output: *mut Result,
+) -> Status {
+    // SAFETY: The output-pointer contract is forwarded unchanged to `invoke`.
+    unsafe {
+        invoke(output, || {
+            if milliseconds > 1_000 {
+                return Err(Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "conformance wait cannot exceed 1000 ms".to_owned(),
+                });
+            }
+            std::thread::sleep(Duration::from_millis(u64::from(milliseconds)));
+            Ok(Vec::new())
         })
     }
 }

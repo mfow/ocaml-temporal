@@ -117,7 +117,7 @@ harness under `test/bridge/`.
 - [x] Add compile-time header/layout checks and a C executable that links the
   static archive, calls the ABI, frees every returned allocation, and exits
   cleanly under sanitizers where available.
-- [ ] Run Rust, C, license, and aggregate verification; document ABI ownership
+- [x] Run Rust, C, license, and aggregate verification; document ABI ownership
   in `docs/reference/core-bridge.md`, then commit.
 
 ### Task 3: OCaml C stubs and native static linking
@@ -125,18 +125,18 @@ harness under `test/bridge/`.
 **Files:** Create `lib/core_bridge/`, Dune Cargo build rules, OCaml bridge tests,
 and an install smoke test; modify package metadata and documentation.
 
-- [ ] Write a failing OCaml test that calls the ABI version function and a
+- [x] Write a failing OCaml test that calls the ABI version function and a
   blocking test operation from the final native link.
-- [ ] Build the Rust archive through Dune without requiring a host Rust
+- [x] Build the Rust archive through Dune without requiring a host Rust
   installation outside Docker; link it through private C stubs into an OCaml
   executable.
-- [ ] Convert bridge statuses to a private typed OCaml error without raising
+- [x] Convert bridge statuses to a private typed OCaml error without raising
   expected exceptions. Copy bridge buffers exactly once and always invoke the
   Rust free function.
-- [ ] Surround blocking calls with `caml_enter_blocking_section` and
+- [x] Surround blocking calls with `caml_enter_blocking_section` and
   `caml_leave_blocking_section`. Prove another OCaml Domain makes progress
   while a bridge call waits.
-- [ ] Prove `dune build @install` includes the public OCaml library while the
+- [x] Prove `dune build @install` includes the public OCaml library while the
   Rust and C implementation remain private package details.
 - [ ] Run all supported OCaml/compiler architecture cells plus Rust/C tests,
   update docs, and commit.

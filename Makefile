@@ -9,7 +9,7 @@ RUN := $(COMPOSE_RUN) opam exec --
 CARGO := $(COMPOSE_RUN) cargo
 CARGO_MANIFEST := rust/Cargo.toml
 
-.PHONY: version-check build test test-unit test-runtime test-rust test-bridge lint lint-rust fmt license-check audit clean verify check
+.PHONY: version-check build test test-unit test-runtime test-rust test-bridge test-install lint lint-rust fmt license-check audit clean verify check
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -25,6 +25,7 @@ test:
 	$(RUN) dune runtest
 	$(MAKE) test-rust
 	$(MAKE) test-bridge
+	$(MAKE) test-install
 
 test-rust:
 	$(COMPOSE_RUN) sh test/smoke/test_rust_toolchain.sh
@@ -32,6 +33,9 @@ test-rust:
 
 test-bridge:
 	$(COMPOSE_RUN) sh test/bridge/test_abi.sh
+
+test-install:
+	$(COMPOSE_RUN) sh test/bridge/test_install.sh
 
 test-unit:
 	$(RUN) dune runtest test/unit test/smoke

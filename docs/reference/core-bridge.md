@@ -44,6 +44,23 @@ ownership; freeing both copies is invalid.
 An output object may be uninitialized, but it must not contain a live owned
 result when passed to another operation. Free the previous result first.
 
+### OCaml ownership guard
+
+The private C stubs allocate an OCaml custom block before entering Rust. That
+block is the sole owner of the ABI result and has a finalizer which calls
+`ocaml_temporal_core_v1_result_free`. The OCaml wrapper also uses
+`Fun.protect` to release the result deterministically after copying its bytes.
+This gives every path two compatible safeguards: normal operation frees
+immediately, while an OCaml allocation failure or other exception leaves a
+rooted/finalizable owner rather than orphaning Rust memory. Disposal is
+idempotent, so a later finalizer after deterministic disposal is harmless.
+
+Returned bytes are copied once, directly from the live Rust buffer into the
+OCaml string/bytes allocation. Inputs that must survive a blocking call are
+copied to temporary C storage before the runtime lock is released, then freed
+immediately after the lock is reacquired. Neither side directly frees an
+allocation made by the other side.
+
 ## Pointer and panic contract
 
 Null output/result pointers return `INVALID_ARGUMENT` without being
@@ -57,10 +74,42 @@ The Rust integration suite invokes the common wrapper with a deliberate panic;
 the panic test hook is not exported in the C header and is not part of the
 stable ABI.
 
+## Stateful handle ownership
+
+The reserved runtime, client, and worker handles are opaque references to
+Rust-owned SDK state, not OS handles and not public OCaml values:
+
+- a runtime owns Tokio and shared Core infrastructure;
+- a client owns one cluster connection and its authentication/configuration;
+- a worker owns polling and completion state for a task queue configuration.
+
+A normal process is expected to have one runtime, usually one client, and one
+or a small number of workers. The intended OCaml design is therefore one
+supervisor actor per SDK instance, not one actor per handle. A dedicated OCaml
+Domain owns the entire runtime/client/worker graph. Calls from other Domains
+enter a synchronized MPSC mailbox and receive typed one-shot `result` replies.
+The supervisor serializes lifecycle transitions and destroys workers before
+clients and the runtime. Rust retains internal Tokio concurrency; workflow
+executions retain their separate deterministic effect schedulers.
+
+Notification is event-driven without a foreign-thread OCaml callback. Rust
+queues readiness and signals a native condition/event primitive; the
+supervisor's dedicated Domain/OS thread waits in a C stub with its OCaml
+runtime lock released. No workflow effect continuation or general cooperative
+scheduler performs this blocking wait. The stub returns normally when
+signaled, after which the actor drains ready Core work. Shutdown signals the
+same wait path. This avoids polling timers while also avoiding runtime
+registration, reentrancy, and teardown races from Tokio threads entering
+OCaml.
+
 ## Verification
 
 Rust integration tests cover version negotiation, status propagation, binary
-and zero-length buffers, invalid null pointers, repeated result disposal, and
-panic containment. A C11 harness compiles against the public header, links the
-actual static archive, exercises the ownership contract, and runs with Address
-Sanitizer and UndefinedBehaviorSanitizer in the development container.
+and zero-length buffers, invalid null pointers, bounded blocking, repeated
+result disposal, and panic containment. A C11 harness compiles against the
+public header, links the actual static archive, exercises the ownership
+contract, and runs with Address Sanitizer and UndefinedBehavior Sanitizer in
+the development container. An OCaml two-Domain test calls the linked Rust
+archive and proves another Domain progresses during a native wait. An install
+smoke test builds a fresh OCaml executable from the staged package and invokes
+the negotiated ABI through the public `Temporal.Runtime_info` module.

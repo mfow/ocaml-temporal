@@ -289,7 +289,7 @@ for OCaml 5.3 through 5.5 and native amd64/arm64.
 
 ## 2026-07-11: Versioned native ABI foundation
 
-Status: locally verified; native CI matrix pending.
+Status: verified.
 
 The Rust bridge now exports a version-1 C ABI with explicitly numbered status
 codes and one documented `repr(C)` result shape. Success and error bytes are
@@ -313,8 +313,48 @@ Local evidence:
 - A strict C11 harness compiles against the canonical header, links the actual
   Rust static archive, and passes under AddressSanitizer and
   UndefinedBehaviorSanitizer.
+- [GitHub Actions run 29141377953](https://github.com/mfow/ocaml-temporal/actions/runs/29141377953)
+  passed the standalone license audit and all eight OCaml/compiler and native
+  architecture jobs.
 
 This is an OCaml Temporal SDK, not only a Temporal service client. The future
 Core client handle is an internal connection component; worker polling,
 deterministic workflow execution, replay, and workflow command production are
 first-class SDK responsibilities alongside start/result client operations.
+
+## 2026-07-11: OCaml-owned native static link
+
+Status: locally verified; native CI matrix pending.
+
+The public OCaml package now links the project Rust bridge through private C
+stubs. `Temporal.Runtime_info.native_bridge_abi_version` negotiates ABI v1 from
+an OCaml-built executable, while binary echo and bounded-wait conformance
+operations exercise owned buffers and blocking calls in the internal test
+surface.
+
+The C boundary prioritizes leak safety. It allocates a finalizable OCaml custom
+owner before calling Rust, deterministically disposes it through `Fun.protect`,
+and retains the finalizer as a fallback for allocation failures and exceptions.
+Returned bytes are copied once into OCaml before Rust frees them. Input bytes
+are copied before releasing the OCaml runtime lock, so the unlocked stub never
+inspects an OCaml heap value.
+
+The staged package contains the native archive and compiled private stubs but
+does not install the C header or Rust source. A fresh `ocamlfind ocamlopt`
+consumer links only the installed `temporal` package and successfully calls
+the Rust ABI. The stateful worker implementation will use one OCaml supervisor
+actor per SDK instance to own the runtime/client/worker handle graph; it will
+not create an actor for every individual handle.
+
+Local evidence:
+
+- The focused test first failed because `temporal.internal_core_bridge` did
+  not exist, then passed through the real Rust archive.
+- A second OCaml Domain progressed while the first waited in Rust, exercising
+  the runtime-lock release/reacquire path.
+- Rust ABI tests cover the bounded wait and all existing ownership and panic
+  cases.
+- `dune build @install` stages the native archive, compiled stubs, and public
+  `Temporal.Runtime_info` API without the Rust source or C header.
+- The install smoke test builds and runs a new native OCaml executable against
+  that staged package.

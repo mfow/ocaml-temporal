@@ -54,6 +54,10 @@ The Rust bridge is a project-owned compatibility boundary. It wraps pinned Core 
 
 The bridge provides blocking C entry points over Core's asynchronous operations. OCaml stubs release the OCaml runtime lock while a poll or completion waits in Rust, then reacquire it before returning an owned result. Rust/Tokio threads do not call arbitrary OCaml closures. This avoids foreign-thread callback hazards and keeps OCaml in control of its runtime.
 
+Stateful native resources are owned as one graph by an OCaml supervisor actor per SDK instance. In a typical process that graph contains one Tokio/Core runtime, one configured cluster client, and one or a small number of task-queue workers. The actor runs on a dedicated Domain, accepts typed messages through a synchronized MPSC mailbox from any OCaml Domain, and returns one-shot `result` replies. It serializes handle creation, use, shutdown, and destruction; there is not a separate actor per native handle. Tokio remains responsible for network concurrency inside Rust, and each workflow execution continues to use its own deterministic effect scheduler.
+
+The supervisor does not poll Rust on a timer. Rust signals an internal condition/event primitive whenever Core work becomes ready, and the supervisor's dedicated Domain/OS thread waits through a blocking C stub with its OCaml runtime lock released. Workflow effect continuations and general cooperative schedulers never execute this blocking wait. The call returns normally to OCaml to drain work. This provides callback-like wakeup latency without allowing arbitrary Tokio threads to enter the OCaml runtime; shutdown uses the same signal to unblock the wait safely.
+
 ### 4.2 Why not the Go SDK
 
 The Go SDK includes a Go-specific cooperative workflow runtime. Embedding it would require adapting that runtime's workflow callbacks to OCaml or placing an additional recorded boundary around OCaml evaluation. Temporal Core instead exposes workflow activations and commands specifically so language runtimes can implement their own scheduler. That boundary maps directly to the problem this project must solve.

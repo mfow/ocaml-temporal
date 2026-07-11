@@ -9,10 +9,11 @@ modern OCaml 5. Workflow code uses ordinary functions, explicit `result`
 values, typed codecs and futures, and private algebraic effects for
 direct-style suspension.
 
-The repository currently contains a verified deterministic runtime kernel and
-synthetic activation interpreter. It does **not yet connect to Temporal
-Server**. The next milestone links a native OCaml worker executable to the
-official Rust Temporal Core SDK.
+The repository currently contains a verified deterministic runtime kernel,
+synthetic activation interpreter, and native OCaml-to-Rust link through the
+official Rust Temporal Core dependency. It does **not yet connect to Temporal
+Server**; the current native operation is a bridge/ownership proof before real
+Core runtime and worker handles are implemented.
 
 ## Current capabilities
 
@@ -22,6 +23,8 @@ official Rust Temporal Core SDK.
 - Concurrent activity scheduling with `Future.both`
 - Durable timer command generation with `Workflow.sleep`
 - Deterministic synthetic replay, cancellation, and cache eviction tests
+- Dune-built OCaml executables linked to the Rust Core bridge static library
+- Finalizer-backed, panic-contained native result ownership
 - Docker Compose development on OCaml 5.2 and current OCaml 5.5
 - Executable no-copyleft dependency policy
 
@@ -87,6 +90,7 @@ not a claim that a production worker can connect yet.
 - [Implementation roadmap](docs/implementation-roadmap.md)
 - [Workflow guide](docs/guides/workflows.md)
 - [Runtime invariants](docs/reference/runtime-invariants.md)
+- [Native Core bridge and ownership](docs/reference/core-bridge.md)
 - [Temporal Core boundary decision](docs/decisions/0001-temporal-core-c-boundary.md)
 - [Dependency and license inventory](docs/dependencies.md)
 - [Verified progress](docs/progress.md)

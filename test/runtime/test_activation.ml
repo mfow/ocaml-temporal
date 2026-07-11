@@ -370,6 +370,44 @@ let rejecting_child_input =
     ~encode:(fun _ -> Error (Temporal.Error.codec ~message:"input rejected"))
     ~decode:(fun _ -> Ok ())
 
+(** Checks that validation returned a ready defect with the expected message,
+    allowing the fixture to continue and prove a later valid child receives
+    sequence one. *)
+let require_ready_child_id_error expected future =
+  match Temporal.Future.peek future with
+  | Some (Error error) when String.equal (Temporal.Error.message error) expected ->
+      Ok ()
+  | Some (Error error) ->
+      Error
+        (Temporal.Error.defect
+           ~message:
+             (Printf.sprintf "unexpected child ID error: %s"
+                (Temporal.Error.message error)))
+  | Some (Ok _) ->
+      Error (Temporal.Error.defect ~message:"invalid child ID succeeded")
+  | None ->
+      Error (Temporal.Error.defect ~message:"invalid child ID remained pending")
+
+(** Rejects IDs that cannot cross the strict JSON boundary, then starts one
+    valid child. This makes sequence allocation observable after both failures. *)
+let child_id_boundary_workflow =
+  Temporal.Workflow.define ~name:"child_id_boundary" ~input:Temporal.Codec.unit
+    ~output:Temporal.Codec.string (fun () ->
+      let open Temporal.Result_syntax in
+      let oversized = String.make 65_537 'x' in
+      let* () =
+        Temporal.Child_workflow.start ~id:oversized greeting_child "oversized"
+        |> require_ready_child_id_error
+             "child workflow id exceeds 65536 UTF-8 bytes"
+      in
+      let invalid_utf_8 = String.make 1 (Char.chr 0xff) in
+      let* () =
+        Temporal.Child_workflow.start ~id:invalid_utf_8 greeting_child "invalid"
+        |> require_ready_child_id_error
+             "child workflow id must be valid UTF-8"
+      in
+      Temporal.Child_workflow.execute ~id:"after-invalid" greeting_child "Ada")
+
 (** Invalid IDs and codec inputs are expected failures. They produce no child
     command, and detached calls return a ready typed defect rather than raising
     or performing a private suspension effect. *)
@@ -412,6 +450,29 @@ let test_child_workflow_validation () =
   | Some (Error error) ->
       expect "detached child kind" "defect" (Temporal.Error.kind error)
   | Some (Ok _) | None -> failwith "detached child did not fail immediately"
+
+(** Proves ID validation occurs before input encoding, sequence allocation, and
+    command emission. The first valid child still receives sequence one. *)
+let test_child_workflow_id_boundary () =
+  let execution = Execution.start child_id_boundary_workflow () in
+  expect "invalid child IDs consume no sequence"
+    [
+      Activation.Start_child_workflow
+        {
+          seq = 1L;
+          id = "after-invalid";
+          name = "greeting_child";
+          input = payload "Ada";
+        };
+    ]
+    (Execution.activate execution [ Activation.Start_workflow ]);
+  expect "valid child after ID failures completes"
+    [ Activation.Complete_workflow (payload "Hello Ada") ]
+    (Execution.activate execution
+       [
+         Activation.Resolve_child_workflow
+           { seq = 1L; result = Ok (payload "Hello Ada") };
+       ])
 
 (** Remote child failures retain their typed error, while unknown or repeated
     sequence numbers become bridge defects and never resolve a future twice. *)
@@ -485,5 +546,6 @@ let () =
   test_child_workflow_completion ();
   test_child_workflow_concurrency_and_decoding ();
   test_child_workflow_validation ();
+  test_child_workflow_id_boundary ();
   test_child_workflow_failures_and_sequence_ownership ();
   test_cancel_and_evict ()

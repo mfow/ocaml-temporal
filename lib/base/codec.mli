@@ -22,6 +22,11 @@ val encode : 'a t -> 'a -> (payload, Error.t) result
 (** Validates encoding metadata and deserializes a payload. *)
 val decode : 'a t -> payload -> ('a, Error.t) result
 
+(** Reports whether every byte forms one complete, canonical UTF-8 sequence.
+    Internal protocol-facing APIs use this before placing an OCaml string into
+    JSON or Protobuf; public payload callers normally rely on [string]. *)
+val valid_utf_8 : string -> bool
+
 (** Encodes OCaml strings as JSON using Temporal's [json/plain] encoding name.
     Yojson performs the JSON parsing and printing. Invalid UTF-8 and JSON values
     that are not strings produce [Error.t]. *)

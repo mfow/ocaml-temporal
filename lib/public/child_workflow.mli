@@ -1,8 +1,10 @@
 (** Starts [definition] as a durable child workflow and returns immediately.
-    [id] is the child execution's application-owned durable identity and must
-    be non-empty. Invalid identity or input encoding returns a ready failed
-    future without emitting a command. Starting several operations before
-    awaiting them lets Temporal run them concurrently. *)
+    [id] is the child execution's application-owned durable identity. It must
+    be non-empty, valid UTF-8, and no more than 65,536 UTF-8 bytes so it can
+    cross the strict bridge boundary. Invalid identity or input encoding returns
+    a ready failed future without emitting a command or consuming a sequence.
+    Starting several operations before awaiting them lets Temporal run them
+    concurrently. *)
 val start :
   id:string ->
   ('input, 'output) Workflow.t ->

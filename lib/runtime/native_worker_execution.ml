@@ -303,6 +303,7 @@ let find_definition definitions workflow_type =
 module Make (Supervisor : SUPERVISOR) = struct
   type adapter_state = {
     supervisor : Supervisor.t;
+    task_queue : string;
     definitions : registered_definition Run_map.t;
     mutable runs : run Run_map.t;
     mutex : Mutex.t;
@@ -311,11 +312,18 @@ module Make (Supervisor : SUPERVISOR) = struct
   type t = adapter_state
 
   (** Creates the immutable definition registry and an empty run registry. *)
-  let create ~supervisor ~workflows =
+  let create ?(task_queue = "default") ~supervisor ~workflows () =
     match build_definitions workflows with
     | Error error -> Error error
     | Ok definitions ->
-        Ok { supervisor; definitions; runs = Run_map.empty; mutex = Mutex.create () }
+        Ok
+          {
+            supervisor;
+            task_queue;
+            definitions;
+            runs = Run_map.empty;
+            mutex = Mutex.create ();
+          }
 
   (** Distinguishes an ordinary source rejection from an exception raised while
       completing. The latter is allowed to reach [process_one]'s cleanup guard:
@@ -439,7 +447,10 @@ module Make (Supervisor : SUPERVISOR) = struct
                   | Error error ->
                       retire_with_failure adapter activation error
                   | Ok input ->
-                      let execution = Execution.start definition input in
+                      let execution =
+                        Execution.start ~task_queue:adapter.task_queue definition
+                          input
+                      in
                       let run = Run { definition; execution } in
                       adapter.runs <- Run_map.add activation.run_id run adapter.runs;
                       match Native_execution.activate execution activation with

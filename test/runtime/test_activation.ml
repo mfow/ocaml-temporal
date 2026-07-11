@@ -51,7 +51,19 @@ let test_commands_and_completion () =
   expect "activity command"
     [
       Activation.Schedule_activity
-        { seq = 1L; name = "greeting"; input = payload "Ada" };
+        {
+          seq = 1L;
+          activity_id = "ocaml-activity-1";
+          activity_type = "greeting";
+          task_queue = "default";
+          arguments = [ payload "Ada" ];
+          schedule_to_close_timeout = None;
+          schedule_to_start_timeout = None;
+          start_to_close_timeout = Some 60_000L;
+          heartbeat_timeout = None;
+          cancellation_type = Activation.Try_cancel;
+          do_not_eagerly_execute = false;
+        };
     ]
     (Execution.activate execution [ Activation.Start_workflow ]);
   expect "timer command"
@@ -65,6 +77,101 @@ let test_commands_and_completion () =
     [ Activation.Complete_workflow (payload "Hello Ada!") ]
     (Execution.activate execution [ Activation.Fire_timer { seq = 2L } ]);
   expect "completion emitted once" [] (Execution.activate execution [])
+
+(** Explicit activity labels survive command construction, while an execution's
+    configured worker queue supplies the default for ordinary [Activity.start]
+    calls. *)
+let test_activity_options_and_queue () =
+  let explicit_workflow =
+    Temporal.Workflow.define ~name:"explicit_activity_options"
+      ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
+        Temporal.Activity.start ~activity_id:"lookup-42" ~task_queue:"fast-lane"
+          ~schedule_to_close_timeout:(Temporal.Duration.of_ms 5_000L)
+          ~heartbeat_timeout:(Temporal.Duration.of_ms 1_000L)
+          ~cancellation_type:Temporal.Activity.Wait_cancellation_completed
+          ~do_not_eagerly_execute:true greeting input
+        |> Temporal.Future.await)
+  in
+  let explicit = Execution.start ~task_queue:"worker-default" explicit_workflow "Ada" in
+  begin match Execution.activate explicit [ Activation.Start_workflow ] with
+  | [
+      Activation.Schedule_activity
+        {
+          seq = 1L;
+          activity_id = "lookup-42";
+          activity_type = "greeting";
+          task_queue = "fast-lane";
+          arguments = [ argument ];
+          schedule_to_close_timeout = Some 5_000L;
+          schedule_to_start_timeout = None;
+          start_to_close_timeout = None;
+          heartbeat_timeout = Some 1_000L;
+          cancellation_type = Activation.Wait_cancellation_completed;
+          do_not_eagerly_execute = true;
+        };
+    ] when argument = payload "Ada" -> ()
+  | _ -> failwith "explicit activity options were not preserved"
+  end;
+  let defaulted = Execution.start ~task_queue:"worker-default" greeting_workflow "Ada" in
+  begin match Execution.activate defaulted [ Activation.Start_workflow ] with
+  | [ Activation.Schedule_activity { task_queue = "worker-default"; _ } ] -> ()
+  | _ -> failwith "execution task queue was not used as activity default"
+  end;
+  let start_only_workflow =
+    Temporal.Workflow.define ~name:"start_only_activity_options"
+      ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
+        Temporal.Activity.start
+          ~schedule_to_start_timeout:(Temporal.Duration.of_ms 2_000L)
+          greeting input
+        |> Temporal.Future.await)
+  in
+  let start_only = Execution.start start_only_workflow "Ada" in
+  begin match Execution.activate start_only [ Activation.Start_workflow ] with
+  | [
+      Activation.Schedule_activity
+        {
+          schedule_to_start_timeout = Some 2_000L;
+          start_to_close_timeout = Some 60_000L;
+          _;
+        };
+    ] -> ()
+  | _ -> failwith "activity default timeout was not applied with schedule-to-start"
+  end
+
+(** Invalid optional activity identity is returned through the workflow's
+    typed failure path and does not emit a schedule command. *)
+let test_invalid_activity_options_do_not_schedule () =
+  let invalid_workflow =
+    Temporal.Workflow.define ~name:"invalid_activity_options"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Activity.start ~task_queue:"" greeting "ignored"
+        |> Temporal.Future.await
+        |> Result.map (fun _ -> ()))
+  in
+  let execution = Execution.start invalid_workflow () in
+  match Execution.activate execution [ Activation.Start_workflow ] with
+  | [ Activation.Fail_workflow error ] when Temporal.Error.kind error = "defect" ->
+      ()
+  | [ Activation.Schedule_activity _ ] ->
+      failwith "invalid activity queue emitted a schedule command"
+  | _ -> failwith "invalid activity options did not fail through the workflow"
+
+(** Rejects malformed worker defaults while the execution context is created.
+    An omitted activity queue must never defer this configuration error until a
+    later command translation step, after a future and sequence were created. *)
+let test_invalid_default_task_queue () =
+  let expect_invalid label task_queue =
+    try
+      ignore (Execution.start ~task_queue greeting_workflow "Ada");
+      failwith (label ^ " default task queue was accepted")
+    with
+    | Invalid_argument message ->
+        if String.equal message "" then failwith (label ^ " had no diagnostic")
+  in
+  expect_invalid "empty" "";
+  expect_invalid "NUL" "bad\000queue";
+  expect_invalid "oversized" (String.make 65_537 'x');
+  expect_invalid "UTF-8" (String.make 1 (Char.chr 0xff))
 
 (** Runs the greeting fixture and returns all emitted command batches for replay
     comparison. *)
@@ -326,7 +433,19 @@ let test_child_workflow_concurrency_and_decoding () =
           input = payload "Ada";
         };
       Activation.Schedule_activity
-        { seq = 2L; name = "greeting"; input = payload "Grace" };
+        {
+          seq = 2L;
+          activity_id = "ocaml-activity-2";
+          activity_type = "greeting";
+          task_queue = "default";
+          arguments = [ payload "Grace" ];
+          schedule_to_close_timeout = None;
+          schedule_to_start_timeout = None;
+          start_to_close_timeout = Some 60_000L;
+          heartbeat_timeout = None;
+          cancellation_type = Activation.Try_cancel;
+          do_not_eagerly_execute = false;
+        };
     ]
     (Execution.activate execution [ Activation.Start_workflow ]);
   expect "one concurrent result leaves parent pending" []
@@ -537,6 +656,9 @@ let test_cancel_and_evict () =
 
 let () =
   test_commands_and_completion ();
+  test_activity_options_and_queue ();
+  test_invalid_activity_options_do_not_schedule ();
+  test_invalid_default_task_queue ();
   test_replay_is_stable ();
   test_resolution_job_order ();
   test_bridge_defects ();

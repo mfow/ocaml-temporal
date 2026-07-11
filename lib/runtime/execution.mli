@@ -3,8 +3,11 @@
 type ('input, 'output) t
 
 (** Creates the in-memory state but does not call the workflow function yet.
-    The function starts only after [activate] receives [Start_workflow]. *)
+    The function starts only after [activate] receives [Start_workflow].
+    [task_queue] is captured in the execution context and is used by activity
+    commands when a workflow does not supply an explicit queue. *)
 val start :
+  ?task_queue:string ->
   ( 'input,
     'output,
     'input -> ('output, Temporal_base.Error.t) result )

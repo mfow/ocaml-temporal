@@ -191,7 +191,19 @@ let test_workflow_events_and_privacy () =
         (commands
         = [
             Activation.Schedule_activity
-              { seq = 1L; name = "wait"; input = payload secret };
+              {
+                seq = 1L;
+                activity_id = "ocaml-activity-1";
+                activity_type = "wait";
+                task_queue = "default";
+                arguments = [ payload secret ];
+                schedule_to_close_timeout = None;
+                schedule_to_start_timeout = None;
+                start_to_close_timeout = Some 60_000L;
+                heartbeat_timeout = None;
+                cancellation_type = Activation.Try_cancel;
+                do_not_eagerly_execute = false;
+              };
           ]);
       let activation =
         require_event ~source:"temporal.sdk.workflow" ~level:Logs.Debug

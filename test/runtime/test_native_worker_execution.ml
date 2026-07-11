@@ -130,7 +130,7 @@ let latest_completion supervisor =
 
 (** Creates a worker around a list of executable workflow definitions. *)
 let worker supervisor workflows =
-  match Worker.create ~supervisor ~workflows with
+  match Worker.create ~supervisor ~workflows () with
   | Ok worker -> worker
   | Error error ->
       failwith
@@ -142,9 +142,10 @@ let worker supervisor workflows =
 let expect_completed ~terminal = function
   | Adapter.Completed { terminal = actual; _ } when Bool.equal actual terminal ->
       ()
-  | Adapter.Completed { terminal = actual; _ } ->
+  | Adapter.Completed { terminal = actual; run_id; command_count } ->
       failwith
-        (Printf.sprintf "terminal flag was %b instead of %b" actual terminal)
+        (Printf.sprintf "run %s emitted %d commands with terminal flag %b instead of %b"
+           run_id command_count actual terminal)
   | Adapter.Not_ready -> failwith "poll unexpectedly reported Not_ready"
   | Adapter.Rejected { error; _ } ->
       failwith
@@ -289,8 +290,8 @@ let test_unexpected_completion_exception_is_retried () =
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "completion exception retry left a native lease outstanding"
 
-(** If the failure-completion acknowledgement itself raises, the adapter
-    returns a typed [completion_failed] error and does not claim retirement. *)
+(** If an ordinary completion raises, the adapter converts the exception into a
+    typed rejected outcome and submits one explicit failure completion. *)
 let test_failure_completion_exception_is_typed () =
   let supervisor = fake_supervisor () in
   let activity =
@@ -309,11 +310,11 @@ let test_failure_completion_exception_is_typed () =
   supervisor.raise_next_completion := true;
   let worker = worker supervisor [ Adapter.register workflow ] in
   begin match Worker.poll worker with
-  | Error { code = "completion_failed"; _ } -> ()
+  | Ok (Adapter.Rejected { lease_retired = true; _ }) -> ()
   | _ -> failwith "failure completion exception was not typed"
   end;
-  if Hashtbl.length supervisor.leased <> 1 then
-    failwith "failed failure-completion incorrectly claimed lease retirement"
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "typed failure completion left a native lease outstanding"
 
 (** A later activation can fail after a run has already suspended. Once that
     failure is acknowledged, the stale execution must be removed just like a
@@ -345,10 +346,18 @@ let test_resumed_failure_removes_run () =
   enqueue supervisor
     (activation ~run_id:"run-resumed-failure"
        [ Protocol.Fire_timer { seq = timer_seq } ]);
-  begin match Worker.poll worker with
-  | Ok (Adapter.Rejected { lease_retired = true; error; _ })
-    when String.equal error.code "unsupported" -> ()
-  | _ -> failwith "resumed unsupported command was not rejected"
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin match (latest_completion supervisor).commands with
+  | [ Protocol.Schedule_activity _ ] -> ()
+  | _ -> failwith "timer resolution did not schedule the resumed activity"
+  end;
+  enqueue supervisor
+    (activation ~run_id:"run-resumed-failure"
+       [ Protocol.Fire_timer { seq = timer_seq } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  begin match (latest_completion supervisor).commands with
+  | [ Protocol.Fail_workflow _ ] -> ()
+  | _ -> failwith "invalid timer resolution did not fail the workflow"
   end;
   enqueue supervisor
     (activation ~run_id:"run-resumed-failure"
@@ -359,10 +368,9 @@ let test_resumed_failure_removes_run () =
   | _ -> failwith "resumed failed run remained in the execution registry"
   end
 
-(** An activity command is intentionally not guessed into the first semantic
-    protocol. The adapter submits a typed failure completion and reports a
-    rejected outcome instead of dropping the leased activation. *)
-let test_unsupported_command_retires_lease () =
+(** A native activity command is submitted with its complete identifier, queue,
+    argument, and timeout fields; the run remains suspended awaiting the result. *)
+let test_activity_command_retires_lease () =
   let supervisor = fake_supervisor () in
   let activity =
     Temporal.Activity.remote ~name:"native_worker_activity"
@@ -379,18 +387,16 @@ let test_unsupported_command_retires_lease () =
            ~workflow_type:"native_worker_unsupported" ]);
   let worker = worker supervisor [ Adapter.register workflow ] in
   begin match Worker.poll worker with
-  | Ok (Adapter.Rejected { lease_retired = true; error; _ }) ->
-      if not (String.equal error.code "unsupported") then
-        failwith "unsupported runtime command had the wrong error code"
-  | Ok _ -> failwith "unsupported runtime command was silently accepted"
-  | Error error -> failwith ("unsupported command failed to retire: " ^ error.message)
+  | Ok (Adapter.Completed { terminal = false; _ }) -> ()
+  | Ok _ -> failwith "activity command unexpectedly completed the workflow"
+  | Error error -> failwith ("activity command failed to retire: " ^ error.message)
   end;
   begin match (latest_completion supervisor).commands with
-  | [ Protocol.Fail_workflow _ ] -> ()
-  | _ -> failwith "unsupported runtime command did not submit a failure"
+  | [ Protocol.Schedule_activity { activity_type = "native_worker_activity"; _ } ] -> ()
+  | _ -> failwith "activity command did not submit its complete protocol shape"
   end;
   if Hashtbl.length supervisor.leased <> 0 then
-    failwith "unsupported command left a native lease outstanding"
+    failwith "activity command left a native lease outstanding"
 
 (** An activation for a run not present in the existential registry is rejected
     and completed as a non-retryable bridge failure. *)
@@ -436,6 +442,7 @@ let test_registration_validation () =
   begin match
     Worker.create ~supervisor
       ~workflows:[ Adapter.register (definition ()); Adapter.register (definition ()) ]
+      ()
   with
   | Error { code = "duplicate_workflow"; _ } -> ()
   | _ -> failwith "duplicate workflow registration was accepted"
@@ -444,7 +451,7 @@ let test_registration_validation () =
     Temporal.Workflow.remote ~name:"remote" ~input:Temporal.Codec.unit
       ~output:Temporal.Codec.unit
   in
-  begin match Worker.create ~supervisor ~workflows:[ Adapter.register remote ] with
+  begin match Worker.create ~supervisor ~workflows:[ Adapter.register remote ] () with
   | Error { code = "not_executable"; _ } -> ()
   | _ -> failwith "remote workflow registration was accepted as executable"
   end
@@ -458,7 +465,7 @@ let () =
   test_unexpected_completion_exception_is_retried ();
   test_failure_completion_exception_is_typed ();
   test_resumed_failure_removes_run ();
-  test_unsupported_command_retires_lease ();
+  test_activity_command_retires_lease ();
   test_unknown_run_retires_lease ();
   test_malformed_activation_error_is_typed ();
   test_registration_validation ()

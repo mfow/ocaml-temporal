@@ -331,13 +331,137 @@ let test_command_order_and_validation () =
     (Native_execution.command_to_protocol
        (Activation.Cancel_timer { seq = 4_294_967_296L }))
 
-(** Child workflows and activities remain explicit unsupported boundaries until
-    their richer Core fields are added to the semantic protocol. *)
-let test_unsupported_commands_are_explicit () =
+(** Activity commands retain every Core-required field through translation, and
+    malformed timeout/identity options fail before a completion is returned. *)
+let test_activity_command_translation_and_validation () =
   let input = runtime_unit_payload () in
-  expect_error_code "activity command" "unsupported"
+  let command =
+    Activation.Schedule_activity
+      {
+        seq = 1L;
+        activity_id = "lookup-1";
+        activity_type = "lookup";
+        task_queue = "activities";
+        arguments = [ input ];
+        schedule_to_close_timeout = Some 30_000L;
+        schedule_to_start_timeout = None;
+        start_to_close_timeout = Some 10_000L;
+        heartbeat_timeout = None;
+        cancellation_type = Activation.Wait_cancellation_completed;
+        do_not_eagerly_execute = true;
+      }
+  in
+  let translated =
+    unwrap "activity command translation"
+      (Native_execution.command_to_protocol command)
+  in
+  begin match translated with
+  | Protocol.Schedule_activity
+      {
+        seq = 1L;
+        activity_id = "lookup-1";
+        activity_type = "lookup";
+        task_queue = "activities";
+        arguments = [ argument ];
+        schedule_to_close_timeout =
+          Some { seconds = 30L; nanoseconds = 0 };
+        schedule_to_start_timeout = None;
+        start_to_close_timeout = Some { seconds = 10L; nanoseconds = 0 };
+        heartbeat_timeout = None;
+        cancellation_type = Protocol.Wait_cancellation_completed;
+        do_not_eagerly_execute = true;
+      }
+    when argument =
+      {
+        Protocol.metadata = [ ("encoding", Bytes.of_string "binary/null") ];
+        data = Bytes.empty;
+      } ->
+      ()
+  | _ -> failwith "activity command fields were not preserved"
+  end;
+  expect_error_code "activity timeout requirement" "invalid_message"
     (Native_execution.command_to_protocol
-       (Activation.Schedule_activity { seq = 1L; name = "lookup"; input }));
+       (Activation.Schedule_activity
+          {
+            seq = 2L;
+            activity_id = "lookup-2";
+            activity_type = "lookup";
+            task_queue = "activities";
+            arguments = [ input ];
+            schedule_to_close_timeout = None;
+            schedule_to_start_timeout = None;
+            start_to_close_timeout = None;
+            heartbeat_timeout = None;
+            cancellation_type = Activation.Try_cancel;
+            do_not_eagerly_execute = false;
+          }));
+  expect_error_code "negative activity timeout" "invalid_message"
+    (Native_execution.command_to_protocol
+       (Activation.Schedule_activity
+          {
+            seq = 3L;
+            activity_id = "lookup-3";
+            activity_type = "lookup";
+            task_queue = "activities";
+            arguments = [ input ];
+            schedule_to_close_timeout = None;
+            schedule_to_start_timeout = None;
+            start_to_close_timeout = Some (-1L);
+            heartbeat_timeout = None;
+            cancellation_type = Activation.Try_cancel;
+            do_not_eagerly_execute = false;
+          }));
+  expect_error_code "empty activity queue" "invalid_message"
+    (Native_execution.command_to_protocol
+       (Activation.Schedule_activity
+          {
+            seq = 4L;
+            activity_id = "lookup-4";
+            activity_type = "lookup";
+            task_queue = "";
+            arguments = [ input ];
+            schedule_to_close_timeout = Some 1L;
+            schedule_to_start_timeout = None;
+            start_to_close_timeout = None;
+            heartbeat_timeout = None;
+            cancellation_type = Activation.Try_cancel;
+            do_not_eagerly_execute = false;
+          }));
+  expect_error_code "invalid UTF-8 activity queue" "invalid_message"
+    (Native_execution.command_to_protocol
+       (Activation.Schedule_activity
+          {
+            seq = 5L;
+            activity_id = "lookup-5";
+            activity_type = "lookup";
+            task_queue = String.make 1 (Char.chr 0xff);
+            arguments = [ input ];
+            schedule_to_close_timeout = Some 1L;
+            schedule_to_start_timeout = None;
+            start_to_close_timeout = None;
+            heartbeat_timeout = None;
+            cancellation_type = Activation.Try_cancel;
+            do_not_eagerly_execute = false;
+          }));
+  expect_error_code "overlong activity ID" "invalid_message"
+    (Native_execution.command_to_protocol
+       (Activation.Schedule_activity
+          {
+            seq = 6L;
+            activity_id = String.make 65_537 'x';
+            activity_type = "lookup";
+            task_queue = "activities";
+            arguments = [ input ];
+            schedule_to_close_timeout = Some 1L;
+            schedule_to_start_timeout = None;
+            start_to_close_timeout = None;
+            heartbeat_timeout = None;
+            cancellation_type = Activation.Try_cancel;
+            do_not_eagerly_execute = false;
+          }));
+  (* Child workflows remain unsupported until the semantic protocol gains the
+     complete Core command record; retaining this assertion prevents an
+     accidental lossy conversion while activity support evolves. *)
   expect_error_code "child command" "unsupported"
     (Native_execution.command_to_protocol
        (Activation.Start_child_workflow
@@ -390,6 +514,6 @@ let () =
   test_activate_terminal_completion ();
   test_activate_eviction_completion ();
   test_command_order_and_validation ();
-  test_unsupported_commands_are_explicit ();
+  test_activity_command_translation_and_validation ();
   test_duplicate_sequence_rejected ();
   test_unknown_sequence_becomes_failure ()

@@ -8,6 +8,31 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-12: Complete native activity command translation
+
+Status: focused runtime, worker-adapter, and native translation tests pass
+locally; native public-worker wiring and live Compose acceptance remain
+follow-up work.
+
+The deterministic runtime now emits complete Temporal activity commands. A
+workflow can choose an activity ID, task queue, all four Temporal timeout
+fields, cancellation policy, and eager-execution preference. Omitted IDs are
+derived from the deterministic command sequence; omitted queues inherit the
+execution queue; and omitting both schedule-to-close and start-to-close uses a
+60-second start-to-close default. The OCaml public API validates explicit
+identifiers before allocating a command, while the native translator validates
+the complete record again at the Rust/Core boundary and copies payload bytes.
+Invalid identifiers, missing required timeout coverage, negative durations,
+and malformed payloads become typed bridge or workflow errors rather than
+silently changing the command.
+
+Evidence: `dune build --root . @install`, `dune runtest --root . test/runtime`,
+and the focused activation, native-translation, and native-worker executables
+pass on the representative host toolchain. Tests cover explicit options,
+configured and default queues, UTF-8/identifier validation, payload copying,
+cancellation and eager flags, timeout validation, and activity lease
+retirement.
+
 ## 2026-07-12: Wakeable native worker readiness seam
 
 Status: focused Rust readiness, C ABI, and OCaml private-wrapper tests are
@@ -49,7 +74,7 @@ typed workflow poll/complete operations. It registers heterogeneous executable
 workflow definitions by name, keeps one existential `Execution.t` per Temporal
 run ID, serializes calls with an OCaml mutex, applies validated activations in
 deterministic order, and removes runs only after the supervisor confirms lease
-retirement. Invalid initialization, unknown runs, unsupported activity/child
+retirement. Invalid initialization, unknown runs, unsupported child-workflow
 commands, and codec failures become typed non-retryable failure completions;
 the adapter never fabricates missing Core fields or silently drops a lease.
 
@@ -60,9 +85,10 @@ by the lower typed supervisor protocol adapter before this functor sees an
 activation, because only that layer still owns the raw lease token.
 
 Evidence: `dune runtest --root . test/runtime` passes, including terminal
-workflow, durable timer, cancellation, cache eviction, unsupported-command
-rejection, unknown-run, malformed source-error, completion-exception cleanup,
-duplicate-registration, and remote-definition tests. See the
+workflow, durable timer, cancellation, cache eviction, complete
+activity-command translation, unknown-run, malformed source-error,
+completion-exception cleanup, duplicate-registration, and remote-definition
+tests. See the
 [native worker execution reference](reference/native-worker-execution.md).
 
 ## 2026-07-12: Pure OCaml native execution translation
@@ -78,13 +104,14 @@ boundary, retains replay/initialization/cancellation/eviction metadata, and
 reports malformed or duplicate sequences as typed bridge errors.
 
 Commands are accepted only when the current runtime and protocol have an exact
-lossless representation. Activity scheduling remains explicitly unsupported
-because the runtime command lacks Core's activity ID, task queue, argument,
-timeout, and cancellation fields. Child-workflow scheduling remains explicitly
-unsupported because the first semantic protocol has no child command variant.
-The adapter never fabricates Temporal defaults or silently drops either
-command. See the [translation reference](reference/native-execution-translation.md)
-for the mapping and ownership rules.
+lossless representation. Activity scheduling now carries Core's activity ID,
+task queue, argument, timeout, cancellation, and eager-execution fields with
+explicit validation and deterministic defaults. Child-workflow scheduling
+remains explicitly unsupported because the first semantic protocol has no child
+command variant. The adapter never silently drops a command or fabricates an
+undocumented default. See the
+[translation reference](reference/native-execution-translation.md) for the
+mapping and ownership rules.
 
 ## 2026-07-12: Typed supervisor worker operations
 

@@ -87,6 +87,8 @@ let validate_identifier path value : (unit, error) result =
     Error (invalid path "identifier must not be empty")
   else if String.contains value '\000' then
     Error (invalid path "identifier must not contain NUL")
+  else if String.length value > 65_536 then
+    Error (invalid path "identifier exceeds 65536 bytes")
   else if not (Temporal_base.Codec.valid_utf_8 value) then
     Error (invalid path "identifier must be valid UTF-8")
   else Ok ()
@@ -435,6 +437,20 @@ let duration_of_milliseconds path milliseconds =
     let nanoseconds = Int64.to_int (Int64.mul remainder 1_000_000L) in
     Ok Protocol.{ seconds; nanoseconds }
 
+(** Converts an optional runtime timeout without losing the distinction between
+    an omitted policy and an exact zero duration. *)
+let optional_duration_of_milliseconds path = function
+  | None -> Ok None
+  | Some milliseconds ->
+      let* duration = duration_of_milliseconds path milliseconds in
+      Ok (Some duration)
+
+(** Maps the runtime cancellation policy to the checked semantic protocol. *)
+let protocol_cancellation_type = function
+  | Activation.Try_cancel -> Protocol.Try_cancel
+  | Activation.Wait_cancellation_completed -> Protocol.Wait_cancellation_completed
+  | Activation.Abandon -> Protocol.Abandon
+
 (** Converts the broad runtime error into the protocol's structured failure
     shape. Category and retryability remain explicit in the application-info
     variant, while details are copied as binary-safe protocol payloads. *)
@@ -469,19 +485,79 @@ let protocol_failure path (error : Temporal_base.Error.t) =
         info = failure_info;
       }
 
-(** Converts one command without fabricating fields that the current runtime
-    does not own. Activity and child-workflow commands are intentionally
-    rejected until their richer protocol records are wired through. *)
+(** Converts one command without fabricating fields. Activity commands already
+    carry all Core-required identifiers, arguments, timeout policies, and
+    cancellation options; the final semantic encoder below performs a second
+    closed-object and range check before the command reaches Rust. *)
 let command_to_protocol command =
   match command with
-  | Activation.Schedule_activity { seq; name; input } ->
+  | Activation.Schedule_activity
+      {
+        seq;
+        activity_id;
+        activity_type;
+        task_queue;
+        arguments;
+        schedule_to_close_timeout;
+        schedule_to_start_timeout;
+        start_to_close_timeout;
+        heartbeat_timeout;
+        cancellation_type;
+        do_not_eagerly_execute;
+      } ->
       let* () = validate_sequence "$.command.seq" seq in
-      let* () = validate_identifier "$.command.name" name in
-      let _ = input in
-      Error
-        (unsupported "$.command"
-           "schedule_activity needs activity id, task queue, arguments, \
-            timeouts, and cancellation options")
+      let* () = validate_identifier "$.command.activity_id" activity_id in
+      let* () = validate_identifier "$.command.activity_type" activity_type in
+      let* () = validate_identifier "$.command.task_queue" task_queue in
+      let rec arguments_loop reversed index = function
+        | [] -> Ok (List.rev reversed)
+        | payload :: rest ->
+            let* payload =
+              protocol_payload
+                (Printf.sprintf "$.command.arguments[%d]" index)
+                payload
+            in
+            arguments_loop (payload :: reversed) (index + 1) rest
+      in
+      let* arguments = arguments_loop [] 0 arguments in
+      let* schedule_to_close_timeout =
+        optional_duration_of_milliseconds
+          "$.command.schedule_to_close_timeout" schedule_to_close_timeout
+      in
+      let* schedule_to_start_timeout =
+        optional_duration_of_milliseconds
+          "$.command.schedule_to_start_timeout" schedule_to_start_timeout
+      in
+      let* start_to_close_timeout =
+        optional_duration_of_milliseconds
+          "$.command.start_to_close_timeout" start_to_close_timeout
+      in
+      let* heartbeat_timeout =
+        optional_duration_of_milliseconds "$.command.heartbeat_timeout"
+          heartbeat_timeout
+      in
+      if Option.is_none schedule_to_close_timeout
+         && Option.is_none start_to_close_timeout
+      then
+        Error
+          (invalid "$.command"
+             "activity requires schedule-to-close or start-to-close timeout")
+      else
+        Ok
+          (Protocol.Schedule_activity
+             {
+               seq;
+               activity_id;
+               activity_type;
+               task_queue;
+               arguments;
+               schedule_to_close_timeout;
+               schedule_to_start_timeout;
+               start_to_close_timeout;
+               heartbeat_timeout;
+               cancellation_type = protocol_cancellation_type cancellation_type;
+               do_not_eagerly_execute;
+             })
   | Activation.Start_child_workflow { seq; id; name; input } ->
       let* () = validate_sequence "$.command.seq" seq in
       let* () = validate_identifier "$.command.id" id in

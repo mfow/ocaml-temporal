@@ -46,9 +46,11 @@ cleaner and more maintainable OCaml design.
    supervisor scheduling loop and first executed workflow remain pending.
    Readiness waits intentionally return to that mailbox after 100 ms when Core
    is quiet. The current
-   translation deliberately rejects activity commands whose runtime shape lacks
-   Core fields and child-workflow commands absent from the first semantic
-   protocol; the richer records must be added before live support is claimed.
+   translation now preserves and validates every field needed by Core activity
+   commands, including deterministic defaults for omitted queue and timeout
+   options. Child-workflow commands remain unsupported in the first semantic
+   protocol; live worker wiring and the Compose acceptance path are still
+   pending.
    Poll decode failures use an exact-document rejection ABI: Rust retains
    semantic handoff state and will not retire a lease for a changed workflow
    activation or activity task.

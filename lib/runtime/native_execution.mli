@@ -69,9 +69,9 @@ val command_to_protocol :
   Activation.command ->
   (Temporal_protocol.Workflow_protocol.completion_command, error) result
 (** Converts one runtime command when every field has an exact protocol
-    representation. Scheduling an activity or child workflow currently returns
-    [Unsupported] because the synthetic command algebra lacks the required
-    Temporal identifiers, arguments, and timeout/options fields. *)
+    representation. Activity options are range-checked and payloads are copied;
+    child workflows remain an explicit unsupported boundary until the semantic
+    protocol gains their command record. *)
 
 val completion_of_commands :
   run_id:string ->

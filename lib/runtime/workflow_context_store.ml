@@ -16,6 +16,7 @@ type child_workflow_resolution =
     adding to the front of an OCaml list is constant time. *)
 type t = {
   scheduler : Scheduler.t;
+  task_queue : string;
   mutable next_sequence : int64;
   activities : (int64, activity_resolution) Hashtbl.t;
   child_workflows : (int64, child_workflow_resolution) Hashtbl.t;
@@ -23,11 +24,29 @@ type t = {
   mutable commands_rev : Activation.command list;
 }
 
+(** Validates the worker queue before it becomes an implicit activity option.
+    Queue names cross the strict JSON boundary even when workflow code omits
+    [~task_queue], so rejecting an empty, NUL-containing, oversized, or
+    non-UTF-8 default at execution construction keeps configuration failures
+    out of the later workflow command path. [Invalid_argument] is appropriate
+    here because the worker supplied an invalid programmer configuration. *)
+let validate_task_queue task_queue =
+  if String.equal task_queue "" then
+    invalid_arg "task_queue must not be empty"
+  else if String.contains task_queue '\000' then
+    invalid_arg "task_queue must not contain NUL"
+  else if String.length task_queue > 65_536 then
+    invalid_arg "task_queue exceeds 65536 bytes"
+  else if not (Temporal_base.Codec.valid_utf_8 task_queue) then
+    invalid_arg "task_queue must be valid UTF-8"
+
 (** Creates empty activity and timer tables. The tables grow normally if a
     workflow has more than the small initial capacity. *)
-let create scheduler =
+let create ?(task_queue = "default") scheduler =
+  validate_task_queue task_queue;
   {
     scheduler;
+    task_queue;
     next_sequence = 0L;
     activities = Hashtbl.create 16;
     child_workflows = Hashtbl.create 16;
@@ -86,14 +105,46 @@ let emit context command = context.commands_rev <- command :: context.commands_r
 
 (** Saves the future resolver before emitting the schedule command. This order
     ensures even an immediate synthetic result can find the pending activity. *)
-let schedule_activity context ~name ~input ~decode =
+let schedule_activity context ~name ~input ?activity_id ?task_queue
+    ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
+    ?heartbeat_timeout ?(cancellation_type = Activation.Try_cancel)
+    ?(do_not_eagerly_execute = false) ~decode () =
   let seq = allocate_sequence context in
   let future, resolve = Scheduler.promise context.scheduler ~outside_error in
   Hashtbl.add context.activities seq (fun result ->
       match result with
       | Error error -> resolve (Error error)
       | Ok payload -> resolve (decode payload));
-  emit context (Activation.Schedule_activity { seq; name; input });
+  let activity_id =
+    match activity_id with
+    | Some value -> value
+    | None -> "ocaml-activity-" ^ Int64.to_string seq
+  in
+  let task_queue = Option.value task_queue ~default:context.task_queue in
+  (* Temporal requires at least one activity timeout. A deterministic
+     start-to-close default keeps the long-standing [Activity.start] call
+     usable while labelled timeout arguments remain available for workflows
+     that need a different policy. *)
+  let start_to_close_timeout =
+    match (schedule_to_close_timeout, start_to_close_timeout) with
+    | None, None -> Some 60_000L
+    | _, value -> value
+  in
+  emit context
+    (Activation.Schedule_activity
+       {
+         seq;
+         activity_id;
+         activity_type = name;
+         task_queue;
+         arguments = [ input ];
+         schedule_to_close_timeout;
+         schedule_to_start_timeout;
+         start_to_close_timeout;
+         heartbeat_timeout;
+         cancellation_type;
+         do_not_eagerly_execute;
+       });
   future
 
 (** Saves a child resolver before emitting its command. The explicit [id] is

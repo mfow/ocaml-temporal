@@ -270,6 +270,11 @@ the optional Clippy and rustfmt components. The toolchain stage now installs
 both explicitly, and the smoke test requires both commands before compiling
 the archive.
 
+The following run reached the separated Rust integration test and exposed that
+a crate configured to emit only a `staticlib` cannot be imported by that test.
+The bridge now also emits Rust's internal `rlib` artifact for integration tests;
+the `staticlib` remains the artifact linked into the OCaml-owned executable.
+
 The Cargo scanner is intentionally absent from the Makefile. The single
 standalone GitHub Actions license job streams locked metadata from the build
 container to a network-disabled, read-only, digest-pinned official Python

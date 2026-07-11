@@ -109,11 +109,13 @@ let test_request_validation () =
   in
   let encoded_start = unwrap (Protocol.encode_start_request valid_start) in
   require_fragment "start request" "{" encoded_start;
+  require_fragment "start request ID" "request-1" encoded_start;
   let encoded_wait = unwrap (Protocol.encode_wait_request execution) in
   require_fragment "wait request" "{" encoded_wait;
   List.iter
     (fun request -> require_error (Protocol.encode_start_request request))
     [
+      { valid_start with request_id = "" };
       { valid_start with namespace = "" };
       { valid_start with workflow_id = "contains\000nul" };
       { valid_start with workflow_type = String.make 65_537 'x' };

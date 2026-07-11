@@ -32,6 +32,12 @@ val remote :
 (** Returns the workflow type name used for registration and commands. *)
 val name : ('input, 'output) t -> string
 
-(** Starts a durable Temporal timer and waits until it fires. A zero duration
-    returns immediately without recording a timer. *)
+(** Starts a durable Temporal timer and returns immediately. Starting several
+    timers before awaiting one emits them in call order. A zero duration returns
+    a ready future without recording a timer. *)
+val start_sleep : Duration.t -> (unit, Error.t) Future.t
+
+(** Starts a durable Temporal timer and waits until it fires. This is equivalent
+    to [Future.await (start_sleep duration)]. A zero duration returns
+    immediately without recording a timer. *)
 val sleep : Duration.t -> (unit, Error.t) result

@@ -158,6 +158,32 @@ let zero_sleep_workflow =
       | Ok () -> Ok ()
       | Error error -> Error error)
 
+(** Workflow fixture that proves timers can be scheduled independently before
+    the workflow chooses which one to await. *)
+let concurrent_sleep_workflow =
+  Temporal.Workflow.define ~name:"concurrent_sleep" ~input:Temporal.Codec.unit
+    ~output:Temporal.Codec.string (fun () ->
+      let first =
+        Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 5L)
+      in
+      let _second =
+        Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 10L)
+      in
+      match Temporal.Future.await first with
+      | Ok () -> Ok "first fired"
+      | Error error -> Error error)
+
+(** Workflow fixture that inspects the zero-duration future without waiting,
+    proving it is immediately ready and history-neutral. *)
+let zero_start_sleep_workflow =
+  Temporal.Workflow.define ~name:"zero_start_sleep" ~input:Temporal.Codec.unit
+    ~output:Temporal.Codec.unit (fun () ->
+      let timer =
+        Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 0L)
+      in
+      if Temporal.Future.is_ready timer then Temporal.Future.await timer
+      else Error (Temporal.Error.defect ~message:"zero timer was pending"))
+
 (** Covers zero sleep and rejection of negative durations. *)
 let test_zero_sleep_and_duration_validation () =
   let execution = Execution.start zero_sleep_workflow () in
@@ -172,6 +198,36 @@ let test_zero_sleep_and_duration_validation () =
   match Temporal.Duration.of_ms (-1L) with
   | exception Invalid_argument _ -> ()
   | _ -> failwith "negative duration accepted"
+
+(** Covers non-blocking timer creation, command order, selected waiting, and a
+    ready zero-duration timer that emits no history command. *)
+let test_start_sleep () =
+  let concurrent = Execution.start concurrent_sleep_workflow () in
+  expect "two timers start before waiting"
+    [
+      Activation.Start_timer { seq = 1L; milliseconds = 5L };
+      Activation.Start_timer { seq = 2L; milliseconds = 10L };
+    ]
+    (Execution.activate concurrent [ Activation.Start_workflow ]);
+  expect "awaited timer completes workflow"
+    [ Activation.Complete_workflow (payload "first fired") ]
+    (Execution.activate concurrent [ Activation.Fire_timer { seq = 1L } ]);
+  let zero = Execution.start zero_start_sleep_workflow () in
+  expect "zero start sleep has no command"
+    [
+      Activation.Complete_workflow
+        (match Temporal.Codec.encode Temporal.Codec.unit () with
+        | Ok payload -> payload
+        | Error error -> failwith (Temporal.Error.message error));
+    ]
+    (Execution.activate zero [ Activation.Start_workflow ]);
+  match
+    Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 1L)
+    |> Temporal.Future.peek
+  with
+  | Some (Error error) ->
+      expect "detached start sleep" "defect" (Temporal.Error.kind error)
+  | Some (Ok ()) | None -> failwith "detached start sleep did not fail immediately"
 
 (** Verifies cancellation emits once and cache removal releases blocked state
     without producing a workflow command. *)
@@ -193,4 +249,5 @@ let () =
   test_resolution_job_order ();
   test_bridge_defects ();
   test_zero_sleep_and_duration_validation ();
+  test_start_sleep ();
   test_cancel_and_evict ()

@@ -266,10 +266,16 @@ let client_result =
   in
   let* handle =
     Temporal.Client.start client ~workflow:greeting_workflow
-      ~task_queue:"greetings" ~id:"greeting-1" ~input:"Ada"
+      ~task_queue:"greetings" ~id:"greeting-1" ~input:"Ada" ()
   in
   Temporal.Client.wait handle
 ```
+
+For a start whose network outcome may need to be reconciled, pass a stable
+Temporal idempotency key with `~request_id:"greeting-start-1"` and use the same
+value if the application retries that logical start. If the argument is
+omitted, the SDK creates a fresh key for the call. The key is kept unchanged
+while the native supervisor polls the asynchronous start ticket.
 
 The worker registration list packs heterogeneous typed definitions at the
 registration boundary while keeping each implementation and its codecs

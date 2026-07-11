@@ -171,7 +171,8 @@ let test_typed_start_and_wait_handle () =
   let handle =
     unwrap
       (Temporal.Client.start client ~workflow:echo_workflow
-         ~task_queue:"unit-test" ~id:"unit-echo" ~input:"hello")
+         ~request_id:"unit-start-1" ~task_queue:"unit-test" ~id:"unit-echo"
+         ~input:"hello" ())
   in
   assert (Temporal.Client.workflow_id handle = "unit-echo");
   assert (String.length (Temporal.Client.run_id handle) > 0);
@@ -183,7 +184,7 @@ let test_typed_start_and_wait_handle () =
   unwrap (Temporal.Client.shutdown client);
   expect_error "bridge"
     (Temporal.Client.start client ~workflow:echo_workflow
-       ~task_queue:"unit-test" ~id:"after-shutdown" ~input:"ignored")
+       ~task_queue:"unit-test" ~id:"after-shutdown" ~input:"ignored" ())
 
 (** Invalid client settings are values rather than exceptions, and a malformed
     durable workflow id is rejected before the backend receives it. *)
@@ -197,7 +198,14 @@ let test_client_validation_errors () =
   in
   expect_error "defect"
     (Temporal.Client.start client ~workflow:echo_workflow
-       ~task_queue:"unit-test" ~id:"" ~input:"ignored");
+       ~task_queue:"unit-test" ~id:"" ~input:"ignored" ());
+  expect_error "defect"
+    (Temporal.Client.start client ~workflow:echo_workflow ~request_id:""
+       ~task_queue:"unit-test" ~id:"valid-id" ~input:"ignored" ());
+  expect_error "defect"
+    (Temporal.Client.start client ~workflow:echo_workflow
+       ~request_id:"contains\000nul" ~task_queue:"unit-test" ~id:"valid-id"
+       ~input:"ignored" ());
   unwrap (Temporal.Client.shutdown client)
 
 (** An HTTP-shaped endpoint is deliberately handed to the native configuration

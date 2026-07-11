@@ -223,6 +223,12 @@ closure. Internal mailbox and supervisor libraries use explicit internal OPAM
 names so Dune can enforce the public dependency graph without exposing their
 implementation modules in the `Temporal` API.
 
+The public `Temporal.Client.start` surface now accepts an optional caller-owned
+Temporal `request_id`. Applications can reuse that key when a start result is
+uncertain, while omitted keys are generated once per logical call. The native
+start request and every bounded ticket poll preserve the same key. Empty and
+NUL-containing keys are rejected before the request reaches the backend.
+
 Evidence:
 
 - `dune build --root . test/unit/test_client_worker.exe` and its executable pass

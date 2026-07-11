@@ -17,6 +17,9 @@ type config = {
 
 (** The request sent when a typed client starts one workflow execution. *)
 type start_request = {
+  (* Optional caller-owned idempotency key. [None] asks the native adapter to
+     allocate a fresh request ID for this start call. *)
+  request_id : string option;
   workflow_name : string;
   workflow_id : string;
   task_queue : string;

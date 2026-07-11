@@ -59,10 +59,14 @@ Rust validates every identifier, rejects NUL bytes, rejects duplicate or
 unknown members, validates payloads, and then calls Core's raw
 `WorkflowService::start_workflow_execution`. The first slice deliberately
 uses Temporal Server's documented defaults for optional start policies; it does
-not invent OCaml-side defaults. `request_id` is chosen by the OCaml caller and
-is sent unchanged to Temporal. It identifies one logical start, so a retry of
-the begin call can recover the same in-flight ticket instead of starting a
-second workflow.
+not invent OCaml-side defaults. The public `Temporal.Client.start` function
+accepts an optional `request_id`. When it is supplied, that caller-owned value
+is sent unchanged to Temporal; callers should reuse it when retrying a start
+whose outcome is uncertain. When it is omitted, the adapter allocates one fresh
+ID for that call. The resulting protocol request is created once and reused by
+the bounded ticket polls, so polling does not accidentally change the
+idempotency key. A request ID identifies one logical start and must not be
+reused for unrelated workflow starts.
 
 On success Rust returns:
 

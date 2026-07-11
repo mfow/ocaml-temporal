@@ -64,21 +64,32 @@ let create ?(identity = default_identity) ~target_url ~namespace () =
               })
             (Backend.client_create config))
 
-(** Validates a durable workflow ID and task queue before encoding input. *)
-let validate_start_fields ~id ~task_queue =
-  match validate_name "workflow id" id with
+(** Validates the optional Temporal idempotency key, durable workflow ID, and
+    task queue before encoding input or constructing a native request. Keeping
+    these checks here makes malformed caller input a typed result and prevents
+    it from crossing the supervisor boundary. *)
+let validate_start_fields ~request_id ~id ~task_queue =
+  let request_result =
+    match request_id with
+    | None -> Ok ()
+    | Some request_id -> validate_name "request id" request_id
+  in
+  match request_result with
   | Error _ as error -> error
-  | Ok () -> validate_name "task queue" task_queue
+  | Ok () -> (
+      match validate_name "workflow id" id with
+      | Error _ as error -> error
+      | Ok () -> validate_name "task queue" task_queue)
 
 (** Starts a workflow after encoding its typed input and checking the backend's
     response still refers to the request. The response check prevents an
     adapter bug from creating a handle for a different execution. *)
-let start client ~workflow ~task_queue ~id ~input =
+let start client ?request_id ~workflow ~task_queue ~id ~input () =
   if Atomic.get client.closed then
     Error
       (Temporal_base.Error.make ~category:`Bridge ~message:"client is shut down" ())
   else
-    match validate_start_fields ~id ~task_queue with
+    match validate_start_fields ~request_id ~id ~task_queue with
     | Error error -> Error error
     | Ok () -> (
         match Codec.encode (Temporal_base.Definition.input workflow) input with
@@ -86,6 +97,7 @@ let start client ~workflow ~task_queue ~id ~input =
         | Ok encoded_input ->
             let request : Backend.start_request =
               {
+                request_id;
                 workflow_name = Workflow.name workflow;
                 workflow_id = id;
                 task_queue;

@@ -22,6 +22,10 @@ type config = {
 
 (** Client start input after public codec encoding. *)
 type start_request = {
+  (* Optional caller-owned Temporal request ID. [None] asks the native
+     adapter to allocate one fresh ID for this logical start call; [Some id]
+     lets a caller retry an uncertain result with the same idempotency key. *)
+  request_id : string option;
   workflow_name : string;
   workflow_id : string;
   task_queue : string;
@@ -471,8 +475,13 @@ let native_request_id client =
 
 (** Converts one public start request to the closed native protocol value. *)
 let native_start_request client (request : start_request) : Client_protocol.start_request =
+  let request_id =
+    match request.request_id with
+    | Some request_id -> request_id
+    | None -> native_request_id client
+  in
   {
-    request_id = native_request_id client;
+    request_id;
     namespace = client.namespace;
     workflow_id = request.workflow_id;
     workflow_type = request.workflow_name;

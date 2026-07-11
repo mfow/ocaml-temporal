@@ -236,6 +236,47 @@ These helpers compose futures only; they do not hide a Temporal command or
 create a new replay boundary. Their callers still choose exactly when each
 activity, child, or timer starts and when to wait.
 
+## Client and worker lifecycle
+
+The public package also has typed client and worker values. A client starts an
+execution with an explicit workflow ID and task queue, then waits for the exact
+workflow/run pair returned by the server:
+
+```ocaml
+let client_result =
+  let open Temporal.Result_syntax in
+  let* client =
+    Temporal.Client.create ~target_url:"http://127.0.0.1:7233"
+      ~namespace:"default" ()
+  in
+  let* handle =
+    Temporal.Client.start client ~workflow:greeting_workflow
+      ~task_queue:"greetings" ~id:"greeting-1" ~input:"Ada"
+  in
+  Temporal.Client.wait handle
+```
+
+The worker registration list packs heterogeneous typed definitions at the
+registration boundary while keeping each implementation and its codecs
+together. Workflow and activity bodies remain ordinary OCaml functions:
+
+```ocaml
+let worker_result =
+  Temporal.Worker.create ~target_url:"http://127.0.0.1:7233"
+    ~namespace:"default" ~task_queue:"greetings"
+    ~workflows:[ Temporal.Worker.workflow greeting_workflow ]
+    ~activities:[] ()
+  |> Result.bind Temporal.Worker.run
+```
+
+The public lifecycle surface is intentionally independent of native handles or
+Temporal protobufs. The live Core poll/start adapter is still being wired; the
+current unit tests use a private deterministic backend seam to prove
+registration, typed encoding/decoding, exact-run handles, and idempotent
+shutdown. That seam is not the native adapter contract: Core activations and
+completions require separate semantic types and an explicit admission,
+shutdown, and finalization lifecycle.
+
 ## Current integration boundary
 
 The repository currently proves this API against a synthetic activation

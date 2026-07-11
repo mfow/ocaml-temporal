@@ -45,9 +45,14 @@ if [ -z "$native_link_flags" ]; then
   exit 1
 fi
 
-# Dune's ordered-set include syntax accepts the linker tokens as S-expressions.
-# rustc owns their platform-specific contents and ordering.
-printf '(%s)\n' "$native_link_flags" >"$link_flags_output"
+# rustc owns the platform-specific library list and its ordering. On Windows,
+# also preserve the Cargo build-script search path needed to resolve winapi's
+# bundled MinGW import archives from OCaml's foreign linker.
+sh "$workspace_root/scripts/render-rust-link-flags.sh" \
+  "$(uname -s)" \
+  "$artifact_root" \
+  "$link_flags_output" \
+  "$native_link_flags"
 
 "$workspace_root/scripts/copy-rust-bridge-artifacts.sh" \
   "$artifact_root/debug" "$static_output" "$dynamic_output"

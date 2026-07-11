@@ -73,6 +73,9 @@ let test_static_foreign_archives () =
   require_text ~path:bridge ~needle:"(foreign_library";
   require_text ~path:bridge ~needle:"(archive_name temporal_native_stubs)";
   require_text ~path:bridge ~needle:"(no_dynlink)";
+  require_text
+    ~path:(Filename.concat source_root "scripts/build-rust-bridge.sh")
+    ~needle:"scripts/render-rust-link-flags.sh";
   if contains ~needle:"(foreign_stubs" (read bridge) then
     failwith
       "lib/core_bridge/dune must not build a temporary native-stubs DLL"

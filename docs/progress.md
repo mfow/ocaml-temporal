@@ -24,12 +24,24 @@ library tokens through FlexDLL while creating that temporary DLL. FlexDLL
 interpreted the tokens as filenames and rejected `-lwinapi_ntdll` after Rust
 itself had compiled successfully.
 
+The final Windows executable needs one additional piece of information that
+`rustc --print=native-static-libs` does not include: Cargo's `winapi` package
+ships its own MinGW import archives and exposes their directory through a
+build-script link-search instruction. The bridge build now validates every
+reported `-lwinapi_*` archive and carries that exact directory into Dune as a
+quoted `-L` flag. It does not guess a Cargo registry location or duplicate the
+archives in this repository.
+
 Evidence:
 
 - The repository regression test requires the static workspace policy, a
   dedicated `foreign_library`, and `no_dynlink`; it rejects reintroducing
   `foreign_stubs` at this boundary because that would recreate a temporary
   Windows DLL link.
+- A platform-independent shell regression test constructs a fake Cargo build
+  output and verifies that Windows receives the validated search directory,
+  paths are encoded as a single Dune S-expression atom, and other platforms
+  retain Rust's exact native-library sequence.
 - The complete local native verification passes the Dune build and lint,
   Clippy with warnings denied, all Rust and OCaml tests, and a fresh installed-
   package consumer executable.

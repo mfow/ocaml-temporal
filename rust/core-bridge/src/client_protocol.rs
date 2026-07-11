@@ -239,8 +239,7 @@ pub fn encode_start_response(
 pub fn encode_wait_response(
     response: &WaitWorkflowResponse,
 ) -> Result<String, protocol::ProtocolError> {
-    validate_execution(&response.execution, "$.execution")?;
-    validate_outcome(&response.outcome)?;
+    validate_wait_response(response)?;
     encode_document(response)
 }
 
@@ -276,7 +275,7 @@ pub async fn start_workflow(
             .into_request(),
         )
         .await
-        .map_err(|status| map_status(&workflow_id, status))?
+        .map_err(|status| map_start_status(&workflow_id, status))?
         .into_inner();
 
     let run_id = response.run_id;
@@ -329,7 +328,7 @@ pub async fn wait_workflow(
                 .into_request(),
             )
             .await
-            .map_err(|status| map_status(&request.workflow_id, status))?
+            .map_err(map_rpc_status)?
             .into_inner();
 
         if let Some(history) = response.history
@@ -461,8 +460,11 @@ fn successor_ref(namespace: &str, workflow_id: &str, run_id: &str) -> Option<Suc
     })
 }
 
-/// Maps a tonic status into the closed privacy-safe client error set.
-fn map_status(workflow_id: &str, status: Status) -> ClientOperationError {
+/// Maps a start RPC failure into the closed privacy-safe client error set.
+///
+/// `AlreadyExists` has Temporal-specific AlreadyStarted meaning only for the
+/// start operation; all other statuses use the stable generic RPC mapping.
+fn map_start_status(workflow_id: &str, status: Status) -> ClientOperationError {
     if status.code() == Code::AlreadyExists {
         let existing_run_id = temporalio_common::protos::utilities::decode_status_detail::<
             temporalio_common::protos::temporal::api::errordetails::v1::WorkflowExecutionAlreadyStartedFailure,
@@ -476,9 +478,45 @@ fn map_status(workflow_id: &str, status: Status) -> ClientOperationError {
             existing_run_id,
         }
     } else {
-        ClientOperationError::Rpc {
-            code: format!("{:?}", status.code()).to_ascii_lowercase(),
-        }
+        map_rpc_status(status)
+    }
+}
+
+/// Maps a non-start RPC failure without inventing start-specific semantics.
+///
+/// The exact-run history operation can theoretically receive any gRPC status,
+/// including `AlreadyExists` from an intermediary.  It must remain an ordinary
+/// RPC error there: only `StartWorkflowExecution` has an AlreadyStarted meaning.
+fn map_rpc_status(status: Status) -> ClientOperationError {
+    ClientOperationError::Rpc {
+        code: rpc_code(status.code()).to_owned(),
+    }
+}
+
+/// Returns the stable snake-case name used by the closed client-error JSON.
+///
+/// Tonic's `Debug` spelling is Rust-style (`AlreadyExists`) and lowercasing it
+/// would collapse word boundaries (`alreadyexists`).  An explicit table keeps
+/// the error ABI stable if tonic changes its formatting implementation.
+fn rpc_code(code: Code) -> &'static str {
+    match code {
+        Code::Ok => "ok",
+        Code::Cancelled => "cancelled",
+        Code::Unknown => "unknown",
+        Code::InvalidArgument => "invalid_argument",
+        Code::DeadlineExceeded => "deadline_exceeded",
+        Code::NotFound => "not_found",
+        Code::AlreadyExists => "already_exists",
+        Code::PermissionDenied => "permission_denied",
+        Code::ResourceExhausted => "resource_exhausted",
+        Code::FailedPrecondition => "failed_precondition",
+        Code::Aborted => "aborted",
+        Code::OutOfRange => "out_of_range",
+        Code::Unimplemented => "unimplemented",
+        Code::Internal => "internal",
+        Code::Unavailable => "unavailable",
+        Code::DataLoss => "data_loss",
+        Code::Unauthenticated => "unauthenticated",
     }
 }
 
@@ -513,11 +551,7 @@ fn validate_execution(value: &ExecutionRef, path: &str) -> Result<(), protocol::
 
 /// Validates one outcome, including required continued-as-new successor data.
 fn validate_outcome(value: &WorkflowOutcome) -> Result<(), protocol::ProtocolError> {
-    let validate_successor = |successor: &SuccessorRef| {
-        validate_identifier(&successor.namespace, "$.outcome.successor.namespace")?;
-        validate_identifier(&successor.workflow_id, "$.outcome.successor.workflow_id")?;
-        validate_identifier(&successor.run_id, "$.outcome.successor.run_id")
-    };
+    let validate_successor = |successor: &SuccessorRef| validate_successor_shape(successor);
     match value {
         WorkflowOutcome::Completed { result, successor } => {
             for payload in result {
@@ -555,10 +589,57 @@ fn validate_outcome(value: &WorkflowOutcome) -> Result<(), protocol::ProtocolErr
     Ok(())
 }
 
+/// Validates the shape of successor metadata without assuming its parent run.
+fn validate_successor_shape(value: &SuccessorRef) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.namespace, "$.outcome.successor.namespace")?;
+    validate_identifier(&value.workflow_id, "$.outcome.successor.workflow_id")?;
+    validate_identifier(&value.run_id, "$.outcome.successor.run_id")
+}
+
+/// Enforces that a successor remains in the same execution chain and is a new
+/// concrete run. Temporal supplies these values, but checking them here keeps
+/// a malformed server response from changing identity at the OCaml boundary.
+fn validate_successor_for_execution(
+    successor: &SuccessorRef,
+    execution: &ExecutionRef,
+) -> Result<(), protocol::ProtocolError> {
+    validate_successor_shape(successor)?;
+    if successor.namespace != execution.namespace {
+        return Err(protocol::ProtocolError::invalid(
+            "$.outcome.successor.namespace",
+            "successor namespace does not match the waited execution",
+        ));
+    }
+    if successor.workflow_id != execution.workflow_id {
+        return Err(protocol::ProtocolError::invalid(
+            "$.outcome.successor.workflow_id",
+            "successor workflow ID does not match the waited execution",
+        ));
+    }
+    if successor.run_id == execution.run_id {
+        return Err(protocol::ProtocolError::invalid(
+            "$.outcome.successor.run_id",
+            "successor run ID must differ from the waited run",
+        ));
+    }
+    Ok(())
+}
+
 /// Validates a complete wait response.
 fn validate_wait_response(value: &WaitWorkflowResponse) -> Result<(), protocol::ProtocolError> {
     validate_execution(&value.execution, "$.execution")?;
-    validate_outcome(&value.outcome)
+    validate_outcome(&value.outcome)?;
+    let successor = match &value.outcome {
+        WorkflowOutcome::Completed { successor, .. }
+        | WorkflowOutcome::Failed { successor, .. }
+        | WorkflowOutcome::TimedOut { successor } => successor.as_ref(),
+        WorkflowOutcome::ContinuedAsNew { successor } => Some(successor),
+        WorkflowOutcome::Cancelled { .. } | WorkflowOutcome::Terminated { .. } => None,
+    };
+    if let Some(successor) = successor {
+        validate_successor_for_execution(successor, &value.execution)?;
+    }
+    Ok(())
 }
 
 /// Serializes, strictly reparses, and validates a client response.
@@ -587,6 +668,11 @@ fn validate_identifier(value: &str, path: &str) -> Result<(), protocol::Protocol
         Err(protocol::ProtocolError::invalid(
             path,
             "identifier is empty or exceeds the protocol string safety limit",
+        ))
+    } else if value.contains('\0') {
+        Err(protocol::ProtocolError::invalid(
+            path,
+            "identifier contains a NUL byte",
         ))
     } else {
         Ok(())
@@ -741,6 +827,47 @@ mod tests {
     }
 
     #[test]
+    /// Rejects a successor that changes namespace or workflow identity.
+    fn successor_must_remain_in_the_waited_execution() {
+        let response = WaitWorkflowResponse {
+            execution: ExecutionRef {
+                namespace: "default".to_owned(),
+                workflow_id: "id".to_owned(),
+                run_id: "run-1".to_owned(),
+            },
+            outcome: WorkflowOutcome::ContinuedAsNew {
+                successor: SuccessorRef {
+                    namespace: "other".to_owned(),
+                    workflow_id: "id".to_owned(),
+                    run_id: "run-2".to_owned(),
+                },
+            },
+        };
+        assert!(encode_wait_response(&response).is_err());
+    }
+
+    #[test]
+    /// Rejects a successor that reuses the run being observed.
+    fn successor_must_use_a_new_run_id() {
+        let response = WaitWorkflowResponse {
+            execution: ExecutionRef {
+                namespace: "default".to_owned(),
+                workflow_id: "id".to_owned(),
+                run_id: "run-1".to_owned(),
+            },
+            outcome: WorkflowOutcome::Completed {
+                result: Vec::new(),
+                successor: Some(SuccessorRef {
+                    namespace: "default".to_owned(),
+                    workflow_id: "id".to_owned(),
+                    run_id: "run-1".to_owned(),
+                }),
+            },
+        };
+        assert!(encode_wait_response(&response).is_err());
+    }
+
+    #[test]
     /// Keeps AlreadyStarted diagnostics closed and free of raw RPC text.
     fn already_started_error_is_closed_and_does_not_include_rpc_text() {
         let error = ClientOperationError::AlreadyStarted {
@@ -756,6 +883,49 @@ mod tests {
             }
         );
         assert!(!error.to_json().contains("server"));
+    }
+
+    #[test]
+    /// Converts a start-only AlreadyExists status into the typed error variant.
+    fn start_status_maps_already_exists_to_already_started() {
+        let error = map_start_status("workflow-1", Status::new(Code::AlreadyExists, "server"));
+        assert_eq!(
+            error,
+            ClientOperationError::AlreadyStarted {
+                workflow_id: "workflow-1".to_owned(),
+                existing_run_id: None,
+            }
+        );
+    }
+
+    #[test]
+    /// Keeps wait failures as RPC errors even when a proxy returns
+    /// `AlreadyExists`, which has start-only meaning in this adapter.
+    fn wait_status_does_not_use_start_error_mapping() {
+        let error = map_rpc_status(Status::new(Code::AlreadyExists, "server text"));
+        assert_eq!(
+            error,
+            ClientOperationError::Rpc {
+                code: "already_exists".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    /// Uses explicit snake-case names instead of tonic's unstable debug text.
+    fn rpc_status_codes_preserve_word_boundaries() {
+        assert_eq!(
+            map_rpc_status(Status::new(Code::DeadlineExceeded, "timeout")),
+            ClientOperationError::Rpc {
+                code: "deadline_exceeded".to_owned()
+            }
+        );
+        assert_eq!(
+            map_rpc_status(Status::new(Code::PermissionDenied, "denied")),
+            ClientOperationError::Rpc {
+                code: "permission_denied".to_owned()
+            }
+        );
     }
 
     #[test]

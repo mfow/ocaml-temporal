@@ -8,6 +8,27 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-12: Pure OCaml native execution translation
+
+Status: focused native execution tests pass locally; the supervisor scheduling
+loop and live Temporal worker remain follow-up work.
+
+`Temporal_runtime.Native_execution` now translates the checked semantic
+activation into the deterministic runtime's ordered jobs and translates its
+ordered commands back into a checked completion. It reuses the protocol's
+canonical validation for typed OCaml values, copies payload bytes at the
+boundary, retains replay/initialization/cancellation/eviction metadata, and
+reports malformed or duplicate sequences as typed bridge errors.
+
+Commands are accepted only when the current runtime and protocol have an exact
+lossless representation. Activity scheduling remains explicitly unsupported
+because the runtime command lacks Core's activity ID, task queue, argument,
+timeout, and cancellation fields. Child-workflow scheduling remains explicitly
+unsupported because the first semantic protocol has no child command variant.
+The adapter never fabricates Temporal defaults or silently drops either
+command. See the [translation reference](reference/native-execution-translation.md)
+for the mapping and ownership rules.
+
 ## 2026-07-12: Raw client start and exact-run wait adapter
 
 Status: Rust unit, ABI, formatting, and warnings-as-errors checks pass locally;

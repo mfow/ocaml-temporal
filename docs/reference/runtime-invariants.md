@@ -85,6 +85,31 @@ and bridge, read the [documentation guide](../README.md) first.
 - Foreign runtime threads never call arbitrary OCaml closures.
 - Blocking FFI calls occur only while the OCaml runtime lock is released.
 
+## Native activation translation
+
+- `Temporal_runtime.Native_execution` is a pure OCaml boundary below the
+  supervisor. It owns no Rust handle, performs no I/O, and does not block a
+  workflow scheduler.
+- A typed activation is revalidated with the canonical protocol encoder before
+  any execution state is touched. Sequence numbers, identifiers, payloads,
+  timestamps, ordering, and closed-object invariants therefore have one
+  validation path for JSON input and programmatic OCaml values.
+- Activation jobs and emitted commands retain source ordering. Every payload
+  is copied; binary protocol metadata that cannot be represented by the
+  runtime's string metadata map is rejected rather than lossy-decoded.
+- Initialization, cancellation, replay metadata, and cache-eviction details
+  remain available in the translated activation even where the first runtime
+  kernel uses only a marker job. Eviction is acknowledged with an empty
+  completion and never emits workflow commands.
+- A valid value with no lossless representation is an explicit typed
+  `unsupported` error. In particular, the current runtime activity command
+  lacks the protocol's activity ID, task queue, arguments, timeout, and
+  cancellation fields, and the first protocol has no child-workflow command;
+  the adapter never fabricates defaults or silently drops either command.
+- Unknown or duplicate operation sequences are bridge defects. They fail the
+  execution rather than being ignored, because ignoring them would make
+  replay diverge from the history supplied by Core.
+
 ## Supervisor mailbox
 
 - One mailbox owner Domain invokes every handler; producers never execute a

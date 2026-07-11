@@ -13,19 +13,21 @@ project intends to build. Start with these documents:
    runtime changes must preserve.
 5. [Native Core bridge](reference/core-bridge.md) explains how OCaml safely
    calls the Rust library linked into the final executable.
-6. [Private JSON control protocol](reference/core-protocol.md) defines the
+6. [Native execution translation](reference/native-execution-translation.md)
+   maps checked activations and runtime commands without losing metadata.
+7. [Private JSON control protocol](reference/core-protocol.md) defines the
    strict bounded envelope used by the two compiled halves of the SDK.
-7. [OCaml activity protocol adapter](reference/activity-protocol.md) explains
+8. [OCaml activity protocol adapter](reference/activity-protocol.md) explains
    typed remote-activity tasks, completions, ownership, and validation.
-8. [OCaml SDK logging](reference/observability.md) documents stable sources,
+9. [OCaml SDK logging](reference/observability.md) documents stable sources,
    tags, levels, application setup, and privacy rules.
-9. [SDK instance supervisor decision](decisions/0004-sdk-instance-supervisor.md)
+10. [SDK instance supervisor decision](decisions/0004-sdk-instance-supervisor.md)
    explains how one owner Domain serializes the complete native handle graph.
-10. [Local Temporal stack](reference/local-temporal-stack.md) explains the
+11. [Local Temporal stack](reference/local-temporal-stack.md) explains the
    PostgreSQL/Temporal Server substrate and its Make commands.
-11. [Quality and security gates](reference/quality-gates.md) explains the
+12. [Quality and security gates](reference/quality-gates.md) explains the
    one-shot scanners, pinned versions, and deliberately excluded tools.
-12. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
+13. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
    describes the long-term design. Unimplemented APIs in that document are
    targets, not claims about the current package.
 

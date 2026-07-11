@@ -44,6 +44,20 @@ accepted only at their documented default; a non-default value returns a typed
 [protocol reference](core-protocol.md), machine-readable schemas, and
 [ADR 0006](../decisions/0006-first-workflow-semantic-protocol.md).
 
+After protocol decoding, the private pure-OCaml
+[`Native_execution`](native-execution-translation.md) adapter translates jobs
+into the deterministic execution kernel and translates its commands back into
+the checked completion model. It preserves activation metadata, initialization
+records, sequence ordering, cancellation reasons, eviction details, and copied
+payload bytes without exposing Rust state. A valid command is accepted only
+when its fields have an exact protocol representation. The current runtime
+activity command is missing Core's activity ID, task queue, argument list,
+timeouts, and cancellation policy, and the first protocol has no child
+workflow command; those commands return typed `unsupported` errors until both
+schemas grow. No Temporal defaults are guessed and no command is silently
+dropped. See the translation reference for the complete mapping table and
+test coverage.
+
 ## Native client start and exact-run wait
 
 The private Rust client adapter adds two JSON ABI operations:

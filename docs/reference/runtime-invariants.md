@@ -37,8 +37,13 @@ and bridge, read the [documentation guide](../README.md) first.
 - Awaiting a ready future does not perform an effect.
 - Awaiting a pending future outside its owning running scheduler returns a
   structured defect.
-- `Future.both` observes both inputs before settling and selects the left error
-  when both fail.
+- `Future.both` and `Future.all` observe every input before settling and select
+  the first error in input order; successful `all` values retain input order.
+- `Future.race` and `Future.first` settle on the first completion, including an
+  error, without cancelling losers. Already-ready inputs use registration order;
+  pending inputs use deterministic callback order.
+- Combining futures from different executions returns a ready typed defect
+  owned by the leading input rather than raising an operational exception.
 - User callback exceptions are contained and reported as scheduler defects.
 - The implementation uses typed closures and GADTs, not `Obj.magic` or a
   heterogeneous untyped value store.
@@ -47,6 +52,11 @@ and bridge, read the [documentation guide](../README.md) first.
 
 - Input payloads are encoded before scheduling a command.
 - Activity outputs are decoded before resolving the typed public future.
+- Child-workflow IDs are explicit, non-empty, valid UTF-8, and at most 65,536
+  UTF-8 bytes. Invalid identity consumes neither a sequence nor a command. A
+  child resolver is registered before its command is emitted and removed before
+  its output is decoded.
+- Activities, child workflows, and timers share one monotonic command sequence.
 - Zero-duration sleep emits no timer.
 - Positive sleep emits one timer and resumes only for its exact sequence.
 - A workflow emits at most one terminal command.

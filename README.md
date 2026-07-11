@@ -4,8 +4,9 @@
 
 > **Community-maintained and unofficial. Not affiliated with or endorsed by Temporal Technologies, Inc.**
 
-OCaml Temporal SDK is a pre-release SDK for writing and managing durable Temporal workflows, activities and in
-modern OCaml 5. Workflow code uses ordinary functions, explicit `result`
+OCaml Temporal SDK is a pre-release SDK for writing and managing durable
+Temporal workflows and activities in modern OCaml 5. Workflow code uses
+ordinary functions, explicit `result`
 values, typed codecs and futures, and private algebraic effects for
 direct-style suspension.
 
@@ -20,17 +21,19 @@ Core runtime and worker handles are implemented.
 - Typed local and remote workflow/activity definitions
 - Explicit payload codecs and structured errors
 - FIFO deterministic workflow fibers built on OCaml 5 deep effects
-- Concurrent activity scheduling with `Future.both`
-- Durable timer command generation with `Workflow.sleep`
+- Concurrent activity and child-workflow scheduling in the synthetic runtime
+- `Future.both`, `all`, heterogeneous `race`, and homogeneous `first`
+- Durable timer command generation with `Workflow.start_sleep` and `sleep`
 - Deterministic synthetic replay, cancellation, and cache eviction tests
 - Dune-built OCaml executables linked to the Rust Core bridge static library
 - Finalizer-backed, panic-contained native result ownership
 - Docker Compose development on OCaml 5.2 and current OCaml 5.5
 - Executable no-copyleft dependency policy
 
-Child workflows, live Temporal connectivity, signals, queries, updates,
-continue-as-new, versioning, local activities, Nexus, and the remaining parity
-surface are planned and tracked in the roadmap.
+Live child-workflow translation, Temporal connectivity, signals, queries,
+updates, continue-as-new, versioning, local activities, Nexus, cancellation
+scopes, and the remaining parity surface are planned and tracked in the
+roadmap.
 
 ## Quick start
 
@@ -99,8 +102,10 @@ let summarize =
 let workflow document =
   let open Temporal.Result_syntax in
   let summary = Temporal.Activity.start summarize document in
-  let* summary = Temporal.Future.await summary in
-  let* () = Temporal.Workflow.sleep (Temporal.Duration.of_ms 10L) in
+  let timer = Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 10L) in
+  let* summary, () =
+    Temporal.Future.await (Temporal.Future.both summary timer)
+  in
   Ok summary
 
 let definition =

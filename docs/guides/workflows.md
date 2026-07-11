@@ -7,8 +7,9 @@ exceptions.
 
 This guide describes the API that compiles today. The current runtime uses a
 synthetic activation interpreter for tests and is not yet a production worker
-connected to Temporal Server. Planned child-workflow and structured-concurrency
-APIs are identified as future work.
+connected to Temporal Server. Child invocation and future aggregation compile
+and run against that interpreter; cancellation scopes and the live Core command
+translation remain future work.
 
 ## Typed payload codecs
 
@@ -118,7 +119,10 @@ OCaml 5 algebraic effect to pause the current workflow fiber. Other runnable
 workflow fibers and the worker process can continue. Application code never
 handles the effect or the saved continuation directly.
 
-Futures support ordinary typed composition:
+Futures support ordinary typed composition. `both` and `all` wait for every
+input and never cancel siblings implicitly. `all` preserves input order even
+when completions arrive in another order. If several inputs fail, it waits for
+all of them and returns the first error in input order:
 
 ```ocaml
 let await_pair first second =
@@ -126,13 +130,25 @@ let await_pair first second =
     (Temporal.Future.map String.length first)
     second
   |> Temporal.Future.await
+
+let await_all pending =
+  Temporal.Future.all pending
+  |> Temporal.Future.await
 ```
 
-`Future.both` observes both inputs before it settles and does not implicitly
-cancel a sibling when one side fails. Later child-workflow APIs will supply
-explicit structured-cancellation scopes.
+`Future.race left right` returns `Left value` or `Right value` for differently
+typed inputs. `Future.first leading rest` selects from a non-empty homogeneous
+collection. Both settle on the first completion, including an error, and leave
+losers running. If inputs are already ready, the left `race` argument or
+`first` list order wins; otherwise the deterministic scheduler's callback order
+wins. Explicit structured-cancellation scopes will be added later.
 
-## Activities, timers, and concurrent scheduling
+Combining futures from different workflow executions returns a ready structured
+defect. It does not raise an exception. `Future.all []` is immediately `Ok []`;
+inside workflow code it belongs to that execution and can be combined with its
+other futures.
+
+## Activities, child workflows, timers, and concurrent scheduling
 
 `Activity.start` emits a command immediately and returns before the remote
 activity completes. Start independent work first, then await the combined
@@ -155,12 +171,78 @@ followed by `Future.await`. Both return expected failures through `result`.
 Calling an operation outside an active workflow returns a structured defect.
 The internal suspension effect never escapes to application code.
 
+Child workflows follow the same start-now or execute-and-wait pattern. Their
+ID is mandatory because it is durable Temporal identity, not a private local
+counter:
+
+```ocaml
+let review =
+  Temporal.Workflow.remote
+    ~name:"review_document"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+
+let summarize_and_review document =
+  let open Temporal.Result_syntax in
+  let summary = Temporal.Activity.start summarize document in
+  let review =
+    Temporal.Child_workflow.start
+      ~id:"document-review"
+      review
+      document
+  in
+  let* summary, review =
+    Temporal.Future.await (Temporal.Future.both summary review)
+  in
+  Ok (summary, review)
+```
+
+`Child_workflow.start ~id definition input` returns immediately;
+`Child_workflow.execute` starts and waits. An ID must be non-empty, valid UTF-8,
+and no more than 65,536 UTF-8 bytes, which is the bridge's bounded-string safety
+ceiling. An invalid ID or input codec failure returns a typed failed future
+without emitting a history command or consuming a command sequence. The SDK
+does not invent child IDs, because a process-local counter cannot safely
+represent durable identity across replay and retries.
+
+Use `Workflow.start_sleep duration` to create a durable timer without waiting,
+or `Workflow.sleep duration` for the common start-and-wait form. A zero duration
+returns a ready future and emits no timer command. Starting several activities,
+children, or timers before awaiting creates deterministic concurrency: command
+order follows the workflow's OCaml call order, while completion order comes
+from recorded history.
+
+## Higher-order workflow helpers
+
+Starters are ordinary functions and can be accepted or returned by application
+helpers. No registration, special syntax, or SDK base class is needed:
+
+```ocaml
+let fan_out starters input =
+  List.map (fun start -> start input) starters
+  |> Temporal.Future.all
+
+let fastest left right input =
+  Temporal.Future.race (left input) (right input)
+
+let enrich document =
+  let summary = Temporal.Activity.start summarize in
+  let review = Temporal.Child_workflow.start ~id:"review-1" review in
+  fan_out [ summary; review ] document
+  |> Temporal.Future.await
+```
+
+These helpers compose futures only; they do not hide a Temporal command or
+create a new replay boundary. Their callers still choose exactly when each
+activity, child, or timer starts and when to wait.
+
 ## Current integration boundary
 
 The repository currently proves this API against a synthetic activation
-interpreter. It can deterministically emit activity and timer commands, apply
-explicitly ordered resolution jobs, suspend and resume OCaml continuations,
-tear down cache entries, and replay the same input to the same command bytes.
+interpreter. It can deterministically emit activity, child-workflow, and timer
+commands, apply explicitly ordered resolution jobs, suspend and resume OCaml
+continuations, aggregate futures, tear down cache entries, and replay the same
+input to the same command bytes.
 
 It does **not yet connect to Temporal Server**. The next phase links the native
 OCaml worker to the pinned Rust Temporal Core SDK and replaces synthetic jobs

@@ -59,14 +59,18 @@ end
 ```
 
 `first` takes a mandatory first argument, so an empty race is unrepresentable.
-`all []` is immediately successful. The public aggregation functions use the
-SDK's structured `Error.t`; this lets ownership mistakes be returned as typed
-defects instead of raising an exception.
+`all []` is immediately successful. When called during workflow execution, its
+ready future belongs to that execution so it can be combined with a timer,
+activity, or child without a false ownership defect. The public aggregation
+functions use the SDK's structured `Error.t`; this lets ownership mistakes be
+returned as typed defects instead of raising an exception.
 
 Child workflow IDs are explicit because Temporal records them as durable
-identity and Temporal Core requires one when starting a child. An empty `id`
-produces a typed failed future (or failed `execute` result) before a command is
-emitted. Rich child options remain later parity work; the SDK does not invent
+identity and Temporal Core requires one when starting a child. An ID must be
+non-empty, valid UTF-8, and at most 65,536 UTF-8 bytes so it fits the strict
+bridge string boundary. Invalid identity produces a typed failed future (or
+failed `execute` result) before input encoding, sequence allocation, or command
+emission. Rich child options remain later parity work; the SDK does not invent
 process-local `child-N` identifiers that could collide with durable history.
 
 ## Completion and ordering semantics

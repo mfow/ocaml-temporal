@@ -18,7 +18,7 @@ cleaner and more maintainable OCaml design.
 | Phase | Deliverable | Runtime evidence | Status |
 |---|---|---|---|
 | 1 | Repository foundation, typed public definitions, codecs, deterministic futures, effect scheduler, and synthetic activations | `make verify` runs from Docker Compose and deterministic command tests pass | Complete |
-| 2 | Rust static library, OCaml C stubs, live worker poll/completion loop, minimum OCaml client, and the real Compose smoke-test topology | An OCaml test-client container starts a workflow executed by a separate OCaml worker against Temporal Server and PostgreSQL | In progress |
+| 2 | Rust static library, OCaml C stubs, private owner-Domain mailbox, live worker poll/completion loop, minimum OCaml client, and the real Compose smoke-test topology | An OCaml test-client container starts a workflow executed by a separate OCaml worker against Temporal Server and PostgreSQL | In progress |
 | 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | Planned |
 | 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes), added to the live smoke suite | Parent workflows fan out to mock activities and children, await one/all, and cancel safely through the real cluster | Planned |
 | 5 | Signals, queries, updates, validators, conditions, and handler policies | CLI-driven interactive workflow tests pass, including mode violations | Planned |
@@ -32,6 +32,9 @@ cleaner and more maintainable OCaml design.
 
 1. [Foundation and deterministic runtime](superpowers/plans/2026-07-11-foundation-and-deterministic-runtime.md)
 2. [Core bridge and first real workflow](superpowers/plans/2026-07-11-core-bridge-and-first-real-workflow.md)
+   The private mailbox processor is a completed Phase 2 foundation described
+   by [ADR 0003](decisions/0003-private-mailbox-processor.md); live handle
+   ownership remains pending.
 3. Activities, timers, and replay (written after Phase 2 evidence is committed)
 4. Child workflows and structured concurrency (written after Phase 3 evidence is committed)
 5. Interactive and advanced features (split further at the preceding review gate)

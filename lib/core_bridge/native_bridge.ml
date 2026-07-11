@@ -274,6 +274,21 @@ let decode response =
         Error
           { status = status code; message = response_error response })
 
+(** Chooses a log level and constant message for each typed bridge status. *)
+let bridge_error_log_level = function
+  | Not_ready ->
+      (* Polling is deliberately non-blocking, so an empty lane is normal
+         scheduler state rather than an error that should page an operator. *)
+      (Logs.Debug, "bridge operation not ready")
+  | Outstanding_tasks ->
+      (* Shutdown can be retried after the language side finishes its leased
+         work. Keep this visible without classifying it as a bridge failure. *)
+      (Logs.Warning, "bridge operation waiting for outstanding tasks")
+  | _ ->
+      (* Protocol, lifecycle, configuration, and native failures all indicate
+         that the requested operation did not complete and need investigation. *)
+      (Logs.Error, "bridge operation failed")
+
 (** Measures one complete bridge operation, reports its structural outcome,
     and returns the original [result] unchanged. *)
 let bridge_call operation action =
@@ -288,8 +303,8 @@ let bridge_call operation action =
         Observability.tags ~operation
           ~bridge_status:(status_name error.status) ()
       in
-      Observability.report ~src:Observability.Source.bridge Logs.Error ~tags
-        "bridge operation failed");
+      let level, message = bridge_error_log_level error.status in
+      Observability.report ~src:Observability.Source.bridge level ~tags message);
   result
 
 (** Converts successful test operations with no useful output to [Ok ()] after

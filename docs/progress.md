@@ -242,7 +242,7 @@ verified to publish the corresponding native manifest.
 
 ## 2026-07-11: Pinned Rust and Temporal Core build foundation
 
-Status: locally verified; native CI matrix pending.
+Status: locally verified; native CI matrix rerun pending.
 
 The development image now copies Rust 1.94.1 from a digest-pinned official
 multi-architecture image and installs only Core's protobuf build tools. The
@@ -264,6 +264,11 @@ Local evidence:
   `rust/core-bridge/tests/`; the revision test passes.
 - Action workflow lint, Rust format checking, repository formatting, Python
   syntax checking, and `git diff --check` pass.
+
+The first native run exposed that the official Rust image does not preinstall
+the optional Clippy and rustfmt components. The toolchain stage now installs
+both explicitly, and the smoke test requires both commands before compiling
+the archive.
 
 The Cargo scanner is intentionally absent from the Makefile. The single
 standalone GitHub Actions license job streams locked metadata from the build

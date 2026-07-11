@@ -10,6 +10,8 @@ if [ "$actual_rust_version" != "$expected_rust_version" ]; then
 fi
 
 cargo --version >/dev/null
+cargo clippy --version >/dev/null
+cargo fmt --version >/dev/null
 cargo build --manifest-path rust/Cargo.toml --locked
 
 archive=_build/rust/debug/libocaml_temporal_core_bridge.a

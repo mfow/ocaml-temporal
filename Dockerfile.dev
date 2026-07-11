@@ -2,6 +2,8 @@ ARG RUST_IMAGE=rust:1.94-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6
 ARG OCAML_IMAGE=ocaml/opam:debian-12-ocaml-5.2
 
 FROM ${RUST_IMAGE} AS rust-toolchain
+RUN rustup component add clippy rustfmt
+
 FROM ${OCAML_IMAGE}
 
 USER root

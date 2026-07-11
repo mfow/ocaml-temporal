@@ -298,8 +298,9 @@ let decode response =
 (** Chooses a log level and constant message for each typed bridge status. *)
 let bridge_error_log_level = function
   | Not_ready ->
-      (* Polling is deliberately non-blocking, so an empty lane is normal
-         scheduler state rather than an error that should page an operator. *)
+      (* Empty worker lanes and an open exact-run wait whose bounded interval
+         elapsed are normal scheduler state, not failures that should page an
+         operator. *)
       (Logs.Debug, "bridge operation not ready")
   | Outstanding_tasks ->
       (* Shutdown can be retried after the language side finishes its leased
@@ -353,8 +354,11 @@ let client_start_workflow_json runtime input =
   bridge_call "client_start_workflow_json" (fun () ->
       decode (client_start_workflow_json_raw runtime input))
 
-(** Waits for one exact run through the Rust-owned client. Rust performs the
-    long poll while the C binding has released the OCaml runtime lock. *)
+(** Waits for one exact run through the Rust-owned client. Each native call
+    performs the close-event long poll for at most 100 ms while the C binding
+    releases the OCaml runtime lock. An open run returns [Not_ready] so a
+    caller or later orchestration loop can retry without occupying the
+    supervisor owner indefinitely. *)
 let client_wait_workflow_json runtime input =
   bridge_call "client_wait_workflow_json" (fun () ->
       decode (client_wait_workflow_json_raw runtime input))

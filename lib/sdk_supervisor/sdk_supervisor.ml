@@ -35,14 +35,23 @@ module Make (Backend : Backend) = struct
     | Running of Backend.state
     | Closed_graph of (unit, error) result
 
-  (** Shared instance state. [shutdown_mutex] serializes joining and protects
-      [shutdown_result]. [shutdown_finished] lets the finalizer avoid spawning
-      redundant cleanup after explicit closure. All native graph access
-      remains in [mailbox]. *)
+  (** Progress of the one terminal mailbox request. Keeping the admitted reply
+      separate from its eventual result makes shutdown admission observable
+      without waiting for earlier backend work to finish. *)
+  type shutdown_progress =
+    | Shutdown_open
+    | Shutdown_submitted of (unit, error) result Mailbox.pending
+    | Shutdown_admission_failed of (unit, error) result
+    | Shutdown_finished of (unit, error) result
+
+  (** Shared instance state. [shutdown_mutex] serializes terminal submission,
+      joining, and updates to [shutdown_progress]. [shutdown_finished] lets the
+      finalizer avoid spawning redundant cleanup after explicit closure. All
+      native graph access remains in [mailbox]. *)
   type t = {
     mailbox : Mailbox.t;
     shutdown_mutex : Mutex.t;
-    mutable shutdown_result : (unit, error) result option;
+    mutable shutdown_progress : shutdown_progress;
     shutdown_finished : bool Atomic.t;
   }
 
@@ -123,23 +132,53 @@ module Make (Backend : Backend) = struct
     | Ok result -> result
     | Error failure -> Error (mailbox_failure failure)
 
+  (** Atomically submits the terminal request while the shutdown mutex is held.
+      This function does not wait for earlier backend work or join the owner. *)
+  let initiate_shutdown_locked supervisor =
+    match supervisor.shutdown_progress with
+    | Shutdown_open ->
+        (match Mailbox.submit_and_close supervisor.mailbox Shutdown with
+        | Ok pending ->
+            supervisor.shutdown_progress <- Shutdown_submitted pending
+        | Error failure ->
+            supervisor.shutdown_progress <-
+              Shutdown_admission_failed (Error (mailbox_failure failure)))
+    | Shutdown_submitted _ | Shutdown_admission_failed _ | Shutdown_finished _ ->
+        ()
+
+  (** Closes operation admission synchronously without waiting for backend
+      teardown. This seam remains in the private supervisor library so tests
+      and future lifecycle orchestration can observe the linearization point. *)
+  let initiate_shutdown supervisor =
+    with_mutex supervisor.shutdown_mutex (fun () ->
+        initiate_shutdown_locked supervisor)
+
   (** Performs shutdown, closes admissions, and joins exactly once. The mutex
       covers the blocking sequence because concurrent shutdown callers must
-      observe one cached result rather than attempt multiple Domain joins. *)
+      await one admitted terminal request and observe one cached result rather
+      than attempt multiple Domain joins. *)
   let shutdown supervisor =
     with_mutex supervisor.shutdown_mutex (fun () ->
-        match supervisor.shutdown_result with
-        | Some result -> result
-        | None ->
+        initiate_shutdown_locked supervisor;
+        match supervisor.shutdown_progress with
+        | Shutdown_submitted pending ->
             let result =
-              match Mailbox.call_and_close supervisor.mailbox Shutdown with
+              match Mailbox.await pending with
               | Ok result -> result
               | Error failure -> Error (mailbox_failure failure)
             in
             ignore (Mailbox.join supervisor.mailbox);
-            supervisor.shutdown_result <- Some result;
+            supervisor.shutdown_progress <- Shutdown_finished result;
             Atomic.set supervisor.shutdown_finished true;
-            result)
+            result
+        | Shutdown_admission_failed result ->
+            ignore (Mailbox.join supervisor.mailbox);
+            supervisor.shutdown_progress <- Shutdown_finished result;
+            Atomic.set supervisor.shutdown_finished true;
+            result
+        | Shutdown_finished result -> result
+        | Shutdown_open ->
+            invalid_arg "SDK supervisor shutdown did not submit a terminal request")
 
   (** Schedules forgotten-instance cleanup on a system thread. A finalizer must
       not block while waiting for mailbox capacity or the owner Domain. The
@@ -169,7 +208,7 @@ module Make (Backend : Backend) = struct
           {
             mailbox;
             shutdown_mutex = Mutex.create ();
-            shutdown_result = None;
+            shutdown_progress = Shutdown_open;
             shutdown_finished = Atomic.make false;
           }
         in

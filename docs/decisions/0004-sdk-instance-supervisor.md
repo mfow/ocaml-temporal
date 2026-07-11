@@ -67,14 +67,18 @@ then re-raised into the mailbox's containment boundary. The active caller,
 queued callers, later callers, and shutdown all observe the same contained
 exception. A cleanup error cannot replace the original defect.
 
-Explicit shutdown uses the mailbox's atomic terminal call. Under the same
-mailbox mutex, it takes the FIFO position after operations already admitted
-and changes the mailbox to closing, so later operations cannot overtake it
-even when the ordinary bounded queue is full. The producer then joins the
-mailbox. A separate
-mutex permits only one producer to perform that blocking join and caches its
-exact result, including an expected backend shutdown error or an unexpected
-owner failure. Repeated shutdown never invokes native destruction again.
+Explicit shutdown first submits and caches the mailbox's atomic terminal call.
+Under the same mailbox mutex, it takes the FIFO position after operations
+already admitted and changes the mailbox to closing, so later operations
+cannot overtake it even when the ordinary bounded queue is full. Submission
+does not wait for earlier backend work; the private `initiate_shutdown` seam
+therefore identifies the exact point after which all new operations must be
+rejected. The public `shutdown` operation awaits that cached reply and joins
+the mailbox. A separate mutex permits only one producer to submit, await, and
+perform the blocking join. It caches the exact result, including an expected
+backend shutdown error or an unexpected owner failure. Concurrent and repeated
+shutdown calls never submit a second terminal request or invoke native
+destruction again.
 
 If an application abandons a live supervisor, an OCaml finalizer starts a
 dedicated system thread which calls the same serialized shutdown function. The
@@ -116,8 +120,9 @@ Focused tests prove:
 - creation errors publish no supervisor and close no nonexistent state;
 - unexpected operation exceptions close once and release queued callers with
   the same failure;
-- shutdown waits behind admitted work, rejects later use, and caches both
-  success and expected shutdown errors;
+- shutdown initiation rejects later use synchronously while admitted backend
+  work remains blocked, then public shutdown waits behind that work and caches
+  both success and expected shutdown errors;
 - sixteen concurrent shutdown callers share one result and one backend close;
 - unexpected create and shutdown exceptions are contained without stranding
   callers, and a shutdown exception is cached for concurrent/later callers;

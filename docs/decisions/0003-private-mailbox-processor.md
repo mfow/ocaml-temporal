@@ -75,14 +75,17 @@ capacity and lifecycle after every wake. Dequeue wakes capacity waiters. This
 is real bounded-buffer backpressure, not an unbounded queue with advisory
 limits.
 
-One lifecycle operation may use `call_and_close` to atomically append a final
-request and transition `Open` to `Closing` under the queue mutex. This terminal
-request has one reserved position beyond the ordinary capacity. It therefore
-never waits behind producers contending for capacity, while FIFO placement
-still keeps it behind all work admitted before the transition. Every later
-admission observes `Closing` and is rejected. This exception to the ordinary
-capacity bound prevents shutdown starvation and makes the shutdown boundary a
-single linearization point.
+One lifecycle operation may use `submit_and_close` to atomically append a final
+request and transition `Open` to `Closing` under the queue mutex. It returns an
+opaque typed pending reply as soon as that transition has linearized; `await`
+waits for the eventual handler result. `call_and_close` composes those two
+operations for callers which do not need to observe the boundary separately.
+The terminal request has one reserved position beyond the ordinary capacity.
+It therefore never waits behind producers contending for capacity, while FIFO
+placement still keeps it behind all work admitted before the transition. Every
+later admission observes `Closing` and is rejected. This exception to the
+ordinary capacity bound prevents shutdown starvation and makes the shutdown
+boundary a single, directly testable linearization point.
 
 ### State transitions and closure
 

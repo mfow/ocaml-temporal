@@ -215,30 +215,13 @@ let test_terminal_call_closes_a_full_mailbox_atomically () =
     (Mailbox.post mailbox (Hold (1, entered, release)));
   await_gate entered;
   expect "ordinary tail filled" (Ok ()) (Mailbox.post mailbox (Add 2));
-  let terminal_started = Atomic.make false in
   let terminal =
-    Domain.spawn (fun () ->
-        Atomic.set terminal_started true;
-        Mailbox.call_and_close mailbox Read)
+    Result.get_ok (Mailbox.submit_and_close mailbox Read)
   in
-  await_atomic terminal_started;
-  yield_to_domains ();
-  let late_finished = Atomic.make false in
-  let late =
-    Domain.spawn (fun () ->
-        let result = Mailbox.post mailbox (Add 3) in
-        Atomic.set late_finished true;
-        result)
-  in
-  yield_to_domains ();
-  if not (Atomic.get late_finished) then (
-    open_gate release;
-    ignore (Domain.join terminal);
-    ignore (Domain.join late);
-    failwith "terminal call did not close admission while the FIFO was full");
-  expect "late admission rejected" (Error Mailbox.Closed) (Domain.join late);
+  expect "late admission rejected" (Error Mailbox.Closed)
+    (Mailbox.post mailbox (Add 3));
   open_gate release;
-  expect "terminal FIFO result" (Ok [ 1; 2 ]) (Domain.join terminal);
+  expect "terminal FIFO result" (Ok [ 1; 2 ]) (Mailbox.await terminal);
   expect "terminal call joined cleanly" (Ok ()) (Mailbox.join mailbox)
 
 (** Verifies that an unexpected handler exception reaches the active caller,

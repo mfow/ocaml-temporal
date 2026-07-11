@@ -94,3 +94,27 @@ and bridge, read the [documentation guide](../README.md) first.
   `call` and `join` cannot complete while the sole owner is executing that
   handler, and `post` can block if the bounded queue is full. A handler may
   call `close`, which does not wait for the owner and preserves drain semantics.
+
+## SDK instance supervisor
+
+- Exactly one dedicated owner Domain creates, uses, and closes the complete
+  runtime/client/worker graph for an SDK instance. Individual native handles do
+  not receive their own actors.
+- Backend state never appears in a producer-facing operation or result. Typed
+  GADT operations may expose ordinary copied values but cannot return a raw
+  native handle.
+- Expected operation errors leave a running graph usable. An unexpected
+  backend exception marks the graph terminal, attempts cleanup exactly once,
+  and becomes the common mailbox failure for active, queued, and later calls.
+- Shutdown is admitted in FIFO order, invalidates the graph before later work
+  can use it, closes and joins the owner, and caches the exact terminal result.
+  Repeated or concurrent shutdown invokes backend destruction at most once.
+- A backend shutdown result, including `Error`, means the graph has been
+  consumed or invalidated. A retryable operation must not masquerade as
+  terminal shutdown while it still owns live resources.
+- Supervisor entry points may block and run only on ordinary producer Domains.
+  Fiber runtimes must offload them; deterministic workflow schedulers must not
+  invoke them directly.
+- The abandoned-instance finalizer never calls a blocking supervisor entry
+  point itself. It delegates normal shutdown to a dedicated system thread; an
+  already completed explicit shutdown schedules no redundant cleanup.

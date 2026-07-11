@@ -7,6 +7,8 @@
   ../../lib/core_bridge/dune
   ../../lib/mailbox_processor/dune
   ../../lib/mailbox_processor/mailbox_processor.mli
+  ../../lib/sdk_supervisor/dune
+  ../../lib/sdk_supervisor/sdk_supervisor.mli
   ../../scripts/build-rust-bridge.sh
   ../bridge/dune
   ../../temporal-sdk.opam

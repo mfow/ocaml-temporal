@@ -97,6 +97,14 @@ The supervisor serializes lifecycle transitions and destroys workers before
 clients and the runtime. Rust retains internal Tokio concurrency; workflow
 executions retain their separate deterministic effect schedulers.
 
+The implemented private supervisor currently owns the real runtime only. Its
+backend protocol exposes typed GADT operations but never the owner-confined
+state, preventing a raw handle from escaping through an otherwise convenient
+callback. Client and worker handles will be added to that same graph after the
+corresponding bridge operations exist. See
+[ADR 0004](../decisions/0004-sdk-instance-supervisor.md) for its lifecycle,
+failure, and scheduler contracts.
+
 Notification is event-driven without a foreign-thread OCaml callback. Rust
 queues readiness and signals a native condition/event primitive; the
 supervisor's dedicated Domain/OS thread waits in a C stub with its OCaml

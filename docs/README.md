@@ -17,7 +17,9 @@ project intends to build. Start with these documents:
    strict bounded envelope used by the two compiled halves of the SDK.
 7. [OCaml SDK logging](reference/observability.md) documents stable sources,
    tags, levels, application setup, and privacy rules.
-8. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
+8. [SDK instance supervisor decision](decisions/0004-sdk-instance-supervisor.md)
+   explains how one owner Domain serializes the complete native handle graph.
+9. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
    describes the long-term design. Unimplemented APIs in that document are
    targets, not claims about the current package.
 

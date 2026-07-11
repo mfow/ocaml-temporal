@@ -99,8 +99,27 @@ let test_mailbox_is_private () =
   if contains ~needle:"public_name" (read dune) then
     failwith "the mailbox processor must remain a Dune-private library"
 
+(** Ensures native graph ownership remains an internal implementation unit and
+    that its interface cannot return the owner-confined backend state. *)
+let test_sdk_supervisor_is_private () =
+  let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
+  let dune = Filename.concat source_root "lib/sdk_supervisor/dune" in
+  let interface =
+    Filename.concat source_root "lib/sdk_supervisor/sdk_supervisor.mli"
+  in
+  require_text ~path:dune ~needle:"(name temporal_sdk_supervisor)";
+  require_text
+    ~path:interface
+    ~needle:"No backend state or\n    native handle can be obtained";
+  require_text
+    ~path:interface
+    ~needle:"must be offloaded by any cooperative scheduler adapter";
+  if contains ~needle:"public_name" (read dune) then
+    failwith "the SDK supervisor must remain a Dune-private library"
+
 let () =
   test_license ();
   test_package_metadata ();
   test_static_foreign_archives ();
-  test_mailbox_is_private ()
+  test_mailbox_is_private ();
+  test_sdk_supervisor_is_private ()

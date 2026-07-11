@@ -1,7 +1,32 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** Design for the first real end-to-end acceptance test. It describes
-work that is not implemented yet.
+**Status:** The source-level driver and worker scaffold now exists under
+`test/integration/temporal/{common,driver,worker}`. It proves that both
+executables can be compiled against the same public `temporal-sdk` package,
+but it is not a live test yet. The binaries refuse to run unless
+`TEMPORAL_TWO_BINARY_LIVE=1` is set, and no Compose service enables that flag.
+
+The guard is deliberate: the current public `Temporal.Client` and
+`Temporal.Worker` implementations still accept only their deterministic
+`mock://` backend. An `http://` or `https://` endpoint currently returns a
+typed "native adapter is not connected" error. Running the scaffold against
+`temporal:7233` before the production adapter exists would therefore test a
+mock or an expected failure, not Temporal Server, and could be mistaken for a
+green SDK acceptance test.
+
+The remaining blockers are concrete rather than environmental:
+
+1. expose the native client start/exact-run wait operations through the
+   supervisor and public client handle;
+2. connect the native workflow/activity poll and completion operations to the
+   deterministic execution registry and public worker loop; and
+3. add activity-task semantic conversion, worker readiness/health signalling,
+   and Compose services that run these two binaries only after those operations
+   are implemented.
+
+Until those seams are complete, CI should continue running the existing
+Core-client/worker lifecycle smoke and compile the scaffold with the ordinary
+OCaml build. It must not promote the scaffold to a live acceptance target.
 
 ## Purpose
 
@@ -68,6 +93,9 @@ test/integration/temporal/
 ├── compose.yaml
 ├── config/
 ├── scripts/
+├── common/
+│   ├── dune
+│   └── smoke_definitions.ml
 ├── worker/
 │   ├── dune
 │   └── smoke_worker.ml

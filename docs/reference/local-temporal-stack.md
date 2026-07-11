@@ -1,7 +1,14 @@
 # Local Temporal and PostgreSQL Stack
 
-This reference describes the live infrastructure available now. It does not
-describe an OCaml worker integration, which is still under development.
+This reference describes the live infrastructure and Core lifecycle acceptance
+available now. Workflow task polling and execution are still under development.
+
+The complete Compose fixture lives under `test/integration/temporal/`, including
+its PostgreSQL/Temporal configuration and fixture-only helper scripts. The
+repository root intentionally contains no Compose file. Use the Make commands
+below: they select the fixture with explicit Compose file, project-directory,
+and project-name arguments while preserving the repository root as the
+development-container build context and source mount.
 
 ## Requirements and ports
 
@@ -51,13 +58,21 @@ make test-temporal-integration
 ```
 
 The test intentionally removes this Compose project's Temporal volume before
-and after the run. It is a database/frontend readiness test, not a workflow
-test. A later milestone will add separate OCaml client and worker containers,
-then use this same target to prove workflow execution against the real cluster.
+and after the run. After database/frontend readiness, an OCaml executable uses
+the private supervisor and C/Rust bridge to connect the official Core client,
+construct and namespace-validate a workflow-only worker, exercise invalid and
+repeated lifecycle transitions, and shut the graph down deterministically.
+This is a lifecycle acceptance test, not an end-to-end workflow test: a later
+milestone must add poll/completion plus separate OCaml client and worker
+services and prove start, poll, execute, and completion against this cluster.
 On every pull request and push to `master`, GitHub Actions runs this target once
 in a standalone Ubuntu job labelled for OCaml 5.5. It is intentionally absent
 from the multi-version build matrix because starting a real database and
 Temporal cluster once provides the same infrastructure evidence.
+
+Running `docker compose` directly from the repository root is unsupported. The
+root Make targets are the stable interface and deliberately hide the fixture's
+test-only location and Compose project identity.
 
 If startup fails, `make temporal-logs` prints the last 200 lines from
 PostgreSQL, schema migration, and Temporal Server. Image pulls can be large;

@@ -75,13 +75,21 @@ module Make (Backend : Backend) : sig
   val shutdown : t -> (unit, error) result
 end
 
-(** The production supervisor over the currently implemented native bridge.
-    Only runtime lifecycle and ABI compatibility exist today; client and worker
-    operations will extend this typed language when their real Core handles
-    are implemented. *)
+(** The production supervisor over one native runtime-client-worker graph. *)
 module Native : sig
-  (** Operations implemented by the current native runtime graph. *)
-  type _ operation = Check_compatibility : unit operation
+  (** Validated client settings whose representation remains bridge-private. *)
+  type client_config
+
+  (** Validated workflow-only worker settings whose representation is private. *)
+  type worker_config
+
+  (** Typed lifecycle operations serialized by the owner Domain. *)
+  type _ operation =
+    | Check_compatibility : unit operation
+    | Connect_client : client_config -> unit operation
+    | Start_worker : worker_config -> unit operation
+    | Shutdown_worker : unit operation
+    | Disconnect_client : unit operation
 
   (** Production lifecycle and bridge failures. *)
   type error =
@@ -89,19 +97,35 @@ module Native : sig
     | Closed
     | Supervisor_failed of exn
 
-  (** An abstract SDK instance which owns one Rust runtime. *)
+  (** An abstract SDK instance which owns the complete Rust handle graph. *)
   type t
+
+  (** Validates client settings without network access. *)
+  val client_config :
+    target_url:string -> identity:string -> (client_config, Temporal_core_bridge.Native_bridge.error) result
+
+  (** Validates explicit worker resource settings without network access. *)
+  val worker_config :
+    namespace:string ->
+    task_queue:string ->
+    build_id:string ->
+    max_cached_workflows:int ->
+    max_outstanding_workflow_tasks:int ->
+    max_concurrent_workflow_task_polls:int ->
+    graceful_shutdown_timeout_ms:int64 ->
+    (worker_config, Temporal_core_bridge.Native_bridge.error) result
 
   (** Starts a dedicated owner Domain and creates the real Rust runtime. *)
   val create : capacity:int -> unit -> (t, error) result
 
-  (** Runs one currently supported typed bridge operation on the owner. *)
+  (** Runs one typed bridge operation on the sole owner Domain. Network waits
+      enter Rust through C stubs which release the OCaml runtime lock. *)
   val perform : t -> 'result operation -> ('result, error) result
 
   (** Closes operation admission without waiting for native teardown. This is
       an internal lifecycle seam; application code should call [shutdown]. *)
   val initiate_shutdown : t -> unit
 
-  (** Deterministically closes the real Rust runtime and owner Domain. *)
+  (** Deterministically closes worker, client, runtime, then owner Domain. *)
   val shutdown : t -> (unit, error) result
 end

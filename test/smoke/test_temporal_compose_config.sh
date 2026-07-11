@@ -5,11 +5,13 @@ set -eu
 # source YAML. That catches invalid interpolation and dependency/profile
 # combinations before the much slower live integration smoke pulls images.
 root=${1:-$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)}
-compose_file="$root/compose.yaml"
+fixture="$root/test/integration/temporal"
+compose_file="$fixture/compose.yaml"
 rendered=$(mktemp)
 trap 'rm -f "$rendered"' EXIT HUP INT TERM
 
-docker compose --file "$compose_file" --profile temporal config >"$rendered"
+docker compose --project-directory "$fixture" --file "$compose_file" \
+  --project-name ocaml-temporal-integration --profile temporal config >"$rendered"
 
 # Reports a focused failure when an invariant is absent from Compose's
 # normalized output, keeping this shell test dependency-free and portable.
@@ -61,6 +63,24 @@ require_workflow_text() {
 require_workflow_text 'name: Temporal/PostgreSQL integration smoke (OCaml 5.5)'
 require_workflow_text 'OCAML_VERSION: "5.5"'
 require_workflow_text 'run: make test-temporal-integration'
+require_workflow_text 'make --silent cargo-metadata'
 
-test -x "$root/scripts/setup-temporal-postgres.sh"
-test -x "$root/scripts/check-temporal-stack.sh"
+require_absent() {
+  path=$1
+  if [ -e "$path" ]; then
+    echo "Temporal integration fixture must not remain at legacy path: $path" >&2
+    exit 1
+  fi
+}
+
+require_absent "$root/compose.yaml"
+require_absent "$root/config/temporal"
+require_absent "$root/scripts/check-temporal-stack.sh"
+require_absent "$root/scripts/setup-temporal-postgres.sh"
+test -x "$fixture/scripts/setup-temporal-postgres.sh"
+test -x "$fixture/scripts/check-temporal-stack.sh"
+
+if ! grep -F 'test/integration/temporal' "$makefile" >/dev/null; then
+  echo "root Make entrypoints must select the nested Compose fixture" >&2
+  exit 1
+fi

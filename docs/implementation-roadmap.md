@@ -34,11 +34,12 @@ cleaner and more maintainable OCaml design.
 2. [Core bridge and first real workflow](superpowers/plans/2026-07-11-core-bridge-and-first-real-workflow.md)
    The private mailbox processor is a completed Phase 2 foundation described
    by [ADR 0003](decisions/0003-private-mailbox-processor.md). The one-Domain
-   SDK graph supervisor now owns the real Rust runtime as described by
-   [ADR 0004](decisions/0004-sdk-instance-supervisor.md). The bilateral first
-   activation/completion semantic adapter is complete as described by
-   [ADR 0006](decisions/0006-first-workflow-semantic-protocol.md); live
-   client/worker handles and the native operations that carry those documents
+   SDK graph supervisor now owns the real Rust runtime, client, and validated
+   workflow-only worker as described by [ADR
+   0004](decisions/0004-sdk-instance-supervisor.md). The bilateral first
+   activation/completion semantic adapter is complete as described by [ADR
+   0006](decisions/0006-first-workflow-semantic-protocol.md); poll/completion
+   operations that carry those documents and the first executed workflow
    remain pending.
 3. Activities, timers, and replay (written after Phase 2 evidence is committed)
 4. Child workflows and structured concurrency (written after Phase 3 evidence is committed)

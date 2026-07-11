@@ -12,9 +12,10 @@ direct-style suspension.
 
 The repository currently contains a verified deterministic runtime kernel,
 synthetic activation interpreter, and native OCaml-to-Rust link through the
-official Rust Temporal Core dependency. It does **not yet connect to Temporal
-Server**; the current native operation is a bridge/ownership proof before real
-Core runtime and worker handles are implemented.
+official Rust Temporal Core dependency. The private supervisor can connect the
+official client and construct and namespace-validate a workflow-only worker.
+It does **not yet poll or complete workflow tasks**, so it cannot execute a live
+workflow yet.
 
 ## Current capabilities
 
@@ -26,11 +27,11 @@ Core runtime and worker handles are implemented.
 - Durable timer command generation with `Workflow.start_sleep` and `sleep`
 - Deterministic synthetic replay, cancellation, and cache eviction tests
 - Dune-built OCaml executables linked to the Rust Core bridge static library
-- Finalizer-backed, panic-contained native result ownership
+- Finalizer-backed, panic-contained runtime-client-worker ownership
 - Docker Compose development on OCaml 5.2 and current OCaml 5.5
 - Executable no-copyleft dependency policy
 
-Live child-workflow translation, Temporal connectivity, signals, queries,
+Live workflow polling and child-workflow translation, signals, queries,
 updates, continue-as-new, versioning, local activities, Nexus, cancellation
 scopes, and the remaining parity surface are planned and tracked in the
 roadmap.
@@ -66,9 +67,12 @@ link on Windows x64 and macOS ARM64 with OCaml 5.5. These jobs use
 
 The explicit `make test-temporal-integration` smoke starts a real Temporal
 Server backed by PostgreSQL, checks both SQL schemas and the frontend gRPC
-health API, and then removes its test data. It does not yet execute an OCaml
-workflow; see the [local stack reference](docs/reference/local-temporal-stack.md)
-for lifecycle commands and current scope.
+health API, then runs the OCaml-owned Core client/worker lifecycle acceptance
+and removes its test data. It does not yet execute an OCaml workflow; see the
+[local stack reference](docs/reference/local-temporal-stack.md) for lifecycle
+commands and the precise acceptance boundary. The Compose file, configuration,
+and fixture helpers are isolated under `test/integration/temporal/`; root Make
+targets are the supported interface to that test infrastructure.
 
 `make quality` is the separate, one-shot repository gate for pinned native
 quality tools. It checks the locked Cargo graph for RustSec advisories and

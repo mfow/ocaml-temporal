@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/blob/master/docs/schemas/bridge/client-config.schema.json",
+  "title": "OCaml Temporal Core bridge client configuration",
+  "description": "Private, strict configuration document sent from the OCaml supervisor to the Rust Core bridge.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target_url", "identity"],
+  "properties": {
+    "target_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://",
+      "description": "Runtime validators enforce the 65536-byte transport ceiling; JSON Schema length is character-based."
+    },
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Runtime validators enforce the 65536-byte transport ceiling; Core and Server enforce semantic identity rules."
+    }
+  }
+}

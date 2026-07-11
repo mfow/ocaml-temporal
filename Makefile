@@ -1,4 +1,7 @@
-COMPOSE := docker compose
+TEMPORAL_FIXTURE_DIR := $(CURDIR)/test/integration/temporal
+TEMPORAL_COMPOSE_FILE := $(TEMPORAL_FIXTURE_DIR)/compose.yaml
+TEMPORAL_COMPOSE_PROJECT ?= ocaml-temporal-integration
+COMPOSE := docker compose --project-directory "$(TEMPORAL_FIXTURE_DIR)" --file "$(TEMPORAL_COMPOSE_FILE)" --project-name "$(TEMPORAL_COMPOSE_PROJECT)"
 TEMPORAL_COMPOSE := $(COMPOSE) --profile temporal
 SERVICE ?= dev
 OCAML_VERSION ?= 5.2
@@ -23,7 +26,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-integration temporal-start temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-core-lifecycle-integration test-temporal-integration temporal-start temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -34,6 +37,11 @@ version-check:
 build:
 	$(RUN) dune build
 	$(CARGO) build --manifest-path $(CARGO_MANIFEST) --locked
+
+# Emits only the locked Cargo metadata document on stdout, allowing CI to pipe
+# it into the isolated license scanner without knowing the Compose fixture path.
+cargo-metadata:
+	@$(CARGO) metadata --manifest-path $(CARGO_MANIFEST) --locked --format-version 1
 
 test:
 	$(MAKE) test-temporal-config
@@ -58,6 +66,11 @@ test-quality-contract:
 
 test-temporal-config:
 	sh test/smoke/test_temporal_compose_config.sh
+
+# This command runs inside the OCaml development container but connects to the
+# real Temporal service on the shared Compose network.
+test-core-lifecycle-integration:
+	$(COMPOSE_RUN) env TEMPORAL_ADDRESS=http://temporal:7233 TEMPORAL_NAMESPACE=temporal-sdk-test opam exec -- dune exec test/integration/test_core_lifecycle.exe
 
 # The live stack is intentionally separate from unit verification. Native
 # Windows and macOS jobs build the SDK directly and never start Linux services.
@@ -100,7 +113,8 @@ test-temporal-integration: test-temporal-config
 	trap 'exit 130' INT; \
 	trap 'exit 143' TERM; \
 	$(MAKE) temporal-start; \
-	$(MAKE) temporal-health
+	$(MAKE) temporal-health; \
+	$(MAKE) test-core-lifecycle-integration
 
 test-unit:
 	$(RUN) dune runtest test/unit test/smoke

@@ -430,6 +430,24 @@ let test_native_runtime_lifecycle () =
   in
   expect "native compatibility" (Ok ())
     (Native.perform supervisor Native.Check_compatibility);
+  let worker_config =
+    Result.get_ok
+      (Native.worker_config ~namespace:"temporal-sdk-test"
+         ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
+         ~max_cached_workflows:100 ~max_outstanding_workflow_tasks:100
+         ~max_concurrent_workflow_task_polls:5
+         ~graceful_shutdown_timeout_ms:1_000L)
+  in
+  (match Native.perform supervisor (Native.Start_worker worker_config) with
+  | Error
+      (Native.Backend
+        { Temporal_core_bridge.Native_bridge.status = Invalid_state; _ }) ->
+      ()
+  | _ -> failwith "native supervisor started a worker without a client");
+  expect "idempotent native worker shutdown" (Ok ())
+    (Native.perform supervisor Native.Shutdown_worker);
+  expect "idempotent native client disconnect" (Ok ())
+    (Native.perform supervisor Native.Disconnect_client);
   expect "native shutdown" (Ok ()) (Native.shutdown supervisor);
   expect "native repeated shutdown" (Ok ()) (Native.shutdown supervisor)
 

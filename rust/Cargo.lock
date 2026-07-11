@@ -1199,8 +1199,10 @@ dependencies = [
  "prost-wkt-types",
  "serde",
  "serde_json",
- "temporalio-protos",
+ "temporalio-client",
+ "temporalio-common",
  "temporalio-sdk-core",
+ "temporalio-protos",
 ]
 
 [[package]]

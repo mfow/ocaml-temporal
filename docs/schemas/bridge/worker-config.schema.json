@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/blob/master/docs/schemas/bridge/worker-config.schema.json",
+  "title": "OCaml Temporal Core bridge workflow worker configuration",
+  "description": "Private, strict workflow-only worker configuration sent from the OCaml supervisor to Rust.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "namespace",
+    "task_queue",
+    "build_id",
+    "max_cached_workflows",
+    "max_outstanding_workflow_tasks",
+    "max_concurrent_workflow_task_polls",
+    "graceful_shutdown_timeout_ms"
+  ],
+  "properties": {
+    "namespace": { "type": "string", "minLength": 1, "description": "Runtime validators enforce the 65536-byte transport ceiling; Core and Server enforce semantic limits." },
+    "task_queue": { "type": "string", "minLength": 1, "description": "Runtime validators enforce the 65536-byte transport ceiling; Core and Server enforce semantic limits." },
+    "build_id": { "type": "string", "minLength": 1, "description": "Runtime validators enforce the 65536-byte transport ceiling; Core and Server enforce semantic limits." },
+    "max_cached_workflows": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "max_outstanding_workflow_tasks": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "max_concurrent_workflow_task_polls": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "graceful_shutdown_timeout_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 }
+  }
+}

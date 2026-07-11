@@ -26,6 +26,16 @@ typedef struct owned_runtime {
   _Atomic(ocaml_temporal_core_runtime *) runtime;
 } owned_runtime;
 
+/* Signature shared by lifecycle operations which borrow one strict JSON
+ * document for the duration of a synchronous Rust call. */
+typedef ocaml_temporal_core_status (*runtime_json_operation)(
+    ocaml_temporal_core_runtime *, const uint8_t *, size_t,
+    ocaml_temporal_core_result *);
+
+/* Signature shared by lifecycle operations without an input document. */
+typedef ocaml_temporal_core_status (*runtime_operation)(
+    ocaml_temporal_core_runtime *, ocaml_temporal_core_result *);
+
 /* Extract the custom-block payload; callers must separately require liveness
  * before reading Rust-owned pointer fields. */
 static owned_response *Response_val(value response) {
@@ -112,6 +122,55 @@ static value alloc_runtime(void) {
   owned = Runtime_val(runtime);
   atomic_init(&owned->runtime, NULL);
   CAMLreturn(runtime);
+}
+
+/* Invoke a blocking graph operation after copying mutable OCaml bytes. The
+ * dedicated supervisor Domain is the sole caller, so the loaded runtime
+ * pointer cannot race explicit close; the rooted custom block also cannot be
+ * finalized until this call returns. */
+static value invoke_runtime_json(value runtime, value input,
+                                 runtime_json_operation operation) {
+  CAMLparam2(runtime, input);
+  CAMLlocal1(response);
+  owned_runtime *owned = Runtime_val(runtime);
+  ocaml_temporal_core_runtime *native_runtime =
+      atomic_load_explicit(&owned->runtime, memory_order_acquire);
+  size_t input_length = caml_string_length(input);
+  uint8_t *input_copy = NULL;
+  ocaml_temporal_core_result native_result = {0};
+
+  response = alloc_response();
+  if (input_length > 0) {
+    input_copy = malloc(input_length);
+    if (input_copy == NULL) {
+      caml_raise_out_of_memory();
+    }
+    memcpy(input_copy, Bytes_val(input), input_length);
+  }
+
+  caml_enter_blocking_section();
+  (void)operation(native_runtime, input_copy, input_length, &native_result);
+  caml_leave_blocking_section();
+  free(input_copy);
+  Response_val(response)->result = native_result;
+  CAMLreturn(response);
+}
+
+/* Invoke a blocking graph operation which needs no borrowed OCaml input. */
+static value invoke_runtime(value runtime, runtime_operation operation) {
+  CAMLparam1(runtime);
+  CAMLlocal1(response);
+  owned_runtime *owned = Runtime_val(runtime);
+  ocaml_temporal_core_runtime *native_runtime =
+      atomic_load_explicit(&owned->runtime, memory_order_acquire);
+  ocaml_temporal_core_result native_result = {0};
+
+  response = alloc_response();
+  caml_enter_blocking_section();
+  (void)operation(native_runtime, &native_result);
+  caml_leave_blocking_section();
+  Response_val(response)->result = native_result;
+  CAMLreturn(response);
 }
 
 /* Reject use-after-free deterministically at the private binding boundary. */
@@ -221,6 +280,30 @@ CAMLprim value ocaml_temporal_runtime_create(value unit) {
   Store_field(pair, 0, runtime);
   Store_field(pair, 1, response);
   CAMLreturn(pair);
+}
+
+/* Connect the official client using a strict JSON configuration while the
+ * OCaml runtime lock is available to other Domains. */
+CAMLprim value ocaml_temporal_client_connect(value runtime, value input) {
+  return invoke_runtime_json(runtime, input,
+                             ocaml_temporal_core_v1_client_connect_json);
+}
+
+/* Construct and validate the workflow-only Core worker. Network validation
+ * and any failure cleanup happen with the OCaml runtime lock released. */
+CAMLprim value ocaml_temporal_worker_start(value runtime, value input) {
+  return invoke_runtime_json(runtime, input,
+                             ocaml_temporal_core_v1_worker_start_json);
+}
+
+/* Gracefully stop the worker; Rust treats an absent worker as already closed. */
+CAMLprim value ocaml_temporal_worker_shutdown(value runtime) {
+  return invoke_runtime(runtime, ocaml_temporal_core_v1_worker_shutdown);
+}
+
+/* Drop the client only after the worker child is absent. */
+CAMLprim value ocaml_temporal_client_disconnect(value runtime) {
+  return invoke_runtime(runtime, ocaml_temporal_core_v1_client_disconnect);
 }
 
 /* Atomically detach the pointer while holding the OCaml lock, then destroy

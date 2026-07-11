@@ -115,23 +115,47 @@ The supervisor serializes lifecycle transitions and destroys workers before
 clients and the runtime. Rust retains internal Tokio concurrency; workflow
 executions retain their separate deterministic effect schedulers.
 
-The implemented private supervisor currently owns the real runtime only. Its
-backend protocol exposes typed GADT operations but never the owner-confined
-state, preventing a raw handle from escaping through an otherwise convenient
-callback. Client and worker handles will be added to that same graph after the
-corresponding bridge operations exist. See
+The implemented private supervisor owns the real runtime, one official client
+connection, and one workflow-only Core worker. Its backend protocol exposes
+typed GADT operations but never the owner-confined state, preventing a raw
+handle from escaping through an otherwise convenient callback. See
 [ADR 0004](../decisions/0004-sdk-instance-supervisor.md) for its lifecycle,
 failure, and scheduler contracts.
 
-Notification is event-driven without a foreign-thread OCaml callback. Rust
-queues readiness and signals a native condition/event primitive; the
-supervisor's dedicated Domain/OS thread waits in a C stub with its OCaml
-runtime lock released. No workflow effect continuation or general cooperative
-scheduler performs this blocking wait. The stub returns normally when
-signaled, after which the actor drains ready Core work. Shutdown signals the
-same wait path. This avoids polling timers while also avoiding runtime
-registration, reentrancy, and teardown races from Tokio threads entering
-OCaml.
+### Lifecycle configuration JSON
+
+The OCaml wrapper constructs two private JSON documents; applications never
+assemble these strings themselves. The client document contains exactly
+`target_url` and `identity`. The worker document contains exactly `namespace`,
+`task_queue`, `build_id`, `max_cached_workflows`,
+`max_outstanding_workflow_tasks`, `max_concurrent_workflow_task_polls`, and
+`graceful_shutdown_timeout_ms`. Closed Draft 2020-12 schemas live under
+`docs/schemas/bridge/`.
+
+Both sides reject missing, unknown, wrongly typed, empty required, and
+out-of-range values. The whole document and each individual string have a
+65,536-byte private transport-safety ceiling. That ceiling is not a Temporal
+identifier policy: Core and Server retain semantic authority. JSON Schema
+measures characters rather than encoded bytes, so the bilateral runtime
+validators enforce the byte ceiling.
+
+Client connection and worker namespace validation are synchronous ABI calls.
+The C stub copies input before releasing the OCaml runtime lock, Rust performs
+the Tokio wait, and the stub reacquires the lock only to copy the result. A
+failed connection publishes no client. A failed worker construction or
+validation gracefully finalizes the temporary worker and leaves the client
+available for a corrected retry.
+
+This lifecycle slice has no worker poll loop and therefore no readiness
+notification path yet. The next poll/complete slice must be event-driven
+without a foreign-thread OCaml callback: Rust will queue readiness and signal a
+native condition/event primitive, while the supervisor's dedicated Domain/OS
+thread waits in a C stub with its OCaml runtime lock released. No workflow
+effect continuation or general cooperative scheduler may perform that blocking
+wait. After the stub returns, the actor will drain ready Core work; shutdown
+must signal the same wait path. This design avoids timer polling while also
+avoiding runtime registration, reentrancy, and teardown races from Tokio
+threads entering OCaml.
 
 ### Runtime destruction
 
@@ -145,7 +169,9 @@ The OCaml custom-block finalizer is a fallback for abandoned runtime values. It
 performs the same atomic detach and ownership transfer but does not wait. Core
 is therefore never destroyed by the OCaml garbage collector thread, whose
 progress must not depend on Tokio shutdown. Both paths clear the handle before
-transfer and are idempotent; exactly one path can own the native runtime.
+transfer and are idempotent; exactly one path can own the native graph. Cleanup
+finalizes worker, drops client, then drops Core even when callers did not
+explicitly close the children.
 
 ## Verification
 

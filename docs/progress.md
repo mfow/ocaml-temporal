@@ -42,6 +42,32 @@ Evidence:
 This evidence is for the synthetic interpreter. It does not claim that Core can
 yet poll or complete these commands against a live Temporal Server.
 
+## 2026-07-11: Official Core client and workflow-worker lifecycle
+
+Status: native unit and boundary verification passed locally; the ignored live
+lifecycle case and complete GitHub Actions verification follow this milestone.
+
+One owner Domain now serializes the complete Rust runtime-client-worker graph.
+The bridge uses the pinned official Core-based client, constructs a
+workflow-only worker with explicit resource policy, and completes Core worker
+validation before publishing it. Explicit and defensive shutdown both release
+worker, client, then runtime, and repeated child or parent closure is safe.
+
+Strict private JSON config documents are independently validated by OCaml and
+Rust and described by closed schemas. Their 65,536-byte string limit is a
+bridge transport safeguard, not a guessed Temporal Server identifier limit.
+Connection and validation waits run in Rust while the C stub releases the
+OCaml runtime lock. Polling and completion remain the next lifecycle slice.
+
+Evidence:
+
+- Rust lifecycle tests reject malformed config and invalid state, retry after
+  connection failure without partial state, and verify repeated cleanup.
+- The C ABI harness exercises worker-before-client rejection and idempotent
+  child cleanup through the public header.
+- OCaml bridge and supervisor tests exercise sender validation, typed lifecycle
+  operations, and reverse terminal shutdown while retaining opaque handles.
+
 ## 2026-07-11: Bilateral workflow semantic protocol
 
 Status: focused OCaml and Rust conformance and Core-conversion tests verified

@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted and implemented as a lifecycle foundation on 2026-07-11. The current
-native graph contains only the real Rust runtime. Client and worker operations
-remain unimplemented and must extend the same typed graph rather than create
+Accepted and implemented on 2026-07-11. The native graph contains the real
+Rust runtime, one official client connection, and one workflow-only worker.
+Polling and completion will extend the same typed graph rather than create
 additional supervisors.
 
 ## Context
@@ -21,10 +21,9 @@ FIFO, a sole handler Domain, and deterministic close/failure propagation. The
 remaining need is a resource-graph lifecycle layer which never leaks backend
 state through a callback or result.
 
-The native bridge currently implements only runtime creation and closure. This
-decision therefore establishes real runtime ownership without inventing a
-client connection, worker polling, or network behavior that Temporal Core does
-not yet expose through the project bridge.
+The bridge first established runtime ownership; it now also exposes real client
+connection and validated workflow-worker lifecycle. Polling and completion are
+still deliberately absent until their strict JSON protocol is implemented.
 
 ## Decision
 
@@ -44,12 +43,11 @@ operation results and structured supervisor errors. The backend `state` type
 does not occur in any producer-facing function, so a raw runtime/client/worker
 handle cannot be returned accidentally by a generic `with_handle` callback.
 
-The production specialization currently owns one real
-`Temporal_core_bridge.Native_bridge.runtime`. Its only use operation rechecks
-ABI compatibility. This operation proves real serialized use and teardown but
-does not claim that a Temporal client or worker exists. Future client and worker
-constructors, polling, completion, and shutdown operations will be constructors
-in the production GADT and will mutate one owner-confined graph.
+The production specialization owns one abstract
+`Temporal_core_bridge.Native_bridge.runtime`, inside which Rust retains the
+client and worker children. Its GADT operations check compatibility, connect a
+client, start a validated workflow-only worker, stop that worker, and disconnect
+the client. Polling and completion will be added to this same typed language.
 
 ## Lifecycle and failure rules
 
@@ -128,8 +126,8 @@ Focused tests prove:
   callers, and a shutdown exception is cached for concurrent/later callers;
 - abandoning a live supervisor schedules non-blocking-finalizer cleanup and
   closes its backend exactly once;
-- the production specialization creates, uses, and repeatedly shuts down the
-  real Rust runtime safely; and
+- the production specialization creates, uses, rejects an invalid lifecycle
+  transition, and repeatedly shuts down the real Rust graph safely; and
 - repository/install checks keep the library out of the installed package.
 
 ## Consequences
@@ -141,5 +139,5 @@ Focused tests prove:
   API.
 - Cooperative runtime adapters are still required and must not weaken the
   blocking boundary.
-- This milestone is not a connected Temporal worker. Live client and worker
-  bridge operations remain Phase 2 work.
+- This milestone connects and validates a worker but does not yet poll or
+  complete workflow tasks; that live execution loop remains Phase 2 work.

@@ -5,6 +5,10 @@ type status =
   | Abi_mismatch
   | Panic
   | Internal
+  | Invalid_state
+  | Configuration
+  | Connection
+  | Worker
   | Unknown of int
 
 (** Error data copied into OCaml. It never owns Rust memory. *)
@@ -28,6 +32,36 @@ type response
     SDK supervisor may use or close it; workflow code never sees this type. *)
 type runtime
 
+(** Validated client connection settings. The concrete JSON representation is
+    private so callers cannot bypass sender-side checks. *)
+type client_config = {
+  target_url : string;
+  identity : string;
+}
+
+(** Validated workflow-only worker settings retained as ordinary OCaml data
+    until the supervisor serializes worker construction. *)
+type worker_config = {
+  namespace : string;
+  task_queue : string;
+  build_id : string;
+  max_cached_workflows : int;
+  max_outstanding_workflow_tasks : int;
+  max_concurrent_workflow_task_polls : int;
+  graceful_shutdown_timeout_ms : int64;
+}
+
+(** Private transport-safety ceiling mirrored and revalidated by Rust. This is
+    not a Temporal Server identifier policy; Core and Server perform semantic
+    field validation. *)
+let max_transport_string_bytes = 65_536
+
+(** Resource ceiling mirrored by the Rust worker-config adapter. *)
+let max_worker_count = 1_000_000
+
+(** Maximum accepted graceful shutdown period in milliseconds. *)
+let max_graceful_shutdown_timeout_ms = 86_400_000L
+
 external check_abi_version_raw : int32 -> response
   = "ocaml_temporal_check_abi_version"
 
@@ -45,12 +79,28 @@ external runtime_create_raw : unit -> runtime * response
 
 external runtime_close_raw : runtime -> int = "ocaml_temporal_runtime_close"
 
+external client_connect_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_connect"
+
+external worker_start_raw : runtime -> bytes -> response
+  = "ocaml_temporal_worker_start"
+
+external worker_shutdown_raw : runtime -> response
+  = "ocaml_temporal_worker_shutdown"
+
+external client_disconnect_raw : runtime -> response
+  = "ocaml_temporal_client_disconnect"
+
 (** Converts known numeric statuses and retains every newer value as [Unknown]. *)
 let status = function
   | 1 -> Invalid_argument
   | 2 -> Abi_mismatch
   | 3 -> Panic
   | 4 -> Internal
+  | 5 -> Invalid_state
+  | 6 -> Configuration
+  | 7 -> Connection
+  | 8 -> Worker
   | code -> Unknown code
 
 (** Converts a bridge status to a bounded stable tag value without exposing the
@@ -60,7 +110,135 @@ let status_name = function
   | Abi_mismatch -> "abi_mismatch"
   | Panic -> "panic"
   | Internal -> "internal"
+  | Invalid_state -> "invalid_state"
+  | Configuration -> "configuration"
+  | Connection -> "connection"
+  | Worker -> "worker"
   | Unknown _ -> "unknown"
+
+(** Constructs a local configuration failure without entering native code. *)
+let configuration_error message = Error { status = Configuration; message }
+
+(** Validates only bridge-owned string invariants before Core sees the value. *)
+let validate_identifier name value =
+  if String.length value = 0 then
+    configuration_error (name ^ " must not be empty")
+  else if String.length value > max_transport_string_bytes then
+    configuration_error
+      (Printf.sprintf "%s exceeds %d UTF-8 bytes" name
+         max_transport_string_bytes)
+  else Ok ()
+
+(** Performs the inexpensive sender-side absolute HTTP(S) shape check. Rust's
+    URL parser repeats and completes validation before network access. *)
+let validate_target_url value =
+  let host_after prefix =
+    let prefix_length = String.length prefix in
+    String.starts_with ~prefix value
+    && String.length value > prefix_length
+    &&
+    let remainder =
+      String.sub value prefix_length (String.length value - prefix_length)
+    in
+    let host =
+      match String.index_opt remainder '/' with
+      | None -> remainder
+      | Some index -> String.sub remainder 0 index
+    in
+    String.length host > 0
+    && not (String.exists (fun character -> Char.code character <= 32) host)
+  in
+  if String.length value > max_transport_string_bytes then
+    configuration_error
+      (Printf.sprintf "target_url exceeds %d UTF-8 bytes"
+         max_transport_string_bytes)
+  else if host_after "http://" || host_after "https://" then Ok ()
+  else configuration_error "target_url must be an absolute http or https URL"
+
+(** Validates one bounded count, allowing zero only for disabled cache size. *)
+let validate_count ~allow_zero name value =
+  let minimum = if allow_zero then 0 else 1 in
+  if value < minimum || value > max_worker_count then
+    configuration_error
+      (Printf.sprintf "%s must be between %d and %d" name minimum
+         max_worker_count)
+  else Ok ()
+
+(** Creates client settings only after all sender-side invariants hold. *)
+let client_config ~target_url ~identity =
+  match validate_target_url target_url with
+  | Error _ as error -> error
+  | Ok () ->
+      Result.map
+        (fun () -> { target_url; identity })
+        (validate_identifier "identity" identity)
+
+(** Creates workflow-only worker settings after validating every field. *)
+let worker_config ~namespace ~task_queue ~build_id ~max_cached_workflows
+    ~max_outstanding_workflow_tasks ~max_concurrent_workflow_task_polls
+    ~graceful_shutdown_timeout_ms =
+  let validations =
+    [
+      validate_identifier "namespace" namespace;
+      validate_identifier "task_queue" task_queue;
+      validate_identifier "build_id" build_id;
+      validate_count ~allow_zero:true "max_cached_workflows"
+        max_cached_workflows;
+      validate_count ~allow_zero:false "max_outstanding_workflow_tasks"
+        max_outstanding_workflow_tasks;
+      validate_count ~allow_zero:false "max_concurrent_workflow_task_polls"
+        max_concurrent_workflow_task_polls;
+      (if
+         Int64.compare graceful_shutdown_timeout_ms 0L >= 0
+         && Int64.compare graceful_shutdown_timeout_ms
+              max_graceful_shutdown_timeout_ms
+            <= 0
+       then Ok ()
+       else
+         configuration_error
+           "graceful_shutdown_timeout_ms must be between 0 and 86400000");
+    ]
+  in
+  match List.find_opt Result.is_error validations with
+  | Some (Error _ as error) -> error
+  | Some (Ok ()) -> assert false
+  | None ->
+      Ok
+        {
+          namespace;
+          task_queue;
+          build_id;
+          max_cached_workflows;
+          max_outstanding_workflow_tasks;
+          max_concurrent_workflow_task_polls;
+          graceful_shutdown_timeout_ms;
+        }
+
+(** Encodes the exact strict client document accepted by the Rust adapter. *)
+let encode_client_config config =
+  `Assoc
+    [
+      ("target_url", `String config.target_url);
+      ("identity", `String config.identity);
+    ]
+  |> Yojson.Safe.to_string |> Bytes.of_string
+
+(** Encodes the exact strict workflow-worker document accepted by Rust. *)
+let encode_worker_config config =
+  `Assoc
+    [
+      ("namespace", `String config.namespace);
+      ("task_queue", `String config.task_queue);
+      ("build_id", `String config.build_id);
+      ("max_cached_workflows", `Int config.max_cached_workflows);
+      ( "max_outstanding_workflow_tasks",
+        `Int config.max_outstanding_workflow_tasks );
+      ( "max_concurrent_workflow_task_polls",
+        `Int config.max_concurrent_workflow_task_polls );
+      ( "graceful_shutdown_timeout_ms",
+        `Intlit (Int64.to_string config.graceful_shutdown_timeout_ms) );
+    ]
+  |> Yojson.Safe.to_string |> Bytes.of_string
 
 (** Copies either the successful bytes or error message into OCaml, then always
     frees the Rust allocation. [Fun.protect] still runs cleanup if copying
@@ -106,9 +284,31 @@ let conformance_wait_ms milliseconds =
       Result.map (fun _ -> ())
         (decode (conformance_wait_ms_raw milliseconds)))
 
+(** Connects the official Temporal client through the Rust-owned runtime. *)
+let client_connect runtime config =
+  bridge_call "client_connect" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (client_connect_raw runtime (encode_client_config config))))
+
+(** Constructs and namespace-validates the official workflow-only worker. *)
+let worker_start runtime config =
+  bridge_call "worker_start" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (worker_start_raw runtime (encode_worker_config config))))
+
+(** Gracefully closes the worker. Rust treats repetition as success. *)
+let worker_shutdown runtime =
+  bridge_call "worker_shutdown" (fun () ->
+      Result.map (fun _ -> ()) (decode (worker_shutdown_raw runtime)))
+
+(** Drops the connected client after its worker is absent. *)
+let client_disconnect runtime =
+  bridge_call "client_disconnect" (fun () ->
+      Result.map (fun _ -> ()) (decode (client_disconnect_raw runtime)))
+
 (** Closes the native owner after first clearing its OCaml-held pointer. This
-    makes repeated sequential calls safe; the future supervisor actor will
-    serialize all lifecycle calls across Domains. *)
+    makes repeated sequential calls safe; the production supervisor serializes
+    all lifecycle calls across Domains. *)
 let runtime_close runtime =
   let result =
     bridge_call "runtime_close" (fun () ->

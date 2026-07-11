@@ -222,14 +222,21 @@ module Make (Backend : Backend) = struct
         Error (mailbox_failure failure)
 end
 
-(** The current real backend owns exactly one Rust runtime. *)
+(** The production backend owns one runtime-client-worker graph. Every
+    operation is invoked by the one supervisor Domain, so no native handle can
+    race another operation or teardown. *)
 module Native_backend = struct
   module Bridge = Temporal_core_bridge.Native_bridge
 
   type config = unit
   type state = Bridge.runtime
   type error = Bridge.error
-  type _ operation = Check_compatibility : unit operation
+  type _ operation =
+    | Check_compatibility : unit operation
+    | Connect_client : Bridge.client_config -> unit operation
+    | Start_worker : Bridge.worker_config -> unit operation
+    | Shutdown_worker : unit operation
+    | Disconnect_client : unit operation
 
   (** Creates the runtime through the ownership-safe C stubs. *)
   let create () = Bridge.runtime_create ()
@@ -237,19 +244,45 @@ module Native_backend = struct
   (** Revalidates the statically linked ABI without exposing the runtime. The
       state argument proves the operation remains ordered with lifecycle use. *)
   let perform : type value. state -> value operation -> (value, error) result =
-   fun _runtime -> function
+   fun runtime -> function
     | Check_compatibility ->
         Bridge.check_abi_version Bridge.abi_version
+    | Connect_client config -> Bridge.client_connect runtime config
+    | Start_worker config -> Bridge.worker_start runtime config
+    | Shutdown_worker -> Bridge.worker_shutdown runtime
+    | Disconnect_client -> Bridge.client_disconnect runtime
 
-  (** Explicitly destroys the runtime; the native close operation atomically
-      detaches its Rust pointer and is itself idempotent. *)
-  let shutdown runtime = Bridge.runtime_close runtime
+  (** Requests reverse-order child teardown and always closes the parent graph.
+      Runtime close is itself defensive and reclaims any child remaining after
+      an earlier error; the first diagnostic is preserved for the caller. *)
+  let shutdown runtime =
+    let worker_result = Bridge.worker_shutdown runtime in
+    let client_result =
+      match worker_result with
+      | Ok () -> Bridge.client_disconnect runtime
+      | Error _ as error -> error
+    in
+    let runtime_result = Bridge.runtime_close runtime in
+    match (worker_result, client_result, runtime_result) with
+    | Error _ as error, _, _ -> error
+    | Ok (), (Error _ as error), _ -> error
+    | Ok (), Ok (), result -> result
 end
 
 (** Specializes the generic supervisor to the real native runtime. *)
 module Native = struct
   include Make (Native_backend)
 
+  type client_config = Native_backend.Bridge.client_config
+  type worker_config = Native_backend.Bridge.worker_config
+
   type 'result operation = 'result Native_backend.operation =
     | Check_compatibility : unit operation
+    | Connect_client : client_config -> unit operation
+    | Start_worker : worker_config -> unit operation
+    | Shutdown_worker : unit operation
+    | Disconnect_client : unit operation
+
+  let client_config = Native_backend.Bridge.client_config
+  let worker_config = Native_backend.Bridge.worker_config
 end

@@ -92,7 +92,6 @@ The intended top-level layout is:
 ```text
 .
 ├── Makefile
-├── compose.yaml
 ├── dune-project
 ├── temporal-sdk.opam
 ├── Cargo.toml
@@ -108,6 +107,7 @@ The intended top-level layout is:
 │   ├── unit/
 │   ├── replay/
 │   ├── integration/
+│   │   └── temporal/       # Compose, config, and scripts for the live test fixture
 │   ├── compatibility/
 │   └── load/
 ├── examples/

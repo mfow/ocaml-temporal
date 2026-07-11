@@ -39,6 +39,32 @@ Evidence:
 - The OCaml bridge test exercises typed invalid-state results for both private
   waits and the existing two-Domain lock-release conformance probe.
 
+## 2026-07-12: Private OCaml native workflow execution registry
+
+Status: focused OCaml adapter and runtime tests pass locally; concrete native
+supervisor wiring and the live Compose worker remain follow-up work.
+
+`Temporal_runtime.Native_worker_execution` now provides a private functor over
+typed workflow poll/complete operations. It registers heterogeneous executable
+workflow definitions by name, keeps one existential `Execution.t` per Temporal
+run ID, serializes calls with an OCaml mutex, applies validated activations in
+deterministic order, and removes runs only after the supervisor confirms lease
+retirement. Invalid initialization, unknown runs, unsupported activity/child
+commands, and codec failures become typed non-retryable failure completions;
+the adapter never fabricates missing Core fields or silently drops a lease.
+
+The functor intentionally does not depend on an unmerged readiness-wait API.
+The future concrete `Sdk_supervisor.Native` instantiation can add wakeable
+waiting without changing this execution registry. Malformed JSON is retired
+by the lower typed supervisor protocol adapter before this functor sees an
+activation, because only that layer still owns the raw lease token.
+
+Evidence: `dune runtest --root . test/runtime` passes, including terminal
+workflow, durable timer, cancellation, cache eviction, unsupported-command
+rejection, unknown-run, malformed source-error, completion-exception cleanup,
+duplicate-registration, and remote-definition tests. See the
+[native worker execution reference](reference/native-worker-execution.md).
+
 ## 2026-07-12: Pure OCaml native execution translation
 
 Status: focused native execution tests pass locally; the supervisor scheduling

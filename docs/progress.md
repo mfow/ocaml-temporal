@@ -78,7 +78,10 @@ run ID, serializes calls with an OCaml mutex, applies validated activations in
 deterministic order, and removes runs only after the supervisor confirms lease
 retirement. Invalid initialization, unknown runs, unsupported child-workflow
 commands, and codec failures become typed non-retryable failure completions;
-the adapter never fabricates missing Core fields or silently drops a lease.
+the adapter never fabricates missing Core fields or silently drops a lease. Its
+constructor also validates the implicit activity queue (including empty, NUL,
+oversized, and invalid UTF-8 values) before publishing any worker state, so a
+configuration defect cannot fail a leased workflow at its first activation.
 
 The functor intentionally does not depend on an unmerged readiness-wait API.
 The future concrete `Sdk_supervisor.Native` instantiation can add wakeable
@@ -90,7 +93,7 @@ Evidence: `dune runtest --root . test/runtime` passes, including terminal
 workflow, durable timer, cancellation, cache eviction, complete
 activity-command translation, unknown-run, malformed source-error,
 completion-exception cleanup, duplicate-registration, and remote-definition
-tests. See the
+tests, and task-queue configuration rejection. See the
 [native worker execution reference](reference/native-worker-execution.md).
 
 ## 2026-07-12: Pure OCaml native execution translation

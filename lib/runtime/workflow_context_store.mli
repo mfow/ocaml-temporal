@@ -8,6 +8,13 @@ type t
     a worker supplies its own queue when it creates an execution. *)
 val create : ?task_queue:string -> Scheduler.t -> t
 
+(** Checks a worker's implicit activity queue without allocating a context.
+    [Ok ()] means that the byte string is non-empty, contains no NUL byte, is
+    at most 65,536 bytes, and is valid UTF-8. The worker adapter uses this
+    result to reject invalid configuration before accepting a worker; direct
+    [create] callers still receive [Invalid_argument] for the same defect. *)
+val validate_task_queue : string -> (unit, string) result
+
 (** Returns the context installed on the current OCaml Domain, if any. *)
 val current : unit -> t option
 

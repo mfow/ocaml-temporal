@@ -12,6 +12,7 @@ type failure = Workflow.failure
 type execution = { namespace : string; workflow_id : string; run_id : string }
 
 type start_request = {
+  request_id : string;
   namespace : string;
   workflow_id : string;
   workflow_type : string;
@@ -20,6 +21,7 @@ type start_request = {
 }
 
 type start_response = { execution : execution }
+type start_ticket = { request : start_request; ticket : string }
 type wait_request = execution
 
 type outcome =
@@ -36,6 +38,11 @@ type client_error =
   | Already_started of { workflow_id : string; existing_run_id : string option }
   | Rpc of { code : string }
   | Protocol of { code : string }
+
+type start_outcome =
+  | Accepted of start_response
+  | Rejected of client_error
+  | Unknown of { request_id : string; workflow_id : string }
 
 type error = { code : string; path : string; message : string }
 type error_view = { code : string; path : string; message : string }
@@ -140,6 +147,21 @@ let decode_execution path json =
   let* run_id = identifier (path ^ ".run_id") run_id_json in
   Ok { namespace; workflow_id; run_id }
 
+(** Serializes one execution identity after applying the same identifier
+    limits used by the decoder. This is used only for closed outcome encoding;
+    Temporal's protobuf representation remains entirely Rust-owned. *)
+let encode_execution path (value : execution) =
+  let* () = validate_identifier (path ^ ".namespace") value.namespace in
+  let* () = validate_identifier (path ^ ".workflow_id") value.workflow_id in
+  let* () = validate_identifier (path ^ ".run_id") value.run_id in
+  Ok
+    (`Assoc
+      [
+        ("namespace", json_string value.namespace);
+        ("workflow_id", json_string value.workflow_id);
+        ("run_id", json_string value.run_id);
+      ])
+
 let encode_object json =
   match Control.encode_payload_object json with
   | Ok value -> Ok value
@@ -151,20 +173,46 @@ let decode_object input =
   | Error error -> Error (of_control_error "$" error)
 
 let encode_start_request (value : start_request) =
+  let* () = validate_identifier "$.request_id" value.request_id in
   let* () = validate_identifier "$.namespace" value.namespace in
   let* () = validate_identifier "$.workflow_id" value.workflow_id in
   let* () = validate_identifier "$.workflow_type" value.workflow_type in
   let* () = validate_identifier "$.task_queue" value.task_queue in
   let* input = payloads_json value.input in
   encode_object
-    (`Assoc
+      (`Assoc
       [
+        ("request_id", json_string value.request_id);
         ("namespace", json_string value.namespace);
         ("workflow_id", json_string value.workflow_id);
         ("workflow_type", json_string value.workflow_type);
         ("task_queue", json_string value.task_queue);
         ("input", input);
       ])
+
+(** Serializes the opaque native capability used by asynchronous start polls.
+    The request is retained in the OCaml value but is deliberately omitted
+    from the wire document: Rust only needs the generated ticket, while the
+    OCaml supervisor uses the retained request to correlate terminal output. *)
+let encode_start_ticket (value : start_ticket) =
+  let* () = validate_identifier "$.ticket" value.ticket in
+  encode_object (`Assoc [ ("ticket", json_string value.ticket) ])
+
+(** Decodes a native ticket and binds it to the exact request that admitted it.
+    Keeping this association private makes it impossible for a caller to pass
+    a valid ticket alongside a different request and accidentally accept a
+    response for the wrong workflow. *)
+let decode_start_ticket ~request input =
+  let* json = decode_object input in
+  let* entries = exact_object "$" [ "ticket" ] json in
+  let* ticket_json = field "$" "ticket" entries in
+  let* ticket = identifier "$.ticket" ticket_json in
+  Ok { request; ticket }
+
+(** Returns the request retained by an opaque ticket. The native ticket value
+    remains inaccessible; this accessor exists only so the supervisor can
+    correlate terminal output with the request before decoding it. *)
+let start_ticket_request (ticket : start_ticket) = ticket.request
 
 (** Verifies that a decoded response names the request's workflow identity.
     Start responses only require the server-assigned run to be non-empty;
@@ -335,6 +383,37 @@ let client_error_code kind path value =
   if List.mem value allowed then Ok value
   else Error (invalid ~path "unknown client error code")
 
+(** Builds one closed client-error object for tests and for callers that need
+    to persist a terminal asynchronous outcome. The native bridge normally
+    emits this document, but validating the OCaml encoder too keeps both sides
+    of the private protocol symmetric. *)
+let encode_client_error_json path = function
+  | Already_started { workflow_id; existing_run_id } ->
+      let* () = validate_identifier (path ^ ".workflow_id") workflow_id in
+      let* () =
+        match existing_run_id with
+        | None -> Ok ()
+        | Some run_id -> validate_identifier (path ^ ".existing_run_id") run_id
+      in
+      Ok
+        (`Assoc
+          [
+            ("kind", json_string "already_started");
+            ("workflow_id", json_string workflow_id);
+            ( "existing_run_id",
+              match existing_run_id with
+              | None -> `Null
+              | Some run_id -> json_string run_id );
+          ])
+  | Rpc { code } ->
+      let* code = client_error_code "rpc" (path ^ ".code") code in
+      Ok (`Assoc [ ("kind", json_string "rpc"); ("code", json_string code) ])
+  | Protocol { code } ->
+      let* code = client_error_code "protocol" (path ^ ".code") code in
+      Ok
+        (`Assoc
+          [ ("kind", json_string "protocol"); ("code", json_string code) ])
+
 (** Parses one terminal exact-run response and verifies that the response
     execution is the requested run before validating its outcome chain. *)
 let decode_wait_response ~(request : wait_request) input =
@@ -396,6 +475,82 @@ let validate_start_error (request : start_request) = function
           (invalid ~path:"$.workflow_id"
              "already-started error names a different workflow ID")
   | (Rpc _ | Protocol _) as error -> Ok error
+
+(** Serializes one terminal asynchronous-start outcome. [Unknown] is kept as a
+    first-class value instead of being encoded as a transport error, because a
+    transport failure can occur after Temporal accepted the request. *)
+let encode_start_outcome = function
+  | Accepted { execution } ->
+      let* execution = encode_execution "$.execution" execution in
+      encode_object
+        (`Assoc
+          [ ("kind", json_string "accepted"); ("execution", execution) ])
+  | Rejected error ->
+      let* error = encode_client_error_json "$.error" error in
+      encode_object
+        (`Assoc [ ("kind", json_string "rejected"); ("error", error) ])
+  | Unknown { request_id; workflow_id } ->
+      let* () = validate_identifier "$.request_id" request_id in
+      let* () = validate_identifier "$.workflow_id" workflow_id in
+      encode_object
+        (`Assoc
+          [
+            ("kind", json_string "unknown");
+            ("request_id", json_string request_id);
+            ("workflow_id", json_string workflow_id);
+          ])
+
+(** Parses a terminal asynchronous-start outcome and checks both sides of its
+    identity. Accepted and already-started responses must name the requested
+    workflow, while unknown responses must repeat the stable logical request
+    ID and workflow ID so they cannot be attributed to another ticket. *)
+let decode_start_outcome ~request input =
+  let* json = decode_object input in
+  let path = "$" in
+  let* kind_json =
+    match json with
+    | `Assoc entries -> field path "kind" entries
+    | _ -> Error (invalid ~path "expected JSON object")
+  in
+  let* kind = string "$.kind" kind_json in
+  match kind with
+  | "accepted" ->
+      let* entries = exact_object path [ "kind"; "execution" ] json in
+      let* execution_json = field path "execution" entries in
+      let* execution = decode_execution "$.execution" execution_json in
+      let* () =
+        validate_execution_matches "$.execution" ~namespace:request.namespace
+          ~workflow_id:request.workflow_id execution
+      in
+      Ok (Accepted { execution })
+  | "rejected" ->
+      let* entries = exact_object path [ "kind"; "error" ] json in
+      let* error_json = field path "error" entries in
+      let* error_text =
+        try Ok (Yojson.Safe.to_string error_json)
+        with _ -> Error (invalid "invalid rejected client error")
+      in
+      let* error = decode_client_error error_text in
+      let* error = validate_start_error request error in
+      Ok (Rejected error)
+  | "unknown" ->
+      let* entries =
+        exact_object path [ "kind"; "request_id"; "workflow_id" ] json
+      in
+      let* request_id_json = field path "request_id" entries in
+      let* request_id = identifier "$.request_id" request_id_json in
+      let* workflow_id_json = field path "workflow_id" entries in
+      let* workflow_id = identifier "$.workflow_id" workflow_id_json in
+      if not (String.equal request_id request.request_id) then
+        Error
+          (invalid ~path:"$.request_id"
+             "unknown outcome request ID does not match the start request")
+      else if not (String.equal workflow_id request.workflow_id) then
+        Error
+          (invalid ~path:"$.workflow_id"
+             "unknown outcome workflow ID does not match the start request")
+      else Ok (Unknown { request_id; workflow_id })
+  | _ -> Error (invalid ~path:"$.kind" "unknown asynchronous start outcome kind")
 
 (** Rejects error categories that cannot be returned by an exact-run wait.
     Keeping this check beside the decoder makes the operation-specific closed

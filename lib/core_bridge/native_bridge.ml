@@ -89,6 +89,15 @@ external client_connect_raw : runtime -> bytes -> response
 external client_start_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_start_workflow_json"
 
+external client_begin_start_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_begin_start_workflow_json"
+
+external client_poll_start_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_poll_start_workflow_json"
+
+external client_wait_start_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_wait_start_workflow_json"
+
 external client_wait_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_wait_workflow_json"
 
@@ -353,6 +362,26 @@ let client_connect runtime config =
 let client_start_workflow_json runtime input =
   bridge_call "client_start_workflow_json" (fun () ->
       decode (client_start_workflow_json_raw runtime input))
+
+(** Admits one asynchronous workflow start and returns an opaque ticket JSON
+    document. The native owner retains the Tokio task and all request metadata;
+    this call only copies the admission result into OCaml. *)
+let client_begin_start_workflow_json runtime input =
+  bridge_call "client_begin_start_workflow_json" (fun () ->
+      decode (client_begin_start_workflow_json_raw runtime input))
+
+(** Polls an asynchronous start ticket without waiting. [Not_ready] is an
+    expected result while the Rust task remains in flight. *)
+let client_poll_start_workflow_json runtime input =
+  bridge_call "client_poll_start_workflow_json" (fun () ->
+      decode (client_poll_start_workflow_json_raw runtime input))
+
+(** Waits for one bounded interval for an asynchronous start ticket. The C
+    stub releases the OCaml runtime lock while Rust waits, so the supervisor
+    Domain never blocks unrelated OCaml Domains. *)
+let client_wait_start_workflow_json runtime input =
+  bridge_call "client_wait_start_workflow_json" (fun () ->
+      decode (client_wait_start_workflow_json_raw runtime input))
 
 (** Waits for one exact run through the Rust-owned client. Each native call
     performs the close-event long poll for at most 100 ms while the C binding

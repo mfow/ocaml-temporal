@@ -36,6 +36,7 @@ let execution : Protocol.execution =
 (** Start requests use the same workflow identity as the response fixtures. *)
 let start_request : Protocol.start_request =
   {
+    request_id = "request-1";
     namespace = execution.namespace;
     workflow_id = execution.workflow_id;
     workflow_type = "Smoke";
@@ -125,6 +126,73 @@ let test_request_validation () =
       { execution with workflow_id = "contains\000nul" };
       { execution with run_id = String.make 65_537 'x' };
     ]
+
+(** Exercises the asynchronous-start capability and all three terminal outcome
+    variants. The request-bound ticket is deliberately opaque: this test can
+    recover the retained request only through the protocol accessor, never by
+    inspecting or constructing the native ticket string. *)
+let test_async_start_protocol () =
+  let ticket_json = {|{"ticket":"ticket-1"}|} in
+  let ticket =
+    unwrap (Protocol.decode_start_ticket ~request:start_request ticket_json)
+  in
+  if Protocol.start_ticket_request ticket <> start_request then
+    failwith "start ticket lost its originating request";
+  let encoded_ticket = unwrap (Protocol.encode_start_ticket ticket) in
+  require_fragment "start ticket" "ticket-1" encoded_ticket;
+  require_error
+    (Protocol.decode_start_ticket ~request:start_request
+       {|{"ticket":"ticket-1","extra":true}|});
+  require_error
+    (Protocol.decode_start_ticket ~request:start_request {|{"ticket":""}|});
+  let accepted_json =
+    {|{"kind":"accepted","execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"}}|}
+  in
+  let accepted =
+    unwrap (Protocol.decode_start_outcome ~request:start_request accepted_json)
+  in
+  (match accepted with
+  | Protocol.Accepted { execution = { run_id = "run-2"; _ } } -> ()
+  | _ -> failwith "accepted start outcome changed shape");
+  let rejected_json =
+    {|{"kind":"rejected","error":{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":"run-existing"}}|}
+  in
+  let rejected =
+    unwrap (Protocol.decode_start_outcome ~request:start_request rejected_json)
+  in
+  (match rejected with
+  | Protocol.Rejected
+      (Protocol.Already_started
+        { workflow_id = "workflow-1"; existing_run_id = Some "run-existing" }) ->
+      ()
+  | _ -> failwith "rejected start outcome changed shape");
+  let unknown_json =
+    {|{"kind":"unknown","request_id":"request-1","workflow_id":"workflow-1"}|}
+  in
+  let unknown =
+    unwrap (Protocol.decode_start_outcome ~request:start_request unknown_json)
+  in
+  (match unknown with
+  | Protocol.Unknown { request_id = "request-1"; workflow_id = "workflow-1" } ->
+      ()
+  | _ -> failwith "unknown start outcome changed shape");
+  List.iter
+    (fun outcome ->
+      ignore (unwrap (Protocol.encode_start_outcome outcome)))
+    [
+      accepted;
+      rejected;
+      unknown;
+    ];
+  require_error
+    (Protocol.decode_start_outcome ~request:start_request
+       {|{"kind":"unknown","request_id":"other-request","workflow_id":"workflow-1"}|});
+  require_error
+    (Protocol.decode_start_outcome ~request:start_request
+       {|{"kind":"accepted","execution":{"namespace":"other","workflow_id":"workflow-1","run_id":"run-2"}}|});
+  require_error
+    (Protocol.decode_start_outcome ~request:start_request
+       {|{"kind":"rejected","error":{"kind":"already_started","workflow_id":"other-workflow","existing_run_id":null}}|})
 
 (** Keeps duplicate and unknown response fields from being accepted by either
     the JSON foundation or the operation-specific decoder. *)
@@ -216,6 +284,7 @@ let () =
   run "client terminal outcomes" test_terminal_outcomes;
   run "client successor identity" test_successor_identity_validation;
   run "client request validation" test_request_validation;
+  run "client asynchronous starts" test_async_start_protocol;
   run "client closed response shape" test_closed_response_shape;
   run "client response correlation" test_response_execution_correlation;
   run "client structured errors" test_client_errors;

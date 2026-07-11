@@ -15,16 +15,25 @@ type execution = { namespace : string; workflow_id : string; run_id : string }
 (** The exact Temporal execution identified by namespace, workflow ID, and run. *)
 
 type start_request = {
+  request_id : string;
   namespace : string;
   workflow_id : string;
   workflow_type : string;
   task_queue : string;
   input : payload list;
 }
-(** Dynamic workflow-start request sent to the Rust client adapter. *)
+(** Dynamic workflow-start request sent to the Rust client adapter. [request_id]
+    is stable across retries and is passed unchanged to Temporal, so a caller
+    can reconcile an uncertain asynchronous start without issuing a second
+    logical operation. *)
 
 type start_response = { execution : execution }
 (** Server-assigned execution returned by a successful start. *)
+
+type start_ticket
+(** Opaque capability for one admitted asynchronous start. The ticket retains
+    the originating request privately so terminal outcomes can be correlated
+    with the caller's requested workflow identity before they are exposed. *)
 
 type wait_request = execution
 (** Exact run selected by a wait; continued-as-new successors are not followed. *)
@@ -47,6 +56,14 @@ type client_error =
   | Protocol of { code : string }
 (** Closed error body returned by a native client operation. *)
 
+type start_outcome =
+  | Accepted of start_response
+  | Rejected of client_error
+  | Unknown of { request_id : string; workflow_id : string }
+(** Terminal result of an asynchronous start. [Unknown] means the bridge
+    cannot prove whether Temporal accepted the request; callers must reconcile
+    using [request_id] rather than automatically retrying. *)
+
 type error
 (** Privacy-safe client-protocol validation failure. *)
 
@@ -58,6 +75,27 @@ val error_view : error -> error_view
 
 val encode_start_request : start_request -> (string, error) result
 (** Validates and serializes one start request. *)
+
+val encode_start_ticket : start_ticket -> (string, error) result
+(** Serializes one opaque ticket for the private poll/wait bridge calls. *)
+
+val decode_start_ticket :
+  request:start_request -> string -> (start_ticket, error) result
+(** Strictly decodes a native ticket and binds it to the request that admitted
+    it. Binding the request here prevents a ticket result from being accepted
+    for another workflow identity. *)
+
+val start_ticket_request : start_ticket -> start_request
+(** Returns the request retained by an opaque ticket for supervisor-side
+    correlation. The native ticket string itself remains inaccessible. *)
+
+val decode_start_outcome :
+  request:start_request -> string -> (start_outcome, error) result
+(** Strictly decodes a terminal asynchronous-start outcome and correlates every
+    execution, rejection identity, and unknown request identity with [request]. *)
+
+val encode_start_outcome : start_outcome -> (string, error) result
+(** Validates and serializes one terminal asynchronous-start outcome. *)
 
 val decode_start_response : request:start_request -> string -> (start_response, error) result
 (** Strictly decodes one successful start response and verifies that the

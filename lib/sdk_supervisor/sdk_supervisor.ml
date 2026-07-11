@@ -358,6 +358,25 @@ module Protocol_adapter = struct
     | Ok output -> Ok (Bytes.of_string output)
     | Error error -> client_error "client start request encoding" error
 
+  (** Decodes the opaque ticket returned by native asynchronous-start
+      admission. The ticket is bound to [request] before it is published to
+      the supervisor caller, so later poll operations cannot mix identities. *)
+  let decode_client_start_ticket request = function
+    | Ok input -> (
+        match
+          Client.decode_start_ticket ~request (Bytes.to_string input)
+        with
+        | Ok ticket -> Ok (Ok ticket)
+        | Error error -> client_error "client start ticket decoding" error)
+    | Error native_error -> Error native_error
+
+  (** Serializes a previously decoded ticket without exposing its opaque
+      native value to this supervisor layer. *)
+  let encode_client_start_ticket ticket =
+    match Client.encode_start_ticket ticket with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> client_error "client start ticket encoding" error
+
   (** Canonically serializes a typed exact-run wait request before it reaches
       the native bridge. *)
   let encode_client_wait_request request =
@@ -444,6 +463,20 @@ module Protocol_adapter = struct
         | Error error -> client_error "client start response decoding" error)
     | Error native_error -> decode_client_start_failure request native_error
 
+  (** Decodes one terminal asynchronous-start outcome. A bounded poll timeout
+      becomes [None], while terminal accepted/rejected/unknown values are
+      validated against the request retained by the ticket. *)
+  let decode_client_start_outcome ticket = function
+    | Ok input -> (
+        let request = Client.start_ticket_request ticket in
+        match
+          Client.decode_start_outcome ~request (Bytes.to_string input)
+        with
+        | Ok outcome -> Ok (Some outcome)
+        | Error error -> client_error "client start outcome decoding" error)
+    | Error { Bridge.status = Not_ready; _ } -> Ok None
+    | Error native_error -> Error native_error
+
   (** Validates a successful native exact-run response and translates it to
       the typed protocol result. [Not_ready] remains an outer bridge result so
       orchestration code can retry without manufacturing a terminal outcome. *)
@@ -471,6 +504,13 @@ module Native_backend = struct
     | Client_start_workflow :
         Client.start_request ->
         (Client.start_response, Client.client_error) result operation
+    | Client_begin_start_workflow :
+        Client.start_request ->
+        (Client.start_ticket, Client.client_error) result operation
+    | Client_poll_start_workflow :
+        Client.start_ticket -> Client.start_outcome option operation
+    | Client_wait_start_workflow :
+        Client.start_ticket -> Client.start_outcome option operation
     | Client_wait_workflow :
         Client.wait_request ->
         (Client.wait_response, Client.client_error) result operation
@@ -502,6 +542,24 @@ module Native_backend = struct
         | Ok input ->
             Protocol_adapter.decode_client_start_result request
               (Bridge.client_start_workflow_json runtime input))
+    | Client_begin_start_workflow request -> (
+        match Protocol_adapter.encode_client_start_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_start_ticket request
+              (Bridge.client_begin_start_workflow_json runtime input))
+    | Client_poll_start_workflow ticket -> (
+        match Protocol_adapter.encode_client_start_ticket ticket with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_start_outcome ticket
+              (Bridge.client_poll_start_workflow_json runtime input))
+    | Client_wait_start_workflow ticket -> (
+        match Protocol_adapter.encode_client_start_ticket ticket with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_start_outcome ticket
+              (Bridge.client_wait_start_workflow_json runtime input))
     | Client_wait_workflow request -> (
         match Protocol_adapter.encode_client_wait_request request with
         | Error error -> Error error
@@ -561,6 +619,13 @@ module Native = struct
     | Client_start_workflow :
         Client.start_request ->
         (Client.start_response, Client.client_error) result operation
+    | Client_begin_start_workflow :
+        Client.start_request ->
+        (Client.start_ticket, Client.client_error) result operation
+    | Client_poll_start_workflow :
+        Client.start_ticket -> Client.start_outcome option operation
+    | Client_wait_start_workflow :
+        Client.start_ticket -> Client.start_outcome option operation
     | Client_wait_workflow :
         Client.wait_request ->
         (Client.wait_response, Client.client_error) result operation

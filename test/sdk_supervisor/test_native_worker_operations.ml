@@ -168,6 +168,7 @@ let test_protocol_failures_are_typed () =
 let test_client_protocol_adapter () =
   let start_request : Client.start_request =
     {
+      request_id = "request-1";
       namespace = "default";
       workflow_id = "workflow-1";
       workflow_type = "Smoke";
@@ -202,6 +203,37 @@ let test_client_protocol_adapter () =
    with
   | Ok (Ok { Client.execution = { run_id = "run-2"; _ } }) -> ()
   | _ -> failwith "valid start response was not typed");
+  let start_ticket =
+    match
+      Supervisor.Protocol_adapter.decode_client_start_ticket start_request
+        (Ok (Bytes.of_string {|{"ticket":"ticket-1"}|}))
+    with
+    | Ok (Ok ticket) -> ticket
+    | _ -> failwith "valid start ticket was not typed"
+  in
+  if Client.start_ticket_request start_ticket <> start_request then
+    failwith "typed start ticket lost its request correlation";
+  let ticket_bytes =
+    require_bridge
+      (Supervisor.Protocol_adapter.encode_client_start_ticket start_ticket)
+  in
+  if not (contains_substring (Bytes.to_string ticket_bytes) "ticket-1") then
+    failwith "typed start ticket was not encoded";
+  let accepted_outcome_json =
+    {|{"kind":"accepted","execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"}}|}
+  in
+  (match
+     Supervisor.Protocol_adapter.decode_client_start_outcome start_ticket
+       (Ok (Bytes.of_string accepted_outcome_json))
+   with
+  | Ok (Some (Client.Accepted { execution = { run_id = "run-2"; _ } })) -> ()
+  | _ -> failwith "valid asynchronous start outcome was not typed");
+  (match
+     Supervisor.Protocol_adapter.decode_client_start_outcome start_ticket
+       (Error { Bridge.status = Not_ready; message = "retry" })
+   with
+  | Ok None -> ()
+  | _ -> failwith "asynchronous start readiness was not mapped to None");
   (match
      Supervisor.Protocol_adapter.decode_client_wait_result wait_request
        (Ok (Bytes.of_string wait_json))
@@ -330,6 +362,7 @@ let test_native_client_lifecycle_guards () =
      its connection-state guard instead of stopping at request validation. *)
   let start_request : Client.start_request =
     {
+      request_id = "request-1";
       namespace = "default";
       workflow_id = "workflow-1";
       workflow_type = "Smoke";
@@ -346,6 +379,32 @@ let test_native_client_lifecycle_guards () =
    with
   | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
   | _ -> failwith "client start without connection was accepted");
+  (match
+     Supervisor.perform supervisor
+       (Supervisor.Client_begin_start_workflow start_request)
+   with
+  | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
+  | _ -> failwith "client asynchronous start without connection was accepted");
+  let ticket =
+    match
+      Client.decode_start_ticket ~request:start_request
+        {|{"ticket":"ticket-before-connect"}|}
+    with
+    | Ok ticket -> ticket
+    | Error _ -> failwith "test asynchronous ticket was invalid"
+  in
+  (match
+     Supervisor.perform supervisor
+       (Supervisor.Client_poll_start_workflow ticket)
+   with
+  | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
+  | _ -> failwith "client asynchronous poll without connection was accepted");
+  (match
+     Supervisor.perform supervisor
+       (Supervisor.Client_wait_start_workflow ticket)
+   with
+  | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
+  | _ -> failwith "client asynchronous wait without connection was accepted");
   (match
      Supervisor.perform supervisor
        (Supervisor.Client_wait_workflow wait_request)

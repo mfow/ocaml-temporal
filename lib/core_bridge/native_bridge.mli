@@ -82,6 +82,21 @@ val client_connect : runtime -> client_config -> (unit, error) result
     structured error document. *)
 val client_start_workflow_json : runtime -> bytes -> (bytes, error) result
 
+(** Admits one asynchronous workflow start and returns a strict opaque ticket
+    document. Rust owns the pending task and its request metadata until a
+    later poll or bounded wait reaches a terminal outcome. *)
+val client_begin_start_workflow_json : runtime -> bytes -> (bytes, error) result
+
+(** Polls one asynchronous start ticket without waiting. [Not_ready] means the
+    request remains in flight; a successful response is a terminal
+    accepted/rejected/unknown outcome document and retires the ticket. *)
+val client_poll_start_workflow_json : runtime -> bytes -> (bytes, error) result
+
+(** Waits for one bounded interval for an asynchronous start ticket. The C
+    binding releases the OCaml runtime lock around the native wait, and
+    [Not_ready] asks the supervisor to service its mailbox and retry. *)
+val client_wait_start_workflow_json : runtime -> bytes -> (bytes, error) result
+
 (** Waits for one exact workflow run. Rust performs a close-event long poll for
     at most 100 ms while the C stub releases the OCaml runtime lock. An open
     run returns [Not_ready] without a terminal response so a caller can retry;

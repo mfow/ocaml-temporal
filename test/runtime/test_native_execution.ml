@@ -160,6 +160,58 @@ let test_retained_payloads_are_copied () =
         failwith "initialization context retained caller-owned bytes"
   | _ -> failwith "initialization payload copies were not retained"
 
+(** Confirms that application details survive the common Temporal shape where an
+    activity failure wraps the application failure in [cause]. *)
+let test_activity_failure_details_are_preserved () =
+  let failure : Protocol.failure =
+    {
+      message = "activity wrapper";
+      source = "core";
+      stack_trace = "";
+      encoded_attributes = None;
+      cause =
+        Some
+          {
+            message = "application failure";
+            source = "worker";
+            stack_trace = "";
+            encoded_attributes = None;
+            cause = None;
+            info =
+              Protocol.Application
+                {
+                  type_name = "mock_failure";
+                  non_retryable = false;
+                  details = [ protocol_payload "failure-details" ];
+                };
+          };
+      info =
+        Protocol.Activity
+          {
+            scheduled_event_id = 1L;
+            started_event_id = 2L;
+            identity = "worker";
+            activity_type = "mock";
+            activity_id = "activity-1";
+            retry_state = Protocol.Timeout;
+          };
+    }
+  in
+  let translated =
+    unwrap "activity failure translation"
+      (Native_execution.translate_activation
+         (activation
+            [ Protocol.Resolve_activity { seq = 6L; result = Failed failure } ]))
+  in
+  match translated.jobs with
+  | [ Activation.Resolve_activity { result = Error error; _ } ] ->
+      let view = Temporal.Error.view error in
+      begin match view.details with
+      | [ payload ] when Bytes.to_string payload.data = "failure-details" -> ()
+      | _ -> failwith "wrapped activity failure details were discarded"
+      end
+  | _ -> failwith "activity failure did not become a typed runtime error"
+
 (** Confirms cancellation and cache-removal facts are retained instead of being
     silently lost by marker-only runtime jobs. *)
 let test_cancellation_and_eviction () =
@@ -333,6 +385,7 @@ let test_unknown_sequence_becomes_failure () =
 let () =
   test_activation_metadata_and_order ();
   test_retained_payloads_are_copied ();
+  test_activity_failure_details_are_preserved ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();
   test_activate_eviction_completion ();

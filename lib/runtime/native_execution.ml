@@ -242,6 +242,26 @@ let failure_diagnostic (failure : Protocol.failure) =
   in
   loop 0 [] failure
 
+(** Collects application and cancellation details through an activity wrapper.
+    Temporal commonly reports an activity failure as an outer [Activity] record
+    whose [cause] contains the application failure and its payloads. The bounded
+    walk preserves details from every such layer without allowing a malformed
+    recursive value to consume unbounded stack or memory. *)
+let failure_details (failure : Protocol.failure) =
+  let rec loop depth reversed (value : Protocol.failure) =
+    let reversed =
+      match value.info with
+      | Protocol.Application { details; _ } | Protocol.Canceled { details; _ }
+        ->
+          List.rev_append details reversed
+      | Protocol.Activity _ -> reversed
+    in
+    match value.cause with
+    | Some cause when depth < 128 -> loop (depth + 1) reversed cause
+    | None | Some _ -> List.rev reversed
+  in
+  loop 0 [] failure
+
 (** Converts one protocol failure to the broad typed error used by workflow
     futures. The error view retains the primary category and details, while the
     protocol's richer recursive fields are included in its diagnostic. *)
@@ -252,12 +272,7 @@ let runtime_error_of_failure path ~category (failure : Protocol.failure) =
         let* payload = runtime_payload (path ^ ".details") payload in
         details_loop (payload :: reversed) rest
   in
-  let details =
-    match failure.info with
-    | Protocol.Application { details; _ } | Protocol.Canceled { details; _ } ->
-        details
-    | Protocol.Activity _ -> []
-  in
+  let details = failure_details failure in
   let* details = details_loop [] details in
   let non_retryable =
     match failure.info with

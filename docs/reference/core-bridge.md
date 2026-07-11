@@ -82,15 +82,27 @@ timed-out close events retain any successor run ID exposed by Core. A
 continued-as-new close is returned as a terminal `continued_as_new` outcome
 with a required successor execution reference; the bridge never follows that
 run implicitly. This prevents an exact-run caller from accidentally observing a
-different execution identity.
+different execution identity. Any successor must retain the waited namespace
+and workflow ID and must identify a different run. Both language validators
+enforce that cross-object relationship because Draft 2020-12 JSON Schema cannot
+express equality between those fields.
 
 Temporal AlreadyStarted responses use status `12` and a closed JSON error body
 (`kind`, `workflow_id`, `existing_run_id`) rather than copying gRPC server text.
 Other RPC failures contain only a stable status code. Core payload and failure
 conversion errors use a `protocol` error kind with a closed conversion code;
-they never include payload bytes or server diagnostics. Machine-readable
+the only values are `core_unsupported` and `core_invalid`. RPC codes use the
+closed lowercase tonic status vocabulary, and never include payload bytes or
+server diagnostics. Machine-readable
 schemas for these documents live under
 `docs/schemas/bridge/client-*.schema.json`.
+
+All client identifiers are nonempty and NUL-free. The schemas state the
+65,536-character necessary bound, while the bilateral runtime validators apply
+the authoritative 65,536-byte UTF-8 limit, reject duplicate members, and
+reparse encoded output. JSON Schema counts Unicode characters rather than
+encoded bytes, so schema validation alone is not a substitute for the runtime
+checks.
 
 ## Result and buffer ownership
 

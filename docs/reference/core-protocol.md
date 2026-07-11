@@ -165,14 +165,22 @@ reference; the bridge does not follow the successor and therefore cannot
 silently change the run returned to the caller. Cancelled and terminated
 outcomes preserve their ordered detail payloads.
 
+Every non-null successor remains in the same execution chain: its namespace
+and workflow ID must equal the waited execution, while its run ID must differ.
+The Rust encoder and OCaml decoder enforce this relationship directly because
+standard JSON Schema cannot compare values held in separate objects.
+
 The ABI error buffer uses a closed `client-error.schema.json` body for
 AlreadyStarted, stable RPC-code failures, and stable Core protocol categories.
 It never contains raw gRPC status text, which can include workflow identifiers
-or payload-derived diagnostics.
+or payload-derived diagnostics. Core conversion codes are exactly
+`core_unsupported` and `core_invalid`. RPC codes use the closed, privacy-safe
+snake-case tonic status vocabulary instead of reflecting diagnostic text.
 The Rust validator checks duplicate object members before typed serde parsing,
-canonical base64, identifier byte limits, and output round trips. These client
-documents are intentionally private until the OCaml supervisor adapter adds
-its own bilateral typed validators.
+canonical base64, NUL-free identifier byte limits, and output round trips. The
+OCaml adapter applies the same identifier and successor checks before requests
+or responses cross its typed boundary. These documents remain private bridge
+protocol rather than a public workflow-authoring API.
 
 ## Workflow activation and completion semantics
 

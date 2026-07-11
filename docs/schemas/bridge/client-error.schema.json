@@ -10,8 +10,8 @@
       "required": ["kind", "workflow_id", "existing_run_id"],
       "properties": {
         "kind": {"const": "already_started"},
-        "workflow_id": {"type": "string", "minLength": 1},
-        "existing_run_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
+        "workflow_id": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+        "existing_run_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"}, {"type": "null"}]}
       }
     },
     {
@@ -20,7 +20,28 @@
       "required": ["kind", "code"],
       "properties": {
         "kind": {"const": "rpc"},
-        "code": {"type": "string", "minLength": 1}
+        "code": {
+          "description": "Canonical snake_case tonic status code.",
+          "enum": [
+            "ok",
+            "cancelled",
+            "unknown",
+            "invalid_argument",
+            "deadline_exceeded",
+            "not_found",
+            "already_exists",
+            "permission_denied",
+            "resource_exhausted",
+            "failed_precondition",
+            "aborted",
+            "out_of_range",
+            "unimplemented",
+            "internal",
+            "unavailable",
+            "data_loss",
+            "unauthenticated"
+          ]
+        }
       }
     },
     {
@@ -29,7 +50,7 @@
       "required": ["kind", "code"],
       "properties": {
         "kind": {"const": "protocol"},
-        "code": {"type": "string", "minLength": 1}
+        "code": {"enum": ["core_unsupported", "core_invalid"]}
       }
     }
   ]

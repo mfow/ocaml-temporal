@@ -1,0 +1,8 @@
+(lang dune 3.18)
+
+;; The Rust bridge is always linked into the final OCaml-owned executable.
+;; Avoid asking platform DLL linkers to reinterpret Rust's native static-library
+;; flags while Dune constructs an unnecessary dynamically loadable stub.
+(context
+ (default
+  (disable_dynamically_linked_foreign_archives true)))

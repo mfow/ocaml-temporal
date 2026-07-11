@@ -8,6 +8,29 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-11: Portable static foreign-archive build
+
+Status: verified locally; GitHub Actions verification follows the corrective
+commit.
+
+The build now explicitly disables dynamically linked foreign archives. The
+SDK's supported artifact has always been an OCaml-owned native executable with
+the Rust bridge linked into it, so constructing a separate loadable stub DLL
+was unnecessary. On Windows that extra Dune rule passed Rust's GNU native
+library tokens through FlexDLL, which interpreted them as filenames and
+rejected `-lwinapi_ntdll` after Rust itself had compiled successfully.
+
+Evidence:
+
+- The repository regression test first failed because no workspace policy
+  selected static foreign archives, then passed after the policy was added.
+- The complete local native verification passes the Dune build and lint,
+  Clippy with warnings denied, all Rust and OCaml tests, and a fresh installed-
+  package consumer executable.
+- macOS ARM64 and every Linux OCaml 5.2 through 5.5 amd64/arm64 job in the
+  preceding runtime-ownership run passed; its Windows x64 job supplied the
+  exact failing FlexDLL command addressed by this change.
+
 ## 2026-07-11: Plain-language documentation and maintained JSON codec
 
 Status: verified locally and by GitHub Actions.

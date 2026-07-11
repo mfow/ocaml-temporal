@@ -57,6 +57,20 @@ let test_package_metadata () =
   require_text ~path:dune_project ~needle:"(name temporal-sdk)";
   require_text ~path:dune_project ~needle:"(yojson (>= 3.0))"
 
+(** Ensures Dune never attempts to turn the statically linked Rust bridge into
+    a dynamically loadable OCaml stub library. Rust reports GNU-style native
+    linker flags on Windows, but FlexDLL cannot consume those flags while
+    constructing a DLL. The SDK intentionally ships an OCaml-owned executable
+    with the Rust bridge linked into it, so static foreign archives are the
+    portable and architecturally correct mode. *)
+let test_static_foreign_archives () =
+  let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
+  let workspace = Filename.concat source_root "dune-workspace" in
+  require_text
+    ~path:workspace
+    ~needle:"(disable_dynamically_linked_foreign_archives true)"
+
 let () =
   test_license ();
-  test_package_metadata ()
+  test_package_metadata ();
+  test_static_foreign_archives ()

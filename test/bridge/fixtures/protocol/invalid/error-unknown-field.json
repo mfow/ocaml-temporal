@@ -1,0 +1,1 @@
+{"kind":"error","correlation_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","operation":"worker.poll","error":{"code":"invalid_message","message":"bad","retryable":false,"details":"secret"}}

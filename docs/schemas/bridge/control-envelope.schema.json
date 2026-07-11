@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/control-envelope.schema.json",
+  "title": "OCaml Temporal private control envelope",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" },
+    { "$ref": "#/$defs/errorResponse" }
+  ],
+  "$defs": {
+    "correlationId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "operation": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z][a-z0-9_.]*$" },
+    "jsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        { "type": "string", "maxLength": 65536 },
+        { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/jsonValue" } },
+        {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": { "maxLength": 65536 },
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "body": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "maxLength": 65536 },
+      "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "correlation_id", "operation", "body"],
+      "properties": {
+        "kind": { "const": "request" },
+        "correlation_id": { "$ref": "#/$defs/correlationId" },
+        "operation": { "$ref": "#/$defs/operation" },
+        "body": { "$ref": "#/$defs/body" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "correlation_id", "operation", "body"],
+      "properties": {
+        "kind": { "const": "response" },
+        "correlation_id": { "$ref": "#/$defs/correlationId" },
+        "operation": { "$ref": "#/$defs/operation" },
+        "body": { "$ref": "#/$defs/body" }
+      }
+    },
+    "bridgeError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "enum": ["invalid_message", "unsupported_message", "internal_bridge"] },
+        "message": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "errorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "correlation_id", "operation", "error"],
+      "properties": {
+        "kind": { "const": "error" },
+        "correlation_id": { "$ref": "#/$defs/correlationId" },
+        "operation": { "$ref": "#/$defs/operation" },
+        "error": { "$ref": "#/$defs/bridgeError" }
+      }
+    }
+  }
+}

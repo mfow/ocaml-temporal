@@ -13,7 +13,9 @@ project intends to build. Start with these documents:
    runtime changes must preserve.
 5. [Native Core bridge](reference/core-bridge.md) explains how OCaml safely
    calls the Rust library linked into the final executable.
-6. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
+6. [Private JSON control protocol](reference/core-protocol.md) defines the
+   strict bounded envelope used by the two compiled halves of the SDK.
+7. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
    describes the long-term design. Unimplemented APIs in that document are
    targets, not claims about the current package.
 

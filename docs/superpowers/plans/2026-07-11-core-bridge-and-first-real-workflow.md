@@ -161,6 +161,11 @@ and an install smoke test; modify package metadata and documentation.
 
 ### Task 4: Strict Core-to-OCaml adapter protocol
 
+Transport foundation complete: the closed correlated envelope, shared resource
+limits, canonical opaque-payload encoding, schemas, bilateral strict parsers,
+normalization, and conformance fixtures are implemented. Activation/completion
+body variants and Core protobuf translation remain intentionally pending.
+
 **Files:** Create `lib/protocol/`, `test/bridge/fixtures/`, Rust adapter
 types/validation, `docs/reference/core-protocol.md`, and Draft 2020-12 schemas
 under `docs/schemas/bridge/`.

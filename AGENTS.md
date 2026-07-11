@@ -19,6 +19,14 @@ the architecture by making Rust own the OCaml application.
 - Keep workflow authoring idiomatic, direct-style OCaml. Public helper
   functions should compose like ordinary OCaml functions, including helpers
   that wrap one or more activities or workflows.
+- Implement the worker, replay, and essential Temporal command path before
+  adding higher-level conveniences inspired by other SDKs. Feature parity is a
+  behavioral target, not a requirement to translate another language's API.
+  Study those SDKs after the supporting core capability is verified, then
+  design the OCaml surface with modules, labelled arguments, variants,
+  [result], higher-order functions, and other idiomatic OCaml tools. Reuse
+  Temporal Core where it owns durable state-machine behavior; reimplement a
+  language-layer feature in OCaml when that boundary is clearer and safer.
 - Use private OCaml 5 algebraic effects to suspend direct-style workflow code.
   Do not expose effect constructors, continuations, Rust futures, Tokio, raw
   pointers, or Core implementation details in the public API.

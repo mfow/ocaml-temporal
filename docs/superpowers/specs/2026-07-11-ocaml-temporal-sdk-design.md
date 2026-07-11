@@ -1,9 +1,14 @@
 # OCaml Temporal SDK Design
 
-**Status:** Approved architecture, pre-implementation specification
+**Status:** Approved target architecture; implementation is in progress
 **Date:** 2026-07-11
 **License:** Apache-2.0
 **Target:** A reusable, publishable OCaml 5 SDK for authoring Temporal workflows
+
+This document describes the intended completed SDK. It is not a list of
+features available today. See the [progress log](../../progress.md) for
+verified current behavior and the [roadmap](../../implementation-roadmap.md)
+for remaining work.
 
 ## 1. Purpose
 
@@ -12,6 +17,14 @@ This project will let developers author Temporal workflows in modern OCaml while
 The SDK must make workflow code feel like ordinary OCaml. Workflow bodies and reusable helpers are normal functions. Temporal operations use typed values, explicit codecs, labelled arguments, immutable configuration values, typed futures, and `result`-based failure handling. OCaml 5 algebraic effects provide direct-style suspension internally, but effect constructors and continuations are not part of the public API.
 
 The long-term target is feature parity with production Temporal SDKs. Delivery will proceed through verified, independently useful vertical slices without narrowing that target.
+
+Parity is a behavioral goal, not an instruction to translate another SDK's
+public API. Core worker correctness comes first. After that foundation is
+working end to end, the project will study useful features from the other
+official SDKs and express them using normal OCaml types and composition. A
+feature may use an existing Temporal Core mechanism or be implemented in OCaml
+from first principles, depending on which boundary gives the clearest,
+safest, and most maintainable result.
 
 ## 2. Goals
 
@@ -270,7 +283,12 @@ Hash-table iteration is not treated as a stable workflow order. APIs that turn m
 
 ## 9. Payloads and Cross-language Interoperability
 
-Every public boundary uses an explicit `'a Codec.t`. The default converter supports Temporal-compatible `json/plain`, binary/plain, null, and protobuf encodings. Metadata matches other SDK defaults so an OCaml workflow can invoke an activity implemented in Go, Python, TypeScript, Java, .NET, Ruby, or Rust without a custom gateway.
+Every public boundary uses an explicit `'a Codec.t`. Temporal stores opaque
+payload bytes and does not require JSON. The SDK provides a `json/plain` codec
+for convenient interoperability with standard converters in other SDKs, as
+well as binary, null, and eventually Protobuf codecs. Applications may use
+another deterministic encoding when both sides agree on its metadata and byte
+format.
 
 Codec failures are structured errors with payload metadata and safe diagnostics. Raw payload access is available for dynamic workflows and forward-compatible integrations. Payload codecs and encryption/compression hooks operate outside deterministic user logic where required.
 
@@ -287,7 +305,11 @@ Parity is organized by capability rather than by replacing the final objective w
 5. **Platform breadth:** client workflow operations, schedules, visibility/list/count, reset/terminate/cancel, update handles, Nexus operations, testing server controls, replay tooling, and task-queue priority/fairness.
 6. **Publication hardening:** API compatibility gates, multi-platform artifacts, performance tuning, security review, exhaustive guides, and OPAM release automation.
 
-Each capability lands with unit tests, an integration or replay test where relevant, documentation, and a verified commit.
+Each capability lands with unit tests, an integration or replay test where
+relevant, documentation, and a verified commit. Convenience APIs inspired by
+other SDKs are added after their underlying Core operations and replay behavior
+are proven. Their OCaml API is designed independently rather than copying the
+source SDK's classes, exception model, or concurrency abstractions.
 
 ## 11. Docker Compose, Makefile, and Kubernetes
 

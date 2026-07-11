@@ -5,14 +5,22 @@ subprojects. It does not redefine the final objective: the project is complete
 only when the acceptance criteria in the architecture specification and every
 capability in the parity matrix are verified.
 
+“Complete” in the table means that the repository has passed the evidence for
+that phase; it does not mean the whole SDK is production-ready. Core worker and
+replay behavior is implemented before ergonomic features borrowed from other
+Temporal SDKs. Those later features should preserve the useful behavior while
+using idiomatic OCaml APIs. They may be implemented in OCaml even when another
+SDK implements them in its host-language layer or in Rust, if that produces a
+cleaner and more maintainable OCaml design.
+
 ## Delivery order
 
 | Phase | Deliverable | Runtime evidence | Status |
 |---|---|---|---|
 | 1 | Repository foundation, typed public definitions, codecs, deterministic futures, effect scheduler, and synthetic activations | `make verify` runs from Docker Compose and deterministic command tests pass | Complete |
-| 2 | Rust static library, OCaml C stubs, Temporal Core workflow poll/completion loop, PostgreSQL and Temporal Compose services | A Dune-built OCaml executable completes a workflow against the Compose cluster | In progress |
-| 3 | Durable timers, remote activities, typed options, failures, retries, and cancellation | Cross-language activity integration tests and worker-restart replay tests pass | Planned |
-| 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes) | Parent workflows fan out to activities and children, await one/all, and cancel safely | Planned |
+| 2 | Rust static library, OCaml C stubs, live worker poll/completion loop, minimum OCaml client, and the real Compose smoke-test topology | An OCaml test-client container starts a workflow executed by a separate OCaml worker against Temporal Server and PostgreSQL | In progress |
+| 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | Planned |
+| 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes), added to the live smoke suite | Parent workflows fan out to mock activities and children, await one/all, and cancel safely through the real cluster | Planned |
 | 5 | Signals, queries, updates, validators, conditions, and handler policies | CLI-driven interactive workflow tests pass, including mode violations | Planned |
 | 6 | Continue-as-new, patches, side effects, external workflow operations, memo, search attributes, priority, and fairness | Recorded histories replay and advanced command integration tests pass | Planned |
 | 7 | OCaml activities, local activities, heartbeats, async completion, interceptors, payload codecs, and graceful shutdown | Activity conformance and Kubernetes-style termination tests pass | Planned |
@@ -33,6 +41,25 @@ Each detailed plan is written immediately before its phase so it can use the
 actual interfaces and upstream Core revision proven by prior phases. This
 prevents later plans from pretending that unstable internal APIs are already
 known while preserving the full target in this roadmap.
+
+## End-to-end acceptance topology
+
+The first live vertical slice creates the deployment shape used by all later
+essential-feature tests:
+
+- PostgreSQL stores Temporal Server state.
+- Temporal Server uses PostgreSQL and exposes its normal frontend service.
+- An OCaml worker container links this library and registers the workflow and
+  deterministic mock activity implementations used by the suite.
+- A separate OCaml test-client container links the same library, starts each
+  test workflow, waits for its result, and checks the expected outcome.
+
+The smoke suite starts with one live workflow as soon as the minimum worker and
+client paths exist. Every subsequent essential capability adds scenarios to
+that same suite. The suite is table-driven and records both the supported case
+and its important error, cancellation, replay, or shutdown behavior. It is not
+considered complete while an essential SDK capability is exercised only by the
+synthetic interpreter.
 
 ## Dependency and licensing gate
 

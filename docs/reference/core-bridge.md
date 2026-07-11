@@ -1,20 +1,25 @@
 # Native Core Bridge ABI
 
+This document is for contributors changing the OCaml/C/Rust boundary. Workflow
+authors do not call this interface directly.
+
 The product is an OCaml Temporal SDK, not only a Temporal service client. It
 implements workflow workers and the deterministic workflow runtime as well as
 client operations that start and observe workflows. The final worker process
 is owned and launched by OCaml. The public OCaml library calls private C stubs,
 which call the versioned Rust ABI documented here. Rust links the official
-Temporal Core library and never invokes arbitrary OCaml closures.
+Temporal Core library and never invokes arbitrary OCaml functions from its
+background threads.
 
 ## Version and symbols
 
 ABI version 1 uses only symbols beginning with `ocaml_temporal_core_v1_`.
-Callers must negotiate `OCAML_TEMPORAL_CORE_ABI_VERSION` before creating future
-runtime, internal Core connection-client, or worker handles. The client handle
-is one implementation component of the larger SDK, not the scope of the public
-library. The header reserves opaque declarations for those three handle types
-without exposing their Rust layout.
+Before using the bridge, OCaml asks Rust which ABI version it implements and
+checks that it matches `OCAML_TEMPORAL_CORE_ABI_VERSION`. Future bridge code
+will represent the Rust runtime, server connection, and worker with opaque
+handles. “Opaque” means OCaml can pass a handle back to Rust but cannot inspect
+the Rust object it refers to. A connection handle is only one internal part of
+the SDK; the public package is not merely a service client.
 
 The canonical header is
 `rust/core-bridge/include/ocaml_temporal_core.h`. Both Rust and C compile-time

@@ -11,15 +11,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* OCaml custom block that is the sole owner of one initialized Rust result.
+ * `live` makes explicit free and finalization idempotent with respect to the
+ * same OCaml value. Copying this C structure remains forbidden. */
 typedef struct owned_response {
   ocaml_temporal_core_result result;
   int live;
 } owned_response;
 
+/* Extract the custom-block payload; callers must separately require liveness
+ * before reading Rust-owned pointer fields. */
 static owned_response *Response_val(value response) {
   return (owned_response *)Data_custom_val(response);
 }
 
+/* Release Rust allocations exactly once and poison further field access. */
 static void release_response(owned_response *response) {
   if (response->live) {
     (void)ocaml_temporal_core_v1_result_free(&response->result);
@@ -27,10 +33,13 @@ static void release_response(owned_response *response) {
   }
 }
 
+/* GC fallback for responses not explicitly decoded because OCaml unwound. */
 static void finalize_response(value response) {
   release_response(Response_val(response));
 }
 
+/* Custom operations deliberately use identity/default behavior; responses are
+ * resource owners, not serializable or semantically comparable values. */
 static struct custom_operations response_operations = {
     .identifier = "org.ocaml-temporal.native-response.v1",
     .finalize = finalize_response,
@@ -42,6 +51,8 @@ static struct custom_operations response_operations = {
     .fixed_length = NULL,
 };
 
+/* Allocate and initialize the finalizable owner before any Rust call can write
+ * allocations into it. Zeroing also satisfies the Rust result precondition. */
 static value alloc_response(void) {
   CAMLparam0();
   CAMLlocal1(response);
@@ -54,6 +65,7 @@ static value alloc_response(void) {
   CAMLreturn(response);
 }
 
+/* Reject use-after-free deterministically at the private binding boundary. */
 static owned_response *require_live(value response) {
   owned_response *owned = Response_val(response);
   if (!owned->live) {
@@ -62,6 +74,8 @@ static owned_response *require_live(value response) {
   return owned;
 }
 
+/* Negotiate ABI compatibility without blocking; the returned custom block owns
+ * any diagnostic allocated by Rust. */
 CAMLprim value ocaml_temporal_check_abi_version(value requested_version) {
   CAMLparam1(requested_version);
   CAMLlocal1(response);
@@ -74,6 +88,8 @@ CAMLprim value ocaml_temporal_check_abi_version(value requested_version) {
   CAMLreturn(response);
 }
 
+/* Copy mutable OCaml bytes before releasing the runtime lock. Rust never holds
+ * an OCaml heap pointer while another Domain or the GC can run. */
 CAMLprim value ocaml_temporal_echo(value input) {
   CAMLparam1(input);
   CAMLlocal1(response);
@@ -101,6 +117,9 @@ CAMLprim value ocaml_temporal_echo(value input) {
   CAMLreturn(response);
 }
 
+/* Exercise a blocking Rust call with the OCaml runtime lock released. The
+ * sentinel UINT32_MAX preserves invalid negative/overflow input for Rust-side
+ * validation instead of truncating it into a valid duration. */
 CAMLprim value ocaml_temporal_conformance_wait_ms(value milliseconds) {
   CAMLparam1(milliseconds);
   CAMLlocal1(response);
@@ -121,12 +140,14 @@ CAMLprim value ocaml_temporal_conformance_wait_ms(value milliseconds) {
   CAMLreturn(response);
 }
 
+/* Read the status while the custom block remains live. */
 CAMLprim value ocaml_temporal_response_status(value response) {
   CAMLparam1(response);
   owned_response *owned = require_live(response);
   CAMLreturn(Val_int(owned->result.status));
 }
 
+/* Copy successful Rust bytes into GC-owned OCaml storage before cleanup. */
 CAMLprim value ocaml_temporal_response_value(value response) {
   CAMLparam1(response);
   CAMLlocal1(output);
@@ -140,6 +161,7 @@ CAMLprim value ocaml_temporal_response_value(value response) {
   CAMLreturn(output);
 }
 
+/* Copy failure diagnostics into GC-owned OCaml storage before cleanup. */
 CAMLprim value ocaml_temporal_response_error(value response) {
   CAMLparam1(response);
   CAMLlocal1(output);
@@ -153,6 +175,7 @@ CAMLprim value ocaml_temporal_response_error(value response) {
   CAMLreturn(output);
 }
 
+/* Explicit cleanup used by [Fun.protect]; finalization remains a fallback. */
 CAMLprim value ocaml_temporal_response_free(value response) {
   CAMLparam1(response);
   release_response(Response_val(response));

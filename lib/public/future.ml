@@ -1,3 +1,5 @@
+(** Re-exports the workflow runtime's future operations. All scheduling remains
+    inside the workflow execution that created the future. *)
 type ('value, 'error) t = ('value, 'error) Temporal_runtime.Future_store.t
 
 let await = Temporal_runtime.Future_store.await

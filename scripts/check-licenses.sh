@@ -3,6 +3,9 @@ set -eu
 
 failed=0
 
+# Return success only for an approved SPDX expression. The two exceptions are
+# deliberately restricted to exact package names and versions reviewed in
+# docs/dependencies.md.
 allowed_license() {
   package=$1
   version=$2
@@ -24,6 +27,10 @@ allowed_license() {
   return 1
 }
 
+# Check one package's complete OPAM license field. OPAM may return a quoted list
+# or a comma-separated value, so normalize either form before applying the
+# exact allowlist. Missing licenses fail except for named compiler virtual
+# packages, which have no independent source distribution.
 check_license_value() {
   package=$1
   version=$2
@@ -62,6 +69,9 @@ check_license_value() {
   IFS=$old_ifs
 }
 
+# Read package name, version, and license metadata from one OPAM manifest, then
+# pass the normalized values to the policy checker. Fixture manifests may omit
+# name or version, in which case the filename and "fixture" identify them.
 check_opam_file() {
   file=$1
   case "$file" in

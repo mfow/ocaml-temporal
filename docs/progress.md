@@ -3,6 +3,44 @@
 This document records verified implementation milestones. Planned work remains
 in [the implementation roadmap](implementation-roadmap.md).
 
+Each entry describes evidence that passed at the time of its commit. The most
+recent entries supersede older package names, dependency counts, and build
+details. For a concise statement of what users can run today, see the project
+[README](../README.md).
+
+## 2026-07-11: Plain-language documentation and maintained JSON codec
+
+Status: verified locally; GitHub Actions verification follows the milestone
+commit.
+
+The repository documentation now begins with a guide and glossary, clearly
+separates implemented behavior from target architecture, and explains public
+APIs in terms of what callers provide and receive. Source comments cover the
+public API, internal workflow runtime, OCaml/C/Rust ownership boundary, and
+test helpers with emphasis on behavior and safety rather than restating code.
+
+The optional `json/plain` string codec now uses Yojson 3.0.0 instead of a
+project-owned JSON parser. Temporal still treats payloads as opaque bytes and
+does not require JSON; the codec remains because it provides useful
+cross-language interoperability. The locked license inventory records Yojson's
+BSD-3-Clause license.
+
+Evidence:
+
+- Package smoke tests first failed because Yojson was not declared, then passed
+  after Dune, OPAM, and the locked closure included it.
+- Codec tests pass for escaping, Unicode surrogate pairs, invalid UTF-8,
+  non-string JSON, trailing input, binary copies, and optional values.
+- `make native-verify NATIVE_OCAML_VERSION=5.4 NATIVE_RUST_VERSION=1.96.0`
+  passed the local OCaml/Rust build, Clippy, Rust tests, OCaml tests, and install
+  smoke test.
+- Docker-backed `make test-unit OCAML_VERSION=5.2`, `make test-runtime
+  OCAML_VERSION=5.2`, and `make license-check OCAML_VERSION=5.2` passed.
+- Both OPAM manifests pass `opam lint`, and `git diff --check` passes.
+
+Next objective: the live Temporal/PostgreSQL Compose acceptance topology with
+separate OCaml test-client and workflow/activity worker executables.
+
 ## 2026-07-11: Repository foundation
 
 Status: verified.

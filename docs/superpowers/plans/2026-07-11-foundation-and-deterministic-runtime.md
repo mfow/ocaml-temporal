@@ -1,5 +1,10 @@
 # Foundation and Deterministic Runtime Implementation Plan
 
+> **Historical plan:** This records the steps used to build Phase 1. It is not
+> current user documentation. See the [progress log](../../progress.md) for the
+> verified result and the [workflow guide](../../guides/workflows.md) for the
+> current API.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the Docker/Makefile repository foundation and a tested OCaml 5 runtime kernel whose typed workflows can schedule commands, suspend on futures, and resume deterministically from synthetic Temporal activations.
@@ -401,7 +406,7 @@ val unit : unit t
 val option : 'a t -> 'a option t
 ```
 
-`Codec.encode` returns `result`, as the test demonstrates. Use `json/plain` for strings, `binary/plain` for bytes, and `binary/null` for unit/`None`. The first implementation encodes JSON strings with correct quote, backslash, newline, carriage-return, tab, and control-character escaping without adding a JSON dependency.
+`Codec.encode` returns `result`, as the test demonstrates. Use `json/plain` for strings, `binary/plain` for bytes, and `binary/null` for unit/`None`. This historical plan proposed a small local JSON-string implementation. The current code instead uses the maintained BSD-licensed Yojson library; see the workflow guide and dependency inventory.
 
 Expose this error view:
 

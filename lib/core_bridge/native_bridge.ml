@@ -1,3 +1,5 @@
+(** OCaml names for Rust bridge status codes. An unrecognized number is kept in
+    [Unknown] so diagnostics remain available across a version mismatch. *)
 type status =
   | Invalid_argument
   | Abi_mismatch
@@ -5,13 +7,17 @@ type status =
   | Internal
   | Unknown of int
 
+(** Error data copied into OCaml. It never owns Rust memory. *)
 type error = {
   status : status;
   message : string;
 }
 
+(** Version requested by this binding layer. *)
 let abi_version = 1l
 
+(** Private OCaml value implemented in C. It owns a Rust result allocation until
+    [decode] frees it or the OCaml garbage collector runs its finalizer. *)
 type response
 
 external check_abi_version_raw : int32 -> response
@@ -27,6 +33,7 @@ external response_value : response -> bytes = "ocaml_temporal_response_value"
 external response_error : response -> string = "ocaml_temporal_response_error"
 external response_free : response -> unit = "ocaml_temporal_response_free"
 
+(** Converts known numeric statuses and retains every newer value as [Unknown]. *)
 let status = function
   | 1 -> Invalid_argument
   | 2 -> Abi_mismatch
@@ -34,6 +41,9 @@ let status = function
   | 4 -> Internal
   | code -> Unknown code
 
+(** Copies either the successful bytes or error message into OCaml, then always
+    frees the Rust allocation. [Fun.protect] still runs cleanup if copying
+    raises an OCaml exception. *)
 let decode response =
   Fun.protect
     ~finally:(fun () -> response_free response)
@@ -44,6 +54,8 @@ let decode response =
         Error
           { status = status code; message = response_error response })
 
+(** Converts successful test operations with no useful output to [Ok ()] after
+    [decode] has performed the normal memory cleanup. *)
 let check_abi_version version =
   Result.map (fun _ -> ()) (decode (check_abi_version_raw version))
 

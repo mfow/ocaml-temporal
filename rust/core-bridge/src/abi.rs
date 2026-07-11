@@ -5,12 +5,18 @@ use std::time::Duration;
 /// Version of the native ABI implemented by this crate.
 pub const ABI_VERSION: u32 = 1;
 
+/// Fixed-width status type shared with the C header.
 pub type Status = i32;
 
+/// Operation completed and `value` may own bytes.
 pub const STATUS_OK: Status = 0;
+/// A pointer, length, range, or other caller argument violated the ABI.
 pub const STATUS_INVALID_ARGUMENT: Status = 1;
+/// The caller requested an ABI version this bridge does not implement.
 pub const STATUS_ABI_MISMATCH: Status = 2;
+/// A Rust panic was contained before it crossed the C boundary.
 pub const STATUS_PANIC: Status = 3;
+/// Reserved non-panic bridge implementation failure.
 pub const STATUS_INTERNAL: Status = 4;
 
 const _: () = assert!(size_of::<Status>() == 4);
@@ -27,6 +33,7 @@ pub struct Buffer {
 }
 
 impl Default for Buffer {
+    /// Returns the canonical empty buffer with no allocation ownership.
     fn default() -> Self {
         Self {
             ptr: ptr::null_mut(),
@@ -36,6 +43,7 @@ impl Default for Buffer {
 }
 
 impl Buffer {
+    /// Transfers a vector allocation into the ABI, canonicalizing empty input.
     fn from_vec(value: Vec<u8>) -> Self {
         if value.is_empty() {
             return Self::default();
@@ -71,13 +79,16 @@ const _: () = {
     );
 };
 
+/// Internal structured failure converted into an owned ABI diagnostic.
 struct Failure {
     status: Status,
     message: String,
 }
 
+/// Byte-producing operation accepted by the shared panic/ownership wrapper.
 type Operation = std::result::Result<Vec<u8>, Failure>;
 
+/// Constructs the only valid successful result shape.
 fn success(value: Vec<u8>) -> Result {
     Result {
         status: STATUS_OK,
@@ -86,6 +97,7 @@ fn success(value: Vec<u8>) -> Result {
     }
 }
 
+/// Constructs the only valid failed result shape with UTF-8 diagnostic bytes.
 fn failure(status: Status, message: impl Into<String>) -> Result {
     Result {
         status,
@@ -94,6 +106,10 @@ fn failure(status: Status, message: impl Into<String>) -> Result {
     }
 }
 
+/// Initializes output, contains panics, and commits one fully formed result.
+///
+/// Writing the empty result before executing user logic ensures every non-null
+/// output is safe to free even when the operation panics.
 unsafe fn invoke(output: *mut Result, operation: impl FnOnce() -> Operation) -> Status {
     if output.is_null() {
         return STATUS_INVALID_ARGUMENT;
@@ -119,6 +135,7 @@ unsafe fn invoke(output: *mut Result, operation: impl FnOnce() -> Operation) -> 
     status
 }
 
+/// Reclaims one bridge allocation and resets the buffer to canonical empty.
 unsafe fn free_buffer(buffer: &mut Buffer) {
     if buffer.ptr.is_null() {
         buffer.len = 0;

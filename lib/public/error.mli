@@ -1,3 +1,6 @@
+(** Identifies the part of the SDK or Temporal operation that failed. These
+    broad categories are intended for pattern matching and metrics; [message]
+    provides the more specific diagnostic. *)
 type category =
   [ `Activity
   | `Bridge
@@ -11,6 +14,9 @@ type category =
   | `Update
   | `Workflow ]
 
+(** The information application code can inspect about an SDK error.
+    [non_retryable] records whether Temporal should avoid retrying the failure.
+    [details] contains any additional raw Temporal payloads supplied with it. *)
 type view = {
   category : category;
   message : string;
@@ -18,14 +24,24 @@ type view = {
   details : Payload.t list;
 }
 
+(** A failure returned by SDK operations through [result]. Expected failures,
+    such as an activity error, cancellation, timeout, or invalid payload, are
+    represented by this type rather than exceptions. *)
 type t = Temporal_base.Error.t
 
+(** Returns all publicly inspectable fields of an error. *)
 val view : t -> view
-(** Return the stable, inspectable representation of an SDK error. *)
 
+(** Returns the lowercase category name, such as ["activity"] or ["codec"]. *)
 val kind : t -> string
-(** Lowercase stable category name, suitable for diagnostics and metrics. *)
 
+(** Returns the human-readable explanation of the failure. *)
 val message : t -> string
+
+(** Creates an error for a value that a custom codec could not encode or
+    decode. *)
 val codec : message:string -> t
+
+(** Creates a non-retryable error for an SDK bug or a violation of an API
+    requirement. *)
 val defect : message:string -> t

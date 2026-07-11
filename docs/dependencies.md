@@ -28,8 +28,9 @@ attributes them to the reviewed compiler distribution.
 
 | Package | Exact version | License | Scope | Linked into release | Redistributed | Review note |
 |---|---:|---|---|---|---|---|
-| temporal | ~dev | Apache-2.0 | project | yes | yes | Project source and binary |
+| temporal-sdk | ~dev | Apache-2.0 | project | yes | yes | Project source and binary |
 | dune | 3.24.0 | MIT | build | no | no | Build system only |
+| yojson | 3.0.0 | BSD-3-Clause | runtime | yes | no | Implements the optional cross-language `json/plain` codec; Temporal itself does not require JSON |
 | ocaml | 5.2.1 | LGPL-2.1-or-later WITH OCaml-LGPL-linking-exception | compiler/runtime | yes | no | Approved OCaml linking exception |
 | ocaml-base-compiler | 5.2.1 | LGPL-2.1-or-later WITH OCaml-LGPL-linking-exception | compiler | no | no | Approved OCaml linking exception |
 | ocaml-config | 3 | ISC | build | no | no | Compiler configuration package |

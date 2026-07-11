@@ -21,6 +21,7 @@ depends: [
   "ocaml-base-compiler" {= "5.2.1"}
   "ocaml-config" {= "3"}
   "ocaml-options-vanilla" {= "1"}
+  "yojson" {= "3.0.0"}
 ]
 build: [
   ["dune" "subst"] {dev}

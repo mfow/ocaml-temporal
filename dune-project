@@ -14,4 +14,5 @@
  (tags (temporal workflow sdk experimental))
  (depends
   (ocaml (>= 5.2))
-  (dune (>= 3.18))))
+  (dune (>= 3.18))
+  (yojson (>= 3.0))))

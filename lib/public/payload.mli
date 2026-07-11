@@ -1,6 +1,10 @@
+(** The serialized form of one value passed through Temporal. Temporal stores
+    the byte sequence without interpreting it; metadata tells SDK codecs how
+    those bytes were encoded. JSON is one possible encoding, not a requirement. *)
 type t = Temporal_base.Payload.t = {
   metadata : (string * string) list;
-      (** Codec metadata, including the mandatory [encoding] entry. *)
+      (** Information used by data converters, normally including an
+          ["encoding"] entry such as ["json/plain"] or ["binary/plain"]. *)
   data : bytes;
-      (** Opaque payload bytes. *)
+      (** The exact serialized bytes stored by Temporal. *)
 }

@@ -1,8 +1,10 @@
 module Scheduler = Temporal_runtime.Scheduler
 
+(** Compares values and includes a short scenario label on failure. *)
 let expect label expected actual =
   if expected <> actual then failwith (label ^ " did not match")
 
+(** Verifies that futures resume their waiting fibers in registration order. *)
 let test_fifo_resume () =
   let scheduler = Scheduler.create () in
   let first, resolve_first =
@@ -27,6 +29,7 @@ let test_fifo_resume () =
   expect "resolution-order resume" [ "second"; "first" ] (List.rev !seen);
   expect "FIFO trace" [ 0; 1; 2; 3 ] (Scheduler.trace scheduler)
 
+(** Verifies that a future rejects a second result. *)
 let test_double_resolution () =
   let scheduler = Scheduler.create () in
   let _, resolve =
@@ -37,6 +40,7 @@ let test_double_resolution () =
   | exception Invalid_argument _ -> ()
   | _ -> failwith "future resolved twice"
 
+(** Exercises successful [map] and [both] composition on scheduler futures. *)
 let test_combinators () =
   let scheduler = Scheduler.create () in
   let left, resolve_left =
@@ -54,6 +58,8 @@ let test_combinators () =
   expect "complete combinator" "complete" (Scheduler.run_label scheduler);
   expect "both" (Some (Ok (5, 42))) !result
 
+(** Confirms awaiting without the owning active scheduler returns the supplied
+    structured error rather than performing an unhandled effect. *)
 let test_outside_scheduler () =
   let scheduler = Scheduler.create () in
   let future, _ =
@@ -61,6 +67,7 @@ let test_outside_scheduler () =
   in
   expect "outside await" (Error "outside scheduler") (Temporal.Future.await future)
 
+(** Covers immediate results and several fibers waiting on the same future. *)
 let test_immediate_and_multiple_waiters () =
   let scheduler = Scheduler.create () in
   let future, resolve =
@@ -76,6 +83,7 @@ let test_immediate_and_multiple_waiters () =
   expect "immediate values" [ Ok 7; Ok 7 ] !seen;
   expect "spawn trace" [ 0; 1 ] (Scheduler.trace scheduler)
 
+(** Covers error mapping and rejection of futures from different schedulers. *)
 let test_map_error_and_owner_check () =
   let first_scheduler = Scheduler.create () in
   let second_scheduler = Scheduler.create () in
@@ -93,6 +101,8 @@ let test_map_error_and_owner_check () =
   | exception Invalid_argument _ -> ()
   | _ -> failwith "cross-scheduler futures were combined")
 
+(** Confirms an exception raised by a mapping function becomes a scheduler
+    failure instead of escaping the run loop. *)
 let test_mapper_defect_is_contained () =
   let scheduler = Scheduler.create () in
   let source, resolve =
@@ -104,6 +114,7 @@ let test_mapper_defect_is_contained () =
   | Scheduler.Failed (Failure message) when message = "mapper defect" -> ()
   | _ -> failwith "mapper exception escaped or was not recorded"
 
+(** Confirms [both] continues observing the other future after one side fails. *)
 let test_both_observes_sibling_after_error () =
   let scheduler = Scheduler.create () in
   let left, resolve_left =
@@ -121,6 +132,7 @@ let test_both_observes_sibling_after_error () =
   expect "left error retained" (Some (Error "left failed"))
     (Temporal.Future.peek combined)
 
+(** Confirms shutdown releases paused fibers and ignores later results. *)
 let test_shutdown_closes_pending_continuations () =
   let scheduler = Scheduler.create () in
   let future, resolve =

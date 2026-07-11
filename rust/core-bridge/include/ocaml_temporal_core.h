@@ -10,6 +10,7 @@ extern "C" {
 
 #define OCAML_TEMPORAL_CORE_ABI_VERSION UINT32_C(1)
 
+/* Signed fixed-width status keeps layout identical across supported ABIs. */
 typedef int32_t ocaml_temporal_core_status;
 
 enum {
@@ -20,11 +21,14 @@ enum {
   OCAML_TEMPORAL_CORE_STATUS_INTERNAL = 4
 };
 
+/* Rust-owned byte allocation. `{ NULL, 0 }` is the sole empty representation. */
 typedef struct ocaml_temporal_core_buffer {
   uint8_t *ptr;
   size_t len;
 } ocaml_temporal_core_buffer;
 
+/* Uniform fallible return object. Exactly one buffer may be live according to
+ * status; release through the versioned result-free function only. */
 typedef struct ocaml_temporal_core_result {
   ocaml_temporal_core_status status;
   ocaml_temporal_core_buffer value;

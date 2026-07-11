@@ -1,5 +1,7 @@
 module Bridge = Temporal_core_bridge.Native_bridge
 
+(** Extracts a successful bridge result or reports the native status and
+    message as a test failure. *)
 let unwrap = function
   | Ok value -> value
   | Error error -> failwith error.Bridge.message

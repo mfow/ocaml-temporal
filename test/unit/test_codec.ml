@@ -1,5 +1,7 @@
+(** Turns an unexpected structured codec error into a readable test failure. *)
 let fail_error error = failwith (Temporal.Error.message error)
 
+(** Extracts a successful test result or fails with its SDK diagnostic. *)
 let unwrap = function Ok value -> value | Error error -> fail_error error
 
 let () =
@@ -32,6 +34,24 @@ let () =
     }
   in
   assert (Temporal.Codec.decode Temporal.Codec.string unicode = Ok "😀");
+  let object_payload : Temporal.Payload.t =
+    {
+      metadata = [ ("encoding", "json/plain") ];
+      data = Bytes.of_string "{\"value\":\"not a string\"}";
+    }
+  in
+  assert
+    (Result.is_error
+       (Temporal.Codec.decode Temporal.Codec.string object_payload));
+  let trailing_json : Temporal.Payload.t =
+    {
+      metadata = [ ("encoding", "json/plain") ];
+      data = Bytes.of_string "\"value\" false";
+    }
+  in
+  assert
+    (Result.is_error
+       (Temporal.Codec.decode Temporal.Codec.string trailing_json));
   let invalid_utf_8 = String.make 1 (Char.chr 0xff) in
   assert
     (Result.is_error

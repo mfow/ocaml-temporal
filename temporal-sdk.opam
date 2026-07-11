@@ -12,6 +12,7 @@ dev-repo: "git+https://github.com/mfow/ocaml-temporal.git"
 depends: [
   "ocaml" {>= "5.2"}
   "dune" {>= "3.18"}
+  "yojson" {>= "3.0"}
 ]
 build: [
   ["dune" "subst"] {dev}

@@ -88,6 +88,7 @@ not a claim that a production worker can connect yet.
 
 ## Documentation
 
+- [Documentation guide and glossary](docs/README.md)
 - [Architecture](docs/superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
 - [Implementation roadmap](docs/implementation-roadmap.md)
 - [Workflow guide](docs/guides/workflows.md)
@@ -96,6 +97,12 @@ not a claim that a production worker can connect yet.
 - [Temporal Core boundary decision](docs/decisions/0001-temporal-core-c-boundary.md)
 - [Dependency and license inventory](docs/dependencies.md)
 - [Verified progress](docs/progress.md)
+
+Temporal payloads are opaque bytes with encoding metadata. JSON is not required
+by Temporal. This library keeps an optional `json/plain` string codec because
+it interoperates with standard data converters in other Temporal SDKs; raw
+bytes use `binary/plain`, and applications can define other deterministic
+codecs.
 
 ## Status and compatibility
 

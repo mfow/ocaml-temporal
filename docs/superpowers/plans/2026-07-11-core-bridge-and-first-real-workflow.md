@@ -1,5 +1,9 @@
 # Core Bridge and First Real Workflow Implementation Plan
 
+> **Active implementation plan:** This describes Phase 2 work and contains
+> design targets that are not implemented yet. See the
+> [progress log](../../progress.md) for the subset that has been verified.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:executing-plans` to implement this plan task-by-task.
 
@@ -7,6 +11,20 @@
 project-owned Rust static library, polls the official Temporal Core SDK, and
 completes a real typed OCaml workflow against Temporal Server and PostgreSQL
 in Docker Compose.
+
+The acceptance environment uses two OCaml executables built against this
+library. A test-client container starts workflows and checks their results. A
+separate worker container registers the workflow plus deterministic mock
+activity implementations. Temporal Server and PostgreSQL run in their own
+containers. This topology is the next milestone after the minimum live Core
+path, not a later publication convenience.
+
+The first scenario proves one end-to-end workflow immediately. The same suite
+then expands until every essential feature has live coverage: payload
+round-trips, activities, timers, scheduling several operations before waiting,
+child workflows, expected failures, retries, cancellation, replay after worker
+restart, and cache eviction. Synthetic tests remain the fast unit layer, but
+they are not sufficient acceptance evidence for an essential feature.
 
 **Architecture:** Rust owns Temporal Core, Tokio, networking, and opaque
 worker handles. A versioned blocking C ABI transfers owned byte buffers; OCaml

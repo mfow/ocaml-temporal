@@ -1,3 +1,4 @@
 (library
  (name temporal_base)
- (public_name temporal-sdk.internal_base))
+ (public_name temporal-sdk.internal_base)
+ (libraries yojson))

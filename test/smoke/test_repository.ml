@@ -1,9 +1,12 @@
+(** Reads a whole repository file in binary mode and always closes it. *)
 let read path =
   let channel = open_in_bin path in
   Fun.protect
     ~finally:(fun () -> close_in channel)
     (fun () -> really_input_string channel (in_channel_length channel))
 
+(** Reports whether [needle] occurs in [haystack] without adding a test-only
+    string dependency. *)
 let contains ~needle haystack =
   let needle_length = String.length needle in
   let haystack_length = String.length haystack in
@@ -14,17 +17,21 @@ let contains ~needle haystack =
   in
   needle_length = 0 || search 0
 
+(** Fails with the path and missing text when repository metadata drifts. *)
 let require_text ~path ~needle =
   let contents = read path in
   if not (contains ~needle contents) then
     failwith (Printf.sprintf "%s does not contain %S" path needle)
 
+(** Verifies that the project license file is the expected Apache license. *)
 let test_license () =
   let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
   let license = Filename.concat source_root "LICENSE" in
   if not (String.starts_with ~prefix:"Apache License" (read license)) then
     failwith "LICENSE does not begin with the Apache License marker"
 
+(** Checks package identity, maintainership, experimental status, and exact
+    dependency declarations in both generated build ecosystems. *)
 let test_package_metadata () =
   let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
   let source path = Filename.concat source_root path in
@@ -37,15 +44,18 @@ let test_package_metadata () =
   require_text ~path:opam ~needle:"authors: \"Michael Fowlie\"";
   require_text ~path:opam ~needle:"x-maintenance-intent: [ \"(latest)\" ]";
   require_text ~path:opam ~needle:"\"experimental\"";
+  require_text ~path:opam ~needle:"\"yojson\" {>= \"3.0\"}";
   require_text ~path:locked ~needle:"name: \"temporal-sdk\"";
   require_text ~path:locked ~needle:"maintainer: \"Michael Fowlie\"";
   require_text ~path:locked ~needle:"authors: \"Michael Fowlie\"";
   require_text ~path:locked ~needle:"x-maintenance-intent: [ \"(latest)\" ]";
   require_text ~path:locked ~needle:"\"experimental\"";
+  require_text ~path:locked ~needle:"\"yojson\" {= \"3.0.0\"}";
   require_text ~path:dune_project ~needle:"(authors \"Michael Fowlie\")";
   require_text ~path:dune_project ~needle:"(maintainers \"Michael Fowlie\")";
   require_text ~path:dune_project ~needle:"(maintenance_intent \"(latest)\")";
-  require_text ~path:dune_project ~needle:"(name temporal-sdk)"
+  require_text ~path:dune_project ~needle:"(name temporal-sdk)";
+  require_text ~path:dune_project ~needle:"(yojson (>= 3.0))"
 
 let () =
   test_license ();

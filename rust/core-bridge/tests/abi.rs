@@ -7,10 +7,12 @@ use ocaml_temporal_core_bridge::{
     ocaml_temporal_core_v1_result_free, test_invoke_panic,
 };
 
+/// Produces writable initialized storage matching the C caller contract.
 fn empty_result() -> AbiResult {
     AbiResult::default()
 }
 
+/// Copies a live bridge buffer for assertions without taking its ownership.
 fn bytes(buffer: &Buffer) -> Vec<u8> {
     if buffer.ptr.is_null() {
         assert_eq!(buffer.len, 0);
@@ -23,6 +25,7 @@ fn bytes(buffer: &Buffer) -> Vec<u8> {
 }
 
 #[test]
+/// Confirms supported negotiation returns a canonical empty success.
 fn negotiates_the_supported_abi_version() {
     let mut result = empty_result();
 
@@ -39,6 +42,7 @@ fn negotiates_the_supported_abi_version() {
 }
 
 #[test]
+/// Confirms mismatches return Rust-owned diagnostics that callers can free.
 fn reports_an_owned_error_for_an_unsupported_version() {
     let mut result = empty_result();
 
@@ -55,6 +59,7 @@ fn reports_an_owned_error_for_an_unsupported_version() {
 }
 
 #[test]
+/// Exercises non-empty ownership transfer and canonical zero-length handling.
 fn owns_echoed_bytes_and_supports_zero_length_buffers() {
     let input = b"activation";
     let mut result = empty_result();
@@ -80,6 +85,7 @@ fn owns_echoed_bytes_and_supports_zero_length_buffers() {
 }
 
 #[test]
+/// Ensures required null pointers fail without dereference or allocation leak.
 fn rejects_null_required_pointers() {
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_check_abi_version(ABI_VERSION, ptr::null_mut()) },
@@ -96,6 +102,7 @@ fn rejects_null_required_pointers() {
 }
 
 #[test]
+/// Verifies explicit cleanup resets ownership and tolerates repeated cleanup.
 fn result_free_is_idempotent_for_the_same_result_object() {
     let mut result = empty_result();
     assert_eq!(
@@ -115,6 +122,7 @@ fn result_free_is_idempotent_for_the_same_result_object() {
 }
 
 #[test]
+/// Proves a Rust panic becomes an owned error rather than unwinding through C.
 fn contains_rust_panics_as_owned_errors() {
     let mut result = empty_result();
 
@@ -131,6 +139,7 @@ fn contains_rust_panics_as_owned_errors() {
 }
 
 #[test]
+/// Keeps the blocking conformance probe bounded for tests and accidental calls.
 fn bounds_the_conformance_wait() {
     let mut result = empty_result();
     assert_eq!(

@@ -1,13 +1,18 @@
+(** Remote activity definition used to verify its name and codecs. *)
 let greeting =
   Temporal.Activity.remote ~name:"greeting" ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
 
+(** Minimal local workflow implementation used by the definition tests. *)
 let workflow input = Ok (input ^ "!")
 
+(** Local workflow definition used to verify implementation storage. *)
 let greeting_workflow =
   Temporal.Workflow.define ~name:"greeting_workflow"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string workflow
 
+(** Confirms invalid names fail during definition construction rather than
+    later during workflow execution. *)
 let expect_invalid_name make =
   match make () with
   | exception Invalid_argument _ -> ()

@@ -1,3 +1,5 @@
+(** Public aliases expose inspection without allowing record construction to
+    bypass the base error constructors. *)
 type category = Temporal_base.Error.category
 
 type view = Temporal_base.Error.view = {

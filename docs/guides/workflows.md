@@ -1,13 +1,23 @@
 # Writing Workflows in OCaml
 
-The public API is exposed beneath the `Temporal` module. Workflow bodies will
-be ordinary OCaml functions that return `result`; expected activity, child,
-timer, cancellation, and codec failures do not require exceptions.
+The public API is under the `Temporal` module. Workflow bodies are ordinary
+OCaml functions that return `result`. Expected failures—such as an activity
+failure, cancellation, timeout, or invalid payload—are values rather than
+exceptions.
+
+This guide describes the API that compiles today. The current runtime uses a
+synthetic activation interpreter for tests and is not yet a production worker
+connected to Temporal Server. Planned child-workflow and structured-concurrency
+APIs are identified as future work.
 
 ## Typed payload codecs
 
-Every workflow and activity boundary has an explicit codec. Built-in codecs
-cover UTF-8 strings, bytes, unit, and options:
+Temporal stores inputs and results as payloads: bytes plus metadata naming the
+encoding. Temporal does not require JSON and does not interpret the bytes. A
+codec is the OCaml code that converts between a typed value and that payload.
+
+Every workflow and activity definition chooses its codecs explicitly. The
+built-in codecs cover UTF-8 strings, bytes, unit, and options:
 
 ```ocaml
 let encode_prompt prompt =
@@ -34,9 +44,15 @@ let positive_integer =
       | _ -> Error (Temporal.Error.codec ~message:"invalid positive integer"))
 ```
 
-Strings use `json/plain`, bytes use `binary/plain`, and unit or `None` use
-`binary/null`. `Some value` retains the nested codec's encoding so it remains
-interoperable with other Temporal SDKs.
+Strings use the optional `json/plain` codec, implemented with Yojson, because
+that encoding is understood by standard converters in other Temporal SDKs.
+Bytes use `binary/plain`, and unit or `None` use `binary/null`. `Some value`
+uses the supplied nested codec. Applications may define Protobuf or another
+deterministic binary codec instead of JSON.
+
+Changing a codec after workflows have started is a compatibility change:
+workers must still be able to decode payloads already recorded in workflow
+history.
 
 ## Explicit error composition
 
@@ -51,9 +67,9 @@ let decode_then_validate payload =
   doubled
 ```
 
-Errors are abstract but inspectable through `Temporal.Error.view`, `kind`, and
-`message`. This preserves room for compatible internal changes while keeping
-application logging and policy decisions stable.
+Use `Temporal.Error.view`, `kind`, or `message` to inspect an error. The type is
+kept abstract so the SDK can add internal detail without forcing application
+code to construct error records itself.
 
 ## Definitions and ordinary helpers
 
@@ -97,9 +113,10 @@ programmer defects, not workflow execution failures.
 ## Futures and direct-style waiting
 
 Temporal operations return typed `('value, 'error) Temporal.Future.t` values.
-`Future.await` returns a `result`: it returns immediately for a ready future or
-uses a private OCaml 5 effect to suspend only the current workflow fiber. The
-effect constructor and captured continuation are not public API.
+`Future.await` returns a `result`. If the result is not ready, the SDK uses an
+OCaml 5 algebraic effect to pause the current workflow fiber. Other runnable
+workflow fibers and the worker process can continue. Application code never
+handles the effect or the saved continuation directly.
 
 Futures support ordinary typed composition:
 
@@ -135,8 +152,8 @@ let enrich document =
 
 `Activity.execute definition input` is the convenience form of `start`
 followed by `Future.await`. Both return expected failures through `result`.
-Calling an operation outside an active workflow returns a structured defect;
-the private suspension effect never escapes to application code.
+Calling an operation outside an active workflow returns a structured defect.
+The internal suspension effect never escapes to application code.
 
 ## Current integration boundary
 

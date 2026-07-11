@@ -1,3 +1,5 @@
+(** Re-exports the internal codec implementation without adding another layer
+    of allocation or changing its behavior. *)
 type payload = Payload.t = { metadata : (string * string) list; data : bytes }
 type 'a t = 'a Temporal_base.Codec.t
 

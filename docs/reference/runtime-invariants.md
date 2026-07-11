@@ -4,6 +4,9 @@ These invariants define the correctness boundary of the OCaml workflow
 runtime. Changes that weaken one require an architecture decision and replay
 tests.
 
+For introductory definitions of activation, command, replay, payload, future,
+and bridge, read the [documentation guide](../README.md) first.
+
 ## Execution ownership
 
 - One execution owns one scheduler, command sequence, pending-operation set,

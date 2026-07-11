@@ -24,4 +24,5 @@
   (include_dirs ../../rust/core-bridge/include)
   (flags :standard -Wall -Wextra -Werror))
  (foreign_archives ocaml_temporal_core_bridge)
- (c_library_flags (:include rust_static_link_flags.sexp)))
+ (c_library_flags
+  (:include rust_static_link_flags.sexp)))

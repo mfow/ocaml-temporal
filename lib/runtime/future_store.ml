@@ -47,6 +47,10 @@ type ('value, 'error) t = {
 
 type ('value, 'error) resolver = ('value, 'error) result -> unit
 
+(** Identifies which input completed a heterogeneous two-way race. The public
+    SDK re-exports this type while keeping the observer machinery private. *)
+type ('left, 'right) race = Left of 'left | Right of 'right
+
 type _ Effect.t +=
   | Await : ('value, 'error) t -> ('value, 'error) result Effect.t
 
@@ -163,11 +167,26 @@ let map_error mapper source =
   observe source (fun result -> resolve (Result.map_error mapper result));
   mapped
 
-(** Records both results before completing the combined future. One failure does
-    not implicitly cancel or stop observing the other operation. *)
-let both left right =
-  if left.owner.id <> right.owner.id then
-    invalid_arg "Temporal.Future.both received futures from different schedulers";
+(** Creates a ready failure owned by [source]. Aggregate ownership errors use
+    this path so application mistakes remain typed values while subsequent
+    combinators still belong to the original workflow scheduler. *)
+let failed_from source error =
+  let failed, resolve =
+    create ~owner:source.owner ~outside_error:source.outside_error
+  in
+  resolve (Error error);
+  failed
+
+(** Reports whether every future belongs to the scheduler that owns [first]. *)
+let same_owner first futures =
+  List.for_all (fun future -> future.owner.id = first.owner.id) futures
+
+(** Records both results before completing the combined future. One failure
+    does not implicitly cancel or stop observing the other operation. A
+    cross-scheduler pair produces [ownership_error] as a value. *)
+let both ~ownership_error left right =
+  if left.owner.id <> right.owner.id then failed_from left (ownership_error ())
+  else
   let combined, resolve =
     create ~owner:left.owner ~outside_error:left.outside_error
   in
@@ -187,6 +206,80 @@ let both left right =
       right_result := Some result;
       finish ());
   combined
+
+(** Completes after every input and preserves input order. Errors are selected
+    in input order only after all siblings settle, so aggregation never implies
+    cancellation. *)
+let all ~ownership_error futures =
+  match futures with
+  | [] -> resolved ~outside_error:ownership_error (Ok [])
+  | first :: _ when not (same_owner first futures) ->
+      failed_from first (ownership_error ())
+  | first :: _ ->
+      let combined, resolve =
+        create ~owner:first.owner ~outside_error:first.outside_error
+      in
+      let remaining = ref (List.length futures) in
+      let results = Array.make !remaining None in
+      let finish_if_complete () =
+        if !remaining = 0 then
+          let ordered = Array.to_list results in
+          match List.find_map (function Some (Error error) -> Some error | _ -> None) ordered with
+          | Some error -> resolve (Error error)
+          | None ->
+              resolve
+                (Ok
+                   (List.map
+                      (function
+                        | Some (Ok value) -> value
+                        | Some (Error _) | None ->
+                            failwith "Temporal.Future.all result invariant violated")
+                      ordered))
+      in
+      List.iteri
+        (fun index future ->
+          observe future (fun result ->
+              results.(index) <- Some result;
+              remaining := !remaining - 1;
+              finish_if_complete ()))
+        futures;
+      combined
+
+(** Settles with the first observed completion of two differently typed inputs.
+    Observer registration order makes an already-ready left input win; pending
+    inputs follow the scheduler's deterministic callback order. *)
+let race ~ownership_error left right =
+  if left.owner.id <> right.owner.id then failed_from left (ownership_error ())
+  else
+    let combined, resolve =
+      create ~owner:left.owner ~outside_error:left.outside_error
+    in
+    let settled = ref false in
+    let finish wrap result =
+      if not !settled then (
+        settled := true;
+        resolve (Result.map wrap result))
+    in
+    observe left (finish (fun value -> Left value));
+    observe right (finish (fun value -> Right value));
+    combined
+
+(** Settles with the first completion from a non-empty homogeneous collection.
+    The mandatory [first] argument makes an empty selection unrepresentable. *)
+let first ~ownership_error leading rest =
+  if not (same_owner leading rest) then failed_from leading (ownership_error ())
+  else
+    let combined, resolve =
+      create ~owner:leading.owner ~outside_error:leading.outside_error
+    in
+    let settled = ref false in
+    let finish result =
+      if not !settled then (
+        settled := true;
+        resolve result)
+    in
+    List.iter (fun future -> observe future finish) (leading :: rest);
+    combined
 
 (** Checks the state directly without pausing or scheduling work. *)
 let is_ready promise = match promise.state with Ready _ -> true | _ -> false

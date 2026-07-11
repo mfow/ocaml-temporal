@@ -4,6 +4,17 @@ module Scheduler = Temporal_runtime.Scheduler
 let expect label expected actual =
   if expected <> actual then failwith (label ^ " did not match")
 
+(** Creates the structured defect returned when a test future is used outside
+    its owning scheduler. Keeping scheduler ownership failures in [Error.t]
+    matches the public workflow API rather than relying on exceptions. *)
+let outside_error () = Temporal.Error.defect ~message:"outside scheduler"
+
+(** Compares an SDK error by its stable public message rather than by its
+    private representation. *)
+let expect_error_message label expected = function
+  | Error error -> expect label expected (Temporal.Error.message error)
+  | Ok _ -> failwith (label ^ " unexpectedly succeeded")
+
 (** Verifies that futures resume their waiting fibers in registration order. *)
 let test_fifo_resume () =
   let scheduler = Scheduler.create () in
@@ -44,10 +55,10 @@ let test_double_resolution () =
 let test_combinators () =
   let scheduler = Scheduler.create () in
   let left, resolve_left =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside scheduler")
+    Scheduler.promise scheduler ~outside_error
   in
   let right, resolve_right =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside scheduler")
+    Scheduler.promise scheduler ~outside_error
   in
   let both = Temporal.Future.both (Temporal.Future.map String.length left) right in
   let result = ref None in
@@ -86,20 +97,105 @@ let test_immediate_and_multiple_waiters () =
 (** Covers error mapping and rejection of futures from different schedulers. *)
 let test_map_error_and_owner_check () =
   let first_scheduler = Scheduler.create () in
-  let second_scheduler = Scheduler.create () in
   let first, resolve_first =
     Scheduler.promise first_scheduler ~outside_error:(fun () -> "outside")
-  in
-  let second, _ =
-    Scheduler.promise second_scheduler ~outside_error:(fun () -> "outside")
   in
   let mapped = Temporal.Future.map_error String.uppercase_ascii first in
   resolve_first (Error "failure");
   expect "mapped error processing" "complete" (Scheduler.run_label first_scheduler);
-  expect "mapped error" (Some (Error "FAILURE")) (Temporal.Future.peek mapped);
-  (match Temporal.Future.both first second with
-  | exception Invalid_argument _ -> ()
-  | _ -> failwith "cross-scheduler futures were combined")
+  expect "mapped error" (Some (Error "FAILURE")) (Temporal.Future.peek mapped)
+
+(** Verifies aggregate ownership mistakes become ready structured errors for
+    every public combinator, including the pre-existing [both]. *)
+let test_aggregate_owner_errors_are_typed () =
+  let first_scheduler = Scheduler.create () in
+  let second_scheduler = Scheduler.create () in
+  let first, _ = Scheduler.promise first_scheduler ~outside_error in
+  let second, _ = Scheduler.promise second_scheduler ~outside_error in
+  let expected =
+    "Temporal future combinator received futures from different workflow executions"
+  in
+  let expect_defect label future =
+    match Temporal.Future.peek future with
+    | Some result -> expect_error_message label expected result
+    | None -> failwith (label ^ " did not return a ready error")
+  in
+  expect_defect "both owner" (Temporal.Future.both first second);
+  expect_defect "all owner" (Temporal.Future.all [ first; second ]);
+  expect_defect "race owner" (Temporal.Future.race first second);
+  expect_defect "first owner" (Temporal.Future.first first [ second ])
+
+(** Confirms [all] waits for every input, retains input ordering, and selects
+    the first error by input order rather than completion order. *)
+let test_all_order_and_errors () =
+  let scheduler = Scheduler.create () in
+  let first, resolve_first = Scheduler.promise scheduler ~outside_error in
+  let second, resolve_second = Scheduler.promise scheduler ~outside_error in
+  let third, resolve_third = Scheduler.promise scheduler ~outside_error in
+  let all = Temporal.Future.all [ first; second; third ] in
+  resolve_third (Ok 3);
+  resolve_first (Ok 1);
+  expect "all waits for every input" "blocked" (Scheduler.run_label scheduler);
+  resolve_second (Ok 2);
+  expect "all completes" "complete" (Scheduler.run_label scheduler);
+  expect "all input order" (Some (Ok [ 1; 2; 3 ])) (Temporal.Future.peek all);
+  let first, resolve_first = Scheduler.promise scheduler ~outside_error in
+  let second, resolve_second = Scheduler.promise scheduler ~outside_error in
+  let failed = Temporal.Future.all [ first; second ] in
+  resolve_second (Error (Temporal.Error.defect ~message:"second"));
+  resolve_first (Error (Temporal.Error.defect ~message:"first"));
+  expect "all errors complete" "complete" (Scheduler.run_label scheduler);
+  match Temporal.Future.peek failed with
+  | Some result -> expect_error_message "all first input error" "first" result
+  | None -> failwith "all error remained pending"
+
+(** Verifies an empty aggregate is immediately successful without allocating
+    pending scheduler work. *)
+let test_all_empty () =
+  expect "empty all" (Some (Ok []))
+    (Temporal.Future.peek (Temporal.Future.all []))
+
+(** Verifies ready inputs use argument order, while pending inputs use
+    deterministic scheduler callback order. Losing inputs remain observable. *)
+let test_race_order_and_loser () =
+  let scheduler = Scheduler.create () in
+  let left, resolve_left = Scheduler.promise scheduler ~outside_error in
+  let right, resolve_right = Scheduler.promise scheduler ~outside_error in
+  resolve_right (Ok "right");
+  resolve_left (Ok "left");
+  let ready_race = Temporal.Future.race left right in
+  expect "ready race processing" "complete" (Scheduler.run_label scheduler);
+  expect "ready race argument order"
+    (Some (Ok (Temporal.Future.Left "left")))
+    (Temporal.Future.peek ready_race);
+  let left, resolve_left = Scheduler.promise scheduler ~outside_error in
+  let right, resolve_right = Scheduler.promise scheduler ~outside_error in
+  let pending_race = Temporal.Future.race left right in
+  resolve_right (Ok "right");
+  expect "pending race first callback" "blocked" (Scheduler.run_label scheduler);
+  expect "pending race completion order"
+    (Some (Ok (Temporal.Future.Right "right")))
+    (Temporal.Future.peek pending_race);
+  resolve_left (Ok "left");
+  expect "race loser can settle" "complete" (Scheduler.run_label scheduler);
+  expect "race winner remains stable"
+    (Some (Ok (Temporal.Future.Right "right")))
+    (Temporal.Future.peek pending_race)
+
+(** Confirms [first] settles on an error as a completion event and does not
+    wait for or cancel later candidates. *)
+let test_first_completion_error () =
+  let scheduler = Scheduler.create () in
+  let first, resolve_first = Scheduler.promise scheduler ~outside_error in
+  let second, resolve_second = Scheduler.promise scheduler ~outside_error in
+  let earliest = Temporal.Future.first first [ second ] in
+  resolve_second (Error (Temporal.Error.defect ~message:"won with error"));
+  expect "first error processing" "blocked" (Scheduler.run_label scheduler);
+  (match Temporal.Future.peek earliest with
+  | Some result -> expect_error_message "first completion error" "won with error" result
+  | None -> failwith "first completion did not settle");
+  resolve_first (Ok 1);
+  expect "first loser settles" "complete" (Scheduler.run_label scheduler)
 
 (** Confirms an exception raised by a mapping function becomes a scheduler
     failure instead of escaping the run loop. *)
@@ -118,19 +214,20 @@ let test_mapper_defect_is_contained () =
 let test_both_observes_sibling_after_error () =
   let scheduler = Scheduler.create () in
   let left, resolve_left =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside")
+    Scheduler.promise scheduler ~outside_error
   in
   let right, resolve_right =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside")
+    Scheduler.promise scheduler ~outside_error
   in
   let combined = Temporal.Future.both left right in
-  resolve_left (Error "left failed");
+  resolve_left (Error (Temporal.Error.defect ~message:"left failed"));
   expect "sibling still pending" "blocked" (Scheduler.run_label scheduler);
   assert (not (Temporal.Future.is_ready combined));
   resolve_right (Ok 9);
   expect "both settled" "complete" (Scheduler.run_label scheduler);
-  expect "left error retained" (Some (Error "left failed"))
-    (Temporal.Future.peek combined)
+  match Temporal.Future.peek combined with
+  | Some result -> expect_error_message "left error retained" "left failed" result
+  | None -> failwith "both remained pending"
 
 (** Confirms shutdown releases paused fibers and ignores later results. *)
 let test_shutdown_closes_pending_continuations () =
@@ -152,6 +249,11 @@ let () =
   test_outside_scheduler ();
   test_immediate_and_multiple_waiters ();
   test_map_error_and_owner_check ();
+  test_aggregate_owner_errors_are_typed ();
+  test_all_order_and_errors ();
+  test_all_empty ();
+  test_race_order_and_loser ();
+  test_first_completion_error ();
   test_mapper_defect_is_contained ();
   test_both_observes_sibling_after_error ();
   test_shutdown_closes_pending_continuations ()

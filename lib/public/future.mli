@@ -3,6 +3,9 @@
     coordinating operating-system threads. *)
 type ('value, 'error) t = ('value, 'error) Temporal_runtime.Future_store.t
 
+(** Identifies the input that completed a heterogeneous race. *)
+type ('left, 'right) race = Left of 'left | Right of 'right
+
 (** Returns the result if it is ready. Otherwise, suspends only the current
     workflow fiber and lets other runnable workflow fibers continue. *)
 val await : ('value, 'error) t -> ('value, 'error) result
@@ -22,9 +25,28 @@ val map_error :
     the left error is returned. Failure of one input does not cancel the other.
     Both inputs must belong to the same workflow execution. *)
 val both :
-  ('left, 'error) t ->
-  ('right, 'error) t ->
-  ('left * 'right, 'error) t
+  ('left, Error.t) t ->
+  ('right, Error.t) t ->
+  ('left * 'right, Error.t) t
+
+(** Returns a future that completes after every input. Successful values retain
+    input order. When inputs fail, the first error in input order is returned
+    after all siblings settle. The empty list succeeds immediately. *)
+val all : ('value, Error.t) t list -> ('value list, Error.t) t
+
+(** Returns the first completion from two differently typed inputs. An error is
+    a completion and therefore can win. Losing operations are not cancelled. *)
+val race :
+  ('left, Error.t) t ->
+  ('right, Error.t) t ->
+  (('left, 'right) race, Error.t) t
+
+(** Returns the first completion from a non-empty homogeneous collection. The
+    first argument also determines ready-input precedence and ownership. *)
+val first :
+  ('value, Error.t) t ->
+  ('value, Error.t) t list ->
+  ('value, Error.t) t
 
 (** Reports whether a result is available without waiting. *)
 val is_ready : ('value, 'error) t -> bool

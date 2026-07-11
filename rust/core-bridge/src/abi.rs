@@ -251,11 +251,9 @@ impl Runtime {
             let _runtime_guard = handle.enter();
             temporalio_sdk_core::init_worker(core, worker_config, client)
         }
-        .map_err(|error| {
-            Failure {
-                status: STATUS_WORKER,
-                message: format!("Temporal workflow worker construction failed: {error}"),
-            }
+        .map_err(|error| Failure {
+            status: STATUS_WORKER,
+            message: format!("Temporal workflow worker construction failed: {error}"),
         })?;
 
         if let Err(error) = handle.block_on(worker.validate()) {

@@ -1,9 +1,35 @@
-(** Reads a whole repository file in binary mode and always closes it. *)
+(** Normalizes source-control line endings before metadata assertions. Git may
+    materialize CRLF files on Windows, while repository needles are written
+    with OCaml's LF string literals; treating both forms alike keeps these
+    source-shape tests about content rather than checkout policy. *)
+let normalize_newlines contents =
+  let length = String.length contents in
+  let normalized = Buffer.create length in
+  let rec copy offset =
+    if offset < length then
+      if
+        contents.[offset] = '\r'
+        && offset + 1 < length
+        && contents.[offset + 1] = '\n'
+      then (
+        Buffer.add_char normalized '\n';
+        copy (offset + 2))
+      else (
+        Buffer.add_char normalized contents.[offset];
+        copy (offset + 1))
+  in
+  copy 0;
+  Buffer.contents normalized
+
+(** Reads a whole repository file in binary mode, normalizes its line endings,
+    and always closes it. *)
 let read path =
   let channel = open_in_bin path in
   Fun.protect
     ~finally:(fun () -> close_in channel)
-    (fun () -> really_input_string channel (in_channel_length channel))
+    (fun () ->
+      really_input_string channel (in_channel_length channel)
+      |> normalize_newlines)
 
 (** Reports whether [needle] occurs in [haystack] without adding a test-only
     string dependency. *)
@@ -22,6 +48,12 @@ let require_text ~path ~needle =
   let contents = read path in
   if not (contains ~needle contents) then
     failwith (Printf.sprintf "%s does not contain %S" path needle)
+
+(** Exercises the Windows checkout form directly so future changes cannot
+    reintroduce platform-sensitive multiline source assertions. *)
+let test_line_ending_normalization () =
+  if normalize_newlines "first\r\nsecond\r\n" <> "first\nsecond\n" then
+    failwith "CRLF source text was not normalized"
 
 (** Verifies that the project license file is the expected Apache license. *)
 let test_license () =
@@ -118,6 +150,7 @@ let test_sdk_supervisor_is_private () =
     failwith "the SDK supervisor must remain a Dune-private library"
 
 let () =
+  test_line_ending_normalization ();
   test_license ();
   test_package_metadata ();
   test_static_foreign_archives ();

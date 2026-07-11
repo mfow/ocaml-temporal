@@ -388,10 +388,13 @@ let test_abandoned_supervisor_is_cleaned_up () =
       failwith "abandoned supervisor did not release its backend graph"
     else (
       Gc.full_major ();
-      Thread.yield ();
+      (* A yield need not let a newly created system thread run on Windows.
+         This short blocking delay gives both the finalizer and its cleanup
+         thread a scheduler opportunity while retaining a bounded failure. *)
+      Thread.delay 0.001;
       collect (attempts - 1))
   in
-  collect 100;
+  collect 5_000;
   expect "abandoned cleanup count" 1 (Atomic.get config.closes)
 
 (** Concurrent shutdown callers all receive one cached expected backend error

@@ -30,5 +30,25 @@ let () =
   Domain.join waiter;
   assert (Atomic.get progressed);
   let runtime = unwrap (Bridge.runtime_create ()) in
+  (match Bridge.client_config ~target_url:"not a URL" ~identity:"worker" with
+  | Error { status = Configuration; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "invalid client configuration was accepted");
+  let worker_config =
+    unwrap
+      (Bridge.worker_config ~namespace:"temporal-sdk-test"
+         ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
+         ~max_cached_workflows:100 ~max_outstanding_workflow_tasks:100
+         ~max_concurrent_workflow_task_polls:5
+         ~graceful_shutdown_timeout_ms:1_000L)
+  in
+  (match Bridge.worker_start runtime worker_config with
+  | Error { status = Invalid_state; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "worker construction without a client was accepted");
+  unwrap (Bridge.worker_shutdown runtime);
+  unwrap (Bridge.worker_shutdown runtime);
+  unwrap (Bridge.client_disconnect runtime);
+  unwrap (Bridge.client_disconnect runtime);
   unwrap (Bridge.runtime_close runtime);
   unwrap (Bridge.runtime_close runtime)

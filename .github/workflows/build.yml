@@ -50,9 +50,7 @@ jobs:
         run: |
           set -o pipefail
           OCAML_IMAGE=ocaml/opam:debian-12-ocaml-5.2 \
-            docker compose --progress quiet run --rm --build \
-              --user "$(id -u):$(id -g)" -T dev \
-              cargo metadata --manifest-path rust/Cargo.toml --locked --format-version 1 \
+            make --silent cargo-metadata \
             | docker run --rm --interactive --network none \
                 --volume "$PWD:/workspace:ro" \
                 --workdir /workspace \

@@ -1,9 +1,15 @@
+use serde::Deserialize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 use std::time::Duration;
-use temporalio_sdk_core::{CoreRuntime, RuntimeOptions, TokioRuntimeBuilder};
+use temporalio_client::{Connection, ConnectionOptions};
+use temporalio_common::worker::WorkerTaskTypes;
+use temporalio_sdk_core::{
+    CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, Worker, WorkerConfig,
+    WorkerVersioningStrategy,
+};
 
 /// Version of the native ABI implemented by this crate.
 pub const ABI_VERSION: u32 = 1;
@@ -21,6 +27,27 @@ pub const STATUS_ABI_MISMATCH: Status = 2;
 pub const STATUS_PANIC: Status = 3;
 /// Reserved non-panic bridge implementation failure.
 pub const STATUS_INTERNAL: Status = 4;
+/// An operation was requested in an incompatible graph lifecycle state.
+pub const STATUS_INVALID_STATE: Status = 5;
+/// A strict lifecycle configuration document was malformed or invalid.
+pub const STATUS_CONFIGURATION: Status = 6;
+/// Temporal client connection failed after configuration validation.
+pub const STATUS_CONNECTION: Status = 7;
+/// Official Core worker construction or namespace validation failed.
+pub const STATUS_WORKER: Status = 8;
+
+/// Maximum accepted lifecycle configuration document size.
+const MAX_LIFECYCLE_CONFIG_BYTES: usize = 64 * 1024;
+/// Private transport-safety ceiling for one string crossing the bridge.
+///
+/// This is deliberately not a claim about Temporal Server identifier limits,
+/// which can be namespace-configurable and differ by field. Core and Server
+/// remain responsible for those semantic checks.
+const MAX_TRANSPORT_STRING_BYTES: usize = 64 * 1024;
+/// Prevents accidental allocation of unreasonable in-process worker state.
+const MAX_WORKER_COUNT: u32 = 1_000_000;
+/// Prevents an unbounded graceful-shutdown duration from entering Core.
+const MAX_GRACEFUL_SHUTDOWN_MS: u64 = 24 * 60 * 60 * 1_000;
 
 const _: () = assert!(size_of::<Status>() == 4);
 
@@ -99,13 +126,38 @@ struct Failure {
 /// the same runtime owner rather than creating independent executors.
 pub struct Runtime {
     core: Option<CoreRuntime>,
+    client: Option<Connection>,
+    worker: Option<Worker>,
     cleanup: std::sync::mpsc::Sender<RuntimeCleanup>,
 }
 
 /// Ownership transfer consumed by the runtime's dedicated cleanup thread.
 struct RuntimeCleanup {
     core: CoreRuntime,
+    client: Option<Connection>,
+    worker: Option<Worker>,
     completed: Option<SyncSender<Status>>,
+}
+
+/// Strict client connection document received from OCaml as UTF-8 JSON.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClientConfig {
+    target_url: String,
+    identity: String,
+}
+
+/// Strict workflow-only Core worker document received from OCaml as JSON.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerConfigInput {
+    namespace: String,
+    task_queue: String,
+    build_id: String,
+    max_cached_workflows: u32,
+    max_outstanding_workflow_tasks: u32,
+    max_concurrent_workflow_task_polls: u32,
+    graceful_shutdown_timeout_ms: u64,
 }
 
 impl Runtime {
@@ -123,8 +175,135 @@ impl Runtime {
         RUNTIMES_CREATED.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
             core: Some(core),
+            client: None,
+            worker: None,
             cleanup,
         })
+    }
+
+    /// Connects one official Core client without publishing partial state.
+    fn connect_client(&mut self, config: ClientConfig) -> Operation {
+        if self.client.is_some() {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal client is already connected".to_owned(),
+            });
+        }
+        let core = self.core.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal runtime is already closed".to_owned(),
+        })?;
+        let target =
+            temporalio_sdk_core::Url::parse(&config.target_url).map_err(|error| Failure {
+                status: STATUS_CONFIGURATION,
+                message: format!("client target_url is invalid: {error}"),
+            })?;
+        if !matches!(target.scheme(), "http" | "https") || target.host_str().is_none() {
+            return Err(Failure {
+                status: STATUS_CONFIGURATION,
+                message: "client target_url must be an absolute http or https URL".to_owned(),
+            });
+        }
+        validate_identifier("identity", &config.identity)?;
+
+        let options = ConnectionOptions::new(target)
+            .identity(config.identity)
+            .maybe_metrics_meter(core.telemetry().get_temporal_metric_meter())
+            .build();
+        let connection = core
+            .tokio_handle()
+            .block_on(Connection::connect(options))
+            .map_err(|error| Failure {
+                status: STATUS_CONNECTION,
+                message: format!("Temporal client connection failed: {error}"),
+            })?;
+        self.client = Some(connection);
+        Ok(Vec::new())
+    }
+
+    /// Constructs and validates one official workflow-only Core worker.
+    ///
+    /// Validation performs the namespace RPC before the worker enters the
+    /// graph. Any construction or validation failure consumes the temporary
+    /// worker and leaves the connected client available for a corrected retry.
+    fn start_worker(&mut self, config: WorkerConfigInput) -> Operation {
+        if self.worker.is_some() {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal workflow worker is already running".to_owned(),
+            });
+        }
+        let client = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let worker_config = config.into_core()?;
+        let core = self.core.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal runtime is already closed".to_owned(),
+        })?;
+        let handle = core.tokio_handle();
+        let worker = {
+            // Core's synchronous constructor creates poll buffers with
+            // `tokio::spawn`. Entering the owned executor here is therefore a
+            // construction precondition, even though only validation exposes
+            // an async function in Core's public API.
+            let _runtime_guard = handle.enter();
+            temporalio_sdk_core::init_worker(core, worker_config, client)
+        }
+        .map_err(|error| Failure {
+            status: STATUS_WORKER,
+            message: format!("Temporal workflow worker construction failed: {error}"),
+        })?;
+
+        if let Err(error) = handle.block_on(worker.validate()) {
+            {
+                // Core's synchronous shutdown initiation spawns its server
+                // deregistration task, so it needs the same runtime context
+                // as synchronous worker construction.
+                let _runtime_guard = handle.enter();
+                worker.initiate_shutdown();
+            }
+            handle.block_on(worker.finalize_shutdown());
+            return Err(Failure {
+                status: STATUS_WORKER,
+                message: format!("Temporal workflow worker validation failed: {error}"),
+            });
+        }
+        self.worker = Some(worker);
+        Ok(Vec::new())
+    }
+
+    /// Gracefully finalizes the child worker once; absence is already closed.
+    fn shutdown_worker(&mut self) -> Operation {
+        let Some(worker) = self.worker.take() else {
+            return Ok(Vec::new());
+        };
+        let handle = self
+            .core
+            .as_ref()
+            .expect("a live worker always has its parent runtime")
+            .tokio_handle();
+        {
+            // `initiate_shutdown` synchronously calls `tokio::spawn`; keep
+            // the guard narrower than the subsequent blocking finalization.
+            let _runtime_guard = handle.enter();
+            worker.initiate_shutdown();
+        }
+        handle.block_on(worker.finalize_shutdown());
+        Ok(Vec::new())
+    }
+
+    /// Drops the client only after its worker child is absent.
+    fn disconnect_client(&mut self) -> Operation {
+        if self.worker.is_some() {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal client cannot disconnect while its worker is running".to_owned(),
+            });
+        }
+        self.client.take();
+        Ok(Vec::new())
     }
 
     /// Transfers Core to its cleanup thread and optionally waits for disposal.
@@ -141,13 +320,19 @@ impl Runtime {
         } else {
             (None, None)
         };
-        let message = RuntimeCleanup { core, completed };
+        let message = RuntimeCleanup {
+            core,
+            client: self.client.take(),
+            worker: self.worker.take(),
+            completed,
+        };
 
         if let Err(error) = self.cleanup.send(message) {
             // The receiver only exits after a message, so this indicates a
             // defect in the cleanup thread itself. Reclaim on this thread to
             // preserve the no-leak guarantee even on that defensive path.
-            drop(error.0.core);
+            let message = error.0;
+            drop_runtime_graph(message.core, message.client, message.worker);
             RUNTIMES_CLEANED.fetch_add(1, Ordering::Release);
             return STATUS_INTERNAL;
         }
@@ -164,8 +349,17 @@ fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
     let Ok(message) = receiver.recv() else {
         return;
     };
-    let RuntimeCleanup { core, completed } = message;
-    let status = if catch_unwind(AssertUnwindSafe(|| drop(core))).is_ok() {
+    let RuntimeCleanup {
+        core,
+        client,
+        worker,
+        completed,
+    } = message;
+    let status = if catch_unwind(AssertUnwindSafe(|| {
+        drop_runtime_graph(core, client, worker)
+    }))
+    .is_ok()
+    {
         STATUS_OK
     } else {
         STATUS_PANIC
@@ -176,6 +370,98 @@ fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
     if let Some(completed) = completed {
         let _ = completed.send(status);
     }
+}
+
+/// Releases worker, then client, then Core on the runtime cleanup thread.
+fn drop_runtime_graph(core: CoreRuntime, client: Option<Connection>, worker: Option<Worker>) {
+    if let Some(worker) = worker {
+        let handle = core.tokio_handle();
+        {
+            // Cleanup runs on a plain OS thread, so explicitly enter Core's
+            // executor before its synchronous shutdown code spawns a task.
+            let _runtime_guard = handle.enter();
+            worker.initiate_shutdown();
+        }
+        handle.block_on(worker.finalize_shutdown());
+    }
+    drop(client);
+    drop(core);
+}
+
+impl WorkerConfigInput {
+    /// Performs bridge-owned bounds checks and constructs official Core config.
+    fn into_core(self) -> std::result::Result<WorkerConfig, Failure> {
+        validate_identifier("namespace", &self.namespace)?;
+        validate_identifier("task_queue", &self.task_queue)?;
+        validate_identifier("build_id", &self.build_id)?;
+        validate_count("max_cached_workflows", self.max_cached_workflows, true)?;
+        validate_count(
+            "max_outstanding_workflow_tasks",
+            self.max_outstanding_workflow_tasks,
+            false,
+        )?;
+        validate_count(
+            "max_concurrent_workflow_task_polls",
+            self.max_concurrent_workflow_task_polls,
+            false,
+        )?;
+        if self.graceful_shutdown_timeout_ms > MAX_GRACEFUL_SHUTDOWN_MS {
+            return Err(Failure {
+                status: STATUS_CONFIGURATION,
+                message: format!("graceful_shutdown_timeout_ms exceeds {MAX_GRACEFUL_SHUTDOWN_MS}"),
+            });
+        }
+
+        WorkerConfig::builder()
+            .namespace(self.namespace)
+            .task_queue(self.task_queue)
+            .max_cached_workflows(self.max_cached_workflows as usize)
+            .max_outstanding_workflow_tasks(self.max_outstanding_workflow_tasks as usize)
+            .workflow_task_poller_behavior(PollerBehavior::SimpleMaximum(
+                self.max_concurrent_workflow_task_polls as usize,
+            ))
+            .graceful_shutdown_period(Duration::from_millis(self.graceful_shutdown_timeout_ms))
+            .versioning_strategy(WorkerVersioningStrategy::None {
+                build_id: self.build_id,
+            })
+            .task_types(WorkerTaskTypes::workflow_only())
+            .build()
+            .map_err(|message| Failure {
+                status: STATUS_CONFIGURATION,
+                message: format!("Temporal workflow worker configuration is invalid: {message}"),
+            })
+    }
+}
+
+/// Validates only bridge-owned string invariants before Core sees the value.
+fn validate_identifier(name: &str, value: &str) -> std::result::Result<(), Failure> {
+    if value.is_empty() {
+        return Err(Failure {
+            status: STATUS_CONFIGURATION,
+            message: format!("{name} must not be empty"),
+        });
+    }
+    if value.len() > MAX_TRANSPORT_STRING_BYTES {
+        return Err(Failure {
+            status: STATUS_CONFIGURATION,
+            message: format!("{name} exceeds {MAX_TRANSPORT_STRING_BYTES} UTF-8 bytes"),
+        });
+    }
+    Ok(())
+}
+
+/// Validates a bounded worker count, optionally allowing zero to disable it.
+fn validate_count(name: &str, value: u32, allow_zero: bool) -> std::result::Result<(), Failure> {
+    if (!allow_zero && value == 0) || value > MAX_WORKER_COUNT {
+        return Err(Failure {
+            status: STATUS_CONFIGURATION,
+            message: format!(
+                "{name} must be between {} and {MAX_WORKER_COUNT}",
+                u8::from(!allow_zero)
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Byte-producing operation accepted by the shared panic/ownership wrapper.
@@ -226,6 +512,41 @@ unsafe fn invoke(output: *mut Result, operation: impl FnOnce() -> Operation) -> 
     // (empty) value is retained.
     unsafe { ptr::write(output, result) };
     status
+}
+
+/// Decodes one bounded strict UTF-8 JSON lifecycle configuration.
+///
+/// # Safety
+///
+/// A nonzero `input_len` requires `input` to identify that many readable bytes
+/// for the duration of this synchronous parse.
+unsafe fn decode_config<T: for<'de> Deserialize<'de>>(
+    input: *const u8,
+    input_len: usize,
+) -> std::result::Result<T, Failure> {
+    if input_len > MAX_LIFECYCLE_CONFIG_BYTES {
+        return Err(Failure {
+            status: STATUS_CONFIGURATION,
+            message: format!("lifecycle configuration exceeds {MAX_LIFECYCLE_CONFIG_BYTES} bytes"),
+        });
+    }
+    if input_len > 0 && input.is_null() {
+        return Err(Failure {
+            status: STATUS_INVALID_ARGUMENT,
+            message: "configuration input is null but input_len is nonzero".to_owned(),
+        });
+    }
+    let bytes = if input_len == 0 {
+        &[]
+    } else {
+        // SAFETY: The caller promises the readable span documented above, and
+        // the nonempty null case was rejected before constructing this slice.
+        unsafe { std::slice::from_raw_parts(input, input_len) }
+    };
+    serde_json::from_slice(bytes).map_err(|error| Failure {
+        status: STATUS_CONFIGURATION,
+        message: format!("invalid lifecycle configuration JSON: {error}"),
+    })
 }
 
 /// Reclaims one bridge allocation and resets the buffer to canonical empty.
@@ -399,6 +720,120 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_runtime_new(
             // until it returns and was validated before invoking the closure.
             ptr::write(runtime, owned);
             Ok(Vec::new())
+        })
+    }
+}
+
+/// Connect the runtime graph's single official Temporal client from strict
+/// JSON. Successful return publishes the client; every failure leaves the
+/// graph without a newly constructed child.
+///
+/// # Safety
+///
+/// `runtime` must be a live handle created by
+/// [`ocaml_temporal_core_v1_runtime_new`] and exclusively owned for this call.
+/// `input` follows [`decode_config`]'s byte-span contract, while `output`
+/// follows [`ocaml_temporal_core_v1_check_abi_version`]'s result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_connect_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    // SAFETY: `invoke` validates output. The closure checks the opaque handle
+    // before dereferencing and forwards the documented input span to decoding.
+    unsafe {
+        invoke(output, || {
+            let runtime = runtime.as_mut().ok_or_else(|| Failure {
+                status: STATUS_INVALID_ARGUMENT,
+                message: "runtime pointer is null".to_owned(),
+            })?;
+            let config = decode_config::<ClientConfig>(input, input_len)?;
+            runtime.connect_client(config)
+        })
+    }
+}
+
+/// Start and validate one workflow-only official Core worker from strict JSON.
+/// Success is not exposed until the namespace validation RPC completes.
+///
+/// # Safety
+///
+/// The runtime, input, and output contracts match
+/// [`ocaml_temporal_core_v1_client_connect_json`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_start_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    // SAFETY: `invoke` and `decode_config` enforce their respective pointer
+    // preconditions before the runtime graph is mutated.
+    unsafe {
+        invoke(output, || {
+            let runtime = runtime.as_mut().ok_or_else(|| Failure {
+                status: STATUS_INVALID_ARGUMENT,
+                message: "runtime pointer is null".to_owned(),
+            })?;
+            let config = decode_config::<WorkerConfigInput>(input, input_len)?;
+            runtime.start_worker(config)
+        })
+    }
+}
+
+/// Gracefully stop and remove the runtime graph's workflow worker.
+///
+/// Repeating this operation after success is safe and returns success.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle. `output` follows
+/// the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_shutdown(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    // SAFETY: `invoke` validates the result before the closure checks and uses
+    // the opaque runtime pointer.
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .shutdown_worker()
+        })
+    }
+}
+
+/// Remove the connected client after its worker child has stopped.
+///
+/// Repeating this operation when no client exists is safe and returns success.
+///
+/// # Safety
+///
+/// The pointer contracts match [`ocaml_temporal_core_v1_worker_shutdown`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_disconnect(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    // SAFETY: `invoke` validates output and the opaque handle is checked for
+    // null before producing the unique mutable reference required by graph use.
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .disconnect_client()
         })
     }
 }

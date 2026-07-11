@@ -1,14 +1,18 @@
 services:
   dev:
     build:
-      context: .
+      # The fixture lives below the repository root, but the development image
+      # and source bind mount deliberately retain the whole-project context.
+      context: ../../..
       dockerfile: Dockerfile.dev
       args:
         OCAML_IMAGE: ${OCAML_IMAGE:-ocaml/opam:debian-12-ocaml-5.2}
     working_dir: /workspace
     volumes:
-      - .:/workspace
+      - ../../..:/workspace
     init: true
+    networks:
+      - temporal-network
 
   postgresql:
     profiles: [temporal]
@@ -67,7 +71,7 @@ services:
     ports:
       - "${TEMPORAL_FRONTEND_PORT:-7233}:7233"
     volumes:
-      - ./config/temporal/development-sql.yaml:/etc/temporal/config/dynamicconfig/development-sql.yaml:ro
+      - ./config/development-sql.yaml:/etc/temporal/config/dynamicconfig/development-sql.yaml:ro
     networks:
       - temporal-network
     healthcheck:

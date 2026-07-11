@@ -5,6 +5,10 @@ type status =
   | Abi_mismatch
   | Panic
   | Internal
+  | Invalid_state
+  | Configuration
+  | Connection
+  | Worker
   | Unknown of int
 
 (** Error copied into the OCaml heap. Once returned, it contains no pointer to
@@ -17,6 +21,15 @@ type error = {
 (** Private owner of the Temporal Core runtime and Tokio executor for one SDK
     instance. It is intentionally abstract and never enters the public API. *)
 type runtime
+
+(** Validated settings for one official Temporal client connection. The JSON
+    representation and concrete fields remain private so callers cannot bypass
+    sender-side transport validation. *)
+type client_config
+
+(** Validated settings for one workflow-only Core worker. Construction does
+    not perform network access; the supervisor sends it to Rust at start. *)
+type worker_config
 
 (** Version of the C-compatible interface expected by this OCaml code. *)
 val abi_version : int32
@@ -33,10 +46,46 @@ val echo : bytes -> (bytes, error) result
     polling. Values outside 0 through 1,000 return an error. *)
 val conformance_wait_ms : int -> (unit, error) result
 
+(** Validates connection settings without opening a connection. The bridge
+    applies only transport-safety checks; Core and Temporal Server retain
+    authority over namespace-configurable semantic limits. *)
+val client_config :
+  target_url:string -> identity:string -> (client_config, error) result
+
+(** Validates workflow-only worker settings without constructing a worker.
+    Counts are explicit so resource policy is visible to the application. *)
+val worker_config :
+  namespace:string ->
+  task_queue:string ->
+  build_id:string ->
+  max_cached_workflows:int ->
+  max_outstanding_workflow_tasks:int ->
+  max_concurrent_workflow_task_polls:int ->
+  graceful_shutdown_timeout_ms:int64 ->
+  (worker_config, error) result
+
 (** Creates a native runtime after checking that the statically linked bridge
     implements the compatibility contract expected by this OCaml build. *)
 val runtime_create : unit -> (runtime, error) result
 
-(** Destroys the native runtime. Repeating this call on the same value is safe.
-    The SDK supervisor must close all future child handles first. *)
+(** Connects the official Core-based Temporal client. The network wait occurs
+    in Rust while the C stub has released the OCaml runtime lock. *)
+val client_connect : runtime -> client_config -> (unit, error) result
+
+(** Constructs a workflow-only worker and completes Core namespace validation
+    before publishing it into the owned graph. *)
+val worker_start : runtime -> worker_config -> (unit, error) result
+
+(** Gracefully finalizes the worker. Absence is treated as already shut down,
+    making sequential repeated calls safe. *)
+val worker_shutdown : runtime -> (unit, error) result
+
+(** Drops the connected client after its worker is absent. Absence is treated
+    as already disconnected. *)
+val client_disconnect : runtime -> (unit, error) result
+
+(** Destroys the complete native graph in worker-client-runtime order.
+    Repeating this call on the same value is safe; explicit child operations
+    remain useful for deterministic diagnostics but are not required for
+    leak-free defensive cleanup. *)
 val runtime_close : runtime -> (unit, error) result

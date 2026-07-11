@@ -1,0 +1,3 @@
+(executable
+ (name test_core_lifecycle)
+ (libraries temporal_sdk_supervisor temporal-sdk.internal_core_bridge))

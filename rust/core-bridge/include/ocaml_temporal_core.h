@@ -18,7 +18,11 @@ enum {
   OCAML_TEMPORAL_CORE_STATUS_INVALID_ARGUMENT = 1,
   OCAML_TEMPORAL_CORE_STATUS_ABI_MISMATCH = 2,
   OCAML_TEMPORAL_CORE_STATUS_PANIC = 3,
-  OCAML_TEMPORAL_CORE_STATUS_INTERNAL = 4
+  OCAML_TEMPORAL_CORE_STATUS_INTERNAL = 4,
+  OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE = 5,
+  OCAML_TEMPORAL_CORE_STATUS_CONFIGURATION = 6,
+  OCAML_TEMPORAL_CORE_STATUS_CONNECTION = 7,
+  OCAML_TEMPORAL_CORE_STATUS_WORKER = 8
 };
 
 /* Rust-owned byte allocation. `{ NULL, 0 }` is the sole empty representation. */
@@ -73,9 +77,37 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_runtime_new(
     ocaml_temporal_core_result *output);
 
 /*
+ * Strictly decode one UTF-8 JSON client configuration, connect through the
+ * official Temporal client, and retain it beneath `runtime`. No client is
+ * retained on failure. The input is borrowed only for this blocking call.
+ */
+ocaml_temporal_core_status ocaml_temporal_core_v1_client_connect_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/*
+ * Strictly decode workflow-only worker configuration, construct the official
+ * Core worker, and validate its namespace before returning success. A failed
+ * temporary worker is cleaned before this operation returns.
+ */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_start_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Gracefully stop the worker. Repeating this operation is safe. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_shutdown(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/* Drop the client after its worker is absent. Repeating this operation is safe. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_client_disconnect(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/*
  * Destroy a runtime and clear the caller's slot. Calling this again with the
- * same now-null slot is safe. Child worker/client handles must already be shut
- * down before their owning runtime is released.
+ * same now-null slot is safe. The runtime defensively finalizes a remaining
+ * worker and drops its client in reverse ownership order before Core.
  */
 ocaml_temporal_core_status ocaml_temporal_core_v1_runtime_free(
     ocaml_temporal_core_runtime **runtime);

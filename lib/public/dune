@@ -1,6 +1,7 @@
 (library
  (name temporal)
  (public_name temporal-sdk)
+ (private_modules backend)
  (libraries
   temporal-sdk.internal_base
   temporal-sdk.internal_core_bridge

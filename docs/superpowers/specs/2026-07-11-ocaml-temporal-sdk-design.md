@@ -71,6 +71,12 @@ Stateful native resources are owned as one graph by an OCaml supervisor actor pe
 
 The supervisor does not poll Rust on a timer. Rust signals an internal condition/event primitive whenever Core work becomes ready, and the supervisor's dedicated Domain/OS thread waits through a blocking C stub with its OCaml runtime lock released. Workflow effect continuations and general cooperative schedulers never execute this blocking wait. The call returns normally to OCaml to drain work. This provides callback-like wakeup latency without allowing arbitrary Tokio threads to enter the OCaml runtime; shutdown uses the same signal to unblock the wait safely.
 
+Throughput optimization is deliberately deferred until correctness benchmarks
+justify it. A later implementation may pipeline native transport, JSON
+validation/codec work, and workflow execution on dedicated lanes, but the
+single-owner ordering contract remains the source of truth: the public API
+must not assume that those lanes are parallel or expose a second mutable owner.
+
 ### 4.2 Why not the Go SDK
 
 The Go SDK includes a Go-specific cooperative workflow runtime. Embedding it would require adapting that runtime's workflow callbacks to OCaml or placing an additional recorded boundary around OCaml evaluation. Temporal Core instead exposes workflow activations and commands specifically so language runtimes can implement their own scheduler. That boundary maps directly to the problem this project must solve.

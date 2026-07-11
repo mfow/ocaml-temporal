@@ -5,6 +5,7 @@
 
 mod abi;
 pub mod activity_protocol;
+mod client_protocol;
 pub mod protocol;
 #[doc(hidden)]
 pub mod worker_bridge;

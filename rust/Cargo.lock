@@ -1204,6 +1204,7 @@ dependencies = [
  "temporalio-protos",
  "temporalio-sdk-core",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

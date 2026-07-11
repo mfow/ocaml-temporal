@@ -990,7 +990,9 @@ fn retry_state_to_core(value: RetryState) -> i32 {
 }
 
 /// Converts the supported recursive official failure subset.
-fn failure_from_core(value: &api_failure::Failure) -> Result<Failure, CoreConversionError> {
+pub(crate) fn failure_from_core(
+    value: &api_failure::Failure,
+) -> Result<Failure, CoreConversionError> {
     use api_failure::failure::FailureInfo as Core;
     let info = match value
         .failure_info

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-start-request.schema.json",
+  "title": "OCaml Temporal native client start request",
+  "description": "Closed JSON document used only by the private Rust client bridge. The Rust validator also enforces UTF-8 byte limits, duplicate-key rejection, and canonical payload encoding.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "workflow_id", "workflow_type", "task_queue", "input"],
+  "properties": {
+    "namespace": {"type": "string", "minLength": 1},
+    "workflow_id": {"type": "string", "minLength": 1},
+    "workflow_type": {"type": "string", "minLength": 1},
+    "task_queue": {"type": "string", "minLength": 1},
+    "input": {
+      "type": "array",
+      "items": {"$ref": "temporal-payload.schema.json"}
+    }
+  }
+}

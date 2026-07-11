@@ -20,3 +20,4 @@ temporalio-common.workspace = true
 temporalio-sdk-core.workspace = true
 temporalio-protos.workspace = true
 tokio.workspace = true
+uuid.workspace = true

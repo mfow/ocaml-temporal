@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-wait-request.schema.json",
+  "title": "OCaml Temporal native client exact-run wait request",
+  "description": "The absence of a follow_runs option is intentional: this operation always waits for the named run and never follows continued-as-new.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "workflow_id", "run_id"],
+  "properties": {
+    "namespace": {"type": "string", "minLength": 1},
+    "workflow_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1}
+  }
+}

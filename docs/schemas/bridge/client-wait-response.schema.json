@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-wait-response.schema.json",
+  "title": "OCaml Temporal native client exact-run wait response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["execution", "outcome"],
+  "properties": {
+    "execution": {"$ref": "client-execution-ref.schema.json"},
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "result", "successor"],
+          "properties": {
+            "kind": {"const": "completed"},
+            "result": {"type": "array", "items": {"$ref": "temporal-payload.schema.json"}},
+            "successor": {"anyOf": [{"$ref": "client-execution-ref.schema.json"}, {"type": "null"}]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "failure", "successor"],
+          "properties": {
+            "kind": {"const": "failed"},
+            "failure": {"$ref": "temporal-failure.schema.json"},
+            "successor": {"anyOf": [{"$ref": "client-execution-ref.schema.json"}, {"type": "null"}]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "details"],
+          "properties": {
+            "kind": {"const": "cancelled"},
+            "details": {"type": "array", "items": {"$ref": "temporal-payload.schema.json"}}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "details"],
+          "properties": {
+            "kind": {"const": "terminated"},
+            "details": {"type": "array", "items": {"$ref": "temporal-payload.schema.json"}}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "successor"],
+          "properties": {
+            "kind": {"const": "timed_out"},
+            "successor": {"anyOf": [{"$ref": "client-execution-ref.schema.json"}, {"type": "null"}]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "successor"],
+          "properties": {
+            "kind": {"const": "continued_as_new"},
+            "successor": {"$ref": "client-execution-ref.schema.json"}
+          }
+        }
+      ]
+    }
+  }
+}

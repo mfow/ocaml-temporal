@@ -44,6 +44,40 @@ accepted only at their documented default; a non-default value returns a typed
 [protocol reference](core-protocol.md), machine-readable schemas, and
 [ADR 0006](../decisions/0006-first-workflow-semantic-protocol.md).
 
+## Native client start and exact-run wait
+
+The private Rust client adapter adds two JSON ABI operations:
+`ocaml_temporal_core_v1_client_start_workflow_json` and
+`ocaml_temporal_core_v1_client_wait_workflow_json`. They are deliberately
+lower-level than the public OCaml `Client` module. The adapter uses Core's raw
+`WorkflowService` trait because workflow type names and payloads are dynamic at
+the OCaml boundary; it does not instantiate Rust's statically typed workflow
+definitions.
+
+The start request contains `namespace`, `workflow_id`, `workflow_type`,
+`task_queue`, and an ordered `input` payload array. Optional start policies are
+not silently invented in this first slice: Core receives its documented server
+defaults. The successful response contains the namespace, workflow ID, and
+run ID allocated by Temporal. Both request and response are strictly decoded,
+re-encoded, and reparsed before crossing the boundary.
+
+The wait request names `namespace`, `workflow_id`, and one concrete `run_id`.
+There is no `follow_runs` escape hatch in the document: the operation always
+uses a close-event history long poll for that exact run. Completed, failed, and
+timed-out close events retain any successor run ID exposed by Core. A
+continued-as-new close is returned as a terminal `continued_as_new` outcome
+with a required successor execution reference; the bridge never follows that
+run implicitly. This prevents an exact-run caller from accidentally observing a
+different execution identity.
+
+Temporal AlreadyStarted responses use status `12` and a closed JSON error body
+(`kind`, `workflow_id`, `existing_run_id`) rather than copying gRPC server text.
+Other RPC failures contain only a stable status code. Core payload and failure
+conversion errors use a `protocol` error kind with a closed conversion code;
+they never include payload bytes or server diagnostics. Machine-readable
+schemas for these documents live under
+`docs/schemas/bridge/client-*.schema.json`.
+
 ## Result and buffer ownership
 
 Every fallible operation accepts a writable result pointer and returns the same

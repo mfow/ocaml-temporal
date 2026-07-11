@@ -257,7 +257,13 @@ impl Runtime {
         })?;
 
         if let Err(error) = handle.block_on(worker.validate()) {
-            worker.initiate_shutdown();
+            {
+                // Core's synchronous shutdown initiation spawns its server
+                // deregistration task, so it needs the same runtime context
+                // as synchronous worker construction.
+                let _runtime_guard = handle.enter();
+                worker.initiate_shutdown();
+            }
             handle.block_on(worker.finalize_shutdown());
             return Err(Failure {
                 status: STATUS_WORKER,
@@ -278,7 +284,12 @@ impl Runtime {
             .as_ref()
             .expect("a live worker always has its parent runtime")
             .tokio_handle();
-        worker.initiate_shutdown();
+        {
+            // `initiate_shutdown` synchronously calls `tokio::spawn`; keep
+            // the guard narrower than the subsequent blocking finalization.
+            let _runtime_guard = handle.enter();
+            worker.initiate_shutdown();
+        }
         handle.block_on(worker.finalize_shutdown());
         Ok(Vec::new())
     }
@@ -365,7 +376,12 @@ fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
 fn drop_runtime_graph(core: CoreRuntime, client: Option<Connection>, worker: Option<Worker>) {
     if let Some(worker) = worker {
         let handle = core.tokio_handle();
-        worker.initiate_shutdown();
+        {
+            // Cleanup runs on a plain OS thread, so explicitly enter Core's
+            // executor before its synchronous shutdown code spawns a task.
+            let _runtime_guard = handle.enter();
+            worker.initiate_shutdown();
+        }
         handle.block_on(worker.finalize_shutdown());
     }
     drop(client);

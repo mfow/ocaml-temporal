@@ -53,6 +53,15 @@ module Make (Request : Request) : sig
       result or the processor fails. *)
   val call : t -> 'result Request.t -> ('result, failure) result
 
+  (** [call_and_close processor request] atomically admits one final typed
+      request at the FIFO tail and changes the lifecycle from open to closing.
+      It never waits for ordinary queue capacity: the terminal request uses
+      one reserved slot beyond [capacity], so shutdown cannot be starved by
+      producers already waiting for capacity. Later admissions are rejected.
+      The call then waits for its result like [call]. If the processor was
+      already closing or terminal, no request is admitted. *)
+  val call_and_close : t -> 'result Request.t -> ('result, failure) result
+
   (** [close processor] is idempotent. It rejects new admissions and asks the
       owner to drain every request admitted before close linearized. *)
   val close : t -> unit

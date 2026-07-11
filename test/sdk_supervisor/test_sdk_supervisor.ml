@@ -1,0 +1,478 @@
+(** A manually controlled synchronization gate for lifecycle tests. All fields
+    are protected by [mutex], and waits recheck their predicate. *)
+type gate = {
+  mutex : Mutex.t;
+  condition : Condition.t;
+  mutable open_ : bool;
+}
+
+(** Creates a closed synchronization gate. *)
+let create_gate () =
+  { mutex = Mutex.create (); condition = Condition.create (); open_ = false }
+
+(** Blocks the current ordinary Domain until [gate] is opened. *)
+let await_gate gate =
+  Mutex.lock gate.mutex;
+  while not gate.open_ do
+    Condition.wait gate.condition gate.mutex
+  done;
+  Mutex.unlock gate.mutex
+
+(** Opens [gate] permanently and wakes every waiter. *)
+let open_gate gate =
+  Mutex.lock gate.mutex;
+  gate.open_ <- true;
+  Condition.broadcast gate.condition;
+  Mutex.unlock gate.mutex
+
+(** Fails with [label] when two structural values differ. *)
+let expect label expected actual =
+  if expected <> actual then failwith (label ^ " did not match")
+
+(** Waits until a spawned Domain has reached a test milestone. *)
+let await_atomic flag =
+  while not (Atomic.get flag) do
+    Domain.cpu_relax ()
+  done
+
+(** Gives contending producer Domains repeated opportunities to reach their
+    mailbox operation without introducing a wall-clock sleep. *)
+let yield_to_domains () =
+  for _ = 1 to 100_000 do
+    Domain.cpu_relax ()
+  done
+
+(** Test backend configuration. Atomics make counters safe to inspect while
+    producer Domains are still active; [owner_ids] is inspected after
+    supervisor shutdown establishes the owner-Domain happens-before edge. *)
+type backend_config = {
+  creates : int Atomic.t;
+  closes : int Atomic.t;
+  active : int Atomic.t;
+  maximum_active : int Atomic.t;
+  owner_ids : int list ref;
+  create_error : string option;
+  create_exception : string option;
+  shutdown_error : string option;
+  shutdown_exception : string option;
+}
+
+(** Allocates an independently observable backend configuration. *)
+let backend_config ?create_error ?create_exception ?shutdown_error
+    ?shutdown_exception () =
+  {
+    creates = Atomic.make 0;
+    closes = Atomic.make 0;
+    active = Atomic.make 0;
+    maximum_active = Atomic.make 0;
+    owner_ids = ref [];
+    create_error;
+    create_exception;
+    shutdown_error;
+    shutdown_exception;
+  }
+
+(** Records the current Domain and updates the maximum number of simultaneous
+    backend calls. A correct supervisor keeps that maximum at one. *)
+let enter_backend config =
+  config.owner_ids := (Domain.self () :> int) :: !(config.owner_ids);
+  let active = Atomic.fetch_and_add config.active 1 + 1 in
+  let rec raise_maximum () =
+    let current = Atomic.get config.maximum_active in
+    if active > current
+       && not (Atomic.compare_and_set config.maximum_active current active)
+    then raise_maximum ()
+  in
+  raise_maximum ()
+
+(** Leaves one instrumented backend invocation. *)
+let leave_backend config = ignore (Atomic.fetch_and_add config.active (-1))
+
+(** A typed operation language used to prove that callers never receive the
+    backend state while operation result types remain precise. *)
+module Backend = struct
+  type config = backend_config
+  type state = backend_config
+  type error = string
+
+  type _ operation =
+    | Owner_id : int operation
+    | Echo : 'value -> 'value operation
+    | Expected_error : string -> int operation
+    | Block : gate * gate -> unit operation
+    | Crash : string -> int operation
+    | Crash_after : gate * gate * string -> int operation
+
+  (** Creates test state on the supervisor owner Domain. *)
+  let create config =
+    ignore (Atomic.fetch_and_add config.creates 1);
+    config.owner_ids := [ (Domain.self () :> int) ];
+    match config.create_exception with
+    | Some message -> failwith message
+    | None ->
+        (match config.create_error with
+        | None -> Ok config
+        | Some error -> Error error)
+
+  (** Executes one operation while recording serialization and ownership. *)
+  let perform : type value. state -> value operation -> (value, error) result =
+   fun config operation ->
+    let execute : type output. output operation -> (output, error) result =
+      function
+      | Owner_id -> Ok (Domain.self () :> int)
+      | Echo value -> Ok value
+      | Expected_error error -> Error error
+      | Block (entered, release) ->
+          open_gate entered;
+          await_gate release;
+          Ok ()
+      | Crash message -> failwith message
+      | Crash_after (entered, release, message) ->
+          open_gate entered;
+          await_gate release;
+          failwith message
+    in
+    enter_backend config;
+    Fun.protect
+      ~finally:(fun () -> leave_backend config)
+      (fun () -> execute operation)
+
+  (** Records deterministic release of the complete test resource graph. *)
+  let shutdown config =
+    config.owner_ids := (Domain.self () :> int) :: !(config.owner_ids);
+    ignore (Atomic.fetch_and_add config.closes 1);
+    match config.shutdown_exception with
+    | Some message -> failwith message
+    | None ->
+        (match config.shutdown_error with
+        | None -> Ok ()
+        | Some error -> Error error)
+end
+
+module Supervisor = Sdk_supervisor.Make (Backend)
+
+(** Closes a supervisor and requires an orderly result. *)
+let expect_clean_shutdown supervisor =
+  expect "first shutdown" (Ok ()) (Supervisor.shutdown supervisor);
+  expect "idempotent shutdown" (Ok ()) (Supervisor.shutdown supervisor)
+
+(** Proves creation, typed use, and cleanup all run on one owner Domain rather
+    than any producer Domain. *)
+let test_owner_domain_and_typed_operations () =
+  let config = backend_config () in
+  let caller_id = (Domain.self () :> int) in
+  let supervisor =
+    match Supervisor.create ~capacity:8 config with
+    | Ok supervisor -> supervisor
+    | Error _ -> failwith "supervisor creation failed"
+  in
+  let owner_id =
+    match Supervisor.perform supervisor Owner_id with
+    | Ok owner_id -> owner_id
+    | Error _ -> failwith "owner identity operation failed"
+  in
+  if owner_id = caller_id then failwith "backend ran on the producer Domain";
+  expect "integer typed operation" (Ok 42)
+    (Supervisor.perform supervisor (Echo 42));
+  expect "string typed operation" (Ok "typed")
+    (Supervisor.perform supervisor (Echo "typed"));
+  expect_clean_shutdown supervisor;
+  expect "one create" 1 (Atomic.get config.creates);
+  expect "one close" 1 (Atomic.get config.closes);
+  if not (List.for_all (( = ) owner_id) !(config.owner_ids)) then
+    failwith "backend lifecycle escaped its owner Domain"
+
+(** Verifies that many producer Domains cannot overlap backend operations and
+    every typed request completes exactly once. *)
+let test_concurrent_producers_are_serialized () =
+  let config = backend_config () in
+  let supervisor =
+    Result.get_ok (Supervisor.create ~capacity:5 config)
+  in
+  let count = 12 in
+  let producers =
+    Array.init count (fun value ->
+        Domain.spawn (fun () ->
+            Supervisor.perform supervisor (Echo value)))
+  in
+  let actual = Array.map Domain.join producers |> Array.to_list in
+  let expected = List.init count (fun value -> Ok value) in
+  expect "concurrent results" expected actual;
+  expect "serialized maximum" 1 (Atomic.get config.maximum_active);
+  expect_clean_shutdown supervisor
+
+(** Expected backend errors remain typed and do not poison the owner. *)
+let test_expected_error_keeps_supervisor_usable () =
+  let config = backend_config () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:2 config) in
+  expect "expected operation error" (Error (Supervisor.Backend "expected"))
+    (Supervisor.perform supervisor (Expected_error "expected"));
+  expect "operation after expected error" (Ok 7)
+    (Supervisor.perform supervisor (Echo 7));
+  expect_clean_shutdown supervisor
+
+(** A creation error is returned without publishing a supervisor or trying to
+    close state which the backend never successfully created. *)
+let test_creation_error () =
+  let config = backend_config ~create_error:"cannot create" () in
+  expect "creation error" (Error (Supervisor.Backend "cannot create"))
+    (Supervisor.create ~capacity:2 config);
+  expect "failed create count" 1 (Atomic.get config.creates);
+  expect "failed create close count" 0 (Atomic.get config.closes)
+
+(** An unexpected operation exception is propagated as a supervisor failure,
+    closes the native graph exactly once, and rejects every later operation
+    with the same terminal exception. *)
+let test_unexpected_operation_failure_cleans_up () =
+  let config = backend_config () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:3 config) in
+  let expect_crash label = function
+    | Error (Supervisor.Supervisor_failed (Failure message))
+      when String.equal message "boom" ->
+        ()
+    | _ -> failwith (label ^ " did not preserve the owner failure")
+  in
+  expect_crash "active crash" (Supervisor.perform supervisor (Crash "boom"));
+  expect_crash "later call" (Supervisor.perform supervisor (Echo 1));
+  expect_crash "shutdown after crash" (Supervisor.shutdown supervisor);
+  expect_crash "repeated shutdown after crash" (Supervisor.shutdown supervisor);
+  expect "exception cleanup count" 1 (Atomic.get config.closes)
+
+(** Callers which begin contending while a defective operation is active all
+    receive its contained terminal exception and none remains waiting. Mailbox
+    admission order itself is proven by the dedicated mailbox tests. *)
+let test_unexpected_failure_releases_contending_callers () =
+  let config = backend_config () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:8 config) in
+  let entered = create_gate () in
+  let release = create_gate () in
+  let crashing =
+    Domain.spawn (fun () ->
+        Supervisor.perform supervisor
+          (Crash_after (entered, release, "queued boom")))
+  in
+  await_gate entered;
+  let waiter_started = Array.init 4 (fun _ -> Atomic.make false) in
+  let waiters =
+    Array.mapi
+      (fun value started ->
+        Domain.spawn (fun () ->
+            Atomic.set started true;
+            Supervisor.perform supervisor (Echo value)))
+      waiter_started
+  in
+  Array.iter await_atomic waiter_started;
+  for _ = 1 to 100_000 do
+    Domain.cpu_relax ()
+  done;
+  open_gate release;
+  let expect_contending_failure label = function
+    | Error (Supervisor.Supervisor_failed (Failure message))
+      when String.equal message "queued boom" ->
+        ()
+    | _ -> failwith (label ^ " did not receive the terminal owner failure")
+  in
+  expect_contending_failure "active failure" (Domain.join crashing);
+  Array.iter
+    (fun waiter ->
+      expect_contending_failure "contending failure" (Domain.join waiter))
+    waiters;
+  expect_contending_failure "failed join result"
+    (Supervisor.shutdown supervisor);
+  expect "contending failure cleanup count" 1 (Atomic.get config.closes)
+
+(** Shutdown waits behind admitted work, runs once on the owner, and rejects
+    use after its result has been observed. *)
+let test_shutdown_waits_and_is_idempotent () =
+  let config = backend_config () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:2 config) in
+  let entered = create_gate () in
+  let release = create_gate () in
+  let operation =
+    Domain.spawn (fun () -> Supervisor.perform supervisor (Block (entered, release)))
+  in
+  await_gate entered;
+  let shutdown_started = Atomic.make false in
+  let shutdown =
+    Domain.spawn (fun () ->
+        Atomic.set shutdown_started true;
+        Supervisor.shutdown supervisor)
+  in
+  await_atomic shutdown_started;
+  if Atomic.get config.closes <> 0 then
+    failwith "shutdown overtook an admitted operation";
+  open_gate release;
+  expect "blocked operation" (Ok ()) (Domain.join operation);
+  expect "concurrent shutdown" (Ok ()) (Domain.join shutdown);
+  expect "cached shutdown" (Ok ()) (Supervisor.shutdown supervisor);
+  expect "single shutdown call" 1 (Atomic.get config.closes);
+  expect "use after shutdown" (Error Supervisor.Closed)
+    (Supervisor.perform supervisor (Echo 1))
+
+(** Saturating the normal FIFO must not leave shutdown waiting for capacity
+    while later operations remain admissible. Shutdown atomically takes the
+    terminal FIFO position, closes admission, then waits for older work. *)
+let test_shutdown_closes_admission_while_fifo_is_full () =
+  let config = backend_config () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:1 config) in
+  let entered = create_gate () in
+  let release = create_gate () in
+  let active =
+    Domain.spawn (fun () -> Supervisor.perform supervisor (Block (entered, release)))
+  in
+  await_gate entered;
+  let queued_started = Atomic.make false in
+  let queued =
+    Domain.spawn (fun () ->
+        Atomic.set queued_started true;
+        Supervisor.perform supervisor (Echo 2))
+  in
+  await_atomic queued_started;
+  yield_to_domains ();
+  let shutdown_started = Atomic.make false in
+  let shutdown =
+    Domain.spawn (fun () ->
+        Atomic.set shutdown_started true;
+        Supervisor.shutdown supervisor)
+  in
+  await_atomic shutdown_started;
+  yield_to_domains ();
+  let late_finished = Atomic.make false in
+  let late =
+    Domain.spawn (fun () ->
+        let result = Supervisor.perform supervisor (Echo 3) in
+        Atomic.set late_finished true;
+        result)
+  in
+  yield_to_domains ();
+  if not (Atomic.get late_finished) then (
+    open_gate release;
+    ignore (Domain.join active);
+    ignore (Domain.join queued);
+    ignore (Domain.join shutdown);
+    ignore (Domain.join late);
+    failwith "shutdown did not close admission while the FIFO was full");
+  expect "operation after shutdown admission" (Error Supervisor.Closed)
+    (Domain.join late);
+  open_gate release;
+  expect "active work before shutdown" (Ok ()) (Domain.join active);
+  expect "queued work before shutdown" (Ok 2) (Domain.join queued);
+  expect "saturated shutdown" (Ok ()) (Domain.join shutdown);
+  expect "one saturated shutdown" 1 (Atomic.get config.closes)
+
+(** A backend shutdown error is cached, while release is still attempted only
+    once and later operations remain closed. *)
+let test_shutdown_error_is_cached () =
+  let config = backend_config ~shutdown_error:"close failed" () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:2 config) in
+  let expected = Error (Supervisor.Backend "close failed") in
+  expect "shutdown error" expected (Supervisor.shutdown supervisor);
+  expect "cached shutdown error" expected (Supervisor.shutdown supervisor);
+  expect "failed shutdown call count" 1 (Atomic.get config.closes);
+  expect "closed after shutdown error" (Error Supervisor.Closed)
+    (Supervisor.perform supervisor (Echo 1))
+
+(** Abandoning an instance schedules cleanup on a separate system thread so a
+    forgotten explicit shutdown cannot strand its owner Domain or graph. *)
+let test_abandoned_supervisor_is_cleaned_up () =
+  let config = backend_config () in
+  let weak = Weak.create 1 in
+  let create_and_drop () =
+    let supervisor = Result.get_ok (Supervisor.create ~capacity:2 config) in
+    Weak.set weak 0 (Some supervisor)
+  in
+  create_and_drop ();
+  let rec collect attempts =
+    if Atomic.get config.closes = 1 then ()
+    else if attempts = 0 then
+      failwith "abandoned supervisor did not release its backend graph"
+    else (
+      Gc.full_major ();
+      (* A yield need not let a newly created system thread run on Windows.
+         This short blocking delay gives both the finalizer and its cleanup
+         thread a scheduler opportunity while retaining a bounded failure. *)
+      Thread.delay 0.001;
+      collect (attempts - 1))
+  in
+  collect 5_000;
+  expect "abandoned cleanup count" 1 (Atomic.get config.closes)
+
+(** Concurrent shutdown callers all receive one cached expected backend error
+    while the backend release operation executes exactly once. *)
+let test_concurrent_shutdown_callers_share_result () =
+  let config = backend_config ~shutdown_error:"shared close failure" () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:8 config) in
+  let callers =
+    Array.init 16 (fun _ ->
+        Domain.spawn (fun () -> Supervisor.shutdown supervisor))
+  in
+  let expected = Error (Supervisor.Backend "shared close failure") in
+  Array.iter
+    (fun caller -> expect "concurrent shutdown result" expected (Domain.join caller))
+    callers;
+  expect "concurrent shutdown backend count" 1 (Atomic.get config.closes)
+
+(** A backend exception during creation is contained and returned to the
+    producer instead of escaping or stranding the temporary owner Domain. *)
+let test_creation_exception_is_contained () =
+  let config = backend_config ~create_exception:"create exploded" () in
+  let creator =
+    Domain.spawn (fun () -> Supervisor.create ~capacity:2 config)
+  in
+  (match Domain.join creator with
+  | Error (Supervisor.Supervisor_failed (Failure message))
+    when String.equal message "create exploded" ->
+      ()
+  | _ -> failwith "creation exception was not contained");
+  expect "exceptional create count" 1 (Atomic.get config.creates);
+  expect "exceptional create close count" 0 (Atomic.get config.closes)
+
+(** An unexpected shutdown exception is contained once and the exact terminal
+    failure is shared by concurrent and later shutdown callers. *)
+let test_shutdown_exception_is_contained_and_cached () =
+  let config = backend_config ~shutdown_exception:"shutdown exploded" () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:8 config) in
+  let callers =
+    Array.init 16 (fun _ ->
+        Domain.spawn (fun () -> Supervisor.shutdown supervisor))
+  in
+  let expect_failure = function
+    | Error (Supervisor.Supervisor_failed (Failure message))
+      when String.equal message "shutdown exploded" ->
+        ()
+    | _ -> failwith "shutdown exception was not preserved"
+  in
+  Array.iter (fun caller -> expect_failure (Domain.join caller)) callers;
+  expect_failure (Supervisor.shutdown supervisor);
+  expect "exceptional shutdown backend count" 1 (Atomic.get config.closes)
+
+(** Exercises the actual Rust runtime through the specialized supervisor. This
+    does not claim a client or worker exists; it proves the real handle remains
+    private and is explicitly released by the owner Domain. *)
+let test_native_runtime_lifecycle () =
+  let module Native = Sdk_supervisor.Native in
+  let supervisor =
+    match Native.create ~capacity:2 () with
+    | Ok supervisor -> supervisor
+    | Error _ -> failwith "native supervisor creation failed"
+  in
+  expect "native compatibility" (Ok ())
+    (Native.perform supervisor Native.Check_compatibility);
+  expect "native shutdown" (Ok ()) (Native.shutdown supervisor);
+  expect "native repeated shutdown" (Ok ()) (Native.shutdown supervisor)
+
+let () =
+  test_owner_domain_and_typed_operations ();
+  test_concurrent_producers_are_serialized ();
+  test_expected_error_keeps_supervisor_usable ();
+  test_creation_error ();
+  test_unexpected_operation_failure_cleans_up ();
+  test_unexpected_failure_releases_contending_callers ();
+  test_shutdown_waits_and_is_idempotent ();
+  test_shutdown_closes_admission_while_fifo_is_full ();
+  test_shutdown_error_is_cached ();
+  test_abandoned_supervisor_is_cleaned_up ();
+  test_concurrent_shutdown_callers_share_result ();
+  test_creation_exception_is_contained ();
+  test_shutdown_exception_is_contained_and_cached ();
+  test_native_runtime_lifecycle ()

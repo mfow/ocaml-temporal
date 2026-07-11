@@ -1,0 +1,7 @@
+(library
+ (name temporal_sdk_supervisor)
+ (wrapped false)
+ (libraries
+  temporal_mailbox_processor
+  temporal-sdk.internal_core_bridge
+  threads))

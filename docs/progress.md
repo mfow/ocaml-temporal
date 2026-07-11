@@ -594,6 +594,51 @@ Local evidence:
 - The design and synchronization evidence are recorded in
   [ADR 0003](decisions/0003-private-mailbox-processor.md).
 
+## 2026-07-11: SDK instance owner-Domain supervisor
+
+Status: representative native verification passed; complete cross-platform
+pull-request evidence pending.
+
+A new Dune-private supervisor layer now turns the generic mailbox into one
+owner for an SDK instance's complete native resource graph. Backend creation,
+typed use, and shutdown all execute on the same dedicated Domain. Backend state
+does not appear in the operation API, so Rust runtime, future client, and future
+worker handles cannot escape to producers.
+
+The production specialization owns the real Rust runtime and supports an ABI
+compatibility operation. This proves actual native creation/use/destruction
+without claiming that live Temporal client or worker operations exist yet.
+Expected operation errors preserve a running graph. Unexpected exceptions
+record terminal state, attempt cleanup once, and use the mailbox failure path
+to release active and queued callers with the same defect.
+
+Focused evidence:
+
+- The first test failed because `temporal_sdk_supervisor` did not exist.
+- Creation, typed operations, and shutdown ran on one non-producer owner
+  Domain; twelve concurrent producers never overlapped backend use.
+- Expected create, operation, and shutdown errors retained explicit `result`
+  values and exact idempotent shutdown outcomes.
+- Sixteen concurrent shutdown callers shared one cached result while backend
+  release ran once. Unexpected create/shutdown exceptions were contained, and
+  the shutdown exception was cached for concurrent and later callers.
+- Unexpected operation failure released callers contending during the defect
+  and closed exactly once; the underlying mailbox suite separately proves
+  admitted-queue failure propagation.
+- Abandoning a live instance delegated its normal cleanup to a system thread;
+  the garbage-collector finalizer did not block and backend shutdown ran once.
+- Twenty-five forced repetitions of the complete supervisor suite passed.
+- The real Rust runtime passed create, compatibility use, shutdown, and
+  repeated-shutdown checks through the supervisor.
+- `make native-verify` passed on OCaml 5.4.1 and Rust 1.96.0, covering the
+  install build, complete OCaml suite, Rust tests, Clippy with warnings denied,
+  rustfmt, and the fresh installed-package consumer.
+- [ADR 0004](decisions/0004-sdk-instance-supervisor.md) records ownership,
+  cleanup, blocking, and future client/worker extension rules.
+
+This milestone does not connect to Temporal Server, create a Core client or
+worker, or poll activations. Those remain the next Phase 2 bridge tasks.
+
 ## 2026-07-11: Real Temporal Server and PostgreSQL Compose substrate
 
 Status: verified locally; OCaml workflow connectivity remains pending.

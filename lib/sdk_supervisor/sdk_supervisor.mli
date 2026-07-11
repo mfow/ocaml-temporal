@@ -1,0 +1,97 @@
+(** Private owner-Domain supervision for one SDK instance.
+
+    The supervisor serializes a complete native resource graph behind typed
+    operations. Its entry points block ordinary producer Domains and therefore
+    must be offloaded by any cooperative scheduler adapter. No backend state or
+    native handle can be obtained through this interface. *)
+
+(** A native resource graph and the typed operations which may use it. *)
+module type Backend = sig
+  (** Immutable information required to create one graph. *)
+  type config
+
+  (** Owner-confined graph state. The supervisor never returns this value to a
+      producer and invokes all functions receiving it on one Domain. *)
+  type state
+
+  (** Expected backend failure copied into OCaml-owned memory. *)
+  type error
+
+  (** Typed operations over the graph. The parameter selects the successful
+      result without exposing [state]. *)
+  type _ operation
+
+  (** Creates the complete initial graph on the owner Domain. Returning
+      [Error] means no state was created and therefore no shutdown is needed. *)
+  val create : config -> (state, error) result
+
+  (** Executes one operation on owner-confined [state]. Expected operational
+      failures use [Error]; exceptions denote backend defects. *)
+  val perform : state -> 'result operation -> ('result, error) result
+
+  (** Releases every resource in reverse ownership order. It is invoked at
+      most once for successfully created state. An [Error] must still mean the
+      backend consumed or invalidated the complete graph. *)
+  val shutdown : state -> (unit, error) result
+end
+
+(** Builds one supervisor implementation for a private backend protocol. *)
+module Make (Backend : Backend) : sig
+  (** Failure visible to internal callers. Backend errors are expected;
+      [Supervisor_failed] contains an unexpected owner-Domain defect. *)
+  type error =
+    | Backend of Backend.error
+    | Closed
+        (** The graph has begun or completed shutdown. *)
+    | Supervisor_failed of exn
+        (** The owner contained an unexpected exception and terminated. *)
+
+  (** An abstract instance containing the mailbox, owner Domain, and cached
+      terminal result. It contains no publicly accessible native handle. *)
+  type t
+
+  (** [create ~capacity config] starts the owner Domain and creates the backend
+      graph on it. [capacity] is the positive number of admitted operations
+      which may wait behind the active operation; invalid capacity is a
+      programmer error reported by [Invalid_argument]. *)
+  val create : capacity:int -> Backend.config -> (t, error) result
+
+  (** [perform instance operation] blocks an ordinary producer Domain until
+      the owner has executed the typed operation. Calls are serialized in the
+      mailbox admission order. *)
+  val perform : t -> 'result Backend.operation -> ('result, error) result
+
+  (** [shutdown instance] waits for earlier admitted operations, releases the
+      graph once, stops and joins the owner Domain, and caches the exact
+      terminal result for every later call. Abandoning an instance schedules
+      this same path on a dedicated system thread; the garbage-collector
+      finalizer itself never waits on mailbox locks or native teardown. *)
+  val shutdown : t -> (unit, error) result
+end
+
+(** The production supervisor over the currently implemented native bridge.
+    Only runtime lifecycle and ABI compatibility exist today; client and worker
+    operations will extend this typed language when their real Core handles
+    are implemented. *)
+module Native : sig
+  (** Operations implemented by the current native runtime graph. *)
+  type _ operation = Check_compatibility : unit operation
+
+  (** Production lifecycle and bridge failures. *)
+  type error =
+    | Backend of Temporal_core_bridge.Native_bridge.error
+    | Closed
+    | Supervisor_failed of exn
+
+  (** An abstract SDK instance which owns one Rust runtime. *)
+  type t
+
+  (** Starts a dedicated owner Domain and creates the real Rust runtime. *)
+  val create : capacity:int -> unit -> (t, error) result
+
+  (** Runs one currently supported typed bridge operation on the owner. *)
+  val perform : t -> 'result operation -> ('result, error) result
+
+  (** Deterministically closes the real Rust runtime and owner Domain. *)
+  val shutdown : t -> (unit, error) result
+end

@@ -25,11 +25,13 @@ Current events use these levels:
   tasks to finish.
 - `Error` records bridge and workflow failures.
 
-An empty non-blocking worker poll lane is reported at `Debug` as `not ready`;
-this is expected scheduling state and is not a failure. Protocol, lifecycle,
+An empty non-blocking worker poll lane and an exact-run client wait whose
+100 ms interval elapsed are reported at `Debug` as `not ready`; both are
+expected scheduling states and are not failures. Protocol, lifecycle,
 configuration, and native bridge failures remain `Error` records. This level
-split keeps a healthy worker from producing error-volume logs while retaining
-actionable diagnostics for conditions that require intervention.
+split keeps a healthy worker or waiting client from producing error-volume
+logs while retaining actionable diagnostics for conditions that require
+intervention.
 
 The SDK never logs at `App`, which is reserved for the application.
 

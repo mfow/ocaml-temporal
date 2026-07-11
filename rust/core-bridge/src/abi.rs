@@ -2,16 +2,22 @@ use crate::worker_bridge::{PollLaneError, PollLanes, ReadinessWait, WorkerBridge
 use crate::{activity_protocol, client_protocol, workflow_protocol};
 use serde::Deserialize;
 use std::collections::{HashMap, hash_map::Entry};
+use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
+use std::sync::mpsc::{
+    Receiver, RecvTimeoutError, SyncSender, TryRecvError, channel, sync_channel,
+};
 use std::time::Duration;
 use temporalio_client::{Connection, ConnectionOptions};
 use temporalio_sdk_core::{
     CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, WorkerConfig,
     WorkerVersioningStrategy,
 };
+use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 /// Version of the native ABI implemented by this crate.
 pub const ABI_VERSION: u32 = 1;
@@ -39,7 +45,7 @@ pub const STATUS_CONNECTION: Status = 7;
 pub const STATUS_WORKER: Status = 8;
 /// Worker shutdown is draining tasks that still require language completion.
 pub const STATUS_OUTSTANDING_TASKS: Status = 9;
-/// A non-blocking poll lane currently has no task ready for handoff.
+/// A bounded readiness operation has no result ready for handoff yet.
 pub const STATUS_NOT_READY: Status = 10;
 /// A semantic workflow or activity document failed strict validation.
 pub const STATUS_PROTOCOL: Status = 11;
@@ -64,6 +70,25 @@ const DEFAULT_MAX_OUTSTANDING_ACTIVITIES: usize = 100;
 const DEFAULT_MAX_CONCURRENT_ACTIVITY_POLLS: usize = 5;
 /// Prevents an unbounded graceful-shutdown duration from entering Core.
 const MAX_GRACEFUL_SHUTDOWN_MS: u64 = 24 * 60 * 60 * 1_000;
+/// Maximum time one exact-run client wait may occupy the supervisor owner.
+///
+/// The Temporal history request remains a close-event long poll, but the
+/// outer ABI operation is deliberately bounded.  When the deadline elapses,
+/// Tokio drops the in-flight request and the caller receives `NOT_READY` so
+/// its mailbox can admit shutdown or another lifecycle operation before it
+/// retries the wait.
+const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
+/// Bounds the number of in-flight client starts retained by one supervisor.
+///
+/// Each entry owns one Tokio task, a response channel, and the validated
+/// request payload until the RPC completes. A finite ceiling prevents a caller
+/// that forgets tickets from turning the supervisor into an unbounded task
+/// registry; the caller can submit more work after polling or closing
+/// completed tickets.
+const MAX_PENDING_STARTS: usize = 64;
+/// Maximum time spent in one wait-ticket ABI call before the owner regains
+/// control of its mailbox and can service lifecycle messages.
+const START_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 
 const _: () = assert!(size_of::<Status>() == 4);
 
@@ -71,6 +96,34 @@ const _: () = assert!(size_of::<Status>() == 4);
 static RUNTIMES_CREATED: AtomicU64 = AtomicU64::new(0);
 /// Monotonic test instrumentation for Core instances whose destructor ran.
 static RUNTIMES_CLEANED: AtomicU64 = AtomicU64::new(0);
+
+/// Runs one exact-run history request for a bounded interval.
+///
+/// A Temporal history long poll can otherwise hold the single supervisor
+/// owner Domain inside `Handle::block_on` until the workflow closes.  The
+/// timeout is applied outside the Core request so its cancellation drops the
+/// tonic future, rather than leaving a detached native operation alive.  A
+/// timeout is an expected pending result (`Ok(None)`), while request errors
+/// continue through the existing typed client-error conversion path.
+async fn bounded_client_wait<F>(
+    future: F,
+) -> std::result::Result<
+    Option<client_protocol::WaitWorkflowResponse>,
+    client_protocol::ClientOperationError,
+>
+where
+    F: Future<
+        Output = std::result::Result<
+            client_protocol::WaitWorkflowResponse,
+            client_protocol::ClientOperationError,
+        >,
+    >,
+{
+    match tokio::time::timeout(CLIENT_WAIT_TIMEOUT, future).await {
+        Ok(response) => response.map(Some),
+        Err(_) => Ok(None),
+    }
+}
 
 /// Byte allocation owned by the Rust bridge.
 ///
@@ -147,7 +200,48 @@ pub struct Runtime {
     worker: Option<PollLanes>,
     workflow_activations: HashMap<String, workflow_protocol::Activation>,
     activity_tasks: HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
+    pending_starts: HashMap<String, PendingStart>,
     cleanup: std::sync::mpsc::Sender<RuntimeCleanup>,
+}
+
+/// One Rust-owned asynchronous start operation indexed by an opaque ticket.
+///
+/// The response channel is a one-shot handoff from a Tokio task to the sole
+/// runtime owner. No Tokio task invokes OCaml or mutates [`Runtime`]; it only
+/// sends the typed result and exits. The owner removes the entry exactly once
+/// when a terminal result is observed, then joins the task before releasing
+/// the connection clone it captured.
+struct PendingStart {
+    /// Complete validated request retained for exact retry matching and for
+    /// the request/workflow identifiers used by an `Unknown` outcome.  Keeping
+    /// the typed value (rather than only namespace and workflow ID) prevents a
+    /// caller from accidentally reusing one request ID for a different task
+    /// queue, workflow type, or payload and silently receiving the old ticket.
+    request: Arc<client_protocol::StartWorkflowRequest>,
+    /// One-shot result channel serviced only by the owner Domain.
+    receiver: Receiver<
+        std::result::Result<
+            client_protocol::StartWorkflowResponse,
+            client_protocol::ClientOperationError,
+        >,
+    >,
+    /// Tokio task performing the network call through Core's runtime.
+    task: JoinHandle<()>,
+}
+
+/// Result of one owner-side ticket-channel read.
+enum StartRead {
+    /// The Tokio task supplied a terminal typed result.
+    Ready(
+        std::result::Result<
+            client_protocol::StartWorkflowResponse,
+            client_protocol::ClientOperationError,
+        >,
+    ),
+    /// No result is available in the selected poll interval.
+    NotReady,
+    /// The task exited without publishing a result, so acceptance is unknown.
+    Disconnected,
 }
 
 /// Ownership transfer consumed by the runtime's dedicated cleanup thread.
@@ -155,6 +249,11 @@ struct RuntimeCleanup {
     core: CoreRuntime,
     client: Option<Connection>,
     worker: Option<PollLanes>,
+    /// Aborted asynchronous-start tasks whose join handles must be awaited
+    /// before the Core runtime and its connection clones are dropped.  The
+    /// non-blocking OCaml finalizer transfers these handles here instead of
+    /// dropping them on the caller thread, which would detach the tasks.
+    pending_start_tasks: Vec<JoinHandle<()>>,
     completed: Option<SyncSender<Status>>,
 }
 
@@ -198,6 +297,7 @@ impl Runtime {
             worker: None,
             workflow_activations: HashMap::new(),
             activity_tasks: HashMap::new(),
+            pending_starts: HashMap::new(),
             cleanup,
         })
     }
@@ -272,6 +372,224 @@ impl Runtime {
         Ok(encoded.into_bytes())
     }
 
+    /// Begins one workflow start without waiting for the RPC response.
+    ///
+    /// The owner Domain performs only validation, ticket bookkeeping, and
+    /// Tokio task admission here. The task owns a cloned Core connection and
+    /// sends exactly one typed result over a standard-library channel; it
+    /// never touches this runtime or calls into OCaml. A repeated request ID
+    /// while an operation is pending returns the original ticket, preventing a
+    /// caller retry from issuing a second Temporal start.
+    fn begin_start_workflow_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let request = client_protocol::decode_start_request(text).map_err(protocol_failure)?;
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+
+        // A caller that retries a begin request with the same logical ID must
+        // observe the existing ticket only when every validated request field
+        // is identical. Reusing an ID for a changed workflow request is
+        // rejected rather than silently aliasing the other operation.
+        let request = Arc::new(request);
+        if let Some((ticket, pending)) = self
+            .pending_starts
+            .iter()
+            .find(|(_, pending)| pending.request.request_id == request.request_id)
+        {
+            if !client_protocol::same_start_request(pending.request.as_ref(), request.as_ref()) {
+                return Err(Failure {
+                    status: STATUS_PROTOCOL,
+                    message: "start request_id is already pending for a different request"
+                        .to_owned(),
+                });
+            }
+            return Ok(client_protocol::encode_start_ticket(ticket)
+                .map_err(protocol_failure)?
+                .into_bytes());
+        }
+        if self.pending_starts.len() >= MAX_PENDING_STARTS {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "too many Temporal workflow starts are pending".to_owned(),
+            });
+        }
+
+        let ticket = loop {
+            let candidate = Uuid::new_v4().to_string();
+            if !self.pending_starts.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        let encoded_ticket = client_protocol::encode_start_ticket(&ticket)
+            .map_err(protocol_failure)?
+            .into_bytes();
+        let (sender, receiver) = channel();
+        let task_request = Arc::clone(&request);
+        let task = handle.spawn(async move {
+            let result =
+                client_protocol::start_workflow(connection, task_request.as_ref().clone()).await;
+            // A closed receiver means the owner is shutting down or has
+            // already consumed the terminal result. Dropping this send is
+            // intentional; task ownership remains entirely on the Tokio side.
+            let _ = sender.send(result);
+        });
+
+        self.pending_starts.insert(
+            ticket.clone(),
+            PendingStart {
+                request,
+                receiver,
+                task,
+            },
+        );
+        Ok(encoded_ticket)
+    }
+
+    /// Polls one start ticket without waiting for the RPC task.
+    fn poll_start_workflow_json(&mut self, input: &[u8]) -> Operation {
+        self.read_start_workflow_json(input, false)
+    }
+
+    /// Waits up to the bounded ticket interval, then returns control to the
+    /// supervisor even when Temporal has not produced a response yet.
+    fn wait_start_workflow_json(&mut self, input: &[u8]) -> Operation {
+        self.read_start_workflow_json(input, true)
+    }
+
+    /// Shared ticket decoder and one-shot channel handoff for poll and wait.
+    fn read_start_workflow_json(&mut self, input: &[u8], wait: bool) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let ticket = client_protocol::decode_start_ticket(text).map_err(protocol_failure)?;
+        // Ticket reads are meaningful only while the client connection is
+        // live.  A ticket supplied before connection setup cannot have been
+        // admitted by this runtime, but returning the lifecycle error is more
+        // useful and consistent with begin/start/wait operations than exposing
+        // the implementation detail that the pending-ticket map is empty.
+        self.client.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let read = {
+            let pending = self
+                .pending_starts
+                .get_mut(&ticket)
+                .ok_or_else(|| Failure {
+                    status: STATUS_PROTOCOL,
+                    message: "unknown Temporal workflow start ticket".to_owned(),
+                })?;
+            if wait {
+                match pending.receiver.recv_timeout(START_WAIT_TIMEOUT) {
+                    Ok(result) => StartRead::Ready(result),
+                    Err(RecvTimeoutError::Timeout) => StartRead::NotReady,
+                    Err(RecvTimeoutError::Disconnected) => StartRead::Disconnected,
+                }
+            } else {
+                match pending.receiver.try_recv() {
+                    Ok(result) => StartRead::Ready(result),
+                    Err(TryRecvError::Empty) => StartRead::NotReady,
+                    Err(TryRecvError::Disconnected) => StartRead::Disconnected,
+                }
+            }
+        };
+
+        match read {
+            StartRead::NotReady => Err(not_ready()),
+            StartRead::Ready(result) => self.finish_start(ticket, Some(result)),
+            StartRead::Disconnected => self.finish_start(ticket, None),
+        }
+    }
+
+    /// Removes a terminal ticket, joins its Tokio task, and encodes the
+    /// explicit accepted/rejected/unknown outcome. Joining after the channel
+    /// handoff proves the task no longer holds a Core connection clone before
+    /// the map entry is released.
+    fn finish_start(
+        &mut self,
+        ticket: String,
+        result: Option<
+            std::result::Result<
+                client_protocol::StartWorkflowResponse,
+                client_protocol::ClientOperationError,
+            >,
+        >,
+    ) -> Operation {
+        let pending = self.pending_starts.remove(&ticket).ok_or_else(|| Failure {
+            status: STATUS_PROTOCOL,
+            message: "unknown Temporal workflow start ticket".to_owned(),
+        })?;
+
+        if let Some(core) = self.core.as_ref() {
+            // The task has sent its one-shot result before this join. The
+            // bounded join therefore only drains its final bookkeeping and
+            // cannot wait on a second network operation.
+            let _ = core.tokio_handle().block_on(pending.task);
+        } else {
+            // Runtime closure is serialized through the same owner, but keep a
+            // defensive abort path if an internal caller ever reaches this
+            // method after Core ownership was removed.
+            pending.task.abort();
+        }
+
+        let outcome = match result {
+            Some(Ok(response)) => client_protocol::StartWorkflowOutcome::Accepted(response),
+            Some(Err(error)) if error.uncertain_start() => {
+                client_protocol::StartWorkflowOutcome::Unknown {
+                    request_id: pending.request.request_id.clone(),
+                    workflow_id: pending.request.workflow_id.clone(),
+                }
+            }
+            Some(Err(error)) => client_protocol::StartWorkflowOutcome::Rejected(error),
+            None => client_protocol::StartWorkflowOutcome::Unknown {
+                request_id: pending.request.request_id.clone(),
+                workflow_id: pending.request.workflow_id.clone(),
+            },
+        };
+        client_protocol::encode_start_outcome(&outcome)
+            .map(|encoded| encoded.into_bytes())
+            .map_err(protocol_failure)
+    }
+
+    /// Aborts every in-flight start and returns handles that need cleanup.
+    ///
+    /// Explicit shutdown (`wait = true`) joins on the owner thread while the
+    /// C stub has released the OCaml runtime lock.  GC fallback (`wait = false`)
+    /// must not block the finalizer, so it returns the already-aborted handles
+    /// for the dedicated cleanup thread to join before Core is released.  In
+    /// either mode no task is detached while it still owns a Core connection.
+    fn abort_pending_starts(&mut self, wait: bool) -> Vec<JoinHandle<()>> {
+        let handle = self.core.as_ref().map(|core| core.tokio_handle());
+        let tasks = self
+            .pending_starts
+            .drain()
+            .map(|(_, pending)| pending.task)
+            .collect::<Vec<_>>();
+        for task in &tasks {
+            task.abort();
+        }
+        if wait {
+            if let Some(handle) = handle {
+                handle.block_on(async {
+                    for task in tasks {
+                        let _ = task.await;
+                    }
+                });
+            }
+            Vec::new()
+        } else {
+            tasks
+        }
+    }
+
     /// Waits for one exact run with fixed `follow_runs = false` semantics.
     ///
     /// A continued-as-new close event is returned as a terminal outcome with
@@ -292,8 +610,11 @@ impl Runtime {
             })?
             .tokio_handle();
         let response = handle
-            .block_on(client_protocol::wait_workflow(connection, request))
+            .block_on(bounded_client_wait(client_protocol::wait_workflow(
+                connection, request,
+            )))
             .map_err(client_operation_failure)?;
+        let response = response.ok_or_else(client_wait_not_ready)?;
         let encoded = client_protocol::encode_wait_response(&response).map_err(protocol_failure)?;
         Ok(encoded.into_bytes())
     }
@@ -611,6 +932,13 @@ impl Runtime {
                 message: "Temporal client cannot disconnect while its worker is running".to_owned(),
             });
         }
+        if !self.pending_starts.is_empty() {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal client cannot disconnect while workflow starts are pending"
+                    .to_owned(),
+            });
+        }
         self.client.take();
         Ok(Vec::new())
     }
@@ -618,8 +946,10 @@ impl Runtime {
     /// Transfers Core to its cleanup thread and optionally waits for disposal.
     ///
     /// Explicit close waits while the OCaml lock is released. GC fallback does
-    /// not wait, so a custom-block finalizer never stalls the collector.
+    /// not wait on this caller, so a custom-block finalizer never stalls the
+    /// collector; the dedicated cleanup thread joins any aborted start tasks.
     fn close(mut self, wait: bool) -> Status {
+        let pending_start_tasks = self.abort_pending_starts(wait);
         let Some(core) = self.core.take() else {
             return STATUS_OK;
         };
@@ -633,6 +963,7 @@ impl Runtime {
             core,
             client: self.client.take(),
             worker: self.worker.take(),
+            pending_start_tasks,
             completed,
         };
 
@@ -641,7 +972,12 @@ impl Runtime {
             // defect in the cleanup thread itself. Reclaim on this thread to
             // preserve the no-leak guarantee even on that defensive path.
             let message = error.0;
-            drop_runtime_graph(message.core, message.client, message.worker);
+            drop_runtime_graph(
+                message.core,
+                message.client,
+                message.worker,
+                message.pending_start_tasks,
+            );
             RUNTIMES_CLEANED.fetch_add(1, Ordering::Release);
             return STATUS_INTERNAL;
         }
@@ -662,10 +998,11 @@ fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
         core,
         client,
         worker,
+        pending_start_tasks,
         completed,
     } = message;
     let status = if catch_unwind(AssertUnwindSafe(|| {
-        drop_runtime_graph(core, client, worker)
+        drop_runtime_graph(core, client, worker, pending_start_tasks)
     }))
     .is_ok()
     {
@@ -681,10 +1018,24 @@ fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
     }
 }
 
-/// Releases worker, then client, then Core on the runtime cleanup thread.
-fn drop_runtime_graph(core: CoreRuntime, client: Option<Connection>, worker: Option<PollLanes>) {
+/// Releases aborted start tasks, then worker, client, and Core on the runtime
+/// cleanup thread.  Awaiting the transferred handles is essential: dropping a
+/// Tokio [`JoinHandle`] after `abort` would detach its task, allowing the task
+/// to retain a cloned `Connection` beyond the lifetime of the runtime graph.
+fn drop_runtime_graph(
+    core: CoreRuntime,
+    client: Option<Connection>,
+    worker: Option<PollLanes>,
+    pending_start_tasks: Vec<JoinHandle<()>>,
+) {
+    let handle = core.tokio_handle();
+    handle.block_on(async {
+        for task in pending_start_tasks {
+            let _ = task.await;
+        }
+    });
+
     if let Some(mut worker) = worker {
-        let handle = core.tokio_handle();
         {
             // Cleanup runs on a plain OS thread, so explicitly enter Core's
             // executor before its synchronous shutdown code spawns a task.
@@ -740,6 +1091,15 @@ fn not_ready() -> Failure {
     Failure {
         status: STATUS_NOT_READY,
         message: "no Temporal task is ready".to_owned(),
+    }
+}
+
+/// Reports an exact-run wait that must be retried without exposing a fake
+/// terminal workflow outcome to the OCaml supervisor.
+fn client_wait_not_ready() -> Failure {
+    Failure {
+        status: STATUS_NOT_READY,
+        message: "Temporal workflow has not reached a close event; retry".to_owned(),
     }
 }
 
@@ -1291,6 +1651,103 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_client_start_workflow_json(
     }
 }
 
+/// Begin one workflow start and return an opaque asynchronous ticket.
+///
+/// The native call only validates and admits the request, then schedules the
+/// Tokio operation. Poll or wait on the returned ticket to obtain a terminal
+/// accepted/rejected/unknown outcome. A pending entry is owned by the runtime
+/// supervisor and is never accessed concurrently from a Tokio task.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle. The input span
+/// is borrowed only for this admission call and `output` follows the standard
+/// initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_begin_start_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .begin_start_workflow_json(input)
+        })
+    }
+}
+
+/// Poll one asynchronous workflow-start ticket without waiting.
+///
+/// `STATUS_NOT_READY` is an expected result while the RPC remains in flight.
+/// Once terminal, the successful value is a strict start-outcome document and
+/// the ticket is retired, so a second poll reports an unknown-ticket protocol
+/// error rather than duplicating or replaying the result.
+///
+/// # Safety
+///
+/// The runtime, input, and output contracts match
+/// [`ocaml_temporal_core_v1_client_begin_start_workflow_json`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_poll_start_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .poll_start_workflow_json(input)
+        })
+    }
+}
+
+/// Wait for one asynchronous workflow-start ticket for a bounded interval.
+///
+/// The wait never blocks the OCaml runtime lock: the C stub releases that lock
+/// around this ABI call, and the owner Domain regains control after at most
+/// [`START_WAIT_TIMEOUT`]. A timeout is returned as `STATUS_NOT_READY`; the
+/// caller can continue servicing its mailbox and wait again.
+///
+/// # Safety
+///
+/// The runtime, input, and output contracts match
+/// [`ocaml_temporal_core_v1_client_begin_start_workflow_json`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_wait_start_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .wait_start_workflow_json(input)
+        })
+    }
+}
+
 /// Wait for one exact workflow run without following continued-as-new.
 ///
 /// The successful value is a strict terminal-outcome document.  A
@@ -1764,3 +2221,84 @@ pub fn test_runtime_cleanup_counts() -> (u64, u64) {
 #[cfg(test)]
 #[path = "../tests/support/abi_rejection.rs"]
 mod rejection_tests;
+
+#[cfg(test)]
+mod client_wait_tests {
+    use super::bounded_client_wait;
+    use crate::client_protocol::{ExecutionRef, WaitWorkflowResponse, WorkflowOutcome};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::task::{Context, Poll};
+
+    /// Future used to prove a timed-out client request is dropped promptly.
+    struct PendingWait {
+        /// Set by [`Drop`] when timeout cancellation releases the request.
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Future for PendingWait {
+        type Output =
+            std::result::Result<WaitWorkflowResponse, crate::client_protocol::ClientOperationError>;
+
+        /// Remains pending forever, like an open Temporal history long poll.
+        fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for PendingWait {
+        /// Records that timeout cancellation reclaimed the in-flight request.
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    /// Builds a runtime with Tokio's timer driver for bounded-wait tests.
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("client wait test runtime should build")
+    }
+
+    #[test]
+    /// Returns `None` and drops a request that never produces a close event.
+    fn timeout_cancels_pending_client_wait() {
+        let runtime = test_runtime();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let result = runtime.block_on(bounded_client_wait(PendingWait {
+            dropped: Arc::clone(&dropped),
+        }));
+
+        assert_eq!(result, Ok(None));
+        assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    /// Preserves a completed terminal response instead of turning it pending.
+    fn completed_client_wait_passes_through() {
+        let runtime = test_runtime();
+        let response = WaitWorkflowResponse {
+            execution: ExecutionRef {
+                namespace: "default".to_owned(),
+                workflow_id: "workflow-1".to_owned(),
+                run_id: "run-1".to_owned(),
+            },
+            outcome: WorkflowOutcome::Completed {
+                result: Vec::new(),
+                successor: None,
+            },
+        };
+        let result = runtime.block_on(bounded_client_wait(async { Ok(response.clone()) }));
+
+        assert_eq!(result, Ok(Some(response)));
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/support/pending_start_cleanup.rs"]
+mod pending_start_cleanup_tests;

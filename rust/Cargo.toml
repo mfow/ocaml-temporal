@@ -17,7 +17,7 @@ temporalio-client = { git = "https://github.com/temporalio/sdk-core.git", rev = 
 temporalio-common = { git = "https://github.com/temporalio/sdk-core.git", rev = "95e97686a079dcfe6c42e3254b2f3f5e3d97408f", default-features = false }
 temporalio-sdk-core = { git = "https://github.com/temporalio/sdk-core.git", rev = "95e97686a079dcfe6c42e3254b2f3f5e3d97408f", default-features = false, features = ["tls-ring"] }
 temporalio-protos = { git = "https://github.com/temporalio/sdk-core.git", rev = "95e97686a079dcfe6c42e3254b2f3f5e3d97408f" }
-tokio = { version = "1.52.3", features = ["sync"] }
+tokio = { version = "1.52.3", features = ["rt", "sync", "time"] }
 uuid = { version = "1.23.4", default-features = false, features = ["v4"] }
 
 [profile.release]

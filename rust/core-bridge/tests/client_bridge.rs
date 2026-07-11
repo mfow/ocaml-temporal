@@ -4,7 +4,10 @@ use std::ptr;
 
 use ocaml_temporal_core_bridge::{
     Buffer, Result as AbiResult, STATUS_INVALID_ARGUMENT, STATUS_INVALID_STATE, STATUS_OK,
-    STATUS_PROTOCOL, ocaml_temporal_core_v1_client_start_workflow_json,
+    STATUS_PROTOCOL, ocaml_temporal_core_v1_client_begin_start_workflow_json,
+    ocaml_temporal_core_v1_client_poll_start_workflow_json,
+    ocaml_temporal_core_v1_client_start_workflow_json,
+    ocaml_temporal_core_v1_client_wait_start_workflow_json,
     ocaml_temporal_core_v1_client_wait_workflow_json, ocaml_temporal_core_v1_result_free,
     ocaml_temporal_core_v1_runtime_free, ocaml_temporal_core_v1_runtime_new,
 };
@@ -26,10 +29,12 @@ fn error_bytes(result: &AbiResult) -> Vec<u8> {
 }
 
 /// Minimal valid start document used when testing ABI state handling.
-const START_REQUEST: &[u8] = br#"{"namespace":"default","workflow_id":"workflow-1","workflow_type":"smoke","task_queue":"queue","input":[]}"#;
+const START_REQUEST: &[u8] = br#"{"request_id":"request-1","namespace":"default","workflow_id":"workflow-1","workflow_type":"smoke","task_queue":"queue","input":[]}"#;
 /// Minimal valid exact-run wait document used when testing ABI state handling.
 const WAIT_REQUEST: &[u8] =
     br#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"}"#;
+/// Syntactically valid opaque ticket used for unknown-ticket state tests.
+const START_TICKET: &[u8] = br#"{"ticket":"ticket-1"}"#;
 
 #[test]
 /// Null runtime handles fail without dereferencing either client operation.
@@ -122,6 +127,73 @@ fn client_operations_require_connected_client() {
         STATUS_OK
     );
     assert!(runtime.is_null());
+}
+
+#[test]
+/// Async start admission and ticket reads require a connected client. Once the
+/// lifecycle guard passes, ticket reads still reject tickets that were not
+/// created by this runtime owner.
+fn async_start_operations_require_connected_client() {
+    let mut runtime = ptr::null_mut();
+    let mut result = empty_result();
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_client_begin_start_workflow_json(
+                runtime,
+                START_REQUEST.as_ptr(),
+                START_REQUEST.len(),
+                &mut result,
+            )
+        },
+        STATUS_INVALID_STATE
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_client_poll_start_workflow_json(
+                runtime,
+                START_TICKET.as_ptr(),
+                START_TICKET.len(),
+                &mut result,
+            )
+        },
+        STATUS_INVALID_STATE
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_client_wait_start_workflow_json(
+                runtime,
+                START_TICKET.as_ptr(),
+                START_TICKET.len(),
+                &mut result,
+            )
+        },
+        STATUS_INVALID_STATE
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
 }
 
 #[test]
@@ -344,7 +416,7 @@ fn client_operations_reject_nul_identifiers() {
         STATUS_OK
     );
 
-    let nul_start = br#"{"namespace":"default\u0000","workflow_id":"workflow-1","workflow_type":"smoke","task_queue":"queue","input":[]}"#;
+    let nul_start = br#"{"request_id":"request-1","namespace":"default\u0000","workflow_id":"workflow-1","workflow_type":"smoke","task_queue":"queue","input":[]}"#;
     assert_eq!(
         unsafe {
             ocaml_temporal_core_v1_client_start_workflow_json(

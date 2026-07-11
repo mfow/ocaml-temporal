@@ -77,15 +77,22 @@ re-encoded, and reparsed before crossing the boundary.
 
 The wait request names `namespace`, `workflow_id`, and one concrete `run_id`.
 There is no `follow_runs` escape hatch in the document: the operation always
-uses a close-event history long poll for that exact run. Completed, failed, and
-timed-out close events retain any successor run ID exposed by Core. A
-continued-as-new close is returned as a terminal `continued_as_new` outcome
-with a required successor execution reference; the bridge never follows that
-run implicitly. This prevents an exact-run caller from accidentally observing a
-different execution identity. Any successor must retain the waited namespace
-and workflow ID and must identify a different run. Both language validators
-enforce that cross-object relationship because Draft 2020-12 JSON Schema cannot
-express equality between those fields.
+uses a close-event history long poll for that exact run, but each native call
+is bounded to 100 ms. If no close event arrives during that interval, the ABI
+returns status `10` (`NOT_READY`) without a terminal response; the OCaml
+caller (or a later orchestration loop) can retry through the supervisor
+mailbox. Bounding each call lets the single owner Domain admit shutdown and
+other lifecycle messages instead of being held indefinitely by a server long
+poll.
+
+Completed, failed, and timed-out close events retain any successor run ID
+exposed by Core. A continued-as-new close is returned as a terminal
+`continued_as_new` outcome with a required successor execution reference; the
+bridge never follows that run implicitly. This prevents an exact-run caller
+from accidentally observing a different execution identity. Any successor
+must retain the waited namespace and workflow ID and must identify a different
+run. Both language validators enforce that cross-object relationship because
+Draft 2020-12 JSON Schema cannot express equality between those fields.
 
 Temporal AlreadyStarted responses use status `12` and a closed JSON error body
 (`kind`, `workflow_id`, `existing_run_id`) rather than copying gRPC server text.
@@ -110,9 +117,12 @@ Every fallible operation accepts a writable result pointer and returns the same
 status stored in that result. Status zero is success. Nonzero statuses describe
 invalid arguments, ABI mismatch, a contained Rust panic, an invalid lifecycle
 transition, a worker failure, or a semantic protocol failure. Worker polling
-also uses two expected statuses: `NOT_READY` means a lane currently has no
-queued task, while `OUTSTANDING_TASKS` means shutdown cannot finalize until
-the language side completes leased work.
+and exact-run client waits use the expected `NOT_READY` status. For a worker
+lane it means no task is queued; for a client wait it means the 100 ms history
+wait elapsed before a close event. In both cases the caller or a later
+orchestration loop can retry through the supervisor mailbox.
+`OUTSTANDING_TASKS` means shutdown cannot finalize until the language side
+completes leased work.
 
 A result has one success buffer and one error buffer. At most one owns memory:
 

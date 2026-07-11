@@ -128,18 +128,21 @@ rejection cleanup, and shutdown drainage.
 
 ## 2026-07-12: Raw client start and exact-run wait adapter
 
-Status: Rust unit, ABI, formatting, and warnings-as-errors checks pass locally;
-the OCaml supervisor adapter and live Temporal integration remain follow-up
-work.
+Status: Rust and OCaml protocol, ABI, formatting, and warnings-as-errors checks
+pass locally; public client wiring and live Temporal integration remain
+follow-up work.
 
 The private Rust bridge now exposes strict JSON operations for starting a
 workflow and waiting for one exact run. It uses Temporal Core's raw workflow
 service trait, so dynamic OCaml workflow type names and payloads do not need a
 Rust-side generated workflow registry. Start returns the server-assigned run
-ID. Wait long-polls close-event history with a fixed `follow_runs = false`
-policy, preserving completed/failed/timed-out successor metadata and returning
-continued-as-new as a terminal result for the requested run rather than
-silently switching to its successor.
+ID. Wait performs a close-event history long poll with a fixed
+`follow_runs = false` policy for at most 100 ms per native call. An open run
+returns `NOT_READY`, allowing the OCaml caller or a later orchestration loop to
+regain the owner Domain and retry through the mailbox. Terminal
+completed/failed/timed-out outcomes preserve successor metadata, while
+continued-as-new is returned as a terminal result for the requested run rather
+than silently switching to its successor.
 
 Requests, responses, successor identities, terminal outcomes, and structured
 AlreadyStarted/RPC failures use closed schemas under `docs/schemas/bridge/`.
@@ -147,6 +150,14 @@ Duplicate and unknown fields, identifier and payload limits, canonical payload
 encoding, and output round trips are validated before bytes cross the ABI.
 The ABI result owns diagnostics and reports AlreadyStarted distinctly while
 discarding raw server status text that could contain user data.
+
+The private OCaml codec now mirrors the same closed documents. It validates
+identifiers before encoding, rejects NUL bytes on both directions, checks
+successor namespace/workflow/run relationships, and accepts only the stable
+RPC and Core conversion code vocabularies. The protocol test covers every
+terminal outcome, malformed fields, duplicate members, structured errors, and
+oversized or invalid request identifiers. The detailed message shapes and
+ownership rules are in the [client protocol reference](reference/client-protocol.md).
 
 Evidence:
 
@@ -156,6 +167,9 @@ Evidence:
   owned result cleanup.
 - `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --all`
   pass locally.
+- `dune build --root . @install` and `dune runtest --root .` pass locally on
+  the representative host toolchain, including the new OCaml client protocol
+  suite.
 - The live Temporal Server path is intentionally not claimed here: it belongs
   to the Docker Compose acceptance test and will be wired after the OCaml
   supervisor can call these two operations.

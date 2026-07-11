@@ -12,6 +12,7 @@ type status =
   | Outstanding_tasks
   | Not_ready
   | Protocol
+  | Already_started
   | Unknown of int
 
 (** Error data copied into OCaml. It never owns Rust memory. *)
@@ -85,6 +86,21 @@ external runtime_close_raw : runtime -> int = "ocaml_temporal_runtime_close"
 external client_connect_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_connect"
 
+external client_start_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_start_workflow_json"
+
+external client_begin_start_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_begin_start_workflow_json"
+
+external client_poll_start_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_poll_start_workflow_json"
+
+external client_wait_start_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_wait_start_workflow_json"
+
+external client_wait_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_wait_workflow_json"
+
 external worker_start_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_start"
 
@@ -131,6 +147,7 @@ let status = function
   | 9 -> Outstanding_tasks
   | 10 -> Not_ready
   | 11 -> Protocol
+  | 12 -> Already_started
   | code -> Unknown code
 
 (** Converts a bridge status to a bounded stable tag value without exposing the
@@ -147,6 +164,7 @@ let status_name = function
   | Outstanding_tasks -> "outstanding_tasks"
   | Not_ready -> "not_ready"
   | Protocol -> "protocol"
+  | Already_started -> "already_started"
   | Unknown _ -> "unknown"
 
 (** Constructs a local configuration failure without entering native code. *)
@@ -289,8 +307,9 @@ let decode response =
 (** Chooses a log level and constant message for each typed bridge status. *)
 let bridge_error_log_level = function
   | Not_ready ->
-      (* Polling is deliberately non-blocking, so an empty lane is normal
-         scheduler state rather than an error that should page an operator. *)
+      (* Empty worker lanes and an open exact-run wait whose bounded interval
+         elapsed are normal scheduler state, not failures that should page an
+         operator. *)
       (Logs.Debug, "bridge operation not ready")
   | Outstanding_tasks ->
       (* Shutdown can be retried after the language side finishes its leased
@@ -337,6 +356,41 @@ let client_connect runtime config =
   bridge_call "client_connect" (fun () ->
       Result.map (fun _ -> ())
         (decode (client_connect_raw runtime (encode_client_config config))))
+
+(** Starts a workflow through the Rust-owned client. The response or closed
+    error document is copied before the Rust allocation is released. *)
+let client_start_workflow_json runtime input =
+  bridge_call "client_start_workflow_json" (fun () ->
+      decode (client_start_workflow_json_raw runtime input))
+
+(** Admits one asynchronous workflow start and returns an opaque ticket JSON
+    document. The native owner retains the Tokio task and all request metadata;
+    this call only copies the admission result into OCaml. *)
+let client_begin_start_workflow_json runtime input =
+  bridge_call "client_begin_start_workflow_json" (fun () ->
+      decode (client_begin_start_workflow_json_raw runtime input))
+
+(** Polls an asynchronous start ticket without waiting. [Not_ready] is an
+    expected result while the Rust task remains in flight. *)
+let client_poll_start_workflow_json runtime input =
+  bridge_call "client_poll_start_workflow_json" (fun () ->
+      decode (client_poll_start_workflow_json_raw runtime input))
+
+(** Waits for one bounded interval for an asynchronous start ticket. The C
+    stub releases the OCaml runtime lock while Rust waits, so the supervisor
+    Domain never blocks unrelated OCaml Domains. *)
+let client_wait_start_workflow_json runtime input =
+  bridge_call "client_wait_start_workflow_json" (fun () ->
+      decode (client_wait_start_workflow_json_raw runtime input))
+
+(** Waits for one exact run through the Rust-owned client. Each native call
+    performs the close-event long poll for at most 100 ms while the C binding
+    releases the OCaml runtime lock. An open run returns [Not_ready] so a
+    caller or later orchestration loop can retry without occupying the
+    supervisor owner indefinitely. *)
+let client_wait_workflow_json runtime input =
+  bridge_call "client_wait_workflow_json" (fun () ->
+      decode (client_wait_workflow_json_raw runtime input))
 
 (** Constructs and namespace-validates the official workflow-only worker. *)
 let worker_start runtime config =

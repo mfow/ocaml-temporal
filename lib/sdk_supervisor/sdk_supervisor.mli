@@ -122,6 +122,65 @@ module Native : sig
       Temporal_protocol.Activity_protocol.completion ->
       (bytes, Temporal_core_bridge.Native_bridge.error) result
     (** Canonically serializes and reparses one remote activity completion. *)
+
+    val encode_client_start_request :
+      Temporal_protocol.Client_protocol.start_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one typed workflow-start request. *)
+
+    val decode_client_start_ticket :
+      Temporal_protocol.Client_protocol.start_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( ( Temporal_protocol.Client_protocol.start_ticket,
+          Temporal_protocol.Client_protocol.client_error )
+        result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes and binds one native asynchronous-start ticket to its request. *)
+
+    val encode_client_start_ticket :
+      Temporal_protocol.Client_protocol.start_ticket ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one previously validated asynchronous-start
+        ticket. *)
+
+    val encode_client_wait_request :
+      Temporal_protocol.Client_protocol.wait_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one typed exact-run wait request. *)
+
+    val decode_client_start_result :
+      Temporal_protocol.Client_protocol.start_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( ( Temporal_protocol.Client_protocol.start_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes a native start result, retaining structured client failures as
+        an inner [Error] and reporting malformed bridge data as an outer
+        protocol error. *)
+
+    val decode_client_start_outcome :
+      Temporal_protocol.Client_protocol.start_ticket ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( Temporal_protocol.Client_protocol.start_outcome option,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes one terminal asynchronous-start outcome. [Not_ready] becomes
+        [Ok None] so poll and bounded-wait callers can retry without treating
+        an in-flight request as a failure. *)
+
+    val decode_client_wait_result :
+      Temporal_protocol.Client_protocol.wait_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( ( Temporal_protocol.Client_protocol.wait_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes a native exact-run wait result. [Not_ready] remains an outer
+        bridge status so callers can retry without a fake terminal outcome. *)
   end
 
   (** Validated client settings whose representation remains bridge-private. *)
@@ -134,6 +193,37 @@ module Native : sig
   type _ operation =
     | Check_compatibility : unit operation
     | Connect_client : client_config -> unit operation
+    | Client_start_workflow :
+        Temporal_protocol.Client_protocol.start_request ->
+        ( Temporal_protocol.Client_protocol.start_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result operation
+        (** Starts one workflow using a typed request and returns either the
+            correlated execution or a structured client failure. *)
+    | Client_begin_start_workflow :
+        Temporal_protocol.Client_protocol.start_request ->
+        ( Temporal_protocol.Client_protocol.start_ticket,
+          Temporal_protocol.Client_protocol.client_error )
+        result operation
+        (** Admits one asynchronous workflow start and returns an opaque ticket
+            bound to the original request. *)
+    | Client_poll_start_workflow :
+        Temporal_protocol.Client_protocol.start_ticket ->
+        Temporal_protocol.Client_protocol.start_outcome option operation
+        (** Polls an asynchronous start without waiting. [None] means the
+            Rust task is still in flight. *)
+    | Client_wait_start_workflow :
+        Temporal_protocol.Client_protocol.start_ticket ->
+        Temporal_protocol.Client_protocol.start_outcome option operation
+        (** Waits one bounded interval for an asynchronous start. [None] means
+            the bounded interval elapsed without a terminal outcome. *)
+    | Client_wait_workflow :
+        Temporal_protocol.Client_protocol.wait_request ->
+        ( Temporal_protocol.Client_protocol.wait_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result operation
+        (** Waits for one exact run using a typed request. [Not_ready] remains
+            the outer bridge result and is safe to retry. *)
     | Start_worker : worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation

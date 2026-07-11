@@ -71,7 +71,7 @@ sequenceDiagram
     W->>R2: validated activity completion JSON
     R2->>S: Core completion
     D->>R1: Workflow_handle.await_result
-    R1->>S: history long poll until terminal event
+    R1->>S: repeated bounded exact-run history waits
     R1->>D: typed terminal result
 ```
 
@@ -216,7 +216,7 @@ validators before an operation changes native or workflow state.
 |---|---|---|---|
 | `client.connect` | OCaml to Rust | client-ready acknowledgement | Builds the connected Core client in the instance graph using endpoint, namespace, TLS, and identity configuration supplied at instance creation. |
 | `client.start_workflow` | OCaml to Rust | exact `{workflow_id, run_id}` | Converts a typed OCaml input payload and start options into `StartWorkflowExecution`. |
-| `client.wait_workflow_result` | OCaml to Rust | terminal completed payload, typed terminal failure, or continued-as-new successor | Long-polls that exact execution's history until a close event, without polling a worker task queue. |
+| `client.wait_workflow_result` | OCaml to Rust | terminal completed payload, typed terminal failure, continued-as-new successor, or retryable `NOT_READY` | Performs a close-event long poll for that exact execution for at most 100 ms per call; the caller retries an open run without polling a worker task queue. |
 | `worker.create` | OCaml to Rust | worker-ready acknowledgement | Creates and validates the Core worker for the configured namespace/task queue. |
 | `worker.poll_workflow` | OCaml to Rust | one workflow activation or a terminal shutdown indication | Calls Core's workflow-activation poll and converts the returned protobuf to the existing semantic activation JSON. |
 | `worker.complete_workflow` | OCaml to Rust | acknowledgement | Validates the existing semantic completion JSON, converts it to Core protobuf, and completes the activation. |
@@ -305,14 +305,14 @@ shutdown coordination. The driver owns a graph with no worker; the worker owns
 a graph with one worker for this acceptance test. There is no actor per client,
 workflow handle, activation, activity task, or Rust handle.
 
-The supervisor serializes graph creation and lifecycle transitions. It must
-not hold its lifecycle mutex or a mailbox reply path while a network long poll
-or completion waits. Instead, a native operation acquires a short-lived
-in-flight lease from the graph, copies its JSON bytes, releases lifecycle
-admission, and awaits the Rust future on Tokio. Close first rejects new
-leases, signals blocked polls, waits for all leases and outstanding OCaml
-workflow/activity work to reach a terminal state, then destroys resources in
-reverse order:
+The supervisor serializes graph creation and lifecycle transitions. Exact-run
+history waits are close-event long polls with a 100 ms native deadline. A
+timeout cancels the request and returns `NOT_READY`, so the owner Domain can
+service shutdown or another lifecycle message before a caller or orchestration
+loop retries the wait through the OCaml mailbox. Close first rejects new
+operations, signals blocked polls, waits for any current bounded call and
+outstanding OCaml workflow/activity work to reach a terminal state, then
+destroys resources in reverse order:
 
 ```text
 stop admission

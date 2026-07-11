@@ -188,7 +188,7 @@ validators before an operation changes native or workflow state.
 |---|---|---|---|
 | `client.connect` | OCaml to Rust | client-ready acknowledgement | Builds the connected Core client in the instance graph using endpoint, namespace, TLS, and identity configuration supplied at instance creation. |
 | `client.start_workflow` | OCaml to Rust | exact `{workflow_id, run_id}` | Converts a typed OCaml input payload and start options into `StartWorkflowExecution`. |
-| `client.wait_workflow_result` | OCaml to Rust | terminal completed payload or typed terminal failure | Long-polls that exact execution's history until a close event, without polling a worker task queue. |
+| `client.wait_workflow_result` | OCaml to Rust | terminal completed payload, typed terminal failure, or continued-as-new successor | Long-polls that exact execution's history until a close event, without polling a worker task queue. |
 | `worker.create` | OCaml to Rust | worker-ready acknowledgement | Creates and validates the Core worker for the configured namespace/task queue. |
 | `worker.poll_workflow` | OCaml to Rust | one workflow activation or a terminal shutdown indication | Calls Core's workflow-activation poll and converts the returned protobuf to the existing semantic activation JSON. |
 | `worker.complete_workflow` | OCaml to Rust | acknowledgement | Validates the existing semantic completion JSON, converts it to Core protobuf, and completes the activation. |
@@ -212,9 +212,13 @@ typed input payloads. It returns the server-issued run ID. `client.wait_workflow
 accepts both workflow ID and that run ID, so a continued-as-new or a later run
 with the same workflow ID cannot be confused with the started execution. Its
 terminal response is a closed variant for completed result, failed execution,
-cancelled execution, terminated execution, timed out execution, or a bridge
-transport failure. The public OCaml API keeps the first five as typed
-workflow-result outcomes and reserves bridge transport failure for `Error`.
+cancelled execution, terminated execution, timed out execution,
+continued-as-new execution (including the successor run ID), or a bridge
+transport failure. An exact-run wait does not silently follow
+continued-as-new: it returns that typed successor outcome so callers can
+explicitly decide whether to await the new run. The public OCaml API keeps the
+first six as typed workflow-result outcomes and reserves bridge transport
+failure for `Error`.
 
 The worker operations use `request`/terminal `response` or `error` envelopes
 with ordinary correlations. A poll response carries an activation/task only
@@ -337,7 +341,7 @@ The driver's successful exit must establish all of the following:
 4. `smoke.timer_then_activity` returned its expected result after a durable
    timer and its mock activity completion; and
 5. neither terminal response was a workflow failure, cancellation, timeout,
-   termination, codec failure, nor bridge failure.
+   termination, continued-as-new outcome, codec failure, nor bridge failure.
 
 The worker must additionally log (without payloads) one lifecycle-ready event,
 each accepted workflow activation and activity task with stable identifiers,

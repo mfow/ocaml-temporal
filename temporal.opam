@@ -1,0 +1,20 @@
+opam-version: "2.0"
+synopsis: "Temporal workflows in modern OCaml"
+description: "A typed OCaml 5 workflow SDK backed by Temporal Core"
+maintainer: "OCaml Temporal contributors"
+authors: "OCaml Temporal contributors"
+license: "Apache-2.0"
+homepage: "https://github.com/ocaml-temporal/ocaml-temporal"
+bug-reports: "https://github.com/ocaml-temporal/ocaml-temporal/issues"
+dev-repo: "git+https://github.com/ocaml-temporal/ocaml-temporal.git"
+depends: [
+  "ocaml" {>= "5.2"}
+  "dune" {>= "3.17"}
+  "alcotest" {with-test & >= "1.8"}
+  "ocamlformat" {with-dev-setup & = "0.28.1"}
+]
+build: [
+  ["dune" "subst"] {dev}
+  ["dune" "build" "-p" name "-j" jobs]
+]
+run-test: [["dune" "runtest" "-p" name "-j" jobs]]

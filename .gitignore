@@ -1,0 +1,9 @@
+_build/
+.opam-switch/
+target/
+*.coverage
+*.merlin
+.DS_Store
+.idea/
+.vscode/
+.worktrees/

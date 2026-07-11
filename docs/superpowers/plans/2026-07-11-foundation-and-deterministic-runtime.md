@@ -63,7 +63,7 @@
 - Consumes: Docker Compose v2 and the verified `ocaml/opam:debian-12-ocaml-5.2` image tag.
 - Produces: `make build`, `make test`, `make test-unit`, `make test-runtime`, `make lint`, `make fmt`, `make clean`, and `make verify`; later tasks add tests without changing these command meanings.
 
-- [ ] **Step 1: Write the failing repository smoke test**
+- [x] **Step 1: Write the failing repository smoke test**
 
 ```ocaml
 let read path =
@@ -73,8 +73,10 @@ let read path =
     (fun () -> really_input_string channel (in_channel_length channel))
 
 let test_license () =
+  let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
+  let license = Filename.concat source_root "LICENSE" in
   Alcotest.(check bool) "Apache marker" true
-    (String.starts_with ~prefix:"Apache License" (read "LICENSE"))
+    (String.starts_with ~prefix:"Apache License" (read license))
 
 let () =
   Alcotest.run "repository"
@@ -84,16 +86,19 @@ let () =
 ```lisp
 (test
  (name test_repository)
- (libraries alcotest))
+ (libraries alcotest)
+ (action
+  (setenv TEMPORAL_SOURCE_ROOT %{workspace_root}
+   (run %{test}))))
 ```
 
-- [ ] **Step 2: Run the test to prove the repository contract is absent**
+- [x] **Step 2: Run the test to prove the repository contract is absent**
 
 Run: `docker compose run --rm dev opam exec -- dune runtest test/smoke`
 
 Expected: FAIL because `compose.yaml`, `Dockerfile.dev`, and the Dune project do not yet exist.
 
-- [ ] **Step 3: Add package, container, and Makefile scaffolding**
+- [x] **Step 3: Add package, container, and Makefile scaffolding**
 
 Use this Dune project header:
 
@@ -107,6 +112,7 @@ Use this Dune project header:
 (maintainers "OCaml Temporal contributors")
 (package
  (name temporal)
+ (allow_empty)
  (synopsis "Temporal workflows in modern OCaml")
  (description "A typed OCaml 5 workflow SDK backed by Temporal Core")
  (depends
@@ -174,7 +180,8 @@ ARG OCAML_IMAGE=ocaml/opam:debian-12-ocaml-5.2
 FROM ${OCAML_IMAGE}
 WORKDIR /workspace
 COPY --chown=opam:opam temporal.opam dune-project ./
-RUN opam install --deps-only --with-test -y .
+RUN opam install --deps-only --with-test -y . \
+    && opam install -y ocamlformat.0.28.1
 USER opam
 CMD ["opam", "exec", "--", "dune", "build"]
 ```
@@ -206,13 +213,13 @@ verify: lint test
 
 Add the full Apache-2.0 license text, ignore `_build/`, `.opam-switch/`, Cargo build output, editor files, and generated coverage output, and configure `ocamlformat` with version `0.28.1` and profile `conventional`.
 
-- [ ] **Step 4: Build and run the smoke test**
+- [x] **Step 4: Build and run the smoke test**
 
 Run: `make build && docker compose run --rm dev opam exec -- dune runtest test/smoke`
 
 Expected: image builds, Dune build succeeds, and Alcotest reports `1 success`.
 
-- [ ] **Step 5: Record the baseline and commit**
+- [x] **Step 5: Record the baseline and commit**
 
 Add `docs/progress.md` with the command output date, OCaml version from `docker compose run --rm dev ocamlc -version`, and the next phase as “typed public kernel.”
 
@@ -229,6 +236,7 @@ Expected: one clean root-layout commit after the architecture commit.
 - Modify: `Makefile`
 - Modify: `compose.yaml`
 - Modify: `docs/progress.md`
+- Modify: `dune-project`
 
 **Interfaces:**
 - Consumes: `temporal.opam`, `temporal.opam.locked`, and installed OPAM package metadata.
@@ -414,6 +422,8 @@ val defect : message:string -> t
 ```
 
 Keep constructors private. `Temporal.Result_syntax` defines `let*` and `let+` exactly as `Result.bind` and `Result.map`.
+
+Remove `(allow_empty)` from the `temporal` package stanza now that `lib/public/dune` provides the installable public library.
 
 - [ ] **Step 4: Run focused and aggregate tests**
 

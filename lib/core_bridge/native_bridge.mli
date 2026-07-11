@@ -12,6 +12,7 @@ type status =
   | Outstanding_tasks
   | Not_ready
   | Protocol
+  | Already_started
   | Unknown of int
 
 (** Error copied into the OCaml heap. Once returned, it contains no pointer to
@@ -74,6 +75,17 @@ val runtime_create : unit -> (runtime, error) result
 (** Connects the official Core-based Temporal client. The network wait occurs
     in Rust while the C stub has released the OCaml runtime lock. *)
 val client_connect : runtime -> client_config -> (unit, error) result
+
+(** Starts one dynamically named workflow through the connected Rust client.
+    The returned bytes are a strictly validated client-start response; a
+    duplicate workflow ID is returned as [Already_started] with its closed
+    structured error document. *)
+val client_start_workflow_json : runtime -> bytes -> (bytes, error) result
+
+(** Waits for one exact workflow run. The call may block in Rust while the C
+    stub releases the OCaml runtime lock; continued-as-new is returned as a
+    terminal response and is never followed implicitly. *)
+val client_wait_workflow_json : runtime -> bytes -> (bytes, error) result
 
 (** Constructs a workflow-only worker and completes Core namespace validation
     before publishing it into the owned graph. *)

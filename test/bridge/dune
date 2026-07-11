@@ -17,3 +17,7 @@
 (test
  (name test_ocaml_activity_protocol)
  (libraries temporal-sdk.internal_protocol))
+
+(test
+ (name test_ocaml_client_protocol)
+ (libraries temporal-sdk.internal_protocol))

@@ -277,6 +277,7 @@ module Protocol_adapter = struct
       | Outstanding_tasks -> "outstanding_tasks"
       | Not_ready -> "not_ready"
       | Protocol -> "protocol"
+      | Already_started -> "already_started"
       | Unknown code -> Printf.sprintf "unknown(%d)" code
     in
     {
@@ -347,6 +348,8 @@ module Native_backend = struct
   type _ operation =
     | Check_compatibility : unit operation
     | Connect_client : Bridge.client_config -> unit operation
+    | Client_start_workflow : bytes -> bytes operation
+    | Client_wait_workflow : bytes -> bytes operation
     | Start_worker : Bridge.worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation
@@ -369,6 +372,10 @@ module Native_backend = struct
     | Check_compatibility ->
         Bridge.check_abi_version Bridge.abi_version
     | Connect_client config -> Bridge.client_connect runtime config
+    | Client_start_workflow input ->
+        Bridge.client_start_workflow_json runtime input
+    | Client_wait_workflow input ->
+        Bridge.client_wait_workflow_json runtime input
     | Start_worker config -> Bridge.worker_start runtime config
     | Try_poll_workflow ->
         Protocol_adapter.workflow_poll_result
@@ -418,6 +425,8 @@ module Native = struct
   type 'result operation = 'result Native_backend.operation =
     | Check_compatibility : unit operation
     | Connect_client : client_config -> unit operation
+    | Client_start_workflow : bytes -> bytes operation
+    | Client_wait_workflow : bytes -> bytes operation
     | Start_worker : worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation

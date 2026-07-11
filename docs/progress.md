@@ -29,6 +29,33 @@ The adapter never fabricates Temporal defaults or silently drops either
 command. See the [translation reference](reference/native-execution-translation.md)
 for the mapping and ownership rules.
 
+## 2026-07-12: Typed supervisor worker operations
+
+Status: focused native-supervisor and protocol tests verified locally; a
+wakeable readiness ABI and production worker loop remain follow-up work.
+
+The private SDK supervisor now owns the complete OCaml-side worker poll and
+completion boundary. `Try_poll_workflow` and `Try_poll_activity` run through
+the same single-owner mailbox as lifecycle operations, strictly decode Rust's
+semantic JSON into private protocol values, and represent an empty native lane
+as `Ok None`. `Complete_workflow` and `Complete_activity` accept private typed
+protocol values, canonically encode and reparse them, then submit copied bytes
+through the existing C stubs. Protocol failures use the bridge's typed
+`Protocol` status and diagnostics omit source JSON and payload bytes.
+
+The pinned ABI does not yet provide a readiness event or wait symbol. This
+slice therefore adds only the safe nonblocking try-poll seam and does not put a
+timer, condition wait, or native blocking call in a workflow fiber. The owner
+Domain continues to serialize native handle access; Rust/Tokio owns the two
+poll lanes, and the existing C stubs release the OCaml runtime lock for every
+native call. A later bridge slice must add a wakeable readiness wait before a
+production worker loop can avoid bounded idle polling.
+
+Focused tests cover canonical workflow/activity serialization, malformed
+incoming and outgoing protocol values, `Not_ready` handling, worker-before-
+start rejection, operation closure after shutdown, and the generic mailbox's
+existing concurrent-producer and shutdown-race invariants.
+
 ## 2026-07-12: Raw client start and exact-run wait adapter
 
 Status: Rust unit, ABI, formatting, and warnings-as-errors checks pass locally;

@@ -77,6 +77,49 @@ end
 
 (** The production supervisor over one native runtime-client-worker graph. *)
 module Native : sig
+  (** Pure conversion functions at the native-worker boundary. Keeping these
+      functions private but independently testable makes both directions of
+      the JSON contract reviewable without constructing a Core worker. *)
+  module Protocol_adapter : sig
+    val decode_workflow_activation :
+      bytes ->
+      ( Temporal_protocol.Workflow_protocol.activation,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Strictly validates one workflow activation returned by Rust. *)
+
+    val workflow_poll_result :
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( Temporal_protocol.Workflow_protocol.activation option,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Maps native [Not_ready] to [None] and validates successful bytes. *)
+
+    val encode_workflow_completion :
+      Temporal_protocol.Workflow_protocol.completion ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes and reparses one workflow completion. *)
+
+    val decode_activity_task :
+      bytes ->
+      ( Temporal_protocol.Activity_protocol.task,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Strictly validates one remote activity task returned by Rust. *)
+
+    val activity_poll_result :
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( Temporal_protocol.Activity_protocol.task option,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Maps native [Not_ready] to [None] and validates successful bytes. *)
+
+    val encode_activity_completion :
+      Temporal_protocol.Activity_protocol.completion ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes and reparses one remote activity completion. *)
+  end
+
   (** Validated client settings whose representation remains bridge-private. *)
   type client_config
 
@@ -88,6 +131,20 @@ module Native : sig
     | Check_compatibility : unit operation
     | Connect_client : client_config -> unit operation
     | Start_worker : worker_config -> unit operation
+    | Try_poll_workflow :
+        Temporal_protocol.Workflow_protocol.activation option operation
+        (** Takes and validates one already-ready workflow activation. [None]
+            means the native lane was empty at that instant. *)
+    | Complete_workflow :
+        Temporal_protocol.Workflow_protocol.completion -> unit operation
+        (** Validates and submits one typed workflow completion. *)
+    | Try_poll_activity :
+        Temporal_protocol.Activity_protocol.task option operation
+        (** Takes and validates one already-ready remote activity task. [None]
+            means the native lane was empty at that instant. *)
+    | Complete_activity :
+        Temporal_protocol.Activity_protocol.completion -> unit operation
+        (** Validates and submits one typed remote activity completion. *)
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation
 

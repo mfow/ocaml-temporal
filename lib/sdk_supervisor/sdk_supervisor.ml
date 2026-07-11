@@ -222,6 +222,80 @@ module Make (Backend : Backend) = struct
         Error (mailbox_failure failure)
 end
 
+(** Converts between OCaml-owned native bytes and the closed semantic protocol
+    types used by the workflow runtime. This layer is deliberately pure: it
+    does not own native handles, mutate lease state, or perform network I/O. *)
+module Protocol_adapter = struct
+  module Bridge = Temporal_core_bridge.Native_bridge
+  module Workflow = Temporal_protocol.Workflow_protocol
+  module Activity = Temporal_protocol.Activity_protocol
+
+  (** Converts a workflow protocol failure to the bridge error vocabulary used
+      by the native supervisor. Protocol diagnostics contain only stable code,
+      path, and validation prose; source JSON and payload bytes are omitted. *)
+  let workflow_error operation error =
+    let view = Workflow.error_view error in
+    Error
+      {
+        Bridge.status = Protocol;
+        message =
+          Printf.sprintf "%s failed: %s at %s: %s" operation view.code view.path
+            view.message;
+      }
+
+  (** Converts an activity protocol failure without exposing the rejected
+      task token, payload data, or original JSON document. *)
+  let activity_error operation error =
+    let view = Activity.error_view error in
+    Error
+      {
+        Bridge.status = Protocol;
+        message =
+          Printf.sprintf "%s failed: %s at %s: %s" operation view.code view.path
+            view.message;
+      }
+
+  (** Strictly validates one workflow activation copied from Rust. *)
+  let decode_workflow_activation input =
+    match Workflow.decode_activation (Bytes.to_string input) with
+    | Ok activation -> Ok activation
+    | Error error -> workflow_error "workflow activation decoding" error
+
+  (** Converts a nonblocking native workflow poll into an optional typed
+      activation. [Not_ready] is the empty-lane state, not a worker failure. *)
+  let workflow_poll_result = function
+    | Ok input -> Result.map Option.some (decode_workflow_activation input)
+    | Error { Bridge.status = Not_ready; _ } -> Ok None
+    | Error _ as error -> error
+
+  (** Canonically serializes and reparses one workflow completion before it
+      can be submitted across the C boundary. *)
+  let encode_workflow_completion completion =
+    match Workflow.encode_completion completion with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> workflow_error "workflow completion encoding" error
+
+  (** Strictly validates one remote activity task copied from Rust. *)
+  let decode_activity_task input =
+    match Activity.decode_task (Bytes.to_string input) with
+    | Ok task -> Ok task
+    | Error error -> activity_error "activity task decoding" error
+
+  (** Converts a nonblocking native activity poll into an optional typed task
+      while preserving every bridge failure other than an empty lane. *)
+  let activity_poll_result = function
+    | Ok input -> Result.map Option.some (decode_activity_task input)
+    | Error { Bridge.status = Not_ready; _ } -> Ok None
+    | Error _ as error -> error
+
+  (** Canonically serializes and reparses one activity completion before it
+      can be submitted across the C boundary. *)
+  let encode_activity_completion completion =
+    match Activity.encode_completion completion with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> activity_error "activity completion encoding" error
+end
+
 (** The production backend owns one runtime-client-worker graph. Every
     operation is invoked by the one supervisor Domain, so no native handle can
     race another operation or teardown. *)
@@ -235,6 +309,14 @@ module Native_backend = struct
     | Check_compatibility : unit operation
     | Connect_client : Bridge.client_config -> unit operation
     | Start_worker : Bridge.worker_config -> unit operation
+    | Try_poll_workflow :
+        Temporal_protocol.Workflow_protocol.activation option operation
+    | Complete_workflow :
+        Temporal_protocol.Workflow_protocol.completion -> unit operation
+    | Try_poll_activity :
+        Temporal_protocol.Activity_protocol.task option operation
+    | Complete_activity :
+        Temporal_protocol.Activity_protocol.completion -> unit operation
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation
 
@@ -249,6 +331,20 @@ module Native_backend = struct
         Bridge.check_abi_version Bridge.abi_version
     | Connect_client config -> Bridge.client_connect runtime config
     | Start_worker config -> Bridge.worker_start runtime config
+    | Try_poll_workflow ->
+        Protocol_adapter.workflow_poll_result
+          (Bridge.worker_try_poll_workflow runtime)
+    | Complete_workflow completion ->
+        Result.bind
+          (Protocol_adapter.encode_workflow_completion completion)
+          (Bridge.worker_complete_workflow_json runtime)
+    | Try_poll_activity ->
+        Protocol_adapter.activity_poll_result
+          (Bridge.worker_try_poll_activity runtime)
+    | Complete_activity completion ->
+        Result.bind
+          (Protocol_adapter.encode_activity_completion completion)
+          (Bridge.worker_complete_activity_json runtime)
     | Shutdown_worker -> Bridge.worker_shutdown runtime
     | Disconnect_client -> Bridge.client_disconnect runtime
 
@@ -273,6 +369,8 @@ end
 module Native = struct
   include Make (Native_backend)
 
+  module Protocol_adapter = Protocol_adapter
+
   type client_config = Native_backend.Bridge.client_config
   type worker_config = Native_backend.Bridge.worker_config
 
@@ -280,6 +378,14 @@ module Native = struct
     | Check_compatibility : unit operation
     | Connect_client : client_config -> unit operation
     | Start_worker : worker_config -> unit operation
+    | Try_poll_workflow :
+        Temporal_protocol.Workflow_protocol.activation option operation
+    | Complete_workflow :
+        Temporal_protocol.Workflow_protocol.completion -> unit operation
+    | Try_poll_activity :
+        Temporal_protocol.Activity_protocol.task option operation
+    | Complete_activity :
+        Temporal_protocol.Activity_protocol.completion -> unit operation
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation
 

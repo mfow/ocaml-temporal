@@ -158,6 +158,22 @@ returning. Rust validates the complete JSON document and checks the run ID or
 opaque activity token against its ownership ledger, so a duplicate or stale
 completion cannot silently reach Core.
 
+`Sdk_supervisor.Native` is the private OCaml adapter for these ABI version 1
+operations. It exposes a typed GADT rather than raw JSON bytes:
+
+| Supervisor operation | Result and boundary behavior |
+| --- | --- |
+| `Try_poll_workflow` | `Workflow_protocol.activation option`; `None` means the workflow lane was empty at that instant |
+| `Complete_workflow completion` | canonical strict JSON is generated and reparsed before the native completion call |
+| `Try_poll_activity` | `Activity_protocol.task option`; `None` means the activity lane was empty at that instant |
+| `Complete_activity completion` | the opaque token and result are validated before the native completion call |
+
+All four operations enter the same bounded mailbox as client and worker
+lifecycle changes. A poll, completion, worker shutdown, and runtime shutdown
+therefore cannot race native graph state. The pure protocol conversion module
+is visible only from the private supervisor library so both serialization
+directions can be tested without constructing a Core worker.
+
 These wrappers deliberately return the same owned-response shape as lifecycle
 operations. The OCaml `decode` helper copies success or diagnostic bytes and
 always calls `response_free` under `Fun.protect`; the C custom-block finalizer
@@ -237,6 +253,12 @@ supervisor takes ready work through non-blocking ABI operations; no Tokio thread
 enters OCaml and no long Core poll occupies the supervisor Domain. Keeping the
 lanes independent prevents an idle activity poll from delaying workflow
 completion, or vice versa.
+
+ABI version 1 has no readiness-wait or readiness-event symbol. Until one is
+added, the supervisor exposes only nonblocking `Try_poll_workflow` and
+`Try_poll_activity`. Callers may treat `Ok None` as a yield point, but must not
+turn it into a blocking condition wait on a workflow scheduler fiber. The
+supervisor does not invent periodic sleeping or a second owner for this gap.
 
 One mutex-protected ledger is the authority for every task Core expects the
 language runtime to complete. A task enters the ledger before its ready message

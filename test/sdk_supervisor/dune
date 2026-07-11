@@ -1,3 +1,10 @@
 (test
  (name test_sdk_supervisor)
  (libraries temporal_sdk_supervisor threads))
+
+(test
+ (name test_native_worker_operations)
+ (libraries
+  temporal_sdk_supervisor
+  temporal-sdk.internal_protocol
+  threads))

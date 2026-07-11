@@ -22,11 +22,13 @@ The existing `Activity.start`, `Activity.execute`, `Future.await`, and
 ```ocaml
 module Child_workflow : sig
   val start :
+    id:string ->
     ('input, 'output) Workflow.t ->
     'input ->
     ('output, Error.t) Future.t
 
   val execute :
+    id:string ->
     ('input, 'output) Workflow.t ->
     'input ->
     ('output, Error.t) result
@@ -61,22 +63,31 @@ end
 SDK's structured `Error.t`; this lets ownership mistakes be returned as typed
 defects instead of raising an exception.
 
+Child workflow IDs are explicit because Temporal records them as durable
+identity and Temporal Core requires one when starting a child. An empty `id`
+produces a typed failed future (or failed `execute` result) before a command is
+emitted. Rich child options remain later parity work; the SDK does not invent
+process-local `child-N` identifiers that could collide with durable history.
+
 ## Completion and ordering semantics
 
 `race` and `first` settle on the first completion, whether it is `Ok` or
-`Error`. They do not cancel losing operations. If several inputs are already
-complete or become complete in one activation, the deterministic scheduler's
-FIFO callback order decides the winner. Later callbacks observe that the
-aggregate is settled and do nothing.
+`Error`. They do not cancel losing operations. If inputs are already complete
+when the aggregate is created, argument and observer-registration order decides
+the winner. Otherwise, the deterministic scheduler's FIFO callback order
+decides the winner. Later callbacks observe that the aggregate is settled and
+do nothing.
 
 `all` observes every input until all have completed. Successful values retain
 input order, independent of completion order. If any input fails, `all` still
 waits for every sibling and then returns the first error in input order.
 
-All aggregate inputs must belong to the same workflow execution. A mismatch
-produces an already-completed future containing a structured defect owned by
-the first input's scheduler. It is an API error value, not routine control flow
-through an exception.
+All inputs to `both`, `all`, `race`, and `first` must belong to the same
+workflow execution. A mismatch produces an already-completed future containing
+a structured defect owned by the first input's scheduler. It is an API error
+value, not routine control flow through an exception. Impossible internal
+double-resolution remains an internal invariant defect and is contained at the
+runtime boundary.
 
 ## Runtime boundary and ownership
 
@@ -104,7 +115,9 @@ let fastest left right input =
 let summarize_and_review document =
   let open Temporal.Result_syntax in
   let summary = Temporal.Activity.start summarize document in
-  let review = Temporal.Child_workflow.start review_workflow document in
+  let review =
+    Temporal.Child_workflow.start ~id:"document-review" review_workflow document
+  in
   let* summary, review = Temporal.Future.await (Temporal.Future.both summary review) in
   Ok (summary, review)
 ```
@@ -124,8 +137,10 @@ replay reconstructs the same suspension points from history.
 
 ## Verification
 
-Tests must prove child command and result decoding, zero and nonzero timer
-behavior, command emission order, input-order `all`, FIFO `race`/`first`, first
+Tests must prove explicit child ID emission and empty-ID rejection, child
+command and result decoding, zero and nonzero timer behavior, command emission
+order, input-order `all`, deterministic ready and pending `race`/`first`, first
 completion errors, no implicit loser cancellation, typed cross-scheduler
-failures, and helper-function composition. Existing scheduler, activation,
-format, lint, Rust, and installation tests remain regression gates.
+failures for every aggregate including `both`, and helper-function composition.
+Existing scheduler, activation, format, lint, Rust, and installation tests
+remain regression gates.

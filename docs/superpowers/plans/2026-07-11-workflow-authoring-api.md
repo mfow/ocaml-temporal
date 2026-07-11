@@ -13,6 +13,7 @@
 - Expected operational failures and ownership misuse return typed `result` values.
 - `race` and `first` settle on the first completion, including errors, without cancelling losers.
 - `all` waits for every input, preserves value order, and reports the first error in input order.
+- Child workflow calls require a non-empty explicit ID and emit it in the durable command.
 - Workflow command creation and callback delivery remain deterministic and FIFO.
 - Effect constructors, continuations, protocol JSON, and Rust handles remain private.
 - Core polling, cancellation, retries, options, and structured concurrency are outside this phase but remain parity goals.
@@ -35,8 +36,10 @@
 - [ ] **Step 1: Write failing scheduler tests**
 
   Add tests that create real scheduler promises and assert ordered `all`, first
-  completion success/error, deterministic ready-input order, loser observation,
-  and a structured defect from cross-scheduler inputs.
+  completion success/error, argument-order selection for already-ready inputs,
+  deterministic callback-order selection for pending inputs, loser observation,
+  and a structured defect from cross-scheduler inputs to `both`, `all`, `race`,
+  and `first`.
 
 - [ ] **Step 2: Verify the tests fail for missing functions**
 
@@ -48,8 +51,9 @@
 - [ ] **Step 3: Implement minimal aggregation**
 
   Add a public race variant, owner validation, one-shot completion guards, and
-  ordered result collection. Constrain aggregate public errors to `Error.t` so
-  ownership defects are values.
+  ordered result collection. Constrain aggregate public errors, including
+  `both`, to `Error.t` so ownership defects are values rather than
+  `Invalid_argument` exceptions.
 
 - [ ] **Step 4: Verify future tests pass**
 
@@ -111,9 +115,10 @@
 
 - [ ] **Step 1: Write failing child-workflow tests**
 
-  Assert typed input encoding, emitted child type name and command order,
-  suspension, successful output decoding, remote errors, invalid codec input,
-  and duplicate/unknown resolution rejection.
+  Assert typed input encoding, explicit child ID and type-name emission, empty
+  ID rejection without command emission, command order, suspension, successful
+  output decoding, remote errors, invalid codec input, and duplicate/unknown
+  resolution rejection.
 
 - [ ] **Step 2: Verify the tests fail for missing child operations**
 

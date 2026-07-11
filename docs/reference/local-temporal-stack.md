@@ -1,7 +1,9 @@
 # Local Temporal and PostgreSQL Stack
 
 This reference describes the live infrastructure and Core lifecycle acceptance
-available now. Workflow task polling and execution are still under development.
+available now. Private typed poll/completion operations exist, but the
+native readiness seam is not yet composed with them in a production scheduling
+loop, and live workflow execution remains under development.
 
 The complete Compose fixture lives under `test/integration/temporal/`, including
 its PostgreSQL/Temporal configuration and fixture-only helper scripts. The
@@ -60,11 +62,13 @@ make test-temporal-integration
 The test intentionally removes this Compose project's Temporal volume before
 and after the run. After database/frontend readiness, an OCaml executable uses
 the private supervisor and C/Rust bridge to connect the official Core client,
-construct and namespace-validate a workflow-only worker, exercise invalid and
-repeated lifecycle transitions, and shut the graph down deterministically.
+construct and namespace-validate a workflow/remote-activity worker, exercise
+invalid and repeated lifecycle transitions, and shut the graph down
+deterministically.
 This is a lifecycle acceptance test, not an end-to-end workflow test: a later
-milestone must add poll/completion plus separate OCaml client and worker
-services and prove start, poll, execute, and completion against this cluster.
+milestone must coordinate the existing readiness and poll/completion operations
+with the deterministic executor and separate OCaml client and worker services,
+then prove start, poll, execute, and completion against this cluster.
 On every pull request and push to `master`, GitHub Actions runs this target once
 in a standalone Ubuntu job labelled for OCaml 5.5. It is intentionally absent
 from the multi-version build matrix because starting a real database and

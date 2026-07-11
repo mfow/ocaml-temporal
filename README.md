@@ -13,8 +13,10 @@ direct-style suspension.
 The repository currently contains a verified deterministic runtime kernel,
 synthetic activation interpreter, and native OCaml-to-Rust link through the
 official Rust Temporal Core dependency. The private supervisor can connect the
-official client and construct and namespace-validate a workflow-only worker.
-It does **not yet poll or complete workflow tasks**, so it cannot execute a live
+official client, construct and namespace-validate a worker, and invoke strict
+typed nonblocking workflow/activity poll and completion operations. It does
+**not yet run the production polling loop** that coordinates readiness and
+those operations with the deterministic executor, so it cannot execute a live
 workflow yet.
 
 ## Current capabilities
@@ -28,10 +30,15 @@ workflow yet.
 - Deterministic synthetic replay, cancellation, and cache eviction tests
 - Dune-built OCaml executables linked to the Rust Core bridge static library
 - Finalizer-backed, panic-contained runtime-client-worker ownership
+- Typed nonblocking workflow/activity polling, completion, and exact-document
+  rejection behind the private supervisor boundary
+- Bounded wakeable workflow/activity readiness waits that release the OCaml
+  runtime lock
 - Docker Compose development on OCaml 5.2 and current OCaml 5.5
 - Executable no-copyleft dependency policy
 
-Live workflow polling and child-workflow translation, signals, queries,
+The production worker scheduling loop that coordinates native readiness with
+the deterministic executor, live child-workflow translation, signals, queries,
 updates, continue-as-new, versioning, local activities, Nexus, cancellation
 scopes, and the remaining parity surface are planned and tracked in the
 roadmap.
@@ -121,7 +128,8 @@ let definition =
 ```
 
 The API above compiles and is exercised by the synthetic interpreter. It is
-not a claim that a production worker can connect yet.
+not a claim that the production worker loop can execute it against Temporal
+Server yet.
 
 ## Documentation
 

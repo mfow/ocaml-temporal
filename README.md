@@ -111,3 +111,9 @@ the repository's permissive-license policy; ordinary GPL, AGPL, LGPL, and
 other copyleft or source-available dependencies are prohibited. The only
 standing exception is the narrowly reviewed OCaml linking exception documented
 in the dependency inventory.
+
+## AI disclosure
+
+AI models used to help build this project:
+
+- GPT 5.6 Sol

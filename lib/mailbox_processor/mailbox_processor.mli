@@ -36,6 +36,10 @@ module Make (Request : Request) : sig
       queue representation, and the owner Domain are deliberately hidden. *)
   type t
 
+  (** A typed one-shot result for a request already admitted to the FIFO. The
+      representation and settlement operation remain owner-private. *)
+  type 'result pending
+
   (** [create ~capacity ~handler] starts one owner Domain. [capacity] is the
       maximum number of admitted requests waiting in the FIFO, excluding the
       request currently executing. A non-positive capacity raises
@@ -53,13 +57,25 @@ module Make (Request : Request) : sig
       result or the processor fails. *)
   val call : t -> 'result Request.t -> ('result, failure) result
 
+  (** [submit_and_close processor request] atomically admits one final typed
+      request at the FIFO tail and changes the lifecycle from open to closing.
+      It never waits for ordinary queue capacity. Returning [Ok pending]
+      proves that the close transition has linearized; the request itself may
+      still be waiting behind earlier admitted work. *)
+  val submit_and_close :
+    t -> 'result Request.t -> ('result pending, failure) result
+
+  (** [await pending] blocks until the owner settles the already admitted
+      request or reports its terminal handler failure. *)
+  val await : 'result pending -> ('result, failure) result
+
   (** [call_and_close processor request] atomically admits one final typed
       request at the FIFO tail and changes the lifecycle from open to closing.
       It never waits for ordinary queue capacity: the terminal request uses
       one reserved slot beyond [capacity], so shutdown cannot be starved by
       producers already waiting for capacity. Later admissions are rejected.
-      The call then waits for its result like [call]. If the processor was
-      already closing or terminal, no request is admitted. *)
+      It is equivalent to [submit_and_close] followed by [await]. If the
+      processor was already closing or terminal, no request is admitted. *)
   val call_and_close : t -> 'result Request.t -> ('result, failure) result
 
   (** [close processor] is idempotent. It rejects new admissions and asks the

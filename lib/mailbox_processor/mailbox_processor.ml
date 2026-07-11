@@ -20,6 +20,10 @@ module Make (Request : Request) = struct
     mutable outcome : ('result, failure) result option;
   }
 
+  (** Opaque caller-side capability for awaiting one already admitted terminal
+      request. Constructing this value is proof that admission has closed. *)
+  type 'result pending = 'result reply
+
   (** An existential queue entry. [None] marks a post; [Some reply] marks a
       call whose result type is tied to the request by this constructor. *)
   type job = Job : 'result Request.t * 'result reply option -> job
@@ -225,12 +229,21 @@ module Make (Request : Request) = struct
     | Error failure -> Error failure
     | Ok () -> await_reply reply
 
-  (** Admits a final typed call and closes all later admission atomically. *)
-  let call_and_close processor request =
+  (** Atomically admits the final call and returns before its handler runs. *)
+  let submit_and_close processor request =
     let reply = create_reply () in
     match enqueue_and_close processor (Job (request, Some reply)) with
     | Error failure -> Error failure
-    | Ok () -> await_reply reply
+    | Ok () -> Ok reply
+
+  (** Waits for one request which has already crossed its admission point. *)
+  let await pending = await_reply pending
+
+  (** Admits a final typed call, closes admission, and waits for its result. *)
+  let call_and_close processor request =
+    match submit_and_close processor request with
+    | Error failure -> Error failure
+    | Ok pending -> await pending
 
   (** Linearizes close under the queue mutex and wakes both an idle owner and
       producers waiting for capacity. *)

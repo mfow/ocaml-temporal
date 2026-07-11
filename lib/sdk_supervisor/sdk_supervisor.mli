@@ -61,6 +61,12 @@ module Make (Backend : Backend) : sig
       mailbox admission order. *)
   val perform : t -> 'result Backend.operation -> ('result, error) result
 
+  (** [initiate_shutdown instance] atomically admits the one terminal request
+      and closes operation admission, but does not wait for earlier backend
+      work or join the owner Domain. Repeated calls are harmless. This is an
+      internal lifecycle seam; application code should call [shutdown]. *)
+  val initiate_shutdown : t -> unit
+
   (** [shutdown instance] waits for earlier admitted operations, releases the
       graph once, stops and joins the owner Domain, and caches the exact
       terminal result for every later call. Abandoning an instance schedules
@@ -91,6 +97,10 @@ module Native : sig
 
   (** Runs one currently supported typed bridge operation on the owner. *)
   val perform : t -> 'result operation -> ('result, error) result
+
+  (** Closes operation admission without waiting for native teardown. This is
+      an internal lifecycle seam; application code should call [shutdown]. *)
+  val initiate_shutdown : t -> unit
 
   (** Deterministically closes the real Rust runtime and owner Domain. *)
   val shutdown : t -> (unit, error) result

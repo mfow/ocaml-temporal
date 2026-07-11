@@ -630,6 +630,15 @@ Focused evidence:
 - Twenty-five forced repetitions of the complete supervisor suite passed.
 - The real Rust runtime passed create, compatibility use, shutdown, and
   repeated-shutdown checks through the supervisor.
+- An ARM CI scheduling failure exposed that the original saturation test used
+  a fixed CPU-relax loop as a proxy for another Domain reaching the mailbox
+  mutex. The mailbox now returns a typed pending reply after the terminal
+  request and close transition linearize. Deterministic tests prove both the
+  reserved terminal slot in a full FIFO and synchronous SDK admission closure
+  while backend work remains blocked; sixteen concurrent public shutdown
+  callers then share the cached terminal outcome and one backend close.
+- One thousand forced repetitions of the mailbox and supervisor suites passed
+  with the deterministic shutdown boundary.
 - `make native-verify` passed on OCaml 5.4.1 and Rust 1.96.0, covering the
   install build, complete OCaml suite, Rust tests, Clippy with warnings denied,
   rustfmt, and the fresh installed-package consumer.

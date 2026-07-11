@@ -132,11 +132,10 @@ module Make (Backend : Backend) = struct
         | Some result -> result
         | None ->
             let result =
-              match Mailbox.call supervisor.mailbox Shutdown with
+              match Mailbox.call_and_close supervisor.mailbox Shutdown with
               | Ok result -> result
               | Error failure -> Error (mailbox_failure failure)
             in
-            Mailbox.close supervisor.mailbox;
             ignore (Mailbox.join supervisor.mailbox);
             supervisor.shutdown_result <- Some result;
             Atomic.set supervisor.shutdown_finished true;

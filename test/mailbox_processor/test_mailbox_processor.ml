@@ -203,6 +203,44 @@ let test_close_releases_blocked_producer () =
   open_gate release;
   expect "close drains after producer wake" (Ok ()) (Mailbox.join mailbox)
 
+(** A terminal call must close admission at the same instant it joins the FIFO
+    tail, even when the ordinary bounded queue is full. Work which begins after
+    that transition is rejected before the active handler is released, while
+    the terminal request still runs after all previously admitted work. *)
+let test_terminal_call_closes_a_full_mailbox_atomically () =
+  let entered = create_gate () in
+  let release = create_gate () in
+  let mailbox = Mailbox.create ~capacity:1 ~handler:(create_handler ()) in
+  expect "active hold admitted" (Ok ())
+    (Mailbox.post mailbox (Hold (1, entered, release)));
+  await_gate entered;
+  expect "ordinary tail filled" (Ok ()) (Mailbox.post mailbox (Add 2));
+  let terminal_started = Atomic.make false in
+  let terminal =
+    Domain.spawn (fun () ->
+        Atomic.set terminal_started true;
+        Mailbox.call_and_close mailbox Read)
+  in
+  await_atomic terminal_started;
+  yield_to_domains ();
+  let late_finished = Atomic.make false in
+  let late =
+    Domain.spawn (fun () ->
+        let result = Mailbox.post mailbox (Add 3) in
+        Atomic.set late_finished true;
+        result)
+  in
+  yield_to_domains ();
+  if not (Atomic.get late_finished) then (
+    open_gate release;
+    ignore (Domain.join terminal);
+    ignore (Domain.join late);
+    failwith "terminal call did not close admission while the FIFO was full");
+  expect "late admission rejected" (Error Mailbox.Closed) (Domain.join late);
+  open_gate release;
+  expect "terminal FIFO result" (Ok [ 1; 2 ]) (Domain.join terminal);
+  expect "terminal call joined cleanly" (Ok ()) (Mailbox.join mailbox)
+
 (** Verifies that an unexpected handler exception reaches the active caller,
     causes deterministic terminal shutdown, and is also reported by [join]. *)
 let test_handler_failure () =
@@ -283,6 +321,7 @@ let () =
   test_bounded_backpressure ();
   test_close_drains_and_rejects ();
   test_close_releases_blocked_producer ();
+  test_terminal_call_closes_a_full_mailbox_atomically ();
   test_handler_failure ();
   test_handler_failure_releases_waiters ();
   test_handler_failure_releases_blocked_producer ();

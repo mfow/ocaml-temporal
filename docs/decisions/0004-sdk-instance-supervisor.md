@@ -67,9 +67,11 @@ then re-raised into the mailbox's containment boundary. The active caller,
 queued callers, later callers, and shutdown all observe the same contained
 exception. A cleanup error cannot replace the original defect.
 
-Explicit shutdown is a typed mailbox call, so it waits behind operations
-admitted earlier. The backend graph is marked closed before the owner accepts
-another operation. The producer then closes and joins the mailbox. A separate
+Explicit shutdown uses the mailbox's atomic terminal call. Under the same
+mailbox mutex, it takes the FIFO position after operations already admitted
+and changes the mailbox to closing, so later operations cannot overtake it
+even when the ordinary bounded queue is full. The producer then joins the
+mailbox. A separate
 mutex permits only one producer to perform that blocking join and caches its
 exact result, including an expected backend shutdown error or an unexpected
 owner failure. Repeated shutdown never invokes native destruction again.

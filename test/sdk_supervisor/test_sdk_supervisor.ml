@@ -35,6 +35,13 @@ let await_atomic flag =
     Domain.cpu_relax ()
   done
 
+(** Gives contending producer Domains repeated opportunities to reach their
+    mailbox operation without introducing a wall-clock sleep. *)
+let yield_to_domains () =
+  for _ = 1 to 100_000 do
+    Domain.cpu_relax ()
+  done
+
 (** Test backend configuration. Atomics make counters safe to inspect while
     producer Domains are still active; [owner_ids] is inspected after
     supervisor shutdown establishes the owner-Domain happens-before edge. *)
@@ -302,6 +309,57 @@ let test_shutdown_waits_and_is_idempotent () =
   expect "use after shutdown" (Error Supervisor.Closed)
     (Supervisor.perform supervisor (Echo 1))
 
+(** Saturating the normal FIFO must not leave shutdown waiting for capacity
+    while later operations remain admissible. Shutdown atomically takes the
+    terminal FIFO position, closes admission, then waits for older work. *)
+let test_shutdown_closes_admission_while_fifo_is_full () =
+  let config = backend_config () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:1 config) in
+  let entered = create_gate () in
+  let release = create_gate () in
+  let active =
+    Domain.spawn (fun () -> Supervisor.perform supervisor (Block (entered, release)))
+  in
+  await_gate entered;
+  let queued_started = Atomic.make false in
+  let queued =
+    Domain.spawn (fun () ->
+        Atomic.set queued_started true;
+        Supervisor.perform supervisor (Echo 2))
+  in
+  await_atomic queued_started;
+  yield_to_domains ();
+  let shutdown_started = Atomic.make false in
+  let shutdown =
+    Domain.spawn (fun () ->
+        Atomic.set shutdown_started true;
+        Supervisor.shutdown supervisor)
+  in
+  await_atomic shutdown_started;
+  yield_to_domains ();
+  let late_finished = Atomic.make false in
+  let late =
+    Domain.spawn (fun () ->
+        let result = Supervisor.perform supervisor (Echo 3) in
+        Atomic.set late_finished true;
+        result)
+  in
+  yield_to_domains ();
+  if not (Atomic.get late_finished) then (
+    open_gate release;
+    ignore (Domain.join active);
+    ignore (Domain.join queued);
+    ignore (Domain.join shutdown);
+    ignore (Domain.join late);
+    failwith "shutdown did not close admission while the FIFO was full");
+  expect "operation after shutdown admission" (Error Supervisor.Closed)
+    (Domain.join late);
+  open_gate release;
+  expect "active work before shutdown" (Ok ()) (Domain.join active);
+  expect "queued work before shutdown" (Ok 2) (Domain.join queued);
+  expect "saturated shutdown" (Ok ()) (Domain.join shutdown);
+  expect "one saturated shutdown" 1 (Atomic.get config.closes)
+
 (** A backend shutdown error is cached, while release is still attempted only
     once and later operations remain closed. *)
 let test_shutdown_error_is_cached () =
@@ -408,6 +466,7 @@ let () =
   test_unexpected_operation_failure_cleans_up ();
   test_unexpected_failure_releases_contending_callers ();
   test_shutdown_waits_and_is_idempotent ();
+  test_shutdown_closes_admission_while_fifo_is_full ();
   test_shutdown_error_is_cached ();
   test_abandoned_supervisor_is_cleaned_up ();
   test_concurrent_shutdown_callers_share_result ();

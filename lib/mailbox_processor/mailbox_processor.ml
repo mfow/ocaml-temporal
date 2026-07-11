@@ -102,6 +102,21 @@ module Make (Request : Request) = struct
             Ok ()
         | lifecycle -> Error (admission_failure lifecycle))
 
+  (** Admits exactly one terminal request while closing normal admission under
+      the same mutex. The reserved extra queue position is intentional: a
+      lifecycle request must never compete with ordinary producers for
+      capacity, because that would let later work overtake or starve closure. *)
+  let enqueue_and_close processor job =
+    with_mutex processor.mutex (fun () ->
+        match processor.lifecycle with
+        | Open ->
+            Queue.add job processor.jobs;
+            processor.lifecycle <- Closing;
+            Condition.signal processor.has_jobs;
+            Condition.broadcast processor.has_capacity;
+            Ok ()
+        | lifecycle -> Error (admission_failure lifecycle))
+
   (** Settles the call carried by [job], if any, with terminal [failure]. Posts
       have no waiter and are deterministically discarded. *)
   let fail_job failure (Job (_, reply)) =
@@ -207,6 +222,13 @@ module Make (Request : Request) = struct
   let call processor request =
     let reply = create_reply () in
     match enqueue processor (Job (request, Some reply)) with
+    | Error failure -> Error failure
+    | Ok () -> await_reply reply
+
+  (** Admits a final typed call and closes all later admission atomically. *)
+  let call_and_close processor request =
+    let reply = create_reply () in
+    match enqueue_and_close processor (Job (request, Some reply)) with
     | Error failure -> Error failure
     | Ok () -> await_reply reply
 

@@ -82,6 +82,10 @@ and bridge, read the [documentation guide](../README.md) first.
 - The bounded FIFO order is the total order of successful enqueue mutations
   under the mailbox mutex. One producer's program order is preserved;
   concurrent producers have no stronger order before those mutations.
+- SDK shutdown is admitted through the mailbox's reserved terminal slot. Its
+  FIFO append and `Open` to `Closing` transition happen under the same mutex;
+  it may temporarily raise the waiting queue to `capacity + 1`, and no later
+  normal request can be admitted ahead of it.
 - Queue and lifecycle state are data-race free. Every condition wait rechecks
   its protected predicate after waking.
 - Normal close rejects new work and drains all admitted work before the owner

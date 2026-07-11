@@ -48,8 +48,11 @@ accepted only at their documented default; a non-default value returns a typed
 
 Every fallible operation accepts a writable result pointer and returns the same
 status stored in that result. Status zero is success. Nonzero statuses describe
-invalid arguments, ABI mismatch, a contained Rust panic, or an internal bridge
-failure.
+invalid arguments, ABI mismatch, a contained Rust panic, an invalid lifecycle
+transition, a worker failure, or a semantic protocol failure. Worker polling
+also uses two expected statuses: `NOT_READY` means a lane currently has no
+queued task, while `OUTSTANDING_TASKS` means shutdown cannot finalize until
+the language side completes leased work.
 
 A result has one success buffer and one error buffer. At most one owns memory:
 
@@ -83,6 +86,36 @@ OCaml string/bytes allocation. Inputs that must survive a blocking call are
 copied to temporary C storage before the runtime lock is released, then freed
 immediately after the lock is reacquired. Neither side directly frees an
 allocation made by the other side.
+
+### Private OCaml worker operations
+
+`Temporal_core_bridge.Native_bridge` exposes four private wrappers over the
+poll/completion symbols. They are used by the future native worker adapter and
+are not part of the public workflow-authoring API:
+
+| OCaml operation | Native behavior | Successful value |
+| --- | --- | --- |
+| `worker_try_poll_workflow` | Drain one already-ready workflow activation without waiting | semantic workflow JSON bytes |
+| `worker_complete_workflow_json` | Validate and complete one leased workflow activation | `unit` |
+| `worker_try_poll_activity` | Drain one already-ready remote activity task without waiting | semantic activity JSON bytes |
+| `worker_complete_activity_json` | Validate and complete one leased activity task | `unit` |
+
+The two poll functions return `Error { status = Not_ready; _ }` when their
+independent Rust ready queues are empty. This is normal scheduling state, not a
+worker defect; the native worker loop will later combine these non-blocking
+drains with the readiness wait described below. Completion functions copy the
+caller-provided OCaml `bytes` into temporary C storage, release the OCaml
+runtime lock for the synchronous Rust submission, then free that copy before
+returning. Rust validates the complete JSON document and checks the run ID or
+opaque activity token against its ownership ledger, so a duplicate or stale
+completion cannot silently reach Core.
+
+These wrappers deliberately return the same owned-response shape as lifecycle
+operations. The OCaml `decode` helper copies success or diagnostic bytes and
+always calls `response_free` under `Fun.protect`; the C custom-block finalizer
+therefore remains a fallback for allocation failures or exceptions. No Rust
+poll lane calls an OCaml closure, and no bridge result retains an OCaml heap
+pointer after the C call returns.
 
 ## Pointer and panic contract
 

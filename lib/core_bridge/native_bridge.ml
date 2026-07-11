@@ -9,6 +9,9 @@ type status =
   | Configuration
   | Connection
   | Worker
+  | Outstanding_tasks
+  | Not_ready
+  | Protocol
   | Unknown of int
 
 (** Error data copied into OCaml. It never owns Rust memory. *)
@@ -85,6 +88,18 @@ external client_connect_raw : runtime -> bytes -> response
 external worker_start_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_start"
 
+external worker_try_poll_workflow_raw : runtime -> response
+  = "ocaml_temporal_worker_try_poll_workflow"
+
+external worker_complete_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_worker_complete_workflow_json"
+
+external worker_try_poll_activity_raw : runtime -> response
+  = "ocaml_temporal_worker_try_poll_activity"
+
+external worker_complete_activity_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_worker_complete_activity_json"
+
 external worker_shutdown_raw : runtime -> response
   = "ocaml_temporal_worker_shutdown"
 
@@ -101,6 +116,9 @@ let status = function
   | 6 -> Configuration
   | 7 -> Connection
   | 8 -> Worker
+  | 9 -> Outstanding_tasks
+  | 10 -> Not_ready
+  | 11 -> Protocol
   | code -> Unknown code
 
 (** Converts a bridge status to a bounded stable tag value without exposing the
@@ -114,6 +132,9 @@ let status_name = function
   | Configuration -> "configuration"
   | Connection -> "connection"
   | Worker -> "worker"
+  | Outstanding_tasks -> "outstanding_tasks"
+  | Not_ready -> "not_ready"
+  | Protocol -> "protocol"
   | Unknown _ -> "unknown"
 
 (** Constructs a local configuration failure without entering native code. *)
@@ -295,6 +316,40 @@ let worker_start runtime config =
   bridge_call "worker_start" (fun () ->
       Result.map (fun _ -> ())
         (decode (worker_start_raw runtime (encode_worker_config config))))
+
+(** Takes one already-ready workflow activation without waiting for Core. The
+    [Not_ready] status is an expected result while both poll lanes are empty;
+    callers should yield or use the future readiness wait rather than treat it
+    as worker failure. The returned bytes are a validated semantic JSON
+    document owned by the OCaml heap after [decode] copies it. *)
+let worker_try_poll_workflow runtime =
+  bridge_call "worker_try_poll_workflow" (fun () ->
+      decode (worker_try_poll_workflow_raw runtime))
+
+(** Validates and submits one workflow activation completion. The caller must
+    use the exact run identifier from a previously leased activation; Rust's
+    task ledger rejects unknown or duplicate completions before Core sees them.
+    Input bytes are copied by the C stub before the OCaml runtime lock is
+    released and are never retained after this call. *)
+let worker_complete_workflow_json runtime input =
+  bridge_call "worker_complete_workflow_json" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (worker_complete_workflow_json_raw runtime input)))
+
+(** Takes one already-ready remote activity task without waiting for Core. The
+    returned bytes contain the closed activity-task JSON document; activity
+    cancellation remains correlated by its opaque token in that document. *)
+let worker_try_poll_activity runtime =
+  bridge_call "worker_try_poll_activity" (fun () ->
+      decode (worker_try_poll_activity_raw runtime))
+
+(** Validates and submits one remote activity completion. Rust checks the
+    opaque task token against the outstanding ledger before completing Core, so
+    a stale or duplicated completion is reported as a typed bridge error. *)
+let worker_complete_activity_json runtime input =
+  bridge_call "worker_complete_activity_json" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (worker_complete_activity_json_raw runtime input)))
 
 (** Gracefully closes the worker. Rust treats repetition as success. *)
 let worker_shutdown runtime =

@@ -46,6 +46,22 @@ let () =
   | Error { status = Invalid_state; message } ->
       assert (String.length message > 0)
   | _ -> failwith "worker construction without a client was accepted");
+  (match Bridge.worker_try_poll_workflow runtime with
+  | Error { status = Invalid_state; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "workflow polling without a worker was accepted");
+  (match Bridge.worker_try_poll_activity runtime with
+  | Error { status = Invalid_state; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "activity polling without a worker was accepted");
+  (match Bridge.worker_complete_workflow_json runtime Bytes.empty with
+  | Error { status = Protocol; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "malformed workflow completion was accepted");
+  (match Bridge.worker_complete_activity_json runtime Bytes.empty with
+  | Error { status = Protocol; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "malformed activity completion was accepted");
   unwrap (Bridge.worker_shutdown runtime);
   unwrap (Bridge.worker_shutdown runtime);
   unwrap (Bridge.client_disconnect runtime);

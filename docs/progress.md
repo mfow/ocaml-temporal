@@ -8,6 +8,30 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-12: Private OCaml/C poll and completion bindings
+
+Status: focused C and OCaml boundary tests verified locally; the live worker
+loop and native readiness wait remain separate follow-up work.
+
+The OCaml bridge now wraps the Rust worker poll/completion ABI introduced by
+the guarded Core poll lanes. The four operations are private and typed: two
+non-blocking drains return semantic workflow or remote-activity JSON bytes, and
+two completion functions accept semantic JSON bytes and return `unit`. Rust
+status codes 9 through 11 are preserved as `Outstanding_tasks`, `Not_ready`,
+and `Protocol` rather than being collapsed into a generic worker error.
+
+The C stubs reuse the existing owned-response custom block, input-copy, and
+runtime-lock release paths. Polls do not wait for Core, and completion input is
+freed before returning. The OCaml wrapper always copies the Rust result before
+deterministic `response_free`, with the custom-block finalizer retained as a
+fallback. Focused tests exercise the new symbols before worker construction,
+malformed completion handling, status conversion, and response cleanup.
+
+This milestone does not claim that an OCaml worker can yet execute a live
+activation. The next slices must add a native readiness wait, protocol records
+on the OCaml side, and the per-run execution adapter before wiring these
+operations into the supervisor.
+
 ## 2026-07-11: Direct-style workflow orchestration API
 
 Status: full local OCaml build and test suite verified; live Temporal Core

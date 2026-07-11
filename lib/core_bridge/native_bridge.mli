@@ -9,6 +9,9 @@ type status =
   | Configuration
   | Connection
   | Worker
+  | Outstanding_tasks
+  | Not_ready
+  | Protocol
   | Unknown of int
 
 (** Error copied into the OCaml heap. Once returned, it contains no pointer to
@@ -75,6 +78,26 @@ val client_connect : runtime -> client_config -> (unit, error) result
 (** Constructs a workflow-only worker and completes Core namespace validation
     before publishing it into the owned graph. *)
 val worker_start : runtime -> worker_config -> (unit, error) result
+
+(** Takes one ready workflow activation without waiting. [Not_ready] is an
+    expected empty-lane result. Successful bytes are a closed semantic JSON
+    document copied into the OCaml heap. *)
+val worker_try_poll_workflow : runtime -> (bytes, error) result
+
+(** Validates and completes one previously leased workflow activation. The
+    completion JSON must identify the exact run returned by the poll operation.
+    Rust retains no input bytes after the call returns. *)
+val worker_complete_workflow_json :
+  runtime -> bytes -> (unit, error) result
+
+(** Takes one ready remote activity task without waiting. Successful bytes are
+    a closed semantic activity-task JSON document. *)
+val worker_try_poll_activity : runtime -> (bytes, error) result
+
+(** Validates and completes one previously leased remote activity task. The
+    opaque task token in the JSON must match the poll result exactly. *)
+val worker_complete_activity_json :
+  runtime -> bytes -> (unit, error) result
 
 (** Gracefully finalizes the worker. Absence is treated as already shut down,
     making sequential repeated calls safe. *)

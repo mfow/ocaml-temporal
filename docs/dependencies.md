@@ -15,6 +15,12 @@ and PostgreSQL. An OCaml compiler/runtime package may use
 `LGPL-2.1-or-later WITH OCaml-LGPL-linking-exception`. Other copyleft,
 source-available, non-commercial, missing, and unknown terms are rejected.
 
+`ocamlbuild.0.16.1` is an exact build-only exception for
+`LGPL-2.0-or-later WITH OCaml-LGPL-linking-exception`. It enters the locked
+closure solely because `logs.0.10.0` uses it to build; neither ocamlbuild nor
+its code is linked into or redistributed with the SDK. Other ocamlbuild
+versions and ordinary LGPL packages remain prohibited.
+
 `ocaml-options-vanilla.1` is an exact reviewed exception for OPAM's historical
 `CC0-1.0+` metadata. CC0 is permissive; the exception is package- and
 version-specific rather than a general substring match.
@@ -30,6 +36,10 @@ attributes them to the reviewed compiler distribution.
 |---|---:|---|---|---|---|---|
 | temporal-sdk | ~dev | Apache-2.0 | project | yes | yes | Project source and binary |
 | dune | 3.24.0 | MIT | build | no | no | Build system only |
+| logs | 0.10.0 | ISC | runtime | yes | no | Maintained application-configurable logging infrastructure; the SDK installs no reporter |
+| ocamlbuild | 0.16.1 | LGPL-2.0-or-later WITH OCaml-LGPL-linking-exception | build | no | no | Exact reviewed build-only linking-exception dependency of `logs` |
+| ocamlfind | 1.9.8 | MIT | build | no | no | Build-time library discovery required by `logs` |
+| topkg | 1.1.1 | ISC | build | no | no | Build-time packaging tool required by `logs` |
 | yojson | 3.0.0 | BSD-3-Clause | runtime | yes | no | Implements the optional cross-language `json/plain` codec; Temporal itself does not require JSON |
 | ocaml | 5.2.1 | LGPL-2.1-or-later WITH OCaml-LGPL-linking-exception | compiler/runtime | yes | no | Approved OCaml linking exception |
 | ocaml-base-compiler | 5.2.1 | LGPL-2.1-or-later WITH OCaml-LGPL-linking-exception | compiler | no | no | Approved OCaml linking exception |
@@ -49,9 +59,13 @@ dependency.
 
 ## Reviewed OCaml linking exceptions
 
-There are currently no ecosystem packages in this table. Only the compiler
-and runtime package names hard-coded by the policy are accepted. Adding a row
-here also requires a matching exact-name checker change and documented review.
+| Package | Exact version | License | Scope | Rationale |
+|---|---:|---|---|---|
+| ocamlbuild | 0.16.1 | LGPL-2.0-or-later WITH OCaml-LGPL-linking-exception | build only | Required to build `logs.0.10.0`; not linked or redistributed |
+
+Only the exact compiler/runtime names and the exact ocamlbuild version
+hard-coded by the policy are accepted. Adding a row here also requires a
+matching exact-name and version checker change.
 
 ## Builder image tooling
 

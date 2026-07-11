@@ -31,6 +31,25 @@ fi
 
 printf '%s\n' \
   'opam-version: "2.0"' \
+  'name: "ocamlbuild"' \
+  'version: "0.16.1"' \
+  'license: "LGPL-2.0-or-later WITH OCaml-LGPL-linking-exception"' \
+  >"$tmp/ocamlbuild.opam"
+scripts/check-licenses.sh "$tmp/ocamlbuild.opam"
+
+printf '%s\n' \
+  'opam-version: "2.0"' \
+  'name: "ocamlbuild"' \
+  'version: "0.16.0"' \
+  'license: "LGPL-2.0-or-later WITH OCaml-LGPL-linking-exception"' \
+  >"$tmp/old-ocamlbuild.opam"
+if scripts/check-licenses.sh "$tmp/old-ocamlbuild.opam"; then
+  echo "unreviewed ocamlbuild version was incorrectly accepted" >&2
+  exit 1
+fi
+
+printf '%s\n' \
+  'opam-version: "2.0"' \
   'name: "mixed"' \
   'license: [' \
   '  "MIT"' \

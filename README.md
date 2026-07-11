@@ -1,5 +1,7 @@
 # OCaml Temporal
 
+[![Build](https://github.com/mfow/ocaml-temporal/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/mfow/ocaml-temporal/actions/workflows/build.yml)
+
 OCaml Temporal is a pre-release SDK for writing durable Temporal workflows in
 modern OCaml 5. Workflow code uses ordinary functions, explicit `result`
 values, typed codecs and futures, and private algebraic effects for
@@ -39,7 +41,9 @@ make verify
 
 All commands run through Docker Compose. `make license-check` audits the exact
 locked OCaml closure, and `make clean` removes Compose services and Dune build
-output.
+output. The default development image uses OCaml 5.2; use
+`make verify SERVICE=dev-current` to run the same gate on OCaml 5.5. GitHub
+Actions runs both variants for every pull request and every push to `master`.
 
 ## Workflow style
 

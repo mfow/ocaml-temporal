@@ -1,5 +1,6 @@
 COMPOSE := docker compose
-RUN := $(COMPOSE) run --rm dev opam exec --
+SERVICE ?= dev
+RUN := $(COMPOSE) run --rm $(SERVICE) opam exec --
 
 .PHONY: build test test-unit test-runtime lint fmt license-check clean verify
 build:
@@ -16,13 +17,13 @@ test-runtime:
 
 lint:
 	$(RUN) dune build
-	$(COMPOSE) run --rm dev sh scripts/check-format.sh
+	$(COMPOSE) run --rm $(SERVICE) sh scripts/check-format.sh
 
 fmt:
-	$(COMPOSE) run --rm dev sh scripts/check-format.sh
+	$(COMPOSE) run --rm $(SERVICE) sh scripts/check-format.sh
 
 license-check:
-	$(COMPOSE) run --rm dev sh scripts/check-licenses.sh
+	$(COMPOSE) run --rm $(SERVICE) sh scripts/check-licenses.sh
 
 clean:
 	$(COMPOSE) down --remove-orphans

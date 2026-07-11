@@ -90,6 +90,11 @@ val worker_try_poll_workflow : runtime -> (bytes, error) result
 val worker_complete_workflow_json :
   runtime -> bytes -> (unit, error) result
 
+(** Returns the exact Rust-produced activation after an OCaml semantic decode
+    failure. Rust reparses and matches the complete retained activation before
+    failing Core and retiring its one-shot lease. *)
+val worker_reject_workflow_json : runtime -> bytes -> (unit, error) result
+
 (** Takes one ready remote activity task without waiting. Successful bytes are
     a closed semantic activity-task JSON document. *)
 val worker_try_poll_activity : runtime -> (bytes, error) result
@@ -98,6 +103,11 @@ val worker_try_poll_activity : runtime -> (bytes, error) result
     opaque task token in the JSON must match the poll result exactly. *)
 val worker_complete_activity_json :
   runtime -> bytes -> (unit, error) result
+
+(** Returns the exact Rust-produced task after an OCaml semantic decode
+    failure. Rust matches the complete retained task, extracts its canonical
+    opaque token, and retires that native obligation exactly once. *)
+val worker_reject_activity_json : runtime -> bytes -> (unit, error) result
 
 (** Gracefully finalizes the worker. Absence is treated as already shut down,
     making sequential repeated calls safe. *)

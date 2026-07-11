@@ -314,6 +314,15 @@ CAMLprim value ocaml_temporal_worker_complete_workflow_json(value runtime,
       runtime, input, ocaml_temporal_core_v1_worker_complete_workflow_json);
 }
 
+/* Return the exact Rust-produced activation document when the OCaml decoder
+ * cannot represent it. Rust reparses and matches the retained activation
+ * before failing Core and retiring the one-shot lease. */
+CAMLprim value ocaml_temporal_worker_reject_workflow_json(value runtime,
+                                                          value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_worker_reject_workflow_json);
+}
+
 /* Drain one ready remote activity task without waiting. Workflow and activity
  * lanes are independent in Rust, so an empty activity lane does not delay a
  * ready workflow activation. */
@@ -328,6 +337,15 @@ CAMLprim value ocaml_temporal_worker_complete_activity_json(value runtime,
                                                             value input) {
   return invoke_runtime_json(
       runtime, input, ocaml_temporal_core_v1_worker_complete_activity_json);
+}
+
+/* Return the original Rust-produced activity document after OCaml decode
+ * failure. Rust matches the retained task before the native ledger retires
+ * its exact opaque token. */
+CAMLprim value ocaml_temporal_worker_reject_activity_json(value runtime,
+                                                          value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_worker_reject_activity_json);
 }
 
 /* Gracefully stop the worker; Rust treats an absent worker as already closed. */

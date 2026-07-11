@@ -374,7 +374,7 @@ fn validate_completion(value: &ActivityCompletion) -> Result<(), ProtocolError> 
 }
 
 /// Strictly decodes one opaque canonical task token.
-fn decode_token(value: &str) -> Result<Vec<u8>, ProtocolError> {
+pub(crate) fn decode_token(value: &str) -> Result<Vec<u8>, ProtocolError> {
     let bytes = STANDARD.decode(value.as_bytes()).map_err(|_| {
         ProtocolError::invalid("$.task_token", "task token is not canonical base64")
     })?;

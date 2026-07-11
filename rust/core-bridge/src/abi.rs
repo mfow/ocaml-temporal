@@ -1,7 +1,7 @@
 use crate::worker_bridge::{PollLaneError, PollLanes, WorkerBridgeError};
 use crate::{activity_protocol, client_protocol, workflow_protocol};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -131,6 +131,7 @@ const _: () = {
 };
 
 /// Internal structured failure converted into an owned ABI diagnostic.
+#[derive(Debug)]
 struct Failure {
     status: Status,
     message: String,
@@ -145,6 +146,7 @@ pub struct Runtime {
     client: Option<Connection>,
     worker: Option<PollLanes>,
     workflow_activations: HashMap<String, workflow_protocol::Activation>,
+    activity_tasks: HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
     cleanup: std::sync::mpsc::Sender<RuntimeCleanup>,
 }
 
@@ -195,6 +197,7 @@ impl Runtime {
             client: None,
             worker: None,
             workflow_activations: HashMap::new(),
+            activity_tasks: HashMap::new(),
             cleanup,
         })
     }
@@ -408,16 +411,7 @@ impl Runtime {
                 return Err(protocol_failure(error));
             }
         };
-        if self
-            .workflow_activations
-            .insert(semantic.run_id.clone(), semantic)
-            .is_some()
-        {
-            return Err(Failure {
-                status: STATUS_INTERNAL,
-                message: "workflow activation lease was duplicated".to_owned(),
-            });
-        }
+        retain_workflow_activation(&mut self.workflow_activations, semantic)?;
         Ok(encoded.into_bytes())
     }
 
@@ -451,6 +445,19 @@ impl Runtime {
         Ok(Vec::new())
     }
 
+    /// Revalidates and retires the exact workflow activation whose OCaml
+    /// semantic decode failed after Rust handed off its lease.
+    fn reject_polled_workflow(&mut self, input: &[u8]) -> Operation {
+        let run_id = workflow_rejection_run_id(&self.workflow_activations, input)?;
+        let rejection = self.reject_workflow_delivery(&run_id);
+        // WorkerBridge retires the ledger debt even when Core rejects the
+        // generated failure. Remove the matching semantic value on the same
+        // path so an error cannot leave a stale second ownership record.
+        self.workflow_activations.remove(&run_id);
+        rejection?;
+        Ok(Vec::new())
+    }
+
     /// Takes one remote activity task from its independent lane without waiting.
     fn try_poll_activity(&mut self) -> Operation {
         let worker = self.worker.as_mut().ok_or_else(|| Failure {
@@ -469,7 +476,10 @@ impl Runtime {
             }
         };
         match activity_protocol::encode_task(&semantic) {
-            Ok(encoded) => Ok(encoded.into_bytes()),
+            Ok(encoded) => {
+                retain_activity_task(&mut self.activity_tasks, task.task_token.clone(), semantic);
+                Ok(encoded.into_bytes())
+            }
             Err(error) => {
                 self.reject_activity_delivery(&task.task_token)?;
                 Err(protocol_failure(error))
@@ -513,6 +523,8 @@ impl Runtime {
     fn complete_activity(&mut self, input: &[u8]) -> Operation {
         let text = decode_semantic_input(input)?;
         let semantic = activity_protocol::decode_completion(text).map_err(protocol_failure)?;
+        let task_token =
+            activity_protocol::decode_token(&semantic.task_token).map_err(protocol_failure)?;
         let completion =
             activity_protocol::completion_to_core(&semantic).map_err(core_conversion_failure)?;
         let worker = self.worker.as_ref().ok_or_else(|| Failure {
@@ -527,6 +539,20 @@ impl Runtime {
         handle
             .block_on(worker.complete_activity(completion))
             .map_err(worker_bridge_failure)?;
+        retire_activity_semantics(&mut self.activity_tasks, &task_token);
+        Ok(Vec::new())
+    }
+
+    /// Revalidates Rust-produced task JSON and retires the exact opaque token
+    /// when OCaml cannot represent the task after lease handoff.
+    fn reject_polled_activity(&mut self, input: &[u8]) -> Operation {
+        let task_token = activity_rejection_token(&self.activity_tasks, input)?;
+        let rejection = self.reject_activity_delivery(&task_token);
+        // The native ledger retires the completion debt even if Core rejects
+        // its generated failure, so the semantic correlation state must follow
+        // the same one-shot ownership transition.
+        retire_activity_semantics(&mut self.activity_tasks, &task_token);
+        rejection?;
         Ok(Vec::new())
     }
 
@@ -701,6 +727,88 @@ fn decode_semantic_input(input: &[u8]) -> std::result::Result<&str, Failure> {
         status: STATUS_PROTOCOL,
         message: "Temporal semantic JSON is not UTF-8".to_owned(),
     })
+}
+
+/// Records one workflow activation without allowing a duplicate poll to
+/// replace the semantic document already leased to the language runtime.
+fn retain_workflow_activation(
+    pending: &mut HashMap<String, workflow_protocol::Activation>,
+    activation: workflow_protocol::Activation,
+) -> std::result::Result<(), Failure> {
+    match pending.entry(activation.run_id.clone()) {
+        Entry::Vacant(entry) => {
+            entry.insert(activation);
+            Ok(())
+        }
+        Entry::Occupied(_) => Err(Failure {
+            status: STATUS_INTERNAL,
+            message: "workflow activation lease was duplicated".to_owned(),
+        }),
+    }
+}
+
+/// Extracts a workflow rejection identity only when the complete submitted
+/// document equals the Rust semantic value retained at the original handoff.
+fn workflow_rejection_run_id(
+    pending: &HashMap<String, workflow_protocol::Activation>,
+    input: &[u8],
+) -> std::result::Result<String, Failure> {
+    let text = decode_semantic_input(input)?;
+    let semantic = workflow_protocol::decode_activation(text).map_err(protocol_failure)?;
+    match pending.get(&semantic.run_id) {
+        Some(leased) if leased == &semantic => Ok(semantic.run_id),
+        Some(_) => Err(Failure {
+            status: STATUS_PROTOCOL,
+            message: "workflow rejection does not match the leased activation".to_owned(),
+        }),
+        None => Err(Failure {
+            status: STATUS_PROTOCOL,
+            message: "workflow rejection does not match a leased activation".to_owned(),
+        }),
+    }
+}
+
+/// Retains every semantic activity handoff under Core's opaque token. Multiple
+/// cancellation updates may share that token and must not overwrite each other.
+fn retain_activity_task(
+    pending: &mut HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
+    task_token: Vec<u8>,
+    task: activity_protocol::ActivityTask,
+) {
+    pending.entry(task_token).or_default().push(task);
+}
+
+/// Clears all handoff documents for one activity token when its single native
+/// completion debt is retired. Cancellation updates add documents but, by
+/// Temporal contract, never add another ledger obligation for the same token.
+fn retire_activity_semantics(
+    pending: &mut HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
+    task_token: &[u8],
+) {
+    pending.remove(task_token);
+}
+
+/// Extracts the canonical opaque activity token only when the complete task
+/// document matches one retained at a successful Rust-to-OCaml handoff.
+fn activity_rejection_token(
+    pending: &HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
+    input: &[u8],
+) -> std::result::Result<Vec<u8>, Failure> {
+    let text = decode_semantic_input(input)?;
+    let semantic = activity_protocol::decode_task(text).map_err(protocol_failure)?;
+    let task_token =
+        activity_protocol::decode_token(&semantic.task_token).map_err(protocol_failure)?;
+    match pending.get(&task_token) {
+        Some(tasks) if tasks.contains(&semantic) => Ok(task_token),
+        Some(_) => Err(Failure {
+            status: STATUS_PROTOCOL,
+            message: "activity rejection does not match a leased task".to_owned(),
+        }),
+        None => Err(Failure {
+            status: STATUS_PROTOCOL,
+            message: "activity rejection does not match a leased task token".to_owned(),
+        }),
+    }
 }
 
 impl WorkerConfigInput {
@@ -1247,6 +1355,36 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_complete_workflow_json(
     }
 }
 
+/// Reject one Rust-produced workflow activation that OCaml could not decode.
+///
+/// Rust strictly reparses the original poll document and requires its complete
+/// semantic activation to equal the one-shot value retained for that run.
+///
+/// # Safety
+///
+/// The runtime and output contracts match the workflow poll operation. A
+/// nonzero input length requires that many readable bytes for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_reject_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .reject_polled_workflow(input)
+        })
+    }
+}
+
 /// Non-blockingly take one validated remote activity task JSON document.
 ///
 /// # Safety
@@ -1294,6 +1432,37 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_complete_activity_json(
                     message: "runtime pointer is null".to_owned(),
                 })?
                 .complete_activity(input)
+        })
+    }
+}
+
+/// Reject one Rust-produced remote activity task that OCaml could not decode.
+///
+/// The closed decoder requires complete equality with a retained handoff task
+/// before recovering its bounded opaque token. The native ledger makes
+/// rejection one-shot and refuses unknown or repeated tokens.
+///
+/// # Safety
+///
+/// The runtime and output contracts match the activity poll operation. A
+/// nonzero input length requires that many readable bytes for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_reject_activity_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .reject_polled_activity(input)
         })
     }
 }
@@ -1488,3 +1657,7 @@ pub fn test_runtime_cleanup_counts() -> (u64, u64) {
         RUNTIMES_CLEANED.load(Ordering::Acquire),
     )
 }
+
+#[cfg(test)]
+#[path = "../tests/support/abi_rejection.rs"]
+mod rejection_tests;

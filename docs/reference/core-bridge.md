@@ -137,16 +137,18 @@ allocation made by the other side.
 
 ### Private OCaml worker operations
 
-`Temporal_core_bridge.Native_bridge` exposes four private wrappers over the
-poll/completion symbols. They are used by the future native worker adapter and
+`Temporal_core_bridge.Native_bridge` exposes six private wrappers over the
+poll, completion, and rejection symbols. They are used by the native worker adapter and
 are not part of the public workflow-authoring API:
 
 | OCaml operation | Native behavior | Successful value |
 | --- | --- | --- |
 | `worker_try_poll_workflow` | Drain one already-ready workflow activation without waiting | semantic workflow JSON bytes |
 | `worker_complete_workflow_json` | Validate and complete one leased workflow activation | `unit` |
+| `worker_reject_workflow_json` | Retire the lease when OCaml cannot decode the exact Rust-produced activation document | `unit` |
 | `worker_try_poll_activity` | Drain one already-ready remote activity task without waiting | semantic activity JSON bytes |
 | `worker_complete_activity_json` | Validate and complete one leased activity task | `unit` |
+| `worker_reject_activity_json` | Retire the lease when OCaml cannot decode the exact Rust-produced activity document | `unit` |
 
 The two poll functions return `Error { status = Not_ready; _ }` when their
 independent Rust ready queues are empty. This is normal scheduling state, not a
@@ -157,6 +159,35 @@ runtime lock for the synchronous Rust submission, then free that copy before
 returning. Rust validates the complete JSON document and checks the run ID or
 opaque activity token against its ownership ledger, so a duplicate or stale
 completion cannot silently reach Core.
+
+If OCaml rejects poll bytes, the supervisor returns that same byte document to
+the corresponding rejection operation. Rust bounds and strictly decodes it
+again; callers never supply a guessed run ID or task token. A workflow document
+must equal the complete semantic activation retained at handoff. An activity
+document must equal one complete semantic task retained under its canonical
+opaque token; cancellation updates using the same token are retained alongside
+the earlier task rather than overwriting it. Those documents still represent
+one ledger obligation per token, so successful completion or rejection retires
+that obligation and clears every retained document for the token. Changed identity or content is a
+protocol failure and cannot retire the real lease. The malformed-byte case is
+defensive: successful Rust poll encoding cannot produce malformed JSON, but
+both language decoders and both rejection entry points still validate it.
+
+`Sdk_supervisor.Native` is the private OCaml adapter for these ABI version 1
+operations. It exposes a typed GADT rather than raw JSON bytes:
+
+| Supervisor operation | Result and boundary behavior |
+| --- | --- |
+| `Try_poll_workflow` | `Workflow_protocol.activation option`; `None` means the workflow lane was empty at that instant |
+| `Complete_workflow completion` | canonical strict JSON is generated and reparsed before the native completion call |
+| `Try_poll_activity` | `Activity_protocol.task option`; `None` means the activity lane was empty at that instant |
+| `Complete_activity completion` | the opaque token and result are validated before the native completion call |
+
+All four operations enter the same bounded mailbox as client and worker
+lifecycle changes. A poll, completion, worker shutdown, and runtime shutdown
+therefore cannot race native graph state. The pure protocol conversion module
+is visible only from the private supervisor library so both serialization
+directions can be tested without constructing a Core worker.
 
 These wrappers deliberately return the same owned-response shape as lifecycle
 operations. The OCaml `decode` helper copies success or diagnostic bytes and
@@ -238,6 +269,12 @@ enters OCaml and no long Core poll occupies the supervisor Domain. Keeping the
 lanes independent prevents an idle activity poll from delaying workflow
 completion, or vice versa.
 
+ABI version 1 has no readiness-wait or readiness-event symbol. Until one is
+added, the supervisor exposes only nonblocking `Try_poll_workflow` and
+`Try_poll_activity`. Callers may treat `Ok None` as a yield point, but must not
+turn it into a blocking condition wait on a workflow scheduler fiber. The
+supervisor does not invent periodic sleeping or a second owner for this gap.
+
 One mutex-protected ledger is the authority for every task Core expects the
 language runtime to complete. A task enters the ledger before its ready message
 is queued, changes from Rust-owned ready state to OCaml-leased state at the
@@ -253,6 +290,15 @@ lease on every outcome. A rejected generated completion remains a fatal worker
 error, but it cannot also leave a fabricated language-side debt that blocks
 shutdown forever. Regression tests cover this rule independently for workflow
 and activity conversion failures.
+
+There is also a post-handoff decode-failure path for version or implementation
+drift between the two strict decoders. OCaml preserves its original protocol
+error, returns the exact Rust-produced bytes to the private rejection ABI, and
+never reflects those bytes in diagnostics. Rust accepts rejection only after
+full semantic equality with retained handoff state. It then generates the Core
+failure and retires both the ledger debt and retained semantic state even if
+Core reports that generated failure as unsuccessful. This prevents shutdown
+from waiting forever while keeping the original decode failure primary.
 
 Shutdown first closes ledger admission, then asks Core to wake both polls, then
 joins both lane tasks. Existing ready and leased work remains completable while

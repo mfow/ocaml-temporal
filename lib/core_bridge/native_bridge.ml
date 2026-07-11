@@ -94,11 +94,17 @@ external worker_try_poll_workflow_raw : runtime -> response
 external worker_complete_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_complete_workflow_json"
 
+external worker_reject_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_worker_reject_workflow_json"
+
 external worker_try_poll_activity_raw : runtime -> response
   = "ocaml_temporal_worker_try_poll_activity"
 
 external worker_complete_activity_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_complete_activity_json"
+
+external worker_reject_activity_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_worker_reject_activity_json"
 
 external worker_shutdown_raw : runtime -> response
   = "ocaml_temporal_worker_shutdown"
@@ -351,6 +357,14 @@ let worker_complete_workflow_json runtime input =
       Result.map (fun _ -> ())
         (decode (worker_complete_workflow_json_raw runtime input)))
 
+(** Returns an activation document produced by Rust when OCaml's semantic
+    decoder cannot accept it. Rust reparses and compares the complete value
+    with its retained activation before retiring the one-shot lease. *)
+let worker_reject_workflow_json runtime input =
+  bridge_call "worker_reject_workflow_json" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (worker_reject_workflow_json_raw runtime input)))
+
 (** Takes one already-ready remote activity task without waiting for Core. The
     returned bytes contain the closed activity-task JSON document; activity
     cancellation remains correlated by its opaque token in that document. *)
@@ -365,6 +379,14 @@ let worker_complete_activity_json runtime input =
   bridge_call "worker_complete_activity_json" (fun () ->
       Result.map (fun _ -> ())
         (decode (worker_complete_activity_json_raw runtime input)))
+
+(** Returns a Rust-produced activity-task document after OCaml decode failure.
+    Rust reparses and compares the complete task with retained handoff state;
+    only then may its opaque-token obligation be retired. *)
+let worker_reject_activity_json runtime input =
+  bridge_call "worker_reject_activity_json" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (worker_reject_activity_json_raw runtime input)))
 
 (** Gracefully closes the worker. Rust treats repetition as success. *)
 let worker_shutdown runtime =

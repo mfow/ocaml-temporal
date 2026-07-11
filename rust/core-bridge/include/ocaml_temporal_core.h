@@ -123,6 +123,12 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_worker_complete_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* Reparse and reject the exact Rust-produced activation document when the
+ * OCaml semantic decoder cannot accept it after lease handoff. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_reject_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
 /* Non-blocking task handoff for the independently guarded remote-activity
  * lane. Local activities and Nexus are disabled by worker configuration. */
 ocaml_temporal_core_status ocaml_temporal_core_v1_worker_try_poll_activity(
@@ -131,6 +137,12 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_worker_try_poll_activity(
 
 /* Complete exactly one previously handed-off remote activity task. */
 ocaml_temporal_core_status ocaml_temporal_core_v1_worker_complete_activity_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Reparse and reject the exact Rust-produced activity-task document when the
+ * OCaml semantic decoder cannot accept it after lease handoff. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_reject_activity_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 

@@ -54,10 +54,15 @@ The test intentionally removes this Compose project's Temporal volume before
 and after the run. It is a database/frontend readiness test, not a workflow
 test. A later milestone will add separate OCaml client and worker containers,
 then use this same target to prove workflow execution against the real cluster.
+On every pull request and push to `master`, GitHub Actions runs this target once
+in a standalone Ubuntu job labelled for OCaml 5.5. It is intentionally absent
+from the multi-version build matrix because starting a real database and
+Temporal cluster once provides the same infrastructure evidence.
 
 If startup fails, `make temporal-logs` prints the last 200 lines from
 PostgreSQL, schema migration, and Temporal Server. Image pulls can be large;
-check local storage before the first run.
+check local storage before the first run. The integration target prints those
+logs automatically before cleanup when a readiness command fails.
 
 ## Image and platform policy
 

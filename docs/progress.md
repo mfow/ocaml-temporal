@@ -654,6 +654,12 @@ and clean-volume integration-smoke targets. Health validation goes beyond a
 port probe: it queries both Temporal schema-version tables, invokes the
 frontend's gRPC cluster-health API, and verifies the test namespace.
 
+GitHub Actions now runs that live smoke once in a standalone Ubuntu job with
+`OCAML_VERSION=5.5`. It is deliberately outside the OCaml version and CPU
+architecture matrix so every change proves the real server/database path
+without starting eight equivalent clusters. The same lane will execute the
+OCaml client and worker when those containers are implemented.
+
 Local evidence:
 
 - The configuration smoke first failed against the development-only Compose

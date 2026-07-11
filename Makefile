@@ -78,8 +78,20 @@ temporal-clean:
 
 test-temporal-integration: test-temporal-config
 	@set -eu; \
+	cleanup() { \
+		status=$$?; \
+		trap - EXIT HUP INT TERM; \
+		if [ "$$status" -ne 0 ]; then \
+			$(MAKE) temporal-logs || true; \
+		fi; \
+		$(MAKE) temporal-clean || true; \
+		exit "$$status"; \
+	}; \
 	$(MAKE) temporal-clean; \
-	trap '$(MAKE) temporal-clean' EXIT HUP INT TERM; \
+	trap cleanup EXIT; \
+	trap 'exit 129' HUP; \
+	trap 'exit 130' INT; \
+	trap 'exit 143' TERM; \
 	$(MAKE) temporal-start; \
 	$(MAKE) temporal-health
 

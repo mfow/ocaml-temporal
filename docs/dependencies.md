@@ -128,9 +128,12 @@ Rust integration tests.
 
 The bridge declares `serde` 1.0.228 (MIT OR Apache-2.0), `serde_json` 1.0.150
 (MIT OR Apache-2.0), and `base64` 0.22.1 (MIT OR Apache-2.0) directly for its
-private control protocol. All three were already present at those exact
-versions in the locked Temporal Core closure, so this changes package ownership
-metadata but adds no package to the 319-dependency graph.
+private control protocol. The semantic adapter additionally declares the
+first-party `temporalio-protos` package at the same immutable Core revision and
+`prost-wkt-types` 0.7.1 (Apache-2.0) for exact protobuf timestamps and
+durations. Every package was already present at the exact locked version in the
+Temporal Core closure, so these declarations change package ownership metadata
+but add no package to the 319-dependency graph.
 
 Dependabot checks the Cargo workspace under `/rust` every Monday and targets
 updates at `master`. OCaml and OPAM are intentionally absent because GitHub

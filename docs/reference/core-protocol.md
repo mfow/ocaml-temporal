@@ -11,11 +11,12 @@ receiver returns exactly one terminal `response` or `error`, copying the
 request's `correlation_id` and `operation`. A request remains pending until that
 terminal message arrives or the owning SDK instance shuts down.
 
-This foundation validates transport structure. A future worker operation must
-define and validate a closed `body` object in both languages before changing
-workflow or Core state. No current operation polls or completes Temporal work.
-Rust alone reads and writes Temporal/Core protobuf. OCaml sees validated JSON
-control values and decoded opaque payload bytes.
+This foundation validates transport structure. The first semantic worker slice
+also defines closed workflow activation and completion documents in both
+languages. Rust alone reads and writes Temporal/Core protobuf; OCaml sees
+validated semantic records, variants, exact time components, and opaque payload
+bytes. The native worker poll/completion operations that carry these documents
+are a separate lifecycle milestone and are not implemented yet.
 
 ## Startup compatibility
 
@@ -59,23 +60,47 @@ escape their boundaries.
 
 Both incoming and outgoing paths enforce:
 
+Required-nullable fields must be explicitly present. Omission is malformed and
+is never normalized into JSON `null`; only fields documented as compatibility
+extensions may be absent.
+
 | Resource | Limit |
 |---|---:|
-| Complete UTF-8 document | 1,048,576 bytes |
-| Object/array nesting | 16 levels, outer value included |
+| Complete UTF-8 document | 201,326,592 bytes (192 MiB) |
+| Object/array nesting | 128 levels, outer value included |
 | One decoded string or object key | 65,536 UTF-8 bytes |
-| Members in one object | 256 |
-| Elements in one array | 256 |
-| Values in the complete tree | 4,096 |
-| Decoded opaque payload | 262,144 bytes |
+| Members in one object | 201,326,592 (document-derived guard) |
+| Elements in one array | 201,326,592 (document-derived guard) |
+| Values in the complete tree | 201,326,592 (document-derived guard) |
+| One decoded opaque byte field | 134,217,728 bytes (128 MiB) |
 | Error message | 1,024 UTF-8 bytes |
 
-The 65,536-byte string limit applies to control envelopes. The closed opaque
-payload wrapper is the only exception: its `data` field may contain up to
-349,528 ASCII base64 bytes, which is the canonical padded encoding of the
-262,144-byte decoded limit. Its `encoding` field and exact two-field object
-shape are validated immediately; this allowance does not apply to envelope
-strings or future operation bodies.
+The 65,536-byte string limit applies to control envelopes and semantic text.
+Closed payload byte wrappers are the only exception: each `data` field may
+contain up to 178,956,972 ASCII base64 bytes, the canonical padded encoding of
+the 128 MiB per-field ceiling. The 192 MiB document ceiling applies to the
+whole JSON document, so several byte fields remain collectively bounded rather
+than each receiving a separate document allowance.
+
+These are private bridge safety limits, not Temporal semantic limits. Temporal
+Server applies namespace-configurable identifier and blob policies. The
+per-field ceiling follows pinned Core's default 128 MiB incoming gRPC decoding
+limit, while the document ceiling provides base64 and structural headroom for
+that transport boundary. The parser rejects an oversized document before JSON
+tree construction, checks encoded base64 length before decoding, and checks
+Core payload byte lengths before cloning them into semantic values. Making
+these bridge ceilings configurable per SDK instance remains future work.
+
+The collection and parsed-node numbers are no-op consistency guards derived
+from the document byte ceiling: every member, element, and value necessarily
+occupies at least one source byte. They do not add a smaller job, command,
+header, or payload-count policy, and post-parse node validation is not treated
+as memory protection; the pre-parse document check owns that role. The
+128-level nesting limit instead matches serde_json's enabled default recursion
+guard, keeping both implementations within the Rust parser's stack-safety
+boundary. It permits realistic recursive failure chains beyond the former
+16-level limit. An iterative parser or configurable depth policy is a future
+option; unbounded recursive parsing is deliberately not enabled.
 
 Numbers must be integral and fit the common signed 64-bit range. Domains that
 may exceed portable JSON integers must use validated decimal strings in their
@@ -118,11 +143,71 @@ path, limit name, and stable error code. They must never contain source JSON,
 payload base64, decoded payload bytes, workflow inputs/results, auth material,
 or Core diagnostics that might embed those values.
 
+## Workflow activation and completion semantics
+
+An activation is a closed object sent from Rust to OCaml. It identifies one
+`run_id`, carries exact `timestamp` seconds and nanoseconds for ordinary work,
+and retains Core's replay state, history state, and job order. Core's synthetic
+cache-eviction constructor deliberately omits the timestamp, represented as
+JSON `null`; no other activation may omit it. The supported job slice is initialization,
+remote-activity resolution, timer firing, workflow cancellation, and cache
+eviction. An eviction must be the only job in its activation. Initialization,
+when present, must occur exactly once and as the first job. Sequence numbers
+and history length are unsigned 32-bit integers. Sequence zero is valid because
+Core defines the value as language-SDK supplied and its pinned tests exercise
+zero for timers and activities. Randomness seeds and history
+sizes are canonical unsigned 64-bit decimal strings so no JSON implementation
+can round them through a floating-point number.
+
+Workflow initialization preserves arguments, headers, identity, parent and root
+execution identity for children, execution/run/task timeouts, first execution
+run ID, start time, priority, attempt, and randomness seed. Priority's `f32`
+fairness weight is carried as its unsigned IEEE-754 bit pattern so strict
+integral JSON preserves every value exactly. Activation-wide internal flags, history size, continue-as-new
+suggestions, deployment identity, SDK version, and target-deployment change are
+also preserved. Optional `context` and `metadata` objects may be absent for
+older synthetic fixtures, but when present their nested shapes are closed.
+Other Core initialization fields outside this first slice are rejected as
+`unsupported`; they are never discarded silently.
+
+A completion is a closed object sent from OCaml to Rust. Its ordered commands
+cover scheduling and requesting cancellation of remote activities, starting
+and cancelling timers, and completing, failing, or cancelling the workflow.
+Scheduled activities require at least a schedule-to-close or start-to-close
+timeout. A terminal workflow command may occur at most once and must be last.
+When acknowledging an eviction, the completion command list must be empty and
+the run ID must match the activation.
+
+Temporal identifiers must be nonempty but use the protocol's 65,536-byte text
+safety ceiling rather than an invented 255-byte server policy; the server's
+identifier policy is configurable. Application failure `type` is bounded text
+and may be empty. Activity failure event IDs are nonnegative and worker
+identity is bounded text. Durations use nonnegative seconds plus 0 through
+999,999,999 nanoseconds;
+timestamps allow signed seconds with the same nanosecond range. Payload metadata
+and initialization header maps normalize keys lexicographically on both sides.
+Payload values preserve opaque data and metadata bytes using the canonical
+base64 wrapper. Supported structured failures are application, cancellation,
+and activity failures, including recursive causes and retry state. Unknown
+protobuf oneofs, enum values, external payload references, unsupported failure
+variants, or omitted Core fields with non-default values fail conversion.
+
+The Rust conversion functions are the only protobuf boundary. They convert
+official pinned Core activations to semantic values and semantic completions
+back to official Core values. Core's `is_local` activity-resolution flag is not
+represented because the pinned Core contract explicitly says language SDKs do
+not need to distinguish it; every other omitted value is checked before
+conversion.
+
 ## Schemas and fixtures
 
 Draft 2020-12 schemas live under [`docs/schemas/bridge`](../schemas/bridge/).
 Shared positive and malformed fixtures under `test/bridge/fixtures/protocol`
-drive both OCaml and Rust tests. Runtime validators remain authoritative for
+drive the envelope tests. The bilateral activation/completion fixtures live
+under `test/bridge/fixtures/workflow-protocol`; their schemas are
+`workflow-activation.schema.json`, `workflow-completion.schema.json`,
+`temporal-payload.schema.json`, and `temporal-failure.schema.json`. Runtime
+validators remain authoritative for
 duplicate keys, decoded payload length, aggregate node count, normalization,
 privacy-safe errors, and every UTF-8 byte limit. JSON Schema `maxLength` counts
 Unicode characters rather than encoded UTF-8 bytes, so it documents a useful

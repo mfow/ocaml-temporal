@@ -1,7 +1,8 @@
 use std::{fs, path::PathBuf};
 
 use ocaml_temporal_core_bridge::protocol::{
-    self, COMPATIBILITY_VERSION, Envelope, MAX_DOCUMENT_BYTES, MAX_PAYLOAD_BYTES, Request,
+    self, COMPATIBILITY_VERSION, Envelope, MAX_COLLECTION_ITEMS, MAX_DEPTH, MAX_DOCUMENT_BYTES,
+    MAX_NODES, MAX_PAYLOAD_BYTES, Request,
 };
 
 /// Locates a shared fixture from the Rust crate within the repository tree.
@@ -63,7 +64,9 @@ fn validates_and_normalizes_payloads() {
         protocol::decode_payload(&protocol::encode_payload(&all_bytes).unwrap()).unwrap(),
         all_bytes
     );
-    let maximum = (0..MAX_PAYLOAD_BYTES)
+    // Exercise the server-default blob-limit scale without forcing every CI
+    // matrix cell to allocate the bridge's 128 MiB transport safety maximum.
+    let maximum = (0..2 * 1024 * 1024)
         .map(|index| (index & usize::from(u8::MAX)) as u8)
         .collect::<Vec<_>>();
     assert_eq!(
@@ -86,7 +89,7 @@ fn validates_and_normalizes_payloads() {
 #[test]
 fn enforces_resource_limits() {
     let prefix = r#"{"kind":"request","correlation_id":"0123456789abcdef0123456789abcdef","operation":"worker.poll","body":"#;
-    let deep = format!("{prefix}{}{}{}", "[".repeat(17), "]".repeat(17), "}");
+    let deep = format!("{prefix}{}{}{}", "[".repeat(129), "]".repeat(129), "}");
     let long_string = format!("{prefix}{{\"value\":\"{}\"}}}}", "a".repeat(65_537));
     let escaped_long_string = format!("{prefix}{{\"value\":\"{}\"}}}}", "\\\"".repeat(65_537));
     let long_array = format!(
@@ -98,9 +101,16 @@ fn enforces_resource_limits() {
     assert!(protocol::decode(&deep).is_err());
     assert!(protocol::decode(&long_string).is_err());
     assert!(protocol::decode(&escaped_long_string).is_err());
-    assert!(protocol::decode(&long_array).is_err());
-    assert!(protocol::decode(&" ".repeat(MAX_DOCUMENT_BYTES + 1)).is_err());
-    assert!(protocol::encode_payload(&vec![0; MAX_PAYLOAD_BYTES + 1]).is_err());
+    assert!(protocol::decode(&long_array).is_ok());
+    assert_eq!(MAX_DEPTH, 128);
+    assert_eq!(MAX_COLLECTION_ITEMS, MAX_DOCUMENT_BYTES);
+    assert_eq!(MAX_NODES, MAX_DOCUMENT_BYTES);
+    assert_eq!(MAX_DOCUMENT_BYTES, 192 * 1024 * 1024);
+    assert_eq!(MAX_PAYLOAD_BYTES, 128 * 1024 * 1024);
+    let maximum_base64_bytes = MAX_PAYLOAD_BYTES.div_ceil(3) * 4;
+    assert_eq!(maximum_base64_bytes, 178_956_972);
+    assert!(MAX_DOCUMENT_BYTES > maximum_base64_bytes);
+    assert!(MAX_DOCUMENT_BYTES < maximum_base64_bytes * 2);
 }
 
 /// Checks the once-per-runtime compatibility number and sender-side validation.
@@ -114,4 +124,17 @@ fn checks_compatibility_and_outgoing_values() {
         body: protocol::JsonValue::Object(Vec::new()),
     });
     assert!(protocol::encode(&invalid).is_err());
+}
+
+/// Proves semantic protocol modules can reuse the strict object-only boundary.
+#[test]
+fn validates_operation_specific_objects() {
+    assert!(protocol::decode_object(r#"{"outer":{"value":1,"value":2}}"#).is_err());
+    let value = protocol::decode_object(r#" {"z":2,"a":{"y":1}} "#).unwrap();
+    assert_eq!(
+        protocol::encode_object(&value).unwrap(),
+        r#"{"a":{"y":1},"z":2}"#
+    );
+    assert!(protocol::decode_object("[]").is_err());
+    assert!(protocol::encode_object(&protocol::JsonValue::Array(Vec::new())).is_err());
 }

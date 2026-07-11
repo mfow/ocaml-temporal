@@ -5,6 +5,7 @@
 
 mod abi;
 pub mod protocol;
+pub mod workflow_protocol;
 
 pub use abi::*;
 

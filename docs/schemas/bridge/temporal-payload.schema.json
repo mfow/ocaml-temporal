@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/temporal-payload.schema.json",
+  "title": "Temporal payload",
+  "description": "A binary Temporal payload used only by the private OCaml/Rust workflow protocol.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["metadata", "data"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "maxProperties": 201326592,
+      "propertyNames": {"minLength": 1, "maxLength": 65536},
+      "additionalProperties": {"$ref": "#/$defs/bytes"}
+    },
+    "data": {"$ref": "#/$defs/bytes"}
+  },
+  "$defs": {
+    "bytes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encoding", "data"],
+      "properties": {
+        "encoding": {"const": "base64"},
+        "data": {
+          "type": "string",
+          "maxLength": 178956972,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        }
+      }
+    }
+  }
+}

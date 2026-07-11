@@ -1,0 +1,1 @@
+{"run_id":"r","timestamp":{"seconds":0,"nanoseconds":0},"is_replaying":false,"history_length":0,"jobs":[{"kind":"fire_timer","seq":1},{"kind":"remove_from_cache","message":"x","reason":"fatal"}]}

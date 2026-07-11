@@ -16,10 +16,10 @@
         { "type": "boolean" },
         { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
         { "type": "string", "maxLength": 65536 },
-        { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/jsonValue" } },
+        { "type": "array", "maxItems": 201326592, "items": { "$ref": "#/$defs/jsonValue" } },
         {
           "type": "object",
-          "maxProperties": 256,
+          "maxProperties": 201326592,
           "propertyNames": { "maxLength": 65536 },
           "additionalProperties": { "$ref": "#/$defs/jsonValue" }
         }
@@ -27,7 +27,7 @@
     },
     "body": {
       "type": "object",
-      "maxProperties": 256,
+      "maxProperties": 201326592,
       "propertyNames": { "maxLength": 65536 },
       "additionalProperties": { "$ref": "#/$defs/jsonValue" }
     },

@@ -1,10 +1,13 @@
 let compatibility_version = 1l
-let max_document_bytes = 1_048_576
-let max_depth = 16
+let max_document_bytes = 192 * 1024 * 1024
+let max_depth = 128
 let max_string_bytes = 65_536
-let max_collection_items = 256
-let max_nodes = 4_096
-let max_payload_bytes = 262_144
+(* A collection member and a parsed node each require at least one byte in the
+   already-bounded source document. These derived ceilings therefore retain a
+   finite validation invariant without narrowing the document limit. *)
+let max_collection_items = max_document_bytes
+let max_nodes = max_document_bytes
+let max_payload_bytes = 128 * 1024 * 1024
 
 (** Maximum canonical padded base64 bytes for one maximum-sized payload. *)
 let max_payload_base64_bytes = (max_payload_bytes + 2) / 3 * 4
@@ -390,6 +393,58 @@ let encode envelope =
     then Ok output
     else Error (invalid "outgoing envelope did not round trip")
   with _ -> Error (invalid "could not encode outgoing envelope")
+
+(** Strictly decodes one closed-operation candidate as an object. Semantic
+    modules apply their own exact-field rules before returning a typed value. *)
+let decode_object input =
+  try
+    let* value = parse_strict input in
+    match value with
+    | `Assoc _ -> Ok value
+    | _ -> Error (invalid "operation body must be a JSON object")
+  with _ -> Error (invalid "invalid strict JSON document")
+
+(** Normalizes and reparses an operation object so sender-side construction
+    receives the same strict checks as peer-supplied JSON. *)
+let encode_object value =
+  try
+    match value with
+    | `Assoc _ ->
+        let* () = validate_json value in
+        let output = Yojson.Safe.to_string (normalize_json value) in
+        let* reparsed = decode_object output in
+        if
+          String.equal
+            (Yojson.Safe.to_string (normalize_json reparsed))
+            output
+        then Ok output
+        else Error (invalid "outgoing object did not round trip")
+    | _ -> Error (invalid "operation body must be a JSON object")
+  with _ -> Error (invalid "could not encode outgoing object")
+
+(** Parses a semantic object with the payload base64 ceiling. Callers retain
+    the ordinary string ceiling for all non-payload fields. *)
+let decode_payload_object input =
+  try
+    let* value = parse_strict ~string_limit:max_payload_base64_bytes input in
+    match value with
+    | `Assoc _ -> Ok value
+    | _ -> Error (invalid "operation body must be a JSON object")
+  with _ -> Error (invalid "invalid strict JSON document")
+
+(** Normalizes and reparses a semantic object containing payload wrappers. *)
+let encode_payload_object value =
+  try
+    match value with
+    | `Assoc _ ->
+        let* () = validate_json ~string_limit:max_payload_base64_bytes value in
+        let output = Yojson.Safe.to_string (normalize_json value) in
+        let* reparsed = decode_payload_object output in
+        if String.equal (Yojson.Safe.to_string (normalize_json reparsed)) output
+        then Ok output
+        else Error (invalid "outgoing object did not round trip")
+    | _ -> Error (invalid "operation body must be a JSON object")
+  with _ -> Error (invalid "could not encode outgoing object")
 
 (** Canonical RFC 4648 alphabet used by the private payload codec. *)
 let base64_alphabet =

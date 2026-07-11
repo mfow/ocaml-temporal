@@ -1196,8 +1196,10 @@ name = "ocaml-temporal-core-bridge"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "prost-wkt-types",
  "serde",
  "serde_json",
+ "temporalio-protos",
  "temporalio-sdk-core",
 ]
 

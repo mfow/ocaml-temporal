@@ -26,6 +26,24 @@ The canonical header is
 assertions protect the status width and field ordering of the documented
 `repr(C)` structures.
 
+## Semantic workflow adapter
+
+`rust/core-bridge/src/workflow_protocol.rs` is the Rust-only protobuf boundary
+for the first activation/completion slice. It converts pinned official Core
+types to a closed semantic model, serializes that model as strict JSON, and
+performs the inverse conversion for workflow commands. The private OCaml module
+`Temporal_protocol.Workflow_protocol` implements the same model and validation
+without importing protobuf definitions.
+
+Both encoders reparse their own output before it can cross the native boundary.
+Both decoders reject duplicate or unknown fields, unknown variants, numeric
+range violations, non-canonical base64, invalid workflow invariants, and
+oversized values. Core fields not represented by the current semantic slice are
+accepted only at their documented default; a non-default value returns a typed
+`Unsupported` conversion error rather than being lost. See the
+[protocol reference](core-protocol.md), machine-readable schemas, and
+[ADR 0006](../decisions/0006-first-workflow-semantic-protocol.md).
+
 ## Result and buffer ownership
 
 Every fallible operation accepts a writable result pointer and returns the same

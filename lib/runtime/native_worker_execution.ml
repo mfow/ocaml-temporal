@@ -458,7 +458,8 @@ module Make (Supervisor : SUPERVISOR) = struct
             | Some (Run { execution; _ }) -> (
                 match Native_execution.activate execution activation with
                 | Error error ->
-                    retire_with_failure adapter activation (native_error error)
+                    retire_with_failure ~remove_run:true adapter activation
+                      (native_error error)
                 | Ok completion ->
                     submit_completion adapter activation completion
                       ~run_id:activation.run_id)))
@@ -471,7 +472,9 @@ module Make (Supervisor : SUPERVISOR) = struct
   let process_one adapter activation : (outcome, error_view) result =
     try process_one_unsafe adapter activation with exception_ ->
       let error = exception_error ~path:"$.workflow_execution" exception_ in
-      retire_with_failure adapter activation error
+      retire_with_failure
+        ~remove_run:(Run_map.mem activation.run_id adapter.runs)
+        adapter activation error
 
   (** Serializes one poll/execute/complete transaction. A mutex is required in
       addition to supervisor serialization because the run map and scheduler

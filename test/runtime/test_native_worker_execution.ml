@@ -9,6 +9,10 @@
 module Protocol = Temporal_protocol.Workflow_protocol
 module Adapter = Temporal_runtime.Native_worker_execution
 
+(** Keeps workflow fixture sequencing on the same typed-result path as the
+    production adapter. *)
+let ( let* ) = Result.bind
+
 (** A source-side error used by the deterministic semantic queue. *)
 type source_error = { code : string; message : string }
 
@@ -311,6 +315,50 @@ let test_failure_completion_exception_is_typed () =
   if Hashtbl.length supervisor.leased <> 1 then
     failwith "failed failure-completion incorrectly claimed lease retirement"
 
+(** A later activation can fail after a run has already suspended. Once that
+    failure is acknowledged, the stale execution must be removed just like a
+    failure during initialization; otherwise a subsequent activation could
+    resume an execution that Temporal has already retired. *)
+let test_resumed_failure_removes_run () =
+  let supervisor = fake_supervisor () in
+  let activity =
+    Temporal.Activity.remote ~name:"native_worker_resumed_activity"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_resumed_failure"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let* () = Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L) in
+        Temporal.Activity.execute activity ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-resumed-failure"
+       [ initialize ~run_id:"run-resumed-failure"
+           ~workflow_type:"native_worker_resumed_failure" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  let timer_seq =
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_timer { seq; _ } ] -> seq
+    | _ -> failwith "resumed failure workflow did not emit a timer"
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-resumed-failure"
+       [ Protocol.Fire_timer { seq = timer_seq } ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Rejected { lease_retired = true; error; _ })
+    when String.equal error.code "unsupported" -> ()
+  | _ -> failwith "resumed unsupported command was not rejected"
+  end;
+  enqueue supervisor
+    (activation ~run_id:"run-resumed-failure"
+       [ Protocol.Fire_timer { seq = timer_seq } ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Rejected { lease_retired = true; error; _ })
+    when String.equal error.code "unknown_run_id" -> ()
+  | _ -> failwith "resumed failed run remained in the execution registry"
+  end
+
 (** An activity command is intentionally not guessed into the first semantic
     protocol. The adapter submits a typed failure completion and reports a
     rejected outcome instead of dropping the leased activation. *)
@@ -409,6 +457,7 @@ let () =
   test_eviction ();
   test_unexpected_completion_exception_is_retried ();
   test_failure_completion_exception_is_typed ();
+  test_resumed_failure_removes_run ();
   test_unsupported_command_retires_lease ();
   test_unknown_run_retires_lease ();
   test_malformed_activation_error_is_typed ();

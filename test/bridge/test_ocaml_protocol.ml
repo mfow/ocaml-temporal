@@ -17,12 +17,27 @@ let unwrap = function
   | Ok value -> value
   | Error error ->
       let view = Protocol.error_view error in
-      Alcotest.failf "%s at %s: %s" view.code view.path view.message
+      failwith (Printf.sprintf "%s at %s: %s" view.code view.path view.message)
 
 (** Requires a result to fail without inspecting potentially sensitive input. *)
 let require_error = function
   | Error _ -> ()
-  | Ok _ -> Alcotest.fail "expected protocol validation to fail"
+  | Ok _ -> failwith "expected protocol validation to fail"
+
+(** Compares strings without adding a test-framework dependency to the public
+    package's test closure. *)
+let check_string label expected actual =
+  if not (String.equal expected actual) then
+    failwith (label ^ " did not match its expected value")
+
+(** Compares integer observations from resource and payload tests. *)
+let check_int label expected actual =
+  if expected <> actual then
+    failwith (label ^ " did not match its expected value")
+
+(** Requires one Boolean protocol invariant. *)
+let check_true label condition =
+  if not condition then failwith (label ^ " was false")
 
 (** Proves valid shared envelopes normalize and survive a typed round trip. *)
 let test_valid_envelopes () =
@@ -33,8 +48,7 @@ let test_valid_envelopes () =
         String.trim (fixture [ "valid"; name ^ ".normalized.json" ])
       in
       let decoded = unwrap (Protocol.decode input) in
-      Alcotest.(check string)
-        (name ^ " normalization") expected
+      check_string (name ^ " normalization") expected
         (unwrap (Protocol.encode decoded));
       ignore (unwrap (Protocol.decode expected)))
     [ "request"; "response"; "error"; "unicode" ]
@@ -64,16 +78,32 @@ let test_payloads () =
   let input = fixture [ "valid"; "payload.input.json" ] in
   let expected = String.trim (fixture [ "valid"; "payload.normalized.json" ]) in
   let bytes = unwrap (Protocol.decode_payload input) in
-  Alcotest.(check int) "decoded length" 5 (Bytes.length bytes);
-  Alcotest.(check string)
-    "normalized payload" expected
+  check_int "decoded length" 5 (Bytes.length bytes);
+  check_string "normalized payload" expected
     (unwrap (Protocol.encode_payload bytes));
   let all_bytes = Bytes.init 256 Char.chr in
-  Alcotest.(check int)
-    "all byte values" 256
+  check_int "all byte values" 256
     (Bytes.length
        (unwrap
           (Protocol.decode_payload (unwrap (Protocol.encode_payload all_bytes)))));
+  let maximum =
+    Bytes.init Protocol.max_payload_bytes (fun index ->
+        Char.chr (index land 255))
+  in
+  check_true "maximum payload round trip"
+    (Bytes.equal maximum
+       (unwrap
+          (Protocol.decode_payload (unwrap (Protocol.encode_payload maximum)))));
+  let oversized_encoding =
+    {|{"encoding":"|} ^ String.make 65_537 'a' ^ {|","data":""}|}
+  in
+  require_error (Protocol.decode_payload oversized_encoding);
+  let oversized_unknown_field =
+    {|{"encoding":"base64","data":"","extra":"|}
+    ^ String.make 65_537 'a'
+    ^ {|"}|}
+  in
+  require_error (Protocol.decode_payload oversized_unknown_field);
   require_error
     (Protocol.decode_payload
        (fixture [ "invalid"; "payload-invalid-base64.json" ]));
@@ -127,16 +157,19 @@ let test_compatibility_and_outgoing_validation () =
   in
   require_error (Protocol.encode invalid)
 
+(** Runs one test and identifies its name without exposing protocol inputs. *)
+let run name test =
+  try
+    test ();
+    Printf.printf "PASS %s\n%!" name
+  with exn ->
+    Printf.eprintf "FAIL %s: %s\n%!" name (Printexc.to_string exn);
+    exit 1
+
 let () =
-  Alcotest.run "private JSON control protocol"
-    [
-      ( "conformance",
-        [
-          Alcotest.test_case "valid envelopes" `Quick test_valid_envelopes;
-          Alcotest.test_case "invalid envelopes" `Quick test_invalid_envelopes;
-          Alcotest.test_case "payloads" `Quick test_payloads;
-          Alcotest.test_case "resource limits" `Quick test_resource_limits;
-          Alcotest.test_case "compatibility and outgoing validation" `Quick
-            test_compatibility_and_outgoing_validation;
-        ] );
-    ]
+  run "valid envelopes" test_valid_envelopes;
+  run "invalid envelopes" test_invalid_envelopes;
+  run "payloads" test_payloads;
+  run "resource limits" test_resource_limits;
+  run "compatibility and outgoing validation"
+    test_compatibility_and_outgoing_validation

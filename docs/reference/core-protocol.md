@@ -70,6 +70,13 @@ Both incoming and outgoing paths enforce:
 | Decoded opaque payload | 262,144 bytes |
 | Error message | 1,024 UTF-8 bytes |
 
+The 65,536-byte string limit applies to control envelopes. The closed opaque
+payload wrapper is the only exception: its `data` field may contain up to
+349,528 ASCII base64 bytes, which is the canonical padded encoding of the
+262,144-byte decoded limit. Its `encoding` field and exact two-field object
+shape are validated immediately; this allowance does not apply to envelope
+strings or future operation bodies.
+
 Numbers must be integral and fit the common signed 64-bit range. Domains that
 may exceed portable JSON integers must use validated decimal strings in their
 future operation schema. Fractional numbers, trailing input, and Yojson

@@ -6,6 +6,9 @@ let max_collection_items = 256
 let max_nodes = 4_096
 let max_payload_bytes = 262_144
 
+(** Maximum canonical padded base64 bytes for one maximum-sized payload. *)
+let max_payload_base64_bytes = (max_payload_bytes + 2) / 3 * 4
+
 type bridge_error_code =
   | Invalid_message
   | Unsupported_message
@@ -74,7 +77,7 @@ let check_compatibility actual =
         : error)
 
 (** Scans raw text to reject byte and depth attacks before recursive parsing. *)
-let preflight input =
+let preflight ?(string_limit = max_string_bytes) input =
   if String.length input > max_document_bytes then
     Error (invalid "document byte limit exceeded")
   else
@@ -92,7 +95,7 @@ let preflight input =
             else if Char.equal character '"' then in_string := false
             else (
               incr string_bytes;
-              if !string_bytes > max_string_bytes then
+              if !string_bytes > string_limit then
                 failure := Some (invalid "JSON string byte limit exceeded"))
           else
             match character with
@@ -109,7 +112,7 @@ let preflight input =
     match !failure with Some error -> Error error | None -> Ok ()
 
 (** Validates a parsed JSON tree, including duplicate keys and finite limits. *)
-let validate_json ?(depth = 1) value =
+let validate_json ?(depth = 1) ?(string_limit = max_string_bytes) value =
   let nodes = ref 0 in
   let rec loop depth path (value : Yojson.Safe.t) =
     match value with
@@ -130,7 +133,7 @@ let validate_json ?(depth = 1) value =
             (invalid ~path "JSON integer is outside the signed 64-bit range"))
     | `String value ->
         incr nodes;
-        if String.length value > max_string_bytes then
+        if String.length value > string_limit then
           Error (invalid ~path "decoded JSON string limit exceeded")
         else if not (valid_utf_8 value) then
           Error (invalid ~path "JSON string is not valid UTF-8")
@@ -156,8 +159,7 @@ let validate_json ?(depth = 1) value =
               let* () = result in
               if Hashtbl.mem seen key then
                 Error (invalid ~path "duplicate JSON object member")
-              else if
-                String.length key > max_string_bytes || not (valid_utf_8 key)
+              else if String.length key > string_limit || not (valid_utf_8 key)
               then Error (invalid ~path "invalid JSON object key")
               else (
                 Hashtbl.add seen key ();
@@ -170,11 +172,11 @@ let validate_json ?(depth = 1) value =
 
 (** Parses one complete document with Yojson while containing every exception.
 *)
-let parse_strict input =
-  let* () = preflight input in
+let parse_strict ?(string_limit = max_string_bytes) input =
+  let* () = preflight ~string_limit input in
   try
     let value = Yojson.Safe.from_string input in
-    let* () = validate_json value in
+    let* () = validate_json ~string_limit value in
     Ok value
   with _ -> Error (invalid "invalid strict JSON document")
 
@@ -486,10 +488,13 @@ let base64_decode data =
       else
         Error (invalid ~path:"$.data" "payload is not canonical padded base64")
 
-(** Decodes a closed payload wrapper without exposing its data in errors. *)
+(** Decodes a closed payload wrapper without exposing its data in errors.
+    Parsing temporarily admits base64's larger encoded representation, then
+    immediately enforces the exact fields, encoding, canonical form, and
+    decoded-byte limit before returning any data. *)
 let decode_payload input =
   try
-    let* json = parse_strict input in
+    let* json = parse_strict ~string_limit:max_payload_base64_bytes input in
     let* entries = expect_object "$" json in
     let* () = require_exact_fields "$" [ "encoding"; "data" ] entries in
     let* encoding_json = field "$" "encoding" entries in

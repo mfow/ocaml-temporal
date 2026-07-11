@@ -6,4 +6,4 @@
  (name test_ocaml_protocol)
  (deps
   (source_tree fixtures/protocol))
- (libraries alcotest temporal-sdk.internal_protocol))
+ (libraries temporal-sdk.internal_protocol))

@@ -41,6 +41,12 @@ attributes them to the reviewed compiler distribution.
 | base-threads | base | compiler virtual package | runtime capability | no | no | No independent source; part of OCaml distribution |
 | base-unix | base | compiler virtual package | runtime capability | no | no | No independent source; part of OCaml distribution |
 
+Protocol conformance tests use a small repository-owned standard-library
+harness. Alcotest itself is ISC, but its complete OPAM test closure includes
+ordinary LGPL packages outside the compiler/runtime exception allowed by this
+project, so it is intentionally neither used nor declared as a package test
+dependency.
+
 ## Reviewed OCaml linking exceptions
 
 There are currently no ecosystem packages in this table. Only the compiler

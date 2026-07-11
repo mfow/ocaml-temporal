@@ -22,6 +22,8 @@ pub const MAX_COLLECTION_ITEMS: usize = 256;
 pub const MAX_NODES: usize = 4_096;
 /// Maximum decoded bytes in one opaque payload.
 pub const MAX_PAYLOAD_BYTES: usize = 262_144;
+/// Maximum canonical padded base64 bytes for one maximum-sized payload.
+const MAX_PAYLOAD_BASE64_BYTES: usize = MAX_PAYLOAD_BYTES.div_ceil(3) * 4;
 
 /// Owned JSON tree retaining object order for duplicate detection and sorting.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -250,7 +252,10 @@ pub fn encode(envelope: &Envelope) -> Result<String, ProtocolError> {
 
 /// Decodes one closed canonical-base64 payload wrapper.
 pub fn decode_payload(input: &str) -> Result<Vec<u8>, ProtocolError> {
-    let entries = expect_object(parse_strict(input)?, "$")?;
+    let entries = expect_object(
+        parse_strict_with_string_limit(input, MAX_PAYLOAD_BASE64_BYTES)?,
+        "$",
+    )?;
     require_exact_fields(&entries, &["encoding", "data"], "$")?;
     let encoding = expect_string(field(&entries, "encoding", "$")?, "$.encoding")?;
     if encoding != "base64" {
@@ -294,7 +299,7 @@ pub fn encode_payload(bytes: &[u8]) -> Result<String, ProtocolError> {
 }
 
 /// Rejects excessive bytes or nesting before recursive serde allocation.
-fn preflight(input: &str) -> Result<(), ProtocolError> {
+fn preflight(input: &str, string_limit: usize) -> Result<(), ProtocolError> {
     if input.len() > MAX_DOCUMENT_BYTES {
         return Err(ProtocolError::invalid("$", "document byte limit exceeded"));
     }
@@ -312,7 +317,7 @@ fn preflight(input: &str) -> Result<(), ProtocolError> {
                 in_string = false;
             } else {
                 string_bytes += 1;
-                if string_bytes > MAX_STRING_BYTES {
+                if string_bytes > string_limit {
                     return Err(ProtocolError::invalid(
                         "$",
                         "JSON string byte limit exceeded",
@@ -341,7 +346,19 @@ fn preflight(input: &str) -> Result<(), ProtocolError> {
 
 /// Runs duplicate-aware parsing followed by decoded resource validation.
 fn parse_strict(input: &str) -> Result<JsonValue, ProtocolError> {
-    preflight(input)?;
+    parse_strict_with_string_limit(input, MAX_STRING_BYTES)
+}
+
+/// Parses with a caller-selected string cap for one closed document shape.
+///
+/// Only the closed payload decoder raises the cap above the generic control
+/// limit, and it immediately enforces exact fields, encoding, canonical
+/// base64, and decoded size before returning any data.
+fn parse_strict_with_string_limit(
+    input: &str,
+    string_limit: usize,
+) -> Result<JsonValue, ProtocolError> {
+    preflight(input, string_limit)?;
     let mut deserializer = serde_json::Deserializer::from_str(input);
     let value = JsonValue::deserialize(&mut deserializer)
         .map_err(|_| ProtocolError::invalid("$", "invalid strict JSON document"))?;
@@ -349,36 +366,41 @@ fn parse_strict(input: &str) -> Result<JsonValue, ProtocolError> {
         .end()
         .map_err(|_| ProtocolError::invalid("$", "trailing JSON input"))?;
     let mut nodes = 0;
-    validate_tree(&value, 1, &mut nodes)?;
+    validate_tree(&value, 1, &mut nodes, string_limit)?;
     Ok(value)
 }
 
 /// Applies decoded string, depth, and total-node limits recursively.
-fn validate_tree(value: &JsonValue, depth: usize, nodes: &mut usize) -> Result<(), ProtocolError> {
+fn validate_tree(
+    value: &JsonValue,
+    depth: usize,
+    nodes: &mut usize,
+    string_limit: usize,
+) -> Result<(), ProtocolError> {
     *nodes += 1;
     if *nodes > MAX_NODES || depth > MAX_DEPTH {
         return Err(ProtocolError::invalid("$", "JSON resource limit exceeded"));
     }
     match value {
-        JsonValue::String(value) if value.len() > MAX_STRING_BYTES => Err(ProtocolError::invalid(
+        JsonValue::String(value) if value.len() > string_limit => Err(ProtocolError::invalid(
             "$",
             "decoded JSON string limit exceeded",
         )),
         JsonValue::Array(values) => {
             for value in values {
-                validate_tree(value, depth + 1, nodes)?;
+                validate_tree(value, depth + 1, nodes, string_limit)?;
             }
             Ok(())
         }
         JsonValue::Object(entries) => {
             for (key, value) in entries {
-                if key.len() > MAX_STRING_BYTES {
+                if key.len() > string_limit {
                     return Err(ProtocolError::invalid(
                         "$",
                         "decoded JSON key limit exceeded",
                     ));
                 }
-                validate_tree(value, depth + 1, nodes)?;
+                validate_tree(value, depth + 1, nodes, string_limit)?;
             }
             Ok(())
         }
@@ -514,7 +536,7 @@ fn validate_envelope(envelope: &Envelope) -> Result<(), ProtocolError> {
             ));
         }
         let mut nodes = 0;
-        validate_tree(body, 2, &mut nodes)?;
+        validate_tree(body, 2, &mut nodes, MAX_STRING_BYTES)?;
     }
     if let Some(error) = error
         && (error.message.is_empty() || error.message.len() > 1_024)

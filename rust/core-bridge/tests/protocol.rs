@@ -63,6 +63,20 @@ fn validates_and_normalizes_payloads() {
         protocol::decode_payload(&protocol::encode_payload(&all_bytes).unwrap()).unwrap(),
         all_bytes
     );
+    let maximum = (0..MAX_PAYLOAD_BYTES)
+        .map(|index| (index & usize::from(u8::MAX)) as u8)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        protocol::decode_payload(&protocol::encode_payload(&maximum).unwrap()).unwrap(),
+        maximum
+    );
+    let oversized_encoding = format!(r#"{{"encoding":"{}","data":""}}"#, "a".repeat(65_537));
+    assert!(protocol::decode_payload(&oversized_encoding).is_err());
+    let oversized_unknown_field = format!(
+        r#"{{"encoding":"base64","data":"","extra":"{}"}}"#,
+        "a".repeat(65_537)
+    );
+    assert!(protocol::decode_payload(&oversized_unknown_field).is_err());
     for name in ["payload-invalid-base64", "payload-unknown-field"] {
         assert!(protocol::decode_payload(&fixture(&["invalid", &format!("{name}.json")])).is_err());
     }

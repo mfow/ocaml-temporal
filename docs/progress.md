@@ -324,7 +324,7 @@ first-class SDK responsibilities alongside start/result client operations.
 
 ## 2026-07-11: OCaml-owned native static link
 
-Status: locally verified; native CI matrix pending.
+Status: verified locally and on the Linux CI matrix; native desktop CI pending.
 
 The public OCaml package now links the project Rust bridge through private C
 stubs. `Temporal.Runtime_info.native_bridge_abi_version` negotiates ABI v1 from
@@ -358,3 +358,11 @@ Local evidence:
   `Temporal.Runtime_info` API without the Rust source or C header.
 - The install smoke test builds and runs a new native OCaml executable against
   that staged package.
+- [GitHub Actions run 29142248581](https://github.com/mfow/ocaml-temporal/actions/runs/29142248581)
+  passed the standalone dependency audit and all eight Linux OCaml 5.2 through
+  5.5 amd64/arm64 jobs with the linked Rust bridge.
+
+Next compatibility gate: native OCaml 5.5 builds and tests on Windows x64 and
+macOS ARM64. Those jobs deliberately avoid Docker and validate the actual host
+compiler, architecture, Rust target, OCaml tests, Rust tests, Clippy, rustfmt,
+and fresh installed-package consumer.

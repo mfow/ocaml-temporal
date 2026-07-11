@@ -54,8 +54,10 @@ pinned official Python container; it is not repeated for every OCaml version
 and architecture. The default development image uses OCaml 5.2; use, for
 example, `make verify OCAML_VERSION=5.5` to run the build gate on another
 supported version. GitHub Actions builds and tests OCaml 5.2, 5.3, 5.4, and
-5.5 on native amd64 and arm64 runners for every pull request and every push to
-`master`.
+5.5 on native Linux amd64 and arm64 runners for every pull request and every
+push to `master`. Separate native jobs build and test the complete OCaml-to-Rust
+link on Windows x64 and macOS ARM64 with OCaml 5.5. These jobs use
+`make native-verify`; the Compose commands remain the supported local default.
 
 ## Workflow style
 

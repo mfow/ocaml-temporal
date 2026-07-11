@@ -1,7 +1,8 @@
 (rule
  (targets
   libocaml_temporal_core_bridge.a
-  dllocaml_temporal_core_bridge.so)
+  dllocaml_temporal_core_bridge.so
+  rust_static_link_flags.sexp)
  (deps
   (source_tree ../../rust)
   ../../scripts/build-rust-bridge.sh
@@ -22,4 +23,4 @@
   (include_dirs ../../rust/core-bridge/include)
   (flags :standard -Wall -Wextra -Werror))
  (foreign_archives ocaml_temporal_core_bridge)
- (c_library_flags -ldl -lpthread -lm))
+ (c_library_flags (:include rust_static_link_flags.sexp)))

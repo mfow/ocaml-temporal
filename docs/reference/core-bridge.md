@@ -113,3 +113,9 @@ the development container. An OCaml two-Domain test calls the linked Rust
 archive and proves another Domain progresses during a native wait. An install
 smoke test builds a fresh OCaml executable from the staged package and invokes
 the negotiated ABI through the public `Temporal.Runtime_info` module.
+
+The Dune rule asks `rustc --print=native-static-libs` for the exact native
+libraries required by the static archive and consumes the resulting ordered
+flags from a generated S-expression file. This keeps platform linker knowledge
+owned by the pinned Rust compiler instead of duplicating a fragile Linux,
+macOS, and Windows library list in the OCaml build.

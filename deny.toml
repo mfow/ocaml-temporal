@@ -1,0 +1,18 @@
+# Cargo-deny is limited to checks that complement the repository's exact
+# license scanner. Vulnerabilities fail by default. Unmaintained transitive
+# dependencies cannot fail this SDK until the pinned Temporal Core graph can
+# replace them; direct dependencies still fail.
+[advisories]
+unmaintained = "workspace"
+unsound = "workspace"
+
+# Only crates.io and the immutable Temporal Core Git dependency are valid
+# sources. Requiring `rev` prevents a future Git dependency from silently
+# following a mutable branch or tag even if its repository is approved here.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+required-git-spec = "rev"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/temporalio/sdk-core"]
+unused-allowed-source = "deny"

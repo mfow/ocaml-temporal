@@ -8,6 +8,31 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-11: One-shot quality and security scans
+
+Status: focused contract and scanner checks verified locally; complete GitHub
+Actions verification follows the milestone commit.
+
+The repository now has a separate quality job for Cargo advisories and source
+provenance, unused direct Rust dependencies, and cross-language spelling. Exact
+tool versions are enforced locally and installed in CI from checksum-verified
+release artifacts through an immutable action commit. The job is independent
+of both the OCaml compiler matrix and the standalone dependency-license audit.
+
+Evidence:
+
+- The repository contract test first failed because `make quality` was absent,
+  then passed after the Make targets, pinned workflow job, and Cargo source
+  policy were added.
+- `make quality` passed cargo-deny 0.20.2 advisory/source checks,
+  cargo-machete 0.9.2 unused-dependency analysis, and typos 1.48.0.
+- Cargo-deny does not fail on unmaintained transitive crates owned by the
+  pinned Temporal Core graph; vulnerabilities and unapproved sources remain
+  errors.
+- No OCaml-specific dependency was added: maintained alternatives either
+  duplicate compiler/Dune diagnostics or bring a prohibited copyleft tool
+  closure. The language-neutral spelling scan covers OCaml source and docs.
+
 ## 2026-07-11: Strict JSON control-protocol foundation
 
 Status: focused OCaml and Rust conformance tests verified locally; complete

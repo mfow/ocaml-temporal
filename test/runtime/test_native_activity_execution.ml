@@ -264,16 +264,23 @@ let test_successful_dispatch () =
   end
 
 (** A typed [Error.t] from an activity becomes a structured application failure,
-    preserves its retryability flag, and is acknowledged without raising an
-    exception. *)
+    preserves retryability and application detail payloads, and is acknowledged
+    without raising an exception. The binary detail body verifies that failure
+    diagnostics cross the native boundary without text conversion. *)
 let test_typed_failure () =
   let supervisor = fake_supervisor () in
+  let detail : Temporal.Payload.t =
+    {
+      metadata = [ ("encoding", "binary/plain"); ("source", "test") ];
+      data = Bytes.of_string "\000failure-detail\255";
+    }
+  in
   let activity =
     Temporal.Activity.define ~name:"native_activity_failure"
       ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
         Error
           (Temporal_base.Error.make ~category:`Activity
-             ~message:"deliberate activity failure" ()))
+             ~message:"deliberate activity failure" ~details:[ detail ] ()))
   in
   let token = Bytes.of_string "failure-token" in
   enqueue supervisor
@@ -289,11 +296,23 @@ let test_typed_failure () =
   end;
   begin match (latest_completion supervisor).Protocol.result with
   | Protocol.Failed
-      { info = Protocol.Application { non_retryable = false; _ }; _ } ->
-      ()
+      {
+        info = Protocol.Application { non_retryable = false; details; _ };
+        _;
+      } ->
+      begin match details with
+      | [ detail ]
+        when detail.Protocol.metadata
+             = [ ("encoding", Bytes.of_string "binary/plain");
+                 ("source", Bytes.of_string "test") ]
+             && Bytes.equal detail.Protocol.data
+                  (Bytes.of_string "\000failure-detail\255") ->
+          ()
+      | _ -> failwith "typed activity failure dropped or altered its details"
+      end
   | _ ->
       failwith
-        "typed activity failure did not preserve application retryability"
+        "typed activity failure did not preserve retryability or details"
   end
 
 (** An unknown activity type is acknowledged with a typed non-retryable failure,

@@ -167,29 +167,6 @@ let failure_of_error (error : error_view) : Protocol.failure =
           };
     }
 
-(** Converts an activity implementation's structured error while preserving its
-    retryability classification. Adapter-generated input/registry errors use
-    [failure_of_error] and are always non-retryable; an application error may
-    intentionally remain retryable so Temporal can apply its retry policy. *)
-let failure_of_application_error (diagnostic : error_view)
-    (error : Base_error.t) : Protocol.failure =
-  let view = Base_error.view error in
-  Protocol.
-    {
-      message = diagnostic.message;
-      source = "ocaml-temporal";
-      stack_trace = "";
-      encoded_attributes = None;
-      cause = None;
-      info =
-        Application
-          {
-            type_name = Base_error.kind error;
-            non_retryable = view.non_retryable;
-            details = [];
-          };
-    }
-
 (** Uses a stable, closed set of cancellation labels so cancellation failures
     remain valid protocol strings even when the source task is malformed. *)
 let cancellation_reason = function
@@ -265,6 +242,40 @@ let protocol_payload path (payload : Temporal_base.Codec.payload) =
   in
   let* metadata = metadata_loop [] payload.metadata in
   Ok Protocol.{ metadata; data = Bytes.copy payload.data }
+
+(** Converts an activity implementation's structured error while preserving its
+    retryability classification and every application-supplied detail payload.
+    Adapter-generated input/registry errors use [failure_of_error] and are
+    always non-retryable; an application error may intentionally remain
+    retryable so Temporal can apply its retry policy. Detail payloads are
+    validated and copied through the same boundary helper as successful
+    activity output. *)
+let failure_of_application_error (diagnostic : error_view)
+    (error : Base_error.t) : (Protocol.failure, error_view) result =
+  let view = Base_error.view error in
+  let rec details_loop reversed = function
+    | [] -> Ok (List.rev reversed)
+    | payload :: rest ->
+        let* payload = protocol_payload "$.completion.result.info.details" payload in
+        details_loop (payload :: reversed) rest
+  in
+  let* details = details_loop [] view.details in
+  Ok
+    Protocol.
+      {
+        message = diagnostic.message;
+        source = "ocaml-temporal";
+        stack_trace = "";
+        encoded_attributes = None;
+        cause = None;
+        info =
+          Application
+            {
+              type_name = Base_error.kind error;
+              non_retryable = view.non_retryable;
+              details;
+            };
+      }
 
 (** Decodes the argument-list shape used by activity tasks. The SDK accepts one
     typed value (or the canonical unit payload) and explicitly rejects extra
@@ -487,11 +498,14 @@ module Make (Supervisor : SUPERVISOR) = struct
                         application_error ~path:"$.implementation"
                           implementation_error
                       in
-                      reject_task_with_failure adapter ~token ~activity_type
-                        ~failure:
-                          (failure_of_application_error diagnostic
-                             implementation_error)
-                        diagnostic
+                      begin match
+                        failure_of_application_error diagnostic implementation_error
+                      with
+                      | Error error -> reject_task adapter ~token ~activity_type error
+                      | Ok failure ->
+                          reject_task_with_failure adapter ~token ~activity_type
+                            ~failure diagnostic
+                      end
                   | Ok output -> (
                       match
                         Codec.encode (Definition.output definition) output

@@ -46,7 +46,9 @@ adapter mutex:
 3. Decode zero arguments as the canonical unit payload, one argument with the
    registered input codec, or reject more than one argument.
 4. Invoke the implementation and convert its typed `result` into either an
-   encoded payload or a structured application failure.
+   encoded payload or a structured application failure. Application failure
+   retryability and every binary-safe detail payload supplied in `Error.t` are
+   copied into the Temporal failure rather than reduced to a message only.
 5. Validate the completion through the strict activity-protocol encoder.
 6. Submit the completion to the supervisor and remove the token only after the
    supervisor returns `Ok ()`.

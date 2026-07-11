@@ -1,0 +1,9 @@
+# Local-development settings derived from Temporal's official PostgreSQL
+# Compose sample. Production deployments should manage dynamic configuration
+# independently and must not copy this file without an operational review.
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true
+    constraints: {}

@@ -95,6 +95,28 @@ build closure includes ordinary GPL packages (`menhir` and `fix`), which this
 project's all-dependencies policy prohibits. `make lint` and `make fmt`
 currently enforce repository-owned whitespace rules instead.
 
+## Local integration service images
+
+The Compose acceptance substrate uses the following exact OCI manifest
+indexes. These images are development and integration services; they are not
+linked into the SDK or redistributed in its OCaml package.
+
+| Image | Manifest digest | Native platforms | Primary software license | Review |
+|---|---|---|---|---|
+| `postgres:16.13-bookworm` | `sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60` | Linux amd64, arm64/v8, and additional official architectures | PostgreSQL License; Docker image packaging is MIT | [PostgreSQL license](https://www.postgresql.org/about/licence/), [official image source](https://github.com/docker-library/postgres) |
+| `temporalio/server:1.31.0` | `sha256:b021b3b58c3f169634cdbb0451fcc0e69e8190b40454323362c7c52bbd4ff7b9` | Linux amd64 and arm64 | MIT | [Temporal source and license](https://github.com/temporalio/temporal), [official Compose sample](https://github.com/temporalio/samples-server/tree/main/compose) |
+| `temporalio/admin-tools:1.31.0` | `sha256:3e68adcd54195a7c1222e99f2dbc32a4fdbf44ad69e3bb48e21e85c4bf417c2e` | Linux amd64 and arm64 | MIT | Schema and CLI tooling from the official Temporal release/sample |
+
+The pinned manifest indexes were inspected directly before adoption. Both
+Temporal indexes expose native `linux/amd64` and `linux/arm64` manifests; the
+PostgreSQL index includes those architectures and others. Temporal's archived
+Compose repository marks `auto-setup` as deprecated, so this project follows
+the maintained `samples-server` split between Server and admin-tools.
+
+The service containers are not release worker images. The future minimal OCaml
+worker image still requires its own complete SBOM and redistribution audit
+before publication.
+
 ## Locked Cargo closure
 
 `rust/Cargo.lock` locks 319 dependencies rooted at Temporal Core commit

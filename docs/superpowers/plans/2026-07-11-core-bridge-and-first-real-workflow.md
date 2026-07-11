@@ -209,6 +209,11 @@ bridge documentation.
 
 ### Task 6: Temporal, PostgreSQL, UI, and CLI Compose stack
 
+> **Progress:** The digest-pinned PostgreSQL, schema-job, Temporal Server, CLI
+> health gate, and Make lifecycle substrate are verified in ADR 0005. The UI,
+> OCaml worker/client services, and CI integration remain pending, so this task
+> is not complete.
+
 **Files:** Modify `compose.yaml`, `Makefile`, CI, dependency inventory, and
 operator documentation; create health/readiness scripts.
 

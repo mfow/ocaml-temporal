@@ -1,13 +1,15 @@
+use crate::worker_bridge::{PollLaneError, PollLanes, WorkerBridgeError};
+use crate::{activity_protocol, workflow_protocol};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 use std::time::Duration;
 use temporalio_client::{Connection, ConnectionOptions};
-use temporalio_common::worker::WorkerTaskTypes;
 use temporalio_sdk_core::{
-    CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, Worker, WorkerConfig,
+    CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, WorkerConfig,
     WorkerVersioningStrategy,
 };
 
@@ -35,6 +37,12 @@ pub const STATUS_CONFIGURATION: Status = 6;
 pub const STATUS_CONNECTION: Status = 7;
 /// Official Core worker construction or namespace validation failed.
 pub const STATUS_WORKER: Status = 8;
+/// Worker shutdown is draining tasks that still require language completion.
+pub const STATUS_OUTSTANDING_TASKS: Status = 9;
+/// A non-blocking poll lane currently has no task ready for handoff.
+pub const STATUS_NOT_READY: Status = 10;
+/// A semantic workflow or activity document failed strict validation.
+pub const STATUS_PROTOCOL: Status = 11;
 
 /// Maximum accepted lifecycle configuration document size.
 const MAX_LIFECYCLE_CONFIG_BYTES: usize = 64 * 1024;
@@ -46,6 +54,11 @@ const MAX_LIFECYCLE_CONFIG_BYTES: usize = 64 * 1024;
 const MAX_TRANSPORT_STRING_BYTES: usize = 64 * 1024;
 /// Prevents accidental allocation of unreasonable in-process worker state.
 const MAX_WORKER_COUNT: u32 = 1_000_000;
+/// Initial remote-activity concurrency until the private worker config grows a
+/// separately tuned activity field in the end-to-end worker slice.
+const DEFAULT_MAX_OUTSTANDING_ACTIVITIES: usize = 100;
+/// Initial Core server-poll concurrency for remote activity tasks.
+const DEFAULT_MAX_CONCURRENT_ACTIVITY_POLLS: usize = 5;
 /// Prevents an unbounded graceful-shutdown duration from entering Core.
 const MAX_GRACEFUL_SHUTDOWN_MS: u64 = 24 * 60 * 60 * 1_000;
 
@@ -127,7 +140,8 @@ struct Failure {
 pub struct Runtime {
     core: Option<CoreRuntime>,
     client: Option<Connection>,
-    worker: Option<Worker>,
+    worker: Option<PollLanes>,
+    workflow_activations: HashMap<String, workflow_protocol::Activation>,
     cleanup: std::sync::mpsc::Sender<RuntimeCleanup>,
 }
 
@@ -135,7 +149,7 @@ pub struct Runtime {
 struct RuntimeCleanup {
     core: CoreRuntime,
     client: Option<Connection>,
-    worker: Option<Worker>,
+    worker: Option<PollLanes>,
     completed: Option<SyncSender<Status>>,
 }
 
@@ -177,6 +191,7 @@ impl Runtime {
             core: Some(core),
             client: None,
             worker: None,
+            workflow_activations: HashMap::new(),
             cleanup,
         })
     }
@@ -270,13 +285,13 @@ impl Runtime {
                 message: format!("Temporal workflow worker validation failed: {error}"),
             });
         }
-        self.worker = Some(worker);
+        self.worker = Some(PollLanes::start(worker, &handle));
         Ok(Vec::new())
     }
 
     /// Gracefully finalizes the child worker once; absence is already closed.
     fn shutdown_worker(&mut self) -> Operation {
-        let Some(worker) = self.worker.take() else {
+        let Some(worker) = self.worker.as_mut() else {
             return Ok(Vec::new());
         };
         let handle = self
@@ -290,7 +305,169 @@ impl Runtime {
             let _runtime_guard = handle.enter();
             worker.initiate_shutdown();
         }
-        handle.block_on(worker.finalize_shutdown());
+        handle
+            .block_on(worker.join_poll_lanes())
+            .map_err(poll_lane_failure)?;
+        if !worker.can_finalize() {
+            return Err(Failure {
+                status: STATUS_OUTSTANDING_TASKS,
+                message: "Temporal worker is draining outstanding workflow or activity tasks"
+                    .to_owned(),
+            });
+        }
+        let worker = self
+            .worker
+            .take()
+            .expect("checked worker remains owned until terminal finalization");
+        handle
+            .block_on(worker.finalize())
+            .map_err(worker_bridge_failure)?;
+        Ok(Vec::new())
+    }
+
+    /// Takes one workflow activation from the Rust lane without waiting.
+    fn try_poll_workflow(&mut self) -> Operation {
+        let worker = self.worker.as_mut().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        let activation = worker
+            .try_take_workflow()
+            .ok_or_else(not_ready)?
+            .map_err(poll_lane_failure)?;
+        let semantic = match workflow_protocol::activation_from_core(&activation) {
+            Ok(semantic) => semantic,
+            Err(error) => {
+                self.reject_workflow_delivery(&activation.run_id)?;
+                return Err(core_conversion_failure(error));
+            }
+        };
+        let encoded = match workflow_protocol::encode_activation(&semantic) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                self.reject_workflow_delivery(&activation.run_id)?;
+                return Err(protocol_failure(error));
+            }
+        };
+        if self
+            .workflow_activations
+            .insert(semantic.run_id.clone(), semantic)
+            .is_some()
+        {
+            return Err(Failure {
+                status: STATUS_INTERNAL,
+                message: "workflow activation lease was duplicated".to_owned(),
+            });
+        }
+        Ok(encoded.into_bytes())
+    }
+
+    /// Strictly validates and submits one leased workflow completion.
+    fn complete_workflow(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let semantic = workflow_protocol::decode_completion(text).map_err(protocol_failure)?;
+        let activation = self
+            .workflow_activations
+            .get(&semantic.run_id)
+            .ok_or_else(|| Failure {
+                status: STATUS_PROTOCOL,
+                message: "workflow completion does not match a leased activation".to_owned(),
+            })?;
+        let completion =
+            workflow_protocol::completion_to_core_for_activation(activation, &semantic)
+                .map_err(core_conversion_failure)?;
+        let worker = self.worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .expect("worker retains parent runtime")
+            .tokio_handle();
+        handle
+            .block_on(worker.complete_workflow(completion))
+            .map_err(worker_bridge_failure)?;
+        self.workflow_activations.remove(&semantic.run_id);
+        Ok(Vec::new())
+    }
+
+    /// Takes one remote activity task from its independent lane without waiting.
+    fn try_poll_activity(&mut self) -> Operation {
+        let worker = self.worker.as_mut().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        let task = worker
+            .try_take_activity()
+            .ok_or_else(not_ready)?
+            .map_err(poll_lane_failure)?;
+        let semantic = match activity_protocol::task_from_core(&task) {
+            Ok(semantic) => semantic,
+            Err(error) => {
+                self.reject_activity_delivery(&task.task_token)?;
+                return Err(core_conversion_failure(error));
+            }
+        };
+        match activity_protocol::encode_task(&semantic) {
+            Ok(encoded) => Ok(encoded.into_bytes()),
+            Err(error) => {
+                self.reject_activity_delivery(&task.task_token)?;
+                Err(protocol_failure(error))
+            }
+        }
+    }
+
+    /// Fails and retires a workflow activation that was never exposed to OCaml.
+    fn reject_workflow_delivery(&self, run_id: &str) -> std::result::Result<(), Failure> {
+        let worker = self.worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .expect("worker retains parent runtime")
+            .tokio_handle();
+        handle
+            .block_on(worker.reject_workflow_delivery(run_id))
+            .map_err(worker_bridge_failure)
+    }
+
+    /// Fails and retires an activity task that was never exposed to OCaml.
+    fn reject_activity_delivery(&self, task_token: &[u8]) -> std::result::Result<(), Failure> {
+        let worker = self.worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .expect("worker retains parent runtime")
+            .tokio_handle();
+        handle
+            .block_on(worker.reject_activity_delivery(task_token))
+            .map_err(worker_bridge_failure)
+    }
+
+    /// Strictly validates and submits one leased remote-activity completion.
+    fn complete_activity(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let semantic = activity_protocol::decode_completion(text).map_err(protocol_failure)?;
+        let completion =
+            activity_protocol::completion_to_core(&semantic).map_err(core_conversion_failure)?;
+        let worker = self.worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .expect("worker retains parent runtime")
+            .tokio_handle();
+        handle
+            .block_on(worker.complete_activity(completion))
+            .map_err(worker_bridge_failure)?;
         Ok(Vec::new())
     }
 
@@ -373,8 +550,8 @@ fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
 }
 
 /// Releases worker, then client, then Core on the runtime cleanup thread.
-fn drop_runtime_graph(core: CoreRuntime, client: Option<Connection>, worker: Option<Worker>) {
-    if let Some(worker) = worker {
+fn drop_runtime_graph(core: CoreRuntime, client: Option<Connection>, worker: Option<PollLanes>) {
+    if let Some(mut worker) = worker {
         let handle = core.tokio_handle();
         {
             // Cleanup runs on a plain OS thread, so explicitly enter Core's
@@ -382,10 +559,74 @@ fn drop_runtime_graph(core: CoreRuntime, client: Option<Connection>, worker: Opt
             let _runtime_guard = handle.enter();
             worker.initiate_shutdown();
         }
-        handle.block_on(worker.finalize_shutdown());
+        let _ = handle.block_on(worker.join_poll_lanes());
+        if worker.can_finalize() {
+            let _ = handle.block_on(worker.finalize());
+        }
     }
     drop(client);
     drop(core);
+}
+
+/// Maps private worker state-machine errors to stable ABI failures.
+fn worker_bridge_failure(error: WorkerBridgeError) -> Failure {
+    let status = match error {
+        WorkerBridgeError::OutstandingTasks(_) => STATUS_OUTSTANDING_TASKS,
+        _ => STATUS_WORKER,
+    };
+    Failure {
+        status,
+        message: format!("Temporal worker bridge failed: {error:?}"),
+    }
+}
+
+/// Maps a fatal background poll-lane error without exposing Core internals.
+fn poll_lane_failure(error: PollLaneError) -> Failure {
+    Failure {
+        status: STATUS_WORKER,
+        message: format!("Temporal worker poll lane failed: {error:?}"),
+    }
+}
+
+/// Constructs the stable result used by empty non-blocking poll lanes.
+fn not_ready() -> Failure {
+    Failure {
+        status: STATUS_NOT_READY,
+        message: "no Temporal task is ready".to_owned(),
+    }
+}
+
+/// Converts strict semantic-protocol failures without reflecting user input.
+fn protocol_failure(_error: crate::protocol::ProtocolError) -> Failure {
+    Failure {
+        status: STATUS_PROTOCOL,
+        message: "Temporal semantic JSON failed validation".to_owned(),
+    }
+}
+
+/// Converts protobuf-boundary failures to a privacy-safe protocol status.
+fn core_conversion_failure(error: workflow_protocol::CoreConversionError) -> Failure {
+    Failure {
+        status: STATUS_PROTOCOL,
+        message: format!(
+            "Temporal Core task cannot be represented safely: {}",
+            error.message
+        ),
+    }
+}
+
+/// Borrows one bounded UTF-8 semantic document for synchronous decoding.
+fn decode_semantic_input(input: &[u8]) -> std::result::Result<&str, Failure> {
+    if input.len() > crate::protocol::MAX_DOCUMENT_BYTES {
+        return Err(Failure {
+            status: STATUS_PROTOCOL,
+            message: "Temporal semantic JSON exceeds the document limit".to_owned(),
+        });
+    }
+    std::str::from_utf8(input).map_err(|_| Failure {
+        status: STATUS_PROTOCOL,
+        message: "Temporal semantic JSON is not UTF-8".to_owned(),
+    })
 }
 
 impl WorkerConfigInput {
@@ -424,7 +665,11 @@ impl WorkerConfigInput {
             .versioning_strategy(WorkerVersioningStrategy::None {
                 build_id: self.build_id,
             })
-            .task_types(WorkerTaskTypes::workflow_only())
+            .max_outstanding_activities(DEFAULT_MAX_OUTSTANDING_ACTIVITIES)
+            .activity_task_poller_behavior(PollerBehavior::SimpleMaximum(
+                DEFAULT_MAX_CONCURRENT_ACTIVITY_POLLS,
+            ))
+            .task_types(crate::worker_bridge::bridge_task_types())
             .build()
             .map_err(|message| Failure {
                 status: STATUS_CONFIGURATION,
@@ -547,6 +792,36 @@ unsafe fn decode_config<T: for<'de> Deserialize<'de>>(
         status: STATUS_CONFIGURATION,
         message: format!("invalid lifecycle configuration JSON: {error}"),
     })
+}
+
+/// Borrows one native input span after enforcing a caller-selected ceiling.
+///
+/// # Safety
+///
+/// A nonzero length requires a readable input allocation for this call.
+unsafe fn input_span<'a>(
+    input: *const u8,
+    input_len: usize,
+    maximum: usize,
+) -> std::result::Result<&'a [u8], Failure> {
+    if input_len > maximum {
+        return Err(Failure {
+            status: STATUS_PROTOCOL,
+            message: format!("native input exceeds {maximum} bytes"),
+        });
+    }
+    if input_len != 0 && input.is_null() {
+        return Err(Failure {
+            status: STATUS_INVALID_ARGUMENT,
+            message: "input is null but input_len is nonzero".to_owned(),
+        });
+    }
+    if input_len == 0 {
+        Ok(&[])
+    } else {
+        // SAFETY: The caller owns the readable span documented above.
+        Ok(unsafe { std::slice::from_raw_parts(input, input_len) })
+    }
 }
 
 /// Reclaims one bridge allocation and resets the buffer to canonical empty.
@@ -779,6 +1054,108 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_start_json(
             })?;
             let config = decode_config::<WorkerConfigInput>(input, input_len)?;
             runtime.start_worker(config)
+        })
+    }
+}
+
+/// Non-blockingly take one validated workflow activation JSON document.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output`
+/// must satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_try_poll_workflow(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .try_poll_workflow()
+        })
+    }
+}
+
+/// Validate and submit one workflow completion JSON document.
+///
+/// # Safety
+///
+/// The runtime and output contracts match the workflow poll operation. A
+/// nonzero input length requires that many readable bytes for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_complete_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .complete_workflow(input)
+        })
+    }
+}
+
+/// Non-blockingly take one validated remote activity task JSON document.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output`
+/// must satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_try_poll_activity(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .try_poll_activity()
+        })
+    }
+}
+
+/// Validate and submit one remote activity completion JSON document.
+///
+/// # Safety
+///
+/// The runtime and output contracts match the activity poll operation. A
+/// nonzero input length requires that many readable bytes for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_complete_activity_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .complete_activity(input)
         })
     }
 }

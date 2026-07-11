@@ -38,9 +38,10 @@ cleaner and more maintainable OCaml design.
    workflow-only worker as described by [ADR
    0004](decisions/0004-sdk-instance-supervisor.md). The bilateral first
    activation/completion semantic adapter is complete as described by [ADR
-   0006](decisions/0006-first-workflow-semantic-protocol.md); poll/completion
-   operations that carry those documents and the first executed workflow
-   remain pending.
+   0006](decisions/0006-first-workflow-semantic-protocol.md). Rust now owns one
+   guarded workflow poll lane, one guarded remote-activity lane, and their
+   shared task ledger; the OCaml supervisor scheduling loop and first executed
+   workflow remain pending.
 3. Activities, timers, and replay (written after Phase 2 evidence is committed)
 4. Child workflows and structured concurrency (written after Phase 3 evidence is committed)
 5. Interactive and advanced features (split further at the preceding review gate)

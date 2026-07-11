@@ -132,7 +132,10 @@ The bridge declares `serde` 1.0.228 (MIT OR Apache-2.0), `serde_json` 1.0.150
 private control protocol. The semantic adapter additionally declares the
 first-party `temporalio-protos` package at the same immutable Core revision and
 `prost-wkt-types` 0.7.1 (Apache-2.0) for exact protobuf timestamps and
-durations. Every package was already present at the exact locked version in the
+durations. The guarded poll lanes directly declare Tokio 1.52.3 (MIT) for its
+bounded channels and task handles; Temporal Core already selected and used
+that exact locked runtime, so the bridge does not create a second executor.
+Every package was already present at the exact locked version in the
 Temporal Core closure, so these declarations change package ownership metadata
 but add no package to the 319-dependency graph.
 

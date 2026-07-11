@@ -4,7 +4,10 @@
 //! executable which links this implementation detail.
 
 mod abi;
+pub mod activity_protocol;
 pub mod protocol;
+#[doc(hidden)]
+pub mod worker_bridge;
 pub mod workflow_protocol;
 
 pub use abi::*;

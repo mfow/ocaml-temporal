@@ -1,0 +1,180 @@
+use ocaml_temporal_core_bridge::worker_bridge::{
+    ActivityAdmission, Admission, CompleteError, TaskLedger, bridge_task_types,
+};
+
+/// A workflow activation is admitted once and remains outstanding until its
+/// matching run identifier is completed.
+#[test]
+fn workflow_run_ids_are_unique_and_completion_is_exact() {
+    let mut ledger = TaskLedger::new();
+
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::Duplicate));
+    assert_eq!(
+        ledger.complete_workflow("unknown"),
+        Err(CompleteError::UnknownWorkflow)
+    );
+    assert_eq!(ledger.outstanding_workflows(), 1);
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+    assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
+    assert_eq!(ledger.outstanding_workflows(), 0);
+}
+
+/// Remote activity cancellation reuses the original task token and therefore
+/// updates an existing admission instead of creating a second completion owed
+/// to Core.
+#[test]
+fn activity_cancellation_reuses_the_existing_token() {
+    let mut ledger = TaskLedger::new();
+    let token = b"opaque-task-token";
+
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::ExistingCancellation)
+    );
+    assert_eq!(ledger.outstanding_activities(), 1);
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(ledger.complete_activity(token), Ok(()));
+    assert_eq!(ledger.outstanding_activities(), 0);
+}
+
+/// Shutdown closes poll admission immediately, while preserving the ability to
+/// finish work already leased to OCaml before final Core worker destruction.
+#[test]
+fn draining_rejects_new_tasks_until_existing_tasks_complete() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+
+    ledger.begin_draining();
+    assert!(ledger.admit_workflow("run-2").is_err());
+    assert!(!ledger.can_finalize());
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+    assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
+    assert!(ledger.can_finalize());
+}
+
+/// Core may issue cancellation for an already admitted activity while worker
+/// shutdown is draining; that update must remain deliverable without admitting
+/// any new completion obligation.
+#[test]
+fn draining_accepts_cancellation_for_an_existing_activity() {
+    let mut ledger = TaskLedger::new();
+    let token = b"activity";
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    ledger.begin_draining();
+
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::ExistingCancellation)
+    );
+    assert!(
+        ledger
+            .admit_activity(b"new", ActivityAdmission::Start)
+            .is_err()
+    );
+}
+
+/// Empty task identities are rejected before they can become keys whose
+/// ownership or completion cannot be explained at the native boundary.
+#[test]
+fn task_identity_validation_rejects_empty_values() {
+    let mut ledger = TaskLedger::new();
+
+    assert!(ledger.admit_workflow("").is_err());
+    assert!(
+        ledger
+            .admit_activity(&[], ActivityAdmission::Start)
+            .is_err()
+    );
+    assert_eq!(ledger.outstanding(), 0);
+}
+
+/// A completion cannot consume a task that remains in Rust's ready queue and
+/// has never crossed the lease handoff to the OCaml supervisor.
+#[test]
+fn completion_requires_a_prior_lease_handoff() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+
+    assert_eq!(
+        ledger.complete_workflow("run-1"),
+        Err(CompleteError::NotLeased)
+    );
+    assert_eq!(ledger.outstanding(), 1);
+}
+
+/// A duplicate workflow poll cannot revoke the existing OCaml lease and make
+/// a legitimate completion appear forged.
+#[test]
+fn duplicate_workflow_admission_preserves_lease_state() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::Duplicate));
+    assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
+}
+
+/// A workflow activation rejected during Rust-to-semantic conversion was never
+/// visible to OCaml. Retiring that exact lease prevents shutdown from waiting
+/// for a completion the language runtime cannot possibly construct.
+#[test]
+fn rejected_workflow_conversion_retires_the_inaccessible_lease() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(
+        ledger.admit_workflow("unrepresentable-run"),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_workflow("unrepresentable-run"), Ok(()));
+
+    assert_eq!(
+        ledger.retire_rejected_workflow("unrepresentable-run"),
+        Ok(())
+    );
+    ledger.begin_draining();
+    assert!(ledger.can_finalize());
+    assert_eq!(
+        ledger.retire_rejected_workflow("unrepresentable-run"),
+        Err(CompleteError::UnknownWorkflow)
+    );
+}
+
+/// Remote activity conversion failure follows the same one-shot ownership
+/// rule, using the opaque Core token rather than a workflow run identifier.
+#[test]
+fn rejected_activity_conversion_retires_the_inaccessible_token() {
+    let mut ledger = TaskLedger::new();
+    let token = b"unrepresentable-activity";
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+
+    assert_eq!(ledger.retire_rejected_activity(token), Ok(()));
+    ledger.begin_draining();
+    assert!(ledger.can_finalize());
+    assert_eq!(
+        ledger.retire_rejected_activity(token),
+        Err(CompleteError::UnknownActivity)
+    );
+}
+
+/// The acceptance worker polls only workflows and remote activities; enabling
+/// local activities or Nexus would create unimplemented completion paths.
+#[test]
+fn bridge_enables_only_supported_core_task_types() {
+    let task_types = bridge_task_types();
+
+    assert!(task_types.enable_workflows);
+    assert!(task_types.enable_remote_activities);
+    assert!(!task_types.enable_local_activities);
+    assert!(!task_types.enable_nexus);
+}

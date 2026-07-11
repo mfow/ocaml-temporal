@@ -22,7 +22,10 @@ enum {
   OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE = 5,
   OCAML_TEMPORAL_CORE_STATUS_CONFIGURATION = 6,
   OCAML_TEMPORAL_CORE_STATUS_CONNECTION = 7,
-  OCAML_TEMPORAL_CORE_STATUS_WORKER = 8
+  OCAML_TEMPORAL_CORE_STATUS_WORKER = 8,
+  OCAML_TEMPORAL_CORE_STATUS_OUTSTANDING_TASKS = 9,
+  OCAML_TEMPORAL_CORE_STATUS_NOT_READY = 10,
+  OCAML_TEMPORAL_CORE_STATUS_PROTOCOL = 11
 };
 
 /* Rust-owned byte allocation. `{ NULL, 0 }` is the sole empty representation. */
@@ -91,6 +94,28 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_client_connect_json(
  * temporary worker is cleaned before this operation returns.
  */
 ocaml_temporal_core_status ocaml_temporal_core_v1_worker_start_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Non-blocking Rust-owned task handoff. `NOT_READY` is an expected empty-lane
+ * result; success owns one strictly validated semantic JSON document. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_try_poll_workflow(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/* Complete exactly one previously handed-off workflow activation. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_complete_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Non-blocking task handoff for the independently guarded remote-activity
+ * lane. Local activities and Nexus are disabled by worker configuration. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_try_poll_activity(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/* Complete exactly one previously handed-off remote activity task. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_complete_activity_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 

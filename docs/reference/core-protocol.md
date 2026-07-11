@@ -15,8 +15,10 @@ This foundation validates transport structure. The first semantic worker slice
 also defines closed workflow activation and completion documents in both
 languages. Rust alone reads and writes Temporal/Core protobuf; OCaml sees
 validated semantic records, variants, exact time components, and opaque payload
-bytes. The native worker poll/completion operations that carry these documents
-are a separate lifecycle milestone and are not implemented yet.
+bytes. Native worker poll/completion operations carry these documents through
+independent Rust-owned ready lanes. They are non-blocking at the OCaml boundary:
+`not_ready` is an expected status rather than a thread wait. A shared ownership
+ledger validates the run ID or opaque task token before Core sees a completion.
 
 ## Startup compatibility
 
@@ -198,6 +200,23 @@ back to official Core values. Core's `is_local` activity-resolution flag is not
 represented because the pinned Core contract explicitly says language SDKs do
 not need to distinguish it; every other omitted value is checked before
 conversion.
+
+## Remote activity task and completion semantics
+
+Remote activity tasks use a separate closed document. The opaque Core task
+token is canonical padded base64 and must be nonempty. A start task preserves
+workflow and activity identity, headers, inputs, heartbeat details, exact
+timestamps and timeouts, attempt, effective retry policy, priority, and the
+standalone activity run ID. Retry backoff uses its unsigned IEEE-754 bit pattern
+as a decimal string. A cancellation preserves its reason and independent detail
+flags. Local activity tasks are rejected because this worker does not enable
+their distinct lifecycle.
+
+Completions contain the same task token and exactly one result: completed with
+an optional payload, failed, cancelled, or will-complete-asynchronously.
+Structured failures reuse the workflow protocol's validated failure model.
+Both directions validate and normalize JSON before handoff; only Rust converts
+to and from official Core protobuf values.
 
 ## Schemas and fixtures
 

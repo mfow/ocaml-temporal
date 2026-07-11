@@ -1,16 +1,19 @@
-(** Implements the private semantic backend contract.
+(** Implements the private deterministic backend seam used by unit tests.
 
-    The [mock://] transport is intentionally tiny: it gives unit tests a
-    deterministic backend while the Rust/Core operation adapter is developed.
-    It is not part of the public URL contract and is never selected for normal
-    HTTP(S) configurations. Every value crossing this module is copied before
-    it is retained, which keeps ownership explicit at the future FFI boundary. *)
+    The [mock://] transport is intentionally tiny: it exercises public API
+    ownership and lifecycle behavior while the native adapter is developed.
+    It is not a production URL contract. The native Rust/Core adapter will use
+    separate activation/completion semantic types and explicit admission and
+    finalization operations rather than implementing this mock task protocol.
+    Every value crossing this module is copied before it is retained, keeping
+    ownership explicit at the future FFI boundary. *)
 
 (** Connection settings copied into each backend graph. *)
 type config = {
   target_url : string;
   namespace : string;
   identity : string;
+  task_queue : string option;
 }
 
 (** Client start input after public codec encoding. *)
@@ -45,14 +48,14 @@ type terminal_result =
       run_id : string;
     }
 
-(** Workflow task delivered by a poll operation. *)
+(** Synthetic workflow task delivered by the deterministic unit-test seam. *)
 type workflow_task = {
   task_token : string;
   workflow_name : string;
   input : Payload.t;
 }
 
-(** Activity task delivered by a poll operation. *)
+(** Synthetic activity task delivered by the deterministic unit-test seam. *)
 type activity_task = {
   task_token : string;
   activity_name : string;
@@ -65,7 +68,7 @@ type 'task poll_result =
   | Idle
   | Shutdown
 
-(** Workflow task completion after registry dispatch. *)
+(** Synthetic workflow completion used by the deterministic unit-test seam. *)
 type workflow_completion =
   | Workflow_completed of {
       task_token : string;
@@ -76,7 +79,7 @@ type workflow_completion =
       error : Error.t;
     }
 
-(** Activity task completion after registry dispatch. *)
+(** Synthetic activity completion used by the deterministic unit-test seam. *)
 type activity_completion =
   | Activity_completed of {
       task_token : string;
@@ -110,6 +113,7 @@ type client = Mock_client of mock_client
     of the same kind but permits workflow and activity streams together. *)
 type mock_worker = {
   _namespace : string;
+  _task_queue : string;
   mutable closed : bool;
   workflow_tasks : workflow_task Queue.t;
   activity_tasks : activity_task Queue.t;
@@ -149,13 +153,19 @@ let valid_nonempty field value =
   else Ok ()
 
 (** Validates shared connection settings once at the private boundary. *)
-let validate_config { target_url; namespace; identity } =
+let validate_config { target_url; namespace; identity; task_queue } =
   if not (valid_target_url target_url) then
     Error (defect "target_url must use http, https, or the private mock scheme")
   else
     match valid_nonempty "namespace" namespace with
     | Error _ as error -> error
-    | Ok () -> valid_nonempty "identity" identity
+    | Ok () -> (
+        match valid_nonempty "identity" identity with
+        | Error _ as error -> error
+        | Ok () -> (
+            match task_queue with
+            | None -> Ok ()
+            | Some task_queue -> valid_nonempty "task queue" task_queue))
 
 (** Constructs an empty client ledger after configuration validation. *)
 let client_create config =
@@ -220,7 +230,9 @@ let worker_create config ~workflow_names ~activity_names =
   match validate_config config with
   | Error error -> Error error
   | Ok () ->
-      if not (String.starts_with ~prefix:"mock://" config.target_url) then
+      if config.task_queue = None then
+        Error (defect "worker task queue is required")
+      else if not (String.starts_with ~prefix:"mock://" config.target_url) then
         Error
           (bridge_error
              "native worker adapter is not connected in this build")
@@ -251,6 +263,7 @@ let worker_create config ~workflow_names ~activity_names =
           (Mock_worker
              {
                _namespace = config.namespace;
+               _task_queue = Option.get config.task_queue;
                closed = false;
                workflow_tasks;
                activity_tasks;

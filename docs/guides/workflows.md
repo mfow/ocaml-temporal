@@ -271,8 +271,11 @@ let worker_result =
 
 The public lifecycle surface is intentionally independent of native handles or
 Temporal protobufs. The live Core poll/start adapter is still being wired; the
-current unit tests use a private deterministic backend to prove registration,
-typed encoding/decoding, exact-run handles, and idempotent shutdown.
+current unit tests use a private deterministic backend seam to prove
+registration, typed encoding/decoding, exact-run handles, and idempotent
+shutdown. That seam is not the native adapter contract: Core activations and
+completions require separate semantic types and an explicit admission,
+shutdown, and finalization lifecycle.
 
 ## Current integration boundary
 

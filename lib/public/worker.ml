@@ -126,7 +126,7 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                   | Error error -> Error error
                   | Ok activities ->
                       let config : Backend.config =
-                        { target_url; namespace; identity }
+                        { target_url; namespace; identity; task_queue = Some task_queue }
                       in
                       let workflow_names =
                         Name_map.bindings workflows |> List.map fst

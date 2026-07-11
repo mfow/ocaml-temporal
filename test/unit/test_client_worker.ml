@@ -137,10 +137,18 @@ let test_client_validation_errors () =
        ~task_queue:"unit-test" ~id:"" ~input:"ignored");
   unwrap (Temporal.Client.shutdown client)
 
+(** The worker task queue is required configuration and is passed through the
+    private backend boundary before any worker graph is allocated. *)
+let test_worker_validation_errors () =
+  expect_error "defect"
+    (Temporal.Worker.create ~target_url:"mock://dispatch"
+       ~namespace:"unit-test" ~task_queue:"" ~workflows:[] ~activities:[] ())
+
 let () =
   test_duplicate_workflows ();
   test_duplicate_activities ();
   test_remote_registration_is_rejected ();
   test_worker_registration_and_dispatch ();
   test_typed_start_and_wait_handle ();
-  test_client_validation_errors ()
+  test_client_validation_errors ();
+  test_worker_validation_errors ()

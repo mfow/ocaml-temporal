@@ -49,7 +49,9 @@ let create ?(identity = default_identity) ~target_url ~namespace () =
       match validate_name "identity" identity with
       | Error error -> Error error
       | Ok () ->
-          let config : Backend.config = { target_url; namespace; identity } in
+          let config : Backend.config =
+            { target_url; namespace; identity; task_queue = None }
+          in
           Result.map
             (fun backend -> { backend; closed = false })
             (Backend.client_create config))

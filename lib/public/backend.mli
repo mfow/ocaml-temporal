@@ -1,14 +1,18 @@
-(** The private semantic backend used by the public client and worker modules.
+(** The private deterministic backend seam used by the public client and
+    worker modules' unit tests.
 
-    This interface deliberately contains only owned OCaml values. The future
-    Rust/Core adapter can implement the same operations without exposing
-    native handles, protobuf values, or callbacks to the public package. *)
+    This interface deliberately contains only owned OCaml values and is not a
+    promise that the native adapter will implement these mock task shapes. The
+    Rust/Core integration will use separate activation/completion semantic
+    types plus an explicit admission/begin-shutdown/finalize lifecycle. None
+    of those native details are exposed by the public package. *)
 
 (** A validated connection configuration shared by client and worker graphs. *)
 type config = {
   target_url : string;
   namespace : string;
   identity : string;
+  task_queue : string option;
 }
 
 (** The request sent when a typed client starts one workflow execution. *)
@@ -44,16 +48,19 @@ type terminal_result =
       run_id : string;
     }
 
-(** A workflow activation reduced to the data needed by the OCaml registry.
-    The Core bridge will later add activation jobs and replay metadata without
-    changing the ownership model of this private interface. *)
+(** A synthetic workflow task used only by the deterministic unit-test seam.
+    Native Core activations carry replay metadata, jobs, and history context;
+    the future adapter will translate those through separate private semantic
+    types rather than widening this mock record. *)
 type workflow_task = {
   task_token : string;
   workflow_name : string;
   input : Payload.t;
 }
 
-(** An activity task reduced to the data needed by an OCaml implementation. *)
+(** A synthetic activity task used only by the deterministic unit-test seam.
+    Native activity tasks have cancellation and asynchronous-completion
+    variants that are intentionally absent from this mock record. *)
 type activity_task = {
   task_token : string;
   activity_name : string;
@@ -67,7 +74,8 @@ type 'task poll_result =
   | Idle
   | Shutdown
 
-(** Completion sent back after dispatching a workflow task. *)
+(** Synthetic workflow completion used only by the unit-test seam. Native Core
+    completion is a semantic command set, not an output/failure payload. *)
 type workflow_completion =
   | Workflow_completed of {
       task_token : string;
@@ -78,7 +86,8 @@ type workflow_completion =
       error : Error.t;
     }
 
-(** Completion sent back after dispatching an activity task. *)
+(** Synthetic activity completion used only by the unit-test seam. Native Core
+    completion also models cancellation and asynchronous completion. *)
 type activity_completion =
   | Activity_completed of {
       task_token : string;
@@ -95,8 +104,9 @@ type client
 (** An opaque worker backend instance owned by one public [Worker.t]. *)
 type worker
 
-(** Creates a client backend. The in-memory transport is used only by unit
-    tests; production URLs are reserved for the future Rust/Core adapter. *)
+(** Creates a deterministic client test seam. The in-memory transport is used
+    only by unit tests; production URLs are reserved for the future Rust/Core
+    adapter, whose semantic types and lifecycle are separate from this seam. *)
 val client_create : config -> (client, Error.t) result
 
 (** Starts one workflow after validating the request in the backend boundary. *)
@@ -108,8 +118,10 @@ val client_wait : client -> wait_request -> (terminal_result, Error.t) result
 (** Closes a client backend. Repeated calls are harmless and return [Ok ()]. *)
 val client_shutdown : client -> (unit, Error.t) result
 
-(** Creates a worker backend and records the names registered by the OCaml
-    registry. The names let a future Core adapter configure its task filters. *)
+(** Creates a deterministic worker test seam and records the task queue and
+    names registered by the OCaml registry. The queue and names are retained
+    here so tests exercise the same admission inputs that the native adapter
+    will validate, even though its activation protocol is different. *)
 val worker_create :
   config ->
   workflow_names:string list ->

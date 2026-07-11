@@ -14,20 +14,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  license-audit:
+    name: Dependency license audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Audit dependency licenses
+        run: make license-check OCAML_VERSION=5.2
+
   verify:
-    name: OCaml ${{ matrix.ocaml }}
-    runs-on: ubuntu-latest
+    name: OCaml ${{ matrix.ocaml }} / ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - ocaml: "5.2"
-            service: dev
-          - ocaml: "5.5"
-            service: dev-current
+        ocaml:
+          - "5.2"
+          - "5.3"
+          - "5.4"
+          - "5.5"
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-      - name: Build, lint, audit licenses, and test
-        run: make verify SERVICE=${{ matrix.service }}
+      - name: Build, lint, and test
+        run: make verify OCAML_VERSION=${{ matrix.ocaml }}

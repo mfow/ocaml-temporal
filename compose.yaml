@@ -4,18 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.dev
       args:
-        OCAML_IMAGE: ocaml/opam:debian-12-ocaml-5.2
-    working_dir: /workspace
-    volumes:
-      - .:/workspace
-    init: true
-
-  dev-current:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-      args:
-        OCAML_IMAGE: ocaml/opam:debian-12-ocaml-5.5
+        OCAML_IMAGE: ${OCAML_IMAGE:-ocaml/opam:debian-12-ocaml-5.2}
     working_dir: /workspace
     volumes:
       - .:/workspace

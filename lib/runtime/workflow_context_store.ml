@@ -24,9 +24,26 @@ type t = {
   mutable commands_rev : Activation.command list;
 }
 
+(** Validates the worker queue before it becomes an implicit activity option.
+    Queue names cross the strict JSON boundary even when workflow code omits
+    [~task_queue], so rejecting an empty, NUL-containing, oversized, or
+    non-UTF-8 default at execution construction keeps configuration failures
+    out of the later workflow command path. [Invalid_argument] is appropriate
+    here because the worker supplied an invalid programmer configuration. *)
+let validate_task_queue task_queue =
+  if String.equal task_queue "" then
+    invalid_arg "task_queue must not be empty"
+  else if String.contains task_queue '\000' then
+    invalid_arg "task_queue must not contain NUL"
+  else if String.length task_queue > 65_536 then
+    invalid_arg "task_queue exceeds 65536 bytes"
+  else if not (Temporal_base.Codec.valid_utf_8 task_queue) then
+    invalid_arg "task_queue must be valid UTF-8"
+
 (** Creates empty activity and timer tables. The tables grow normally if a
     workflow has more than the small initial capacity. *)
 let create ?(task_queue = "default") scheduler =
+  validate_task_queue task_queue;
   {
     scheduler;
     task_queue;

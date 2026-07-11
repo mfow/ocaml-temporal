@@ -156,6 +156,23 @@ let test_invalid_activity_options_do_not_schedule () =
       failwith "invalid activity queue emitted a schedule command"
   | _ -> failwith "invalid activity options did not fail through the workflow"
 
+(** Rejects malformed worker defaults while the execution context is created.
+    An omitted activity queue must never defer this configuration error until a
+    later command translation step, after a future and sequence were created. *)
+let test_invalid_default_task_queue () =
+  let expect_invalid label task_queue =
+    try
+      ignore (Execution.start ~task_queue greeting_workflow "Ada");
+      failwith (label ^ " default task queue was accepted")
+    with
+    | Invalid_argument message ->
+        if String.equal message "" then failwith (label ^ " had no diagnostic")
+  in
+  expect_invalid "empty" "";
+  expect_invalid "NUL" "bad\000queue";
+  expect_invalid "oversized" (String.make 65_537 'x');
+  expect_invalid "UTF-8" (String.make 1 (Char.chr 0xff))
+
 (** Runs the greeting fixture and returns all emitted command batches for replay
     comparison. *)
 let run_greeting () =
@@ -641,6 +658,7 @@ let () =
   test_commands_and_completion ();
   test_activity_options_and_queue ();
   test_invalid_activity_options_do_not_schedule ();
+  test_invalid_default_task_queue ();
   test_replay_is_stable ();
   test_resolution_job_order ();
   test_bridge_defects ();

@@ -44,17 +44,20 @@ let test_package_metadata () =
   require_text ~path:opam ~needle:"authors: \"Michael Fowlie\"";
   require_text ~path:opam ~needle:"x-maintenance-intent: [ \"(latest)\" ]";
   require_text ~path:opam ~needle:"\"experimental\"";
+  require_text ~path:opam ~needle:"\"logs\" {>= \"0.10\"}";
   require_text ~path:opam ~needle:"\"yojson\" {>= \"3.0\"}";
   require_text ~path:locked ~needle:"name: \"temporal-sdk\"";
   require_text ~path:locked ~needle:"maintainer: \"Michael Fowlie\"";
   require_text ~path:locked ~needle:"authors: \"Michael Fowlie\"";
   require_text ~path:locked ~needle:"x-maintenance-intent: [ \"(latest)\" ]";
   require_text ~path:locked ~needle:"\"experimental\"";
+  require_text ~path:locked ~needle:"\"logs\" {= \"0.10.0\"}";
   require_text ~path:locked ~needle:"\"yojson\" {= \"3.0.0\"}";
   require_text ~path:dune_project ~needle:"(authors \"Michael Fowlie\")";
   require_text ~path:dune_project ~needle:"(maintainers \"Michael Fowlie\")";
   require_text ~path:dune_project ~needle:"(maintenance_intent \"(latest)\")";
   require_text ~path:dune_project ~needle:"(name temporal-sdk)";
+  require_text ~path:dune_project ~needle:"(logs (>= 0.10))";
   require_text ~path:dune_project ~needle:"(yojson (>= 3.0))"
 
 (** Ensures Dune never attempts to turn the statically linked Rust bridge into

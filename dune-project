@@ -15,4 +15,5 @@
  (depends
   (ocaml (>= 5.2))
   (dune (>= 3.18))
+  (logs (>= 0.10))
   (yojson (>= 3.0))))

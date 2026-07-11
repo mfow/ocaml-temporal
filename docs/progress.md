@@ -8,6 +8,31 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-11: Application-configurable OCaml logging
+
+Status: verified locally; GitHub Actions verification follows the milestone
+commit.
+
+The SDK now emits bounded, structural events through the OCaml `logs` library
+at lifecycle, native-bridge, workflow-state, and latency boundaries. Stable
+sources and tags let applications filter without parsing message prose. The
+library deliberately installs neither a reporter nor a global level, so the
+OCaml application continues to own output format, destination, and verbosity.
+Raw workflow payloads, arguments, and native diagnostics are excluded, and a
+defective application reporter cannot change SDK result semantics.
+
+Evidence:
+
+- Focused tests first failed because the observability module did not exist,
+  then passed for stable source and tag names, severity, latency, privacy, and
+  reporter-exception containment after the implementation was added.
+- Repository smoke tests first failed because `logs` was absent from package
+  metadata, then passed after Dune, OPAM, and the locked dependency closure
+  declared it.
+- License-policy fixtures first rejected the newly exposed `ocamlbuild`
+  dependency, then passed after documenting and enforcing an exact build-only
+  `0.16.1` OCaml linking-exception allowance. Adjacent versions remain rejected.
+
 ## 2026-07-11: Portable static foreign-archive build
 
 Status: verified locally; GitHub Actions verification follows the corrective

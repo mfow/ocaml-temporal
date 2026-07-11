@@ -2,6 +2,10 @@
 type ('input, 'output) implementation =
   'input -> ('output, Temporal_base.Error.t) result
 
+(** Shared logging vocabulary. It deliberately contains reporter exceptions so
+    workflow command and error semantics never depend on application logging. *)
+module Observability = Temporal_base.Observability
+
 (** In-memory state for one workflow. Only the activation loop changes it.
     [terminal] prevents a second completion command, and [evicted] prevents use
     after Core asks the worker to remove the execution from its cache. *)
@@ -20,15 +24,28 @@ type ('input, 'output) t = {
     only after Temporal delivers a start job, matching replay behavior. *)
 let start definition input =
   let scheduler = Scheduler.create () in
-  {
-    definition;
-    input;
-    scheduler;
-    context = Workflow_context_store.create scheduler;
-    started = false;
-    terminal = false;
-    evicted = false;
-  }
+  let execution =
+    {
+      definition;
+      input;
+      scheduler;
+      context = Workflow_context_store.create scheduler;
+      started = false;
+      terminal = false;
+      evicted = false;
+    }
+  in
+  let tags =
+    Observability.tags ~operation:"execution_created"
+      ~workflow_type:(Temporal_base.Definition.name definition) ()
+  in
+  Observability.report ~src:Observability.Source.workflow Logs.Debug ~tags
+    "workflow execution state created";
+  execution
+
+(** Returns the registered type used for bounded workflow log metadata. *)
+let workflow_type execution =
+  Temporal_base.Definition.name execution.definition
 
 (** Emits the workflow's completion, failure, or cancellation command once and
     immediately releases every paused fiber. *)
@@ -36,10 +53,29 @@ let emit_terminal execution command =
   if not execution.terminal then (
     execution.terminal <- true;
     Workflow_context_store.emit execution.context command;
-    Workflow_context_store.shutdown execution.context)
+    Workflow_context_store.shutdown execution.context;
+    match command with
+    | Activation.Complete_workflow _ ->
+        let tags =
+          Observability.tags ~operation:"workflow_completed"
+            ~workflow_type:(workflow_type execution) ()
+        in
+        Observability.report ~src:Observability.Source.workflow Logs.Info ~tags
+          "workflow completed"
+    | Fail_workflow _ | Cancel_workflow_execution
+    | Schedule_activity _ | Request_cancel_activity _ | Start_timer _
+    | Cancel_timer _ -> ())
 
 (** Fails the workflow through the same one-terminal-command check. *)
 let fail execution error =
+  if not execution.terminal then (
+    let tags =
+      Observability.tags ~operation:"workflow_failed"
+        ~workflow_type:(workflow_type execution)
+        ~error_kind:(Temporal_base.Error.kind error) ()
+    in
+    Observability.report ~src:Observability.Source.workflow Logs.Error ~tags
+      "workflow failed");
   emit_terminal execution (Activation.Fail_workflow error)
 
 (** Creates a non-retryable error when Core and the OCaml runtime disagree about
@@ -55,6 +91,12 @@ let start_workflow execution =
     fail execution (bridge_error "workflow received duplicate start job")
   else if not execution.terminal then begin
     execution.started <- true;
+    let tags =
+      Observability.tags ~operation:"workflow_started"
+        ~workflow_type:(workflow_type execution) ()
+    in
+    Observability.report ~src:Observability.Source.workflow Logs.Info ~tags
+      "workflow started";
     Scheduler.spawn execution.scheduler (fun () ->
         match Temporal_base.Definition.implementation execution.definition with
         | None -> fail execution (bridge_error "remote workflow has no implementation")
@@ -88,9 +130,22 @@ let process_job execution = function
       | Ok () -> ()
       | Error error -> fail execution error)
   | Cancel_workflow ->
+      if not execution.terminal then (
+        let tags =
+          Observability.tags ~operation:"workflow_cancelled"
+            ~workflow_type:(workflow_type execution) ()
+        in
+        Observability.report ~src:Observability.Source.workflow Logs.Info ~tags
+          "workflow cancellation requested");
       emit_terminal execution Activation.Cancel_workflow_execution
   | Remove_from_cache ->
       execution.evicted <- true;
+      let tags =
+        Observability.tags ~operation:"execution_evicted"
+          ~workflow_type:(workflow_type execution) ()
+      in
+      Observability.report ~src:Observability.Source.workflow Logs.Debug ~tags
+        "workflow execution evicted";
       Workflow_context_store.shutdown execution.context
 
 (** Runs queued fibers with this workflow installed as the current context. An
@@ -110,12 +165,31 @@ let run_scheduler execution =
     removal stops processing immediately and returns no commands for the old
     in-memory execution. *)
 let activate execution jobs =
-  if execution.evicted then []
-  else (
-    List.iter
-      (fun job -> if not execution.evicted then process_job execution job)
-      jobs;
-    if execution.evicted then []
-    else (
-      if not execution.terminal then run_scheduler execution;
-      Workflow_context_store.take_commands execution.context))
+  let job_count = List.length jobs in
+  let commands, duration_ms =
+    Observability.measure_ms (fun () ->
+        if execution.evicted then (
+          let tags =
+            Observability.tags ~operation:"activation_ignored"
+              ~workflow_type:(workflow_type execution) ~job_count ()
+          in
+          Observability.report ~src:Observability.Source.workflow Logs.Warning
+            ~tags "activation ignored after cache eviction";
+          [])
+        else (
+          List.iter
+            (fun job -> if not execution.evicted then process_job execution job)
+            jobs;
+          if execution.evicted then []
+          else (
+            if not execution.terminal then run_scheduler execution;
+            Workflow_context_store.take_commands execution.context)))
+  in
+  let tags =
+    Observability.tags ~operation:"activate" ~duration_ms
+      ~workflow_type:(workflow_type execution) ~job_count
+      ~command_count:(List.length commands) ()
+  in
+  Observability.report ~src:Observability.Source.workflow Logs.Debug ~tags
+    "workflow activation processed";
+  commands

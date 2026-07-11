@@ -130,8 +130,9 @@ fn client_operations_require_connected_client() {
 }
 
 #[test]
-/// Async start admission requires a connection, while ticket reads reject a
-/// ticket that was not created by this runtime owner.
+/// Async start admission and ticket reads require a connected client. Once the
+/// lifecycle guard passes, ticket reads still reject tickets that were not
+/// created by this runtime owner.
 fn async_start_operations_require_connected_client() {
     let mut runtime = ptr::null_mut();
     let mut result = empty_result();
@@ -168,7 +169,7 @@ fn async_start_operations_require_connected_client() {
                 &mut result,
             )
         },
-        STATUS_PROTOCOL
+        STATUS_INVALID_STATE
     );
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
@@ -183,7 +184,7 @@ fn async_start_operations_require_connected_client() {
                 &mut result,
             )
         },
-        STATUS_PROTOCOL
+        STATUS_INVALID_STATE
     );
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_result_free(&mut result) },

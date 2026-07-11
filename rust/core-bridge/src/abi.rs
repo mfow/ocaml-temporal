@@ -470,6 +470,15 @@ impl Runtime {
     fn read_start_workflow_json(&mut self, input: &[u8], wait: bool) -> Operation {
         let text = decode_semantic_input(input)?;
         let ticket = client_protocol::decode_start_ticket(text).map_err(protocol_failure)?;
+        // Ticket reads are meaningful only while the client connection is
+        // live.  A ticket supplied before connection setup cannot have been
+        // admitted by this runtime, but returning the lifecycle error is more
+        // useful and consistent with begin/start/wait operations than exposing
+        // the implementation detail that the pending-ticket map is empty.
+        self.client.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
         let read = {
             let pending = self
                 .pending_starts

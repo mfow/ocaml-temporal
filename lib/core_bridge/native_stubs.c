@@ -296,6 +296,40 @@ CAMLprim value ocaml_temporal_worker_start(value runtime, value input) {
                              ocaml_temporal_core_v1_worker_start_json);
 }
 
+/* Drain one ready workflow activation without waiting on Core. The Rust
+ * operation only touches the owner Domain's ready queue; it never invokes
+ * OCaml from a Tokio thread. `NOT_READY` is carried in the normal response so
+ * the OCaml scheduler can decide how to yield or wait for native readiness. */
+CAMLprim value ocaml_temporal_worker_try_poll_workflow(value runtime) {
+  return invoke_runtime(runtime,
+                        ocaml_temporal_core_v1_worker_try_poll_workflow);
+}
+
+/* Copy a semantic workflow completion before releasing the OCaml runtime lock.
+ * Rust validates the document and checks its run-id lease; the bridge never
+ * retains the temporary C copy after the call returns. */
+CAMLprim value ocaml_temporal_worker_complete_workflow_json(value runtime,
+                                                            value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_worker_complete_workflow_json);
+}
+
+/* Drain one ready remote activity task without waiting. Workflow and activity
+ * lanes are independent in Rust, so an empty activity lane does not delay a
+ * ready workflow activation. */
+CAMLprim value ocaml_temporal_worker_try_poll_activity(value runtime) {
+  return invoke_runtime(runtime, ocaml_temporal_core_v1_worker_try_poll_activity);
+}
+
+/* Copy a semantic activity completion before entering the blocking section.
+ * The opaque task token remains Rust-owned state in the ledger; this input is
+ * only a borrowed JSON document for one synchronous submission. */
+CAMLprim value ocaml_temporal_worker_complete_activity_json(value runtime,
+                                                            value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_worker_complete_activity_json);
+}
+
 /* Gracefully stop the worker; Rust treats an absent worker as already closed. */
 CAMLprim value ocaml_temporal_worker_shutdown(value runtime) {
   return invoke_runtime(runtime, ocaml_temporal_core_v1_worker_shutdown);

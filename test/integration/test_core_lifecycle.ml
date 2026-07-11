@@ -14,6 +14,9 @@ let bridge_status = function
   | Configuration -> "configuration"
   | Connection -> "connection"
   | Worker -> "worker"
+  | Outstanding_tasks -> "outstanding_tasks"
+  | Not_ready -> "not_ready"
+  | Protocol -> "protocol"
   | Unknown code -> Printf.sprintf "unknown(%d)" code
 
 (** Raises a test failure while preserving structured bridge diagnostics. *)

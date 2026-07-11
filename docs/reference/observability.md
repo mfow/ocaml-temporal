@@ -21,8 +21,15 @@ Current events use these levels:
   latency.
 - `Info` records important runtime and workflow lifecycle transitions.
 - `Warning` records recoverable abnormal conditions, such as work delivered to
-  an execution after cache eviction.
+  an execution after cache eviction or a worker shutdown that still has leased
+  tasks to finish.
 - `Error` records bridge and workflow failures.
+
+An empty non-blocking worker poll lane is reported at `Debug` as `not ready`;
+this is expected scheduling state and is not a failure. Protocol, lifecycle,
+configuration, and native bridge failures remain `Error` records. This level
+split keeps a healthy worker from producing error-volume logs while retaining
+actionable diagnostics for conditions that require intervention.
 
 The SDK never logs at `App`, which is reserved for the application.
 

@@ -69,6 +69,30 @@ int main(void) {
   assert(ocaml_temporal_core_v1_result_free(&result) ==
          OCAML_TEMPORAL_CORE_STATUS_OK);
 
+  /* Poll and completion symbols are safe to call before a worker exists. The
+   * status is explicit and every result still follows the ordinary ownership
+   * contract, which lets the OCaml wrapper exercise the same cleanup path for
+   * expected lifecycle errors and successful JSON documents. */
+  assert(ocaml_temporal_core_v1_worker_try_poll_workflow(runtime, &result) ==
+         OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_worker_try_poll_activity(runtime, &result) ==
+         OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  const uint8_t malformed_completion[] = "{}";
+  assert(ocaml_temporal_core_v1_worker_complete_workflow_json(
+             runtime, malformed_completion, sizeof(malformed_completion) - 1,
+             &result) == OCAML_TEMPORAL_CORE_STATUS_PROTOCOL);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+  assert(ocaml_temporal_core_v1_worker_complete_activity_json(
+             runtime, malformed_completion, sizeof(malformed_completion) - 1,
+             &result) == OCAML_TEMPORAL_CORE_STATUS_PROTOCOL);
+  assert(ocaml_temporal_core_v1_result_free(&result) ==
+         OCAML_TEMPORAL_CORE_STATUS_OK);
+
   /* Worker construction without its client parent is rejected without
    * mutating the runtime graph or retaining a partial worker. */
   const uint8_t worker_config[] =

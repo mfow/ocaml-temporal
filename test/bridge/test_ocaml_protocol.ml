@@ -91,6 +91,12 @@ let test_resource_limits () =
   let long_string =
     prefix ^ "{\"value\":\"" ^ String.make 65_537 'a' ^ "\"}}"
   in
+  let escaped_long_string =
+    prefix ^ "{\"value\":\""
+    ^ String.init (65_537 * 2) (fun index ->
+        if index mod 2 = 0 then '\\' else '"')
+    ^ "\"}}"
+  in
   let long_array =
     prefix ^ "{\"values\":["
     ^ String.concat "," (List.init 257 (Fun.const "null"))
@@ -98,6 +104,7 @@ let test_resource_limits () =
   in
   require_error (Protocol.decode deep);
   require_error (Protocol.decode long_string);
+  require_error (Protocol.decode escaped_long_string);
   require_error (Protocol.decode long_array);
   require_error
     (Protocol.decode (String.make (Protocol.max_document_bytes + 1) ' '));

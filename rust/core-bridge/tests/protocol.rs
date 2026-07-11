@@ -74,6 +74,7 @@ fn enforces_resource_limits() {
     let prefix = r#"{"kind":"request","correlation_id":"0123456789abcdef0123456789abcdef","operation":"worker.poll","body":"#;
     let deep = format!("{prefix}{}{}{}", "[".repeat(17), "]".repeat(17), "}");
     let long_string = format!("{prefix}{{\"value\":\"{}\"}}}}", "a".repeat(65_537));
+    let escaped_long_string = format!("{prefix}{{\"value\":\"{}\"}}}}", "\\\"".repeat(65_537));
     let long_array = format!(
         "{prefix}{{\"values\":[{}]}}}}",
         std::iter::repeat_n("null", 257)
@@ -82,6 +83,7 @@ fn enforces_resource_limits() {
     );
     assert!(protocol::decode(&deep).is_err());
     assert!(protocol::decode(&long_string).is_err());
+    assert!(protocol::decode(&escaped_long_string).is_err());
     assert!(protocol::decode(&long_array).is_err());
     assert!(protocol::decode(&" ".repeat(MAX_DOCUMENT_BYTES + 1)).is_err());
     assert!(protocol::encode_payload(&vec![0; MAX_PAYLOAD_BYTES + 1]).is_err());

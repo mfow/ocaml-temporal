@@ -117,4 +117,7 @@ Draft 2020-12 schemas live under [`docs/schemas/bridge`](../schemas/bridge/).
 Shared positive and malformed fixtures under `test/bridge/fixtures/protocol`
 drive both OCaml and Rust tests. Runtime validators remain authoritative for
 duplicate keys, decoded payload length, aggregate node count, normalization,
-and privacy-safe errors; schema validation alone is insufficient.
+privacy-safe errors, and every UTF-8 byte limit. JSON Schema `maxLength` counts
+Unicode characters rather than encoded UTF-8 bytes, so it documents a useful
+upper bound but cannot enforce the byte-count contract; schema validation alone
+is insufficient.

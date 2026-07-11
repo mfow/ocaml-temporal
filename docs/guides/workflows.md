@@ -55,10 +55,6 @@ Errors are abstract but inspectable through `Temporal.Error.view`, `kind`, and
 `message`. This preserves room for compatible internal changes while keeping
 application logging and policy decisions stable.
 
-Workflow definitions, activities, futures, and direct-style suspension are
-introduced by the next runtime milestones; their APIs will build on these same
-codec and error contracts.
-
 ## Definitions and ordinary helpers
 
 A definition gives Temporal a stable type name and codecs while leaving the
@@ -116,5 +112,40 @@ let await_pair first second =
 ```
 
 `Future.both` observes both inputs before it settles and does not implicitly
-cancel a sibling when one side fails. Later activity and child-workflow APIs
-will supply explicit structured-cancellation scopes.
+cancel a sibling when one side fails. Later child-workflow APIs will supply
+explicit structured-cancellation scopes.
+
+## Activities, timers, and concurrent scheduling
+
+`Activity.start` emits a command immediately and returns before the remote
+activity completes. Start independent work first, then await the combined
+future:
+
+```ocaml
+let enrich document =
+  let open Temporal.Result_syntax in
+  let summary = Temporal.Activity.start summarize document in
+  let entities = Temporal.Activity.start extract_entities document in
+  let* summary, entities =
+    Temporal.Future.await (Temporal.Future.both summary entities)
+  in
+  let* () = Temporal.Workflow.sleep (Temporal.Duration.of_ms 10L) in
+  Ok (summary, entities)
+```
+
+`Activity.execute definition input` is the convenience form of `start`
+followed by `Future.await`. Both return expected failures through `result`.
+Calling an operation outside an active workflow returns a structured defect;
+the private suspension effect never escapes to application code.
+
+## Current integration boundary
+
+The repository currently proves this API against a synthetic activation
+interpreter. It can deterministically emit activity and timer commands, apply
+explicitly ordered resolution jobs, suspend and resume OCaml continuations,
+tear down cache entries, and replay the same input to the same command bytes.
+
+It does **not yet connect to Temporal Server**. The next phase links the native
+OCaml worker to the pinned Rust Temporal Core SDK and replaces synthetic jobs
+with serialized Core workflow activations. The public workflow style is
+designed to remain the same across that integration.

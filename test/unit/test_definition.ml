@@ -21,4 +21,11 @@ let () =
         ~output:Temporal.Codec.unit);
   expect_invalid_name (fun () ->
       Temporal.Workflow.remote ~name:"bad\000name" ~input:Temporal.Codec.unit
-        ~output:Temporal.Codec.unit)
+        ~output:Temporal.Codec.unit);
+  assert (not (Temporal.Workflow_context.is_active ()));
+  (match Temporal.Future.await (Temporal.Activity.start greeting "Ada") with
+  | Error error -> assert (Temporal.Error.kind error = "defect")
+  | Ok _ -> failwith "activity started outside a workflow");
+  match Temporal.Workflow.sleep (Temporal.Duration.of_ms 1L) with
+  | Error error -> assert (Temporal.Error.kind error = "defect")
+  | Ok () -> failwith "workflow slept outside an execution"

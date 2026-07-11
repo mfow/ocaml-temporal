@@ -659,7 +659,7 @@ Expected: no uncaught effect in tests and one scheduler commit.
 - Consumes: typed definitions from Task 4 and scheduler/futures from Task 5.
 - Produces: private activation jobs and commands; public `Activity.start`, `Activity.execute`, `Workflow.sleep`, and execution tests that suspend then resume without Temporal Core.
 
-- [ ] **Step 1: Write a failing schedule-then-resolve test**
+- [x] **Step 1: Write a failing schedule-then-resolve test**
 
 ```ocaml
 let workflow input =
@@ -683,13 +683,13 @@ let test_commands_and_completion () =
     (Execution.activate execution [ Fire_timer { seq = 2L } ])
 ```
 
-- [ ] **Step 2: Run the test to verify command APIs are absent**
+- [x] **Step 2: Run the test to verify command APIs are absent**
 
 Run: `docker compose run --rm dev opam exec -- dune runtest test/runtime/test_activation.exe`
 
 Expected: FAIL with unbound `Activity.start`, `Workflow.sleep`, and `Execution`.
 
-- [ ] **Step 3: Implement one-to-one synthetic jobs and commands**
+- [x] **Step 3: Implement one-to-one synthetic jobs and commands**
 
 Private protocol types are:
 
@@ -725,7 +725,7 @@ end
 
 `Activity.start` validates/encodes input, allocates a command sequence, emits `Schedule_activity`, and returns a future whose resolution decodes the output codec. `Activity.execute` is exactly `Future.await (Activity.start definition input)`. `Workflow.sleep` emits a timer and awaits its future; zero duration completes immediately without a timer command.
 
-- [ ] **Step 4: Prove deterministic replay and cache teardown**
+- [x] **Step 4: Prove deterministic replay and cache teardown**
 
 Add tests that run the same job lists twice and compare command lists byte-for-byte, deliver two activity resolutions in opposite orders and assert each activation follows its explicit job order, and evict a blocked execution under `OCAMLRUNPARAM=b` without a leaked continuation warning.
 
@@ -733,7 +733,7 @@ Run: `make test-runtime && make test-unit`
 
 Expected: command, replay, malformed-resolution, cancellation, and eviction tests all pass.
 
-- [ ] **Step 5: Document the direct-style API and commit**
+- [x] **Step 5: Document the direct-style API and commit**
 
 Update the workflow guide with a compiling `Activity.start`/`Future.await` example, explain that effect suspension is private, and distinguish synthetic activation proof from real Temporal integration in Phase 2.
 

@@ -78,6 +78,16 @@ let create ~owner ~outside_error =
   in
   (promise, resolve)
 
+let inert_owner =
+  make_owner ~id:(-1) ~enqueue:(fun thunk -> thunk ())
+    ~is_running:(fun () -> false) ~on_create:(fun () -> ())
+    ~on_settled:(fun () -> ()) ~register_teardown:(fun _ -> ())
+
+let resolved ~outside_error result =
+  let promise, resolve = create ~owner:inert_owner ~outside_error in
+  resolve result;
+  promise
+
 let owner_id promise = promise.owner.id
 
 let await promise =

@@ -1,7 +1,11 @@
 type ('input, 'output) implementation =
   'input -> ('output, Error.t) result
 
-type ('input, 'output) t
+type ('input, 'output) t =
+  ( 'input,
+    'output,
+    ('input, 'output) implementation )
+  Temporal_base.Definition.t
 
 val define :
   name:string ->
@@ -19,3 +23,6 @@ val remote :
 (** Declare a typed child or external workflow implemented elsewhere. *)
 
 val name : ('input, 'output) t -> string
+
+val sleep : Duration.t -> (unit, Error.t) result
+(** Start a durable timer and suspend; zero duration returns immediately. *)

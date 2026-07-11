@@ -20,6 +20,11 @@ val create :
   outside_error:(unit -> 'error) ->
   ('value, 'error) t * ('value, 'error) resolver
 
+val resolved :
+  outside_error:(unit -> 'error) ->
+  ('value, 'error) result ->
+  ('value, 'error) t
+
 val owner_id : ('value, 'error) t -> int
 val await : ('value, 'error) t -> ('value, 'error) result
 

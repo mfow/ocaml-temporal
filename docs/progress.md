@@ -126,3 +126,33 @@ Evidence:
 - `dune build @install` and `git diff --check` passed.
 
 Next phase: synthetic activation interpreter and command API.
+
+## 2026-07-11: Synthetic activation interpreter and command API
+
+Status: verified.
+
+The first end-to-end runtime slice schedules typed activities, decodes their
+results, starts durable timers, resumes suspended OCaml code, and emits encoded
+workflow completion commands. A domain-local context makes public operations
+available only during activation execution. This is a synthetic proof and
+does not yet poll Temporal Server.
+
+Evidence:
+
+- The initial focused test failed because the activation and execution modules
+  did not exist.
+- The schedule/activity-resolution/timer/completion sequence passed on OCaml
+  5.2.1 and 5.5.
+- Replaying identical job lists produced structurally identical payload bytes
+  and command lists.
+- Concurrent activity resolution tests proved that runnable order follows the
+  explicit activation job order.
+- Tests reject unknown and duplicate sequences as bridge defects, validate
+  zero/negative durations, emit cancellation exactly once, and evict blocked
+  executions without a command or leaked continuation warning.
+- Terminal completion and failure tear down pending runtime state while
+  retaining the terminal command.
+- Full unit/runtime tests, lint, license audit, install build, OPAM lint,
+  unsafe-cast scan, and `git diff --check` passed.
+
+Next phase: Phase 1 documentation and clean-checkout handoff.

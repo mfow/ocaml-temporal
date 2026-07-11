@@ -80,7 +80,13 @@ currently enforce repository-owned whitespace rules instead.
 `95e97686a079dcfe6c42e3254b2f3f5e3d97408f`; metadata contains 320 packages
 including the project bridge itself. The Core dependency disables default
 features and currently enables only `tls-ring`. The project bridge is
-Apache-2.0 and emits a native `staticlib`.
+Apache-2.0 and emits a native `staticlib` for OCaml plus an internal `rlib` for
+Rust integration tests.
+
+Dependabot checks the Cargo workspace under `/rust` every Monday and targets
+updates at `master`. OCaml and OPAM are intentionally absent because GitHub
+Dependabot does not support that ecosystem; the locked OPAM closure continues
+to be reviewed and updated manually.
 
 The Cargo scanner parses SPDX `AND`, `OR`, `WITH`, and parentheses rather than
 matching substrings. For an `OR`, it prints the exact approved branch selected;

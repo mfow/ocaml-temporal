@@ -275,6 +275,11 @@ a crate configured to emit only a `staticlib` cannot be imported by that test.
 The bridge now also emits Rust's internal `rlib` artifact for integration tests;
 the `staticlib` remains the artifact linked into the OCaml-owned executable.
 
+GitHub Actions run 29140893276 then passed the standalone license audit and all
+eight native build, lint, and test jobs for OCaml 5.2 through 5.5 on amd64 and
+arm64. Cargo-only Dependabot updates are configured weekly against `master`;
+OCaml and OPAM remain intentionally outside Dependabot.
+
 The Cargo scanner is intentionally absent from the Makefile. The single
 standalone GitHub Actions license job streams locked metadata from the build
 container to a network-disabled, read-only, digest-pinned official Python

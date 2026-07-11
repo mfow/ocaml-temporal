@@ -1,0 +1,12 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /rust
+    target-branch: master
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Australia/Sydney
+    open-pull-requests-limit: 10

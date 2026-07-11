@@ -134,6 +134,10 @@ module Native : sig
   type _ operation =
     | Check_compatibility : unit operation
     | Connect_client : client_config -> unit operation
+    | Client_start_workflow : bytes -> bytes operation
+        (** Starts one workflow using a private strict JSON request. *)
+    | Client_wait_workflow : bytes -> bytes operation
+        (** Waits for one exact run using a private strict JSON request. *)
     | Start_worker : worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation

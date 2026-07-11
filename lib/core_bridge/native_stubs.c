@@ -289,6 +289,23 @@ CAMLprim value ocaml_temporal_client_connect(value runtime, value input) {
                              ocaml_temporal_core_v1_client_connect_json);
 }
 
+/* Start one dynamically named workflow through the connected native client.
+ * The JSON input is copied before the runtime lock is released; Rust owns no
+ * OCaml memory after this function returns. */
+CAMLprim value ocaml_temporal_client_start_workflow_json(value runtime,
+                                                         value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_client_start_workflow_json);
+}
+
+/* Wait for one exact run while Rust performs the long poll outside the OCaml
+ * runtime lock. The response custom block owns the result until [decode]. */
+CAMLprim value ocaml_temporal_client_wait_workflow_json(value runtime,
+                                                        value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_client_wait_workflow_json);
+}
+
 /* Construct and validate the workflow-only Core worker. Network validation
  * and any failure cleanup happen with the OCaml runtime lock released. */
 CAMLprim value ocaml_temporal_worker_start(value runtime, value input) {

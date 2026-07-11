@@ -12,6 +12,7 @@ type status =
   | Outstanding_tasks
   | Not_ready
   | Protocol
+  | Already_started
   | Unknown of int
 
 (** Error data copied into OCaml. It never owns Rust memory. *)
@@ -85,6 +86,12 @@ external runtime_close_raw : runtime -> int = "ocaml_temporal_runtime_close"
 external client_connect_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_connect"
 
+external client_start_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_start_workflow_json"
+
+external client_wait_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_wait_workflow_json"
+
 external worker_start_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_start"
 
@@ -131,6 +138,7 @@ let status = function
   | 9 -> Outstanding_tasks
   | 10 -> Not_ready
   | 11 -> Protocol
+  | 12 -> Already_started
   | code -> Unknown code
 
 (** Converts a bridge status to a bounded stable tag value without exposing the
@@ -147,6 +155,7 @@ let status_name = function
   | Outstanding_tasks -> "outstanding_tasks"
   | Not_ready -> "not_ready"
   | Protocol -> "protocol"
+  | Already_started -> "already_started"
   | Unknown _ -> "unknown"
 
 (** Constructs a local configuration failure without entering native code. *)
@@ -337,6 +346,18 @@ let client_connect runtime config =
   bridge_call "client_connect" (fun () ->
       Result.map (fun _ -> ())
         (decode (client_connect_raw runtime (encode_client_config config))))
+
+(** Starts a workflow through the Rust-owned client. The response or closed
+    error document is copied before the Rust allocation is released. *)
+let client_start_workflow_json runtime input =
+  bridge_call "client_start_workflow_json" (fun () ->
+      decode (client_start_workflow_json_raw runtime input))
+
+(** Waits for one exact run through the Rust-owned client. Rust performs the
+    long poll while the C binding has released the OCaml runtime lock. *)
+let client_wait_workflow_json runtime input =
+  bridge_call "client_wait_workflow_json" (fun () ->
+      decode (client_wait_workflow_json_raw runtime input))
 
 (** Constructs and namespace-validates the official workflow-only worker. *)
 let worker_start runtime config =

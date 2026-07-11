@@ -102,9 +102,9 @@ rejection cleanup, and shutdown drainage.
 
 ## 2026-07-12: Raw client start and exact-run wait adapter
 
-Status: Rust unit, ABI, formatting, and warnings-as-errors checks pass locally;
-the OCaml supervisor adapter and live Temporal integration remain follow-up
-work.
+Status: Rust and OCaml protocol, ABI, formatting, and warnings-as-errors checks
+pass locally; public client wiring and live Temporal integration remain
+follow-up work.
 
 The private Rust bridge now exposes strict JSON operations for starting a
 workflow and waiting for one exact run. It uses Temporal Core's raw workflow
@@ -122,6 +122,14 @@ encoding, and output round trips are validated before bytes cross the ABI.
 The ABI result owns diagnostics and reports AlreadyStarted distinctly while
 discarding raw server status text that could contain user data.
 
+The private OCaml codec now mirrors the same closed documents. It validates
+identifiers before encoding, rejects NUL bytes on both directions, checks
+successor namespace/workflow/run relationships, and accepts only the stable
+RPC and Core conversion code vocabularies. The protocol test covers every
+terminal outcome, malformed fields, duplicate members, structured errors, and
+oversized or invalid request identifiers. The detailed message shapes and
+ownership rules are in the [client protocol reference](reference/client-protocol.md).
+
 Evidence:
 
 - `cargo test --locked --all-targets` passes the complete Rust suite, including
@@ -130,6 +138,9 @@ Evidence:
   owned result cleanup.
 - `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --all`
   pass locally.
+- `dune build --root . @install` and `dune runtest --root .` pass locally on
+  the representative host toolchain, including the new OCaml client protocol
+  suite.
 - The live Temporal Server path is intentionally not claimed here: it belongs
   to the Docker Compose acceptance test and will be wired after the OCaml
   supervisor can call these two operations.

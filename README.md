@@ -131,6 +131,7 @@ not a claim that a production worker can connect yet.
 - [Workflow guide](docs/guides/workflows.md)
 - [Runtime invariants](docs/reference/runtime-invariants.md)
 - [Native Core bridge and ownership](docs/reference/core-bridge.md)
+- [Native client JSON protocol](docs/reference/client-protocol.md)
 - [Logging and observability](docs/reference/observability.md)
 - [Local Temporal and PostgreSQL stack](docs/reference/local-temporal-stack.md)
 - [Quality and security gates](docs/reference/quality-gates.md)

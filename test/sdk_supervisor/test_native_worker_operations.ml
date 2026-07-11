@@ -39,6 +39,7 @@ let require_bridge = function
         | Outstanding_tasks -> "outstanding_tasks"
         | Not_ready -> "not_ready"
         | Protocol -> "protocol"
+        | Already_started -> "already_started"
         | Unknown code -> Printf.sprintf "unknown(%d)" code
       in
       failwith (Printf.sprintf "%s: %s" status message)
@@ -210,9 +211,40 @@ let test_native_lifecycle_guards () =
   expect "poll after shutdown" (Error Supervisor.Closed)
     (Supervisor.perform supervisor Supervisor.Try_poll_workflow)
 
+(** Client start and exact-run wait share the same owner lifecycle guard as
+    worker operations. Calling either operation before a client connection is
+    established must return a typed native state error rather than touching an
+    uninitialized Rust handle. *)
+let test_native_client_lifecycle_guards () =
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:4 ()) in
+  (* These are semantically complete documents so the native adapter reaches
+     its connection-state guard instead of stopping at request validation. *)
+  let start_request =
+    Bytes.of_string
+      {|{"namespace":"default","workflow_id":"workflow-1","workflow_type":"Smoke","task_queue":"queue","input":[]}|}
+  in
+  let wait_request =
+    Bytes.of_string
+      {|{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"}|}
+  in
+  (match
+     Supervisor.perform supervisor
+       (Supervisor.Client_start_workflow start_request)
+   with
+  | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
+  | _ -> failwith "client start without connection was accepted");
+  (match
+     Supervisor.perform supervisor
+       (Supervisor.Client_wait_workflow wait_request)
+   with
+  | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
+  | _ -> failwith "client wait without connection was accepted");
+  expect "client lifecycle shutdown" (Ok ()) (Supervisor.shutdown supervisor)
+
 let () =
   test_nonblocking_readiness_results ();
   test_decode_failure_retires_native_lease ();
   test_protocol_serialization ();
   test_protocol_failures_are_typed ();
-  test_native_lifecycle_guards ()
+  test_native_lifecycle_guards ();
+  test_native_client_lifecycle_guards ()

@@ -19,15 +19,17 @@ project intends to build. Start with these documents:
    strict bounded envelope used by the two compiled halves of the SDK.
 8. [OCaml activity protocol adapter](reference/activity-protocol.md) explains
    typed remote-activity tasks, completions, ownership, and validation.
-9. [OCaml SDK logging](reference/observability.md) documents stable sources,
+9. [Native client JSON protocol](reference/client-protocol.md) documents
+   exact-run start/wait messages, structured errors, and bilateral validation.
+10. [OCaml SDK logging](reference/observability.md) documents stable sources,
    tags, levels, application setup, and privacy rules.
-10. [SDK instance supervisor decision](decisions/0004-sdk-instance-supervisor.md)
+11. [SDK instance supervisor decision](decisions/0004-sdk-instance-supervisor.md)
    explains how one owner Domain serializes the complete native handle graph.
-11. [Local Temporal stack](reference/local-temporal-stack.md) explains the
+12. [Local Temporal stack](reference/local-temporal-stack.md) explains the
    PostgreSQL/Temporal Server substrate and its Make commands.
-12. [Quality and security gates](reference/quality-gates.md) explains the
+13. [Quality and security gates](reference/quality-gates.md) explains the
    one-shot scanners, pinned versions, and deliberately excluded tools.
-13. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
+14. [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
    describes the long-term design. Unimplemented APIs in that document are
    targets, not claims about the current package.
 

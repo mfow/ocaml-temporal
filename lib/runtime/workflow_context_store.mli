@@ -39,6 +39,17 @@ val schedule_activity :
   decode:(Temporal_base.Codec.payload -> ('output, Temporal_base.Error.t) result) ->
   ('output, Temporal_base.Error.t) Future_store.t
 
+(** Assigns a private correlation sequence, records how to decode the child
+    result, emits a command containing the application-supplied durable [id],
+    and returns the child result future. *)
+val start_child_workflow :
+  t ->
+  id:string ->
+  name:string ->
+  input:Temporal_base.Codec.payload ->
+  decode:(Temporal_base.Codec.payload -> ('output, Temporal_base.Error.t) result) ->
+  ('output, Temporal_base.Error.t) Future_store.t
+
 (** Emits a durable timer command and returns a future resolved by [fire_timer].
     The duration is an exact non-negative millisecond count. *)
 val start_timer : t -> int64 -> (unit, Temporal_base.Error.t) Future_store.t
@@ -47,6 +58,14 @@ val start_timer : t -> int64 -> (unit, Temporal_base.Error.t) Future_store.t
     and then removes it. An unknown or repeated number returns a non-retryable
     bridge error because Core and the OCaml runtime disagree about state. *)
 val resolve_activity :
+  t ->
+  seq:int64 ->
+  (Temporal_base.Codec.payload, Temporal_base.Error.t) result ->
+  (unit, Temporal_base.Error.t) result
+
+(** Completes and removes the pending child workflow with this private
+    correlation sequence. Unknown and repeated numbers are bridge defects. *)
+val resolve_child_workflow :
   t ->
   seq:int64 ->
   (Temporal_base.Codec.payload, Temporal_base.Error.t) result ->
@@ -61,6 +80,6 @@ val emit : t -> Activation.command -> unit
 (** Returns buffered commands in emission order and atomically clears them. *)
 val take_commands : t -> Activation.command list
 
-(** Closes the scheduler and removes all saved activity and timer callbacks.
-    Calling it more than once is safe. *)
+(** Closes the scheduler and removes all saved activity, child workflow, and
+    timer callbacks. Calling it more than once is safe. *)
 val shutdown : t -> unit

@@ -4,6 +4,12 @@
 type activity_resolution =
   (Temporal_base.Codec.payload, Temporal_base.Error.t) result -> unit
 
+(** Function saved for each pending child workflow. Child and activity
+    resolutions have the same wire payload shape but remain in separate tables,
+    preventing one job kind from resolving an operation of the other kind. *)
+type child_workflow_resolution =
+  (Temporal_base.Codec.payload, Temporal_base.Error.t) result -> unit
+
 (** State shared by SDK operations in one workflow execution. Activities and
     timers use increasing sequence numbers so later activation jobs can identify
     the command they complete. Commands are stored in reverse order because
@@ -12,6 +18,7 @@ type t = {
   scheduler : Scheduler.t;
   mutable next_sequence : int64;
   activities : (int64, activity_resolution) Hashtbl.t;
+  child_workflows : (int64, child_workflow_resolution) Hashtbl.t;
   timers : (int64, unit -> unit) Hashtbl.t;
   mutable commands_rev : Activation.command list;
 }
@@ -23,6 +30,7 @@ let create scheduler =
     scheduler;
     next_sequence = 0L;
     activities = Hashtbl.create 16;
+    child_workflows = Hashtbl.create 16;
     timers = Hashtbl.create 16;
     commands_rev = [];
   }
@@ -88,6 +96,19 @@ let schedule_activity context ~name ~input ~decode =
   emit context (Activation.Schedule_activity { seq; name; input });
   future
 
+(** Saves a child resolver before emitting its command. The explicit [id] is
+    application-owned durable identity; the private [seq] only correlates Core
+    completion jobs with this in-memory execution. *)
+let start_child_workflow context ~id ~name ~input ~decode =
+  let seq = allocate_sequence context in
+  let future, resolve = Scheduler.promise context.scheduler ~outside_error in
+  Hashtbl.add context.child_workflows seq (fun result ->
+      match result with
+      | Error error -> resolve (Error error)
+      | Ok payload -> resolve (decode payload));
+  emit context (Activation.Start_child_workflow { seq; id; name; input });
+  future
+
 (** Starts a timer whose future completes with [()] because a timer firing has
     no result payload. *)
 let start_timer context milliseconds =
@@ -116,6 +137,19 @@ let resolve_activity context ~seq result =
       resolve result;
       Ok ()
 
+(** Removes a child resolver before invoking it, so an immediate duplicate job
+    is rejected without risking a second future resolution. *)
+let resolve_child_workflow context ~seq result =
+  match Hashtbl.find_opt context.child_workflows seq with
+  | None ->
+      Error
+        (bridge_error
+           (Printf.sprintf "unknown or duplicate child workflow sequence %Ld" seq))
+  | Some resolve ->
+      Hashtbl.remove context.child_workflows seq;
+      resolve result;
+      Ok ()
+
 (** Removes a timer before completing its future, matching activity handling. *)
 let fire_timer context ~seq =
   match Hashtbl.find_opt context.timers seq with
@@ -139,4 +173,5 @@ let take_commands context =
 let shutdown context =
   Scheduler.shutdown context.scheduler;
   Hashtbl.clear context.activities;
+  Hashtbl.clear context.child_workflows;
   Hashtbl.clear context.timers

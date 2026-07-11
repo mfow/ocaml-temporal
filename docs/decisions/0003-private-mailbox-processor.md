@@ -112,6 +112,13 @@ will keep this `.mli` unchanged and offload blocking calls with a documented
 bridge such as `Eio_unix.run_in_systhread`, then resolve a fiber promise from
 that helper. The dedicated owner Domain remains the only handler executor.
 
+The handler must not re-enter `post`, `call`, or `join` on its own processor.
+Because there is exactly one owner Domain, `call` and `join` cannot complete
+until the current handler returns. `post` can also wait forever if the bounded
+FIFO is full. Calling `close` from the handler is safe: it changes lifecycle
+state without waiting for the owner, and the owner drains previously admitted
+requests after the current handler returns.
+
 ## Consequences
 
 - The processor is portable without new dependencies and remains extractable

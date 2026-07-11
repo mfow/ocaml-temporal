@@ -517,6 +517,11 @@ all queued calls while queued posts are deterministically discarded. Blocking
 operations are explicitly excluded from cooperative scheduler Domains; a
 future adapter must offload them to a blocking bridge.
 
+The handler contract also forbids re-entering `post`, `call`, or `join` on the
+same processor because the sole owner cannot make the progress those operations
+may require. Handler-initiated `close` remains safe and preserves orderly
+draining after the handler returns.
+
 Local evidence:
 
 - The focused suite first failed because `temporal_mailbox_processor` did not

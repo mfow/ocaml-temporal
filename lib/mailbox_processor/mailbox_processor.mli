@@ -23,7 +23,13 @@ module Make (Request : Request) : sig
         (** The owner Domain contained an unexpected handler exception. *)
 
   (** A rank-2 handler. Every invocation occurs sequentially on the one owner
-      Domain, so mutable state captured by this closure can remain owner-only. *)
+      Domain, so mutable state captured by this closure can remain owner-only.
+
+      A handler must not call [post], [call], or [join] on that same processor.
+      [call] and [join] cannot complete while the handler occupies the sole
+      owner Domain, and [post] can block forever when the bounded FIFO is full.
+      Calling [close] from the handler is safe: it rejects later admissions and
+      the owner drains requests already admitted after the handler returns. *)
   type handler = { handle : 'result. 'result Request.t -> 'result }
 
   (** An abstract processor handle. Synchronization primitives, reply cells,

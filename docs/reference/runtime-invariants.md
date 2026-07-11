@@ -90,3 +90,7 @@ and bridge, read the [documentation guide](../README.md) first.
 - Blocking mailbox entry points run only on ordinary producer Domains. Future
   Eio or workflow-effect adapters must offload them rather than blocking a
   cooperative scheduler Domain.
+- A handler never calls `post`, `call`, or `join` on its own processor.
+  `call` and `join` cannot complete while the sole owner is executing that
+  handler, and `post` can block if the bounded queue is full. A handler may
+  call `close`, which does not wait for the owner and preserves drain semantics.

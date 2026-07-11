@@ -96,6 +96,15 @@ and bridge, read the [documentation guide](../README.md) first.
 - Rust panics, decode errors, and Core failures become explicit bridge errors.
 - Foreign runtime threads never call arbitrary OCaml closures.
 - Blocking FFI calls occur only while the OCaml runtime lock is released.
+- Worker readiness waits are bounded to 100 ms and return `Not_ready` on a
+  quiet lane, so a supervisor handler cannot strand a queued shutdown request.
+- Each Rust poll lane owns one mutex-protected pending count. Producers hold
+  that mutex while publishing a queue message and its wake notification;
+  the supervisor holds it while receiving and decrementing. A wake is never
+  considered proof of readiness without rechecking the protected predicate.
+- Shutdown closes both readiness signals before waking Core polls, but queued
+  messages always take precedence over terminal state and are drained before a
+  readiness wait reports shutdown or a fatal lane error.
 
 ## Native activation translation
 
@@ -169,3 +178,6 @@ and bridge, read the [documentation guide](../README.md) first.
 - The abandoned-instance finalizer never calls a blocking supervisor entry
   point itself. It delegates normal shutdown to a dedicated system thread; an
   already completed explicit shutdown schedules no redundant cleanup.
+- A handler that waits for native worker readiness uses the bounded bridge wait
+  and returns to the mailbox between retries; it never performs an indefinite
+  condition wait that could block the mailbox's reserved shutdown transition.

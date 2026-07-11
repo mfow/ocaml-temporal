@@ -118,6 +118,14 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_worker_try_poll_workflow(
     ocaml_temporal_core_runtime *runtime,
     ocaml_temporal_core_result *output);
 
+/* Bounded readiness wait for the workflow lane. The C/OCaml binding must call
+ * this with the OCaml runtime lock released; `NOT_READY` means the bounded
+ * wait elapsed and the owner supervisor should service its mailbox and retry.
+ * Success does not consume a task; callers drain it with try_poll_workflow. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_wait_workflow(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
 /* Complete exactly one previously handed-off workflow activation. */
 ocaml_temporal_core_status ocaml_temporal_core_v1_worker_complete_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
@@ -132,6 +140,12 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_worker_reject_workflow_json(
 /* Non-blocking task handoff for the independently guarded remote-activity
  * lane. Local activities and Nexus are disabled by worker configuration. */
 ocaml_temporal_core_status ocaml_temporal_core_v1_worker_try_poll_activity(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/* Bounded readiness wait for the remote-activity lane. It has the same lock,
+ * timeout, and non-consuming semantics as the workflow readiness operation. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_worker_wait_activity(
     ocaml_temporal_core_runtime *runtime,
     ocaml_temporal_core_result *output);
 

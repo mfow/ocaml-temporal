@@ -39,16 +39,18 @@ cleaner and more maintainable OCaml design.
    0004](decisions/0004-sdk-instance-supervisor.md). The bilateral first
    activation/completion semantic adapter is complete as described by [ADR
    0006](decisions/0006-first-workflow-semantic-protocol.md). Rust now owns one
-   guarded workflow poll lane, one guarded remote-activity lane, and their
-   shared task ledger. The pure-OCaml activation translation and execution
-   command conversion are now covered by focused tests; the OCaml supervisor
-   scheduling loop and first executed workflow remain pending. The current
-   translation deliberately rejects activity commands whose runtime shape lacks
-   Core fields and child-workflow commands absent from the first semantic
-   protocol; the richer records must be added before live support is claimed.
-   Poll decode failures use an exact-document
-   rejection ABI: Rust retains semantic handoff state and will not retire a
-   lease for a changed workflow activation or activity task.
+   guarded workflow poll lane, one guarded remote-activity lane, their shared
+   task ledger, and bounded owner-domain readiness waits. The pure-OCaml
+   activation translation and execution command conversion are now covered by
+   focused tests; the OCaml supervisor scheduling loop and first executed
+   workflow remain pending. Readiness waits intentionally return to that
+   mailbox after 100 ms when Core is quiet. The current translation
+   deliberately rejects activity commands whose runtime shape lacks Core fields
+   and child-workflow commands absent from the first semantic protocol; the
+   richer records must be added before live support is claimed. Poll decode
+   failures use an exact-document rejection ABI: Rust retains semantic handoff
+   state and will not retire a lease for a changed workflow activation or
+   activity task.
 3. Activities, timers, and replay (written after Phase 2 evidence is committed)
 4. Child workflows and structured concurrency (written after Phase 3 evidence is committed)
 5. Interactive and advanced features (split further at the preceding review gate)

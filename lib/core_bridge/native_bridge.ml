@@ -91,6 +91,9 @@ external worker_start_raw : runtime -> bytes -> response
 external worker_try_poll_workflow_raw : runtime -> response
   = "ocaml_temporal_worker_try_poll_workflow"
 
+external worker_wait_workflow_raw : runtime -> response
+  = "ocaml_temporal_worker_wait_workflow"
+
 external worker_complete_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_complete_workflow_json"
 
@@ -99,6 +102,9 @@ external worker_reject_workflow_json_raw : runtime -> bytes -> response
 
 external worker_try_poll_activity_raw : runtime -> response
   = "ocaml_temporal_worker_try_poll_activity"
+
+external worker_wait_activity_raw : runtime -> response
+  = "ocaml_temporal_worker_wait_activity"
 
 external worker_complete_activity_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_complete_activity_json"
@@ -347,6 +353,15 @@ let worker_try_poll_workflow runtime =
   bridge_call "worker_try_poll_workflow" (fun () ->
       decode (worker_try_poll_workflow_raw runtime))
 
+(** Waits for workflow-lane readiness without consuming the activation. The C
+    stub releases the OCaml runtime lock while Rust waits. [Not_ready] means
+    the bounded wait elapsed; retry from the supervisor mailbox so lifecycle
+    messages remain serviceable. A successful result is only a wake signal, so
+    callers must drain with [worker_try_poll_workflow]. *)
+let worker_wait_workflow runtime =
+  bridge_call "worker_wait_workflow" (fun () ->
+      Result.map (fun _ -> ()) (decode (worker_wait_workflow_raw runtime)))
+
 (** Validates and submits one workflow activation completion. The caller must
     use the exact run identifier from a previously leased activation; Rust's
     task ledger rejects unknown or duplicate completions before Core sees them.
@@ -371,6 +386,13 @@ let worker_reject_workflow_json runtime input =
 let worker_try_poll_activity runtime =
   bridge_call "worker_try_poll_activity" (fun () ->
       decode (worker_try_poll_activity_raw runtime))
+
+(** Waits for remote-activity-lane readiness under the same bounded,
+    runtime-lock-free contract as [worker_wait_workflow]. The wake does not
+    consume a task; drain it with [worker_try_poll_activity]. *)
+let worker_wait_activity runtime =
+  bridge_call "worker_wait_activity" (fun () ->
+      Result.map (fun _ -> ()) (decode (worker_wait_activity_raw runtime)))
 
 (** Validates and submits one remote activity completion. Rust checks the
     opaque task token against the outstanding ledger before completing Core, so

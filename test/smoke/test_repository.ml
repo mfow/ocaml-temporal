@@ -72,6 +72,7 @@ let test_static_foreign_archives () =
     ~needle:"(disable_dynamically_linked_foreign_archives true)";
   require_text ~path:bridge ~needle:"(foreign_library";
   require_text ~path:bridge ~needle:"(archive_name temporal_native_stubs)";
+  require_text ~path:bridge ~needle:"(no_dynlink)";
   if contains ~needle:"(foreign_stubs" (read bridge) then
     failwith
       "lib/core_bridge/dune must not build a temporary native-stubs DLL"

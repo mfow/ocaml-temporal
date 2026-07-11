@@ -147,7 +147,9 @@ The C binding is a Dune `foreign_library`, so Dune first compiles it into a
 plain static archive without applying Rust's system-library flags. The OCaml
 library then references both that C archive and the Rust archive, and applies
 the generated flags only when linking a consumer. The workspace also disables
-dynamically linked foreign archives.
+dynamically linked foreign archives. The internal OCaml library uses
+`no_dynlink`, because a native plugin (`.cmxs`) would be another dynamic bridge
+artifact and is neither supported nor needed by the final executable.
 
 The supported deployment artifact is an OCaml-owned native executable; the
 project does not need a separately loadable bridge DLL. This distinction is

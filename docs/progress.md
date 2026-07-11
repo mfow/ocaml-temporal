@@ -15,7 +15,8 @@ commit.
 
 The build now compiles the C binding into a static foreign archive and keeps it
 separate from Rust's native system-library flags until the final executable is
-linked. The workspace also disables dynamically linked foreign archives. The
+linked. The workspace disables dynamically linked foreign archives, and the
+internal bridge library disables OCaml native plugins with `no_dynlink`. The
 SDK's supported artifact has always been an OCaml-owned native executable with
 the Rust bridge linked into it, so constructing a separate loadable stub DLL
 was unnecessary. On Windows, Dune's `foreign_stubs` path sent Rust's GNU native
@@ -25,9 +26,10 @@ itself had compiled successfully.
 
 Evidence:
 
-- The repository regression test requires both the static workspace policy and
-  a dedicated `foreign_library`; it rejects reintroducing `foreign_stubs` at
-  this boundary because that would recreate the temporary Windows DLL link.
+- The repository regression test requires the static workspace policy, a
+  dedicated `foreign_library`, and `no_dynlink`; it rejects reintroducing
+  `foreign_stubs` at this boundary because that would recreate a temporary
+  Windows DLL link.
 - The complete local native verification passes the Dune build and lint,
   Clippy with warnings denied, all Rust and OCaml tests, and a fresh installed-
   package consumer executable.

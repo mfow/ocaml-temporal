@@ -24,6 +24,7 @@
 (library
  (name temporal_core_bridge)
  (public_name temporal-sdk.internal_core_bridge)
+ (no_dynlink)
  (modules native_bridge)
  (foreign_archives temporal_native_stubs ocaml_temporal_core_bridge)
  (c_library_flags

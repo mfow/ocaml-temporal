@@ -1,0 +1,601 @@
+(** Private typed execution of one native Temporal activity-task lease.
+
+    Rust/Core owns polling, protobuf conversion, and network concurrency. This
+    module owns only the OCaml half: a deterministic activity registry, codec
+    conversion, implementation dispatch, and the small pending-completion map
+    needed when the native completion call is temporarily unavailable. The map
+    is deliberately protected by one mutex; no task can be executed twice merely
+    because its completion transport failed. *)
+
+module Protocol = Temporal_protocol.Activity_protocol
+module Definition = Temporal_base.Definition
+module Codec = Temporal_base.Codec
+module Base_error = Temporal_base.Error
+module Observability = Temporal_base.Observability
+
+(** Result-bind notation keeps expected protocol and codec failures on typed
+    paths rather than using exceptions as ordinary activity control flow. *)
+let ( let* ) = Result.bind
+
+(** The native operations required by the adapter. Keeping this signature
+    independent of the concrete supervisor makes task ownership testable with a
+    deterministic queue and avoids coupling this private layer to Rust ABI
+    details. *)
+module type SUPERVISOR = sig
+  type t
+  type error
+
+  val try_poll_activity : t -> (Protocol.task option, error) result
+  val complete_activity : t -> Protocol.completion -> (unit, error) result
+  val error_code : error -> string
+  val error_message : error -> string
+end
+
+type error_view = { code : string; path : string; message : string }
+(** Stable diagnostics never contain payload bytes or opaque task-token data. *)
+
+(** Public registration is existential so definitions with unrelated OCaml
+    input/output types can share one name-indexed registry. *)
+type registered_activity =
+  | Activity :
+      ('input, 'output, 'input -> ('output, Base_error.t) result) Definition.t
+      -> registered_activity
+
+(** Completion classes exposed in the small private outcome summary. *)
+type completion_kind = Succeeded | Failed | Cancelled
+
+(** One serialized adapter transaction result. The opaque token itself stays
+    inside the supervisor and pending-lease map; only the activity type and
+    terminal class are exposed for safe metrics and logs. *)
+type outcome =
+  | Not_ready
+  | Completed of { activity_type : string option; kind : completion_kind }
+  | Rejected of {
+      activity_type : string option;
+      error : error_view;
+      lease_retired : bool;
+    }
+
+(** Heterogeneous definition registry values. *)
+type registered_definition =
+  | Registered_definition :
+      ('input, 'output, 'input -> ('output, Base_error.t) result) Definition.t
+      -> registered_definition
+
+(** Immutable comparison for copied opaque task-token bytes. The adapter never
+    uses a token as a string, so embedded NUL bytes and non-UTF-8 bytes remain
+    unchanged. *)
+module Token_map = Map.Make (struct
+  type t = bytes
+
+  let compare = Bytes.compare
+end)
+
+module Name_map = Map.Make (String)
+(** Name lookup is separate from token lookup because Temporal schedules by an
+    activity type while Core correlates completion by an opaque token. *)
+
+(** What the caller should observe after a lease is acknowledged. A rejected
+    task carries the original adapter diagnostic so the caller can identify a
+    bad registration or payload without inspecting the completion bytes. *)
+type accepted_result =
+  | Completed_result of completion_kind
+  | Rejected_result of error_view
+
+type lease = {
+  token : bytes;
+  activity_type : string option;
+  completion : Protocol.completion;
+  accepted_result : accepted_result;
+}
+(** One completion that has not yet been proven accepted by native Core. The
+    [token] is always an owned copy and [completion] contains another owned copy
+    of that same token. *)
+
+(** Bounds diagnostics before they are sent to Logs or embedded in a
+    non-retryable Temporal failure. Invalid UTF-8 is replaced because the
+    protocol's string fields are strict UTF-8. *)
+let bounded_text ~fallback value =
+  let maximum = 1_024 in
+  if not (Codec.valid_utf_8 value) then fallback
+  else if String.length value <= maximum then value
+  else
+    let rec prefix length =
+      if length <= 0 then fallback
+      else
+        let value = String.sub value 0 length in
+        if Codec.valid_utf_8 value then value ^ "..." else prefix (length - 1)
+    in
+    prefix (maximum - 3)
+
+(** Bounds a source classification separately from its human-readable text. *)
+let bounded_code value = bounded_text ~fallback:"native_activity_error" value
+
+(** Constructs one immutable privacy-safe diagnostic. *)
+let make_error ?(path = "$") code message : error_view =
+  {
+    code = bounded_code code;
+    path;
+    message = bounded_text ~fallback:"invalid activity diagnostic" message;
+  }
+
+(** Converts an unexpected OCaml exception into a typed boundary diagnostic.
+    Exceptions are still defects; catching them here prevents a user activity
+    from unwinding past the lease and leaving native Core without a response. *)
+let exception_error ?(path = "$") exception_ =
+  let message =
+    try Printexc.to_string exception_ with _ -> "unprintable OCaml exception"
+  in
+  make_error ~path "ocaml_exception" message
+
+(** Converts a supervisor error without trusting its diagnostic accessors to be
+    exception-free. This guard keeps lifecycle failures on the typed path. *)
+let supervisor_error ?(path = "$") ~error_code ~error_message source_error =
+  try make_error ~path (error_code source_error) (error_message source_error)
+  with exception_ -> exception_error ~path exception_
+
+(** Converts the protocol's private diagnostic into this adapter's stable
+    representation. *)
+let protocol_error ?(path = "$") error =
+  let view = Protocol.error_view error in
+  make_error ~path view.code view.message
+
+(** Converts a public structured error to an adapter diagnostic. Payload details
+    remain available to callers of [Error.view] but are not copied into a wire
+    failure or log message at this boundary. *)
+let application_error ?(path = "$") error =
+  let view = Base_error.view error in
+  make_error ~path (Base_error.kind error) view.message
+
+(** Builds a non-retryable application failure used when a task cannot be
+    dispatched locally. Empty details keep the failure independent of mutable
+    application payloads and make it safe to retry completion submission. *)
+let failure_of_error (error : error_view) : Protocol.failure =
+  Protocol.
+    {
+      message = error.message;
+      source = "ocaml-temporal";
+      stack_trace = "";
+      encoded_attributes = None;
+      cause = None;
+      info =
+        Application
+          {
+            type_name = "ocaml_temporal_native_activity";
+            non_retryable = true;
+            details = [];
+          };
+    }
+
+(** Uses a stable, closed set of cancellation labels so cancellation failures
+    remain valid protocol strings even when the source task is malformed. *)
+let cancellation_reason = function
+  | Protocol.Cancellation_not_found -> "not_found"
+  | Cancellation_requested -> "cancelled"
+  | Cancellation_timed_out -> "timed_out"
+  | Cancellation_worker_shutdown -> "worker_shutdown"
+  | Cancellation_paused -> "paused"
+  | Cancellation_reset -> "reset"
+
+(** Converts a cancellation task into the standard Temporal canceled failure.
+    Cancellation details are intentionally not copied into a second completion
+    payload: Core already carries the exact reason and flags in the task. *)
+let cancellation_failure reason : Protocol.failure =
+  Protocol.
+    {
+      message = "activity cancellation requested: " ^ cancellation_reason reason;
+      source = "temporal";
+      stack_trace = "";
+      encoded_attributes = None;
+      cause = None;
+      info = Canceled { details = []; identity = "ocaml-temporal" };
+    }
+
+(** Converts binary protocol metadata to the runtime's string metadata without
+    replacement decoding. Body and metadata bytes are copied so a task can be
+    retained safely after the supervisor releases its source buffer. *)
+let runtime_payload path (payload : Protocol.payload) =
+  let rec metadata_loop reversed = function
+    | [] -> Ok (List.rev reversed)
+    | (key, bytes) :: rest ->
+        if String.length key = 0 || String.contains key '\000' then
+          Error
+            (make_error ~path:(path ^ ".metadata") "invalid_message"
+               "metadata key must be non-empty and must not contain NUL")
+        else if not (Codec.valid_utf_8 key) then
+          Error
+            (make_error ~path:(path ^ ".metadata.key") "invalid_message"
+               "metadata key must be valid UTF-8")
+        else
+          let value = Bytes.to_string bytes in
+          if not (Codec.valid_utf_8 value) then
+            Error
+              (make_error
+                 ~path:(path ^ ".metadata." ^ key)
+                 "unsupported"
+                 "binary metadata cannot be represented by the runtime")
+          else metadata_loop ((key, value) :: reversed) rest
+  in
+  let* metadata = metadata_loop [] payload.metadata in
+  Ok { Temporal_base.Payload.metadata; data = Bytes.copy payload.data }
+
+(** Converts a runtime payload into the binary-safe protocol representation,
+    validating metadata before copying it across the ownership boundary. *)
+let protocol_payload path (payload : Temporal_base.Codec.payload) =
+  let rec metadata_loop reversed = function
+    | [] -> Ok (List.rev reversed)
+    | (key, value) :: rest ->
+        if String.length key = 0 || String.contains key '\000' then
+          Error
+            (make_error ~path:(path ^ ".metadata") "invalid_message"
+               "metadata key must be non-empty and must not contain NUL")
+        else if not (Codec.valid_utf_8 key) then
+          Error
+            (make_error ~path:(path ^ ".metadata.key") "invalid_message"
+               "metadata key must be valid UTF-8")
+        else if not (Codec.valid_utf_8 value) then
+          Error
+            (make_error
+               ~path:(path ^ ".metadata." ^ key)
+               "invalid_message" "metadata value must be valid UTF-8")
+        else metadata_loop ((key, Bytes.of_string value) :: reversed) rest
+  in
+  let* metadata = metadata_loop [] payload.metadata in
+  Ok Protocol.{ metadata; data = Bytes.copy payload.data }
+
+(** Converts an activity implementation's structured error while preserving its
+    retryability classification and every application-supplied detail payload.
+    Adapter-generated input/registry errors use [failure_of_error] and are
+    always non-retryable; an application error may intentionally remain
+    retryable so Temporal can apply its retry policy. Detail payloads are
+    validated and copied through the same boundary helper as successful
+    activity output. *)
+let failure_of_application_error (diagnostic : error_view)
+    (error : Base_error.t) : (Protocol.failure, error_view) result =
+  let view = Base_error.view error in
+  let rec details_loop reversed = function
+    | [] -> Ok (List.rev reversed)
+    | payload :: rest ->
+        let* payload = protocol_payload "$.completion.result.info.details" payload in
+        details_loop (payload :: reversed) rest
+  in
+  let* details = details_loop [] view.details in
+  Ok
+    Protocol.
+      {
+        message = diagnostic.message;
+        source = "ocaml-temporal";
+        stack_trace = "";
+        encoded_attributes = None;
+        cause = None;
+        info =
+          Application
+            {
+              type_name = Base_error.kind error;
+              non_retryable = view.non_retryable;
+              details;
+            };
+      }
+
+(** Decodes the argument-list shape used by activity tasks. The SDK accepts one
+    typed value (or the canonical unit payload) and explicitly rejects extra
+    values rather than silently dropping arguments. *)
+let decode_input definition arguments =
+  let payload_result =
+    match arguments with
+    | [] ->
+        Ok
+          {
+            Temporal_base.Payload.metadata = [ ("encoding", "binary/null") ];
+            data = Bytes.empty;
+          }
+    | [ payload ] -> runtime_payload "$.variant.input[0]" payload
+    | _ ->
+        Error
+          (make_error ~path:"$.variant.input" "unsupported"
+             "activity definitions currently accept exactly one input value")
+  in
+  let* payload = payload_result in
+  match Codec.decode (Definition.input definition) payload with
+  | Ok input -> Ok input
+  | Error error -> Error (application_error ~path:"$.variant.input" error)
+
+(** Finds an executable definition by the Temporal activity type. *)
+let find_definition definitions activity_type =
+  match Name_map.find_opt activity_type definitions with
+  | Some definition -> Ok definition
+  | None ->
+      Error
+        (make_error ~path:"$.variant.activity_type" "unknown_activity_type"
+           ("no executable activity is registered for type " ^ activity_type))
+
+(** Adds one definition to the immutable name map and rejects remote-only
+    references before the worker can claim a task for them. *)
+let add_definition definitions (Activity definition) =
+  let name = Definition.name definition in
+  if Name_map.mem name definitions then
+    Error
+      (make_error ~path:"$.activities" "duplicate_activity"
+         ("activity type is registered more than once: " ^ name))
+  else if Option.is_none (Definition.implementation definition) then
+    Error
+      (make_error ~path:("$.activities." ^ name) "not_executable"
+         "activity registration has no local implementation")
+  else Ok (Name_map.add name (Registered_definition definition) definitions)
+
+(** Builds the complete definition map before publishing mutable lease state. *)
+let build_definitions activities =
+  List.fold_left
+    (fun result activity ->
+      let* definitions = result in
+      add_definition definitions activity)
+    (Ok Name_map.empty) activities
+
+(** Reports lifecycle events without allowing an observability backend defect to
+    affect lease ownership or activity execution. *)
+let report level ~operation ?error_kind () =
+  try
+    let tags = Observability.tags ~operation ?error_kind () in
+    Observability.report ~src:Observability.Source.lifecycle level ~tags
+      "native activity worker adapter event"
+  with _ -> ()
+
+(** One of the two ways a native completion call may finish. Keeping raised
+    exceptions distinct lets [poll] retain the pending lease in both cases. *)
+type completion_attempt =
+  | Accepted
+  | Rejected_by_supervisor of error_view
+  | Raised_by_supervisor of exn
+
+(** Validates the typed completion using the same strict JSON semantic encoder
+    that the Rust-facing supervisor uses. No JSON string is retained; the
+    round-trip is a validation gate only. *)
+let validate_completion completion =
+  match Protocol.encode_completion completion with
+  | Ok _ -> Ok ()
+  | Error error -> Error (protocol_error ~path:"$.completion" error)
+
+(** Converts a supervisor completion exception to a stable diagnostic without
+    revealing the opaque token or native exception object. *)
+let completion_exception_error exception_ =
+  make_error ~path:"$.completion" "completion_failed"
+    (Printf.sprintf "supervisor completion raised: %s"
+       (exception_error exception_).message)
+
+module Make (Supervisor : SUPERVISOR) = struct
+  type adapter_state = {
+    supervisor : Supervisor.t;
+    definitions : registered_definition Name_map.t;
+    mutable leases : lease Token_map.t;
+    mutex : Mutex.t;
+  }
+  (** Mutable state is intentionally small: immutable definitions plus one map
+      of completions whose task-token leases have not yet been acknowledged. *)
+
+  type t = adapter_state
+
+  (** Creates the registry without contacting native Core or invoking user code.
+  *)
+  let create ~supervisor ~activities =
+    match build_definitions activities with
+    | Error error -> Error error
+    | Ok definitions ->
+        Ok
+          {
+            supervisor;
+            definitions;
+            leases = Token_map.empty;
+            mutex = Mutex.create ();
+          }
+
+  (** Calls native completion after validation and preserves lease uncertainty
+      when either a typed native error or an exception is returned. *)
+  let attempt_completion supervisor completion =
+    match validate_completion completion with
+    | Error error -> Rejected_by_supervisor error
+    | Ok () -> (
+        try
+          match Supervisor.complete_activity supervisor completion with
+          | Ok () -> Accepted
+          | Error source_error ->
+              let source =
+                supervisor_error ~path:"$.completion"
+                  ~error_code:Supervisor.error_code
+                  ~error_message:Supervisor.error_message source_error
+              in
+              Rejected_by_supervisor
+                (make_error ~path:"$.completion" "completion_failed"
+                   (Printf.sprintf "supervisor rejected completion (%s): %s"
+                      source.code source.message))
+        with exception_ -> Raised_by_supervisor exception_)
+
+  (** Inserts a copied completion lease. A duplicate token is a native protocol
+      violation; refusing to overwrite the existing lease preserves the original
+      completion and avoids acknowledging the wrong obligation. *)
+  let add_lease adapter lease =
+    if Token_map.mem lease.token adapter.leases then
+      Error
+        (make_error ~path:"$.task_token" "duplicate_task_token"
+           "native supervisor delivered an already leased activity token")
+    else (
+      adapter.leases <- Token_map.add lease.token lease adapter.leases;
+      Ok ())
+
+  (** Submits one pending lease and removes it only after native Core accepts
+      the exact copied token. Rejections leave it in the map for the next poll.
+  *)
+  let finish_lease adapter lease : (outcome, error_view) result =
+    match attempt_completion adapter.supervisor lease.completion with
+    | Rejected_by_supervisor error -> Error error
+    | Raised_by_supervisor exception_ ->
+        Error (completion_exception_error exception_)
+    | Accepted ->
+        adapter.leases <- Token_map.remove lease.token adapter.leases;
+        begin match lease.accepted_result with
+        | Completed_result kind ->
+            report Logs.Debug ~operation:"activity_task_completed" ();
+            Ok (Completed { activity_type = lease.activity_type; kind })
+        | Rejected_result error ->
+            report Logs.Warning ~operation:"activity_task_rejected"
+              ~error_kind:error.code ();
+            Ok
+              (Rejected
+                 {
+                   activity_type = lease.activity_type;
+                   error;
+                   lease_retired = true;
+                 })
+        end
+
+  (** Creates, records, and submits one completion. Recording precedes the
+      native call so every failed transport has an exact retryable completion.
+  *)
+  let enqueue_and_finish adapter ~token ~activity_type ~completion
+      ~accepted_result =
+    let token = Bytes.copy token in
+    let completion =
+      Protocol.{ completion with task_token = Bytes.copy completion.task_token }
+    in
+    let lease = { token; activity_type; completion; accepted_result } in
+    let* () = add_lease adapter lease in
+    finish_lease adapter lease
+
+  (** Turns an adapter diagnostic into a non-retryable failure completion while
+      preserving the original task token. *)
+  let reject_task_with_failure adapter ~token ~activity_type ~failure error =
+    let completion =
+      Protocol.{ task_token = Bytes.copy token; result = Failed failure }
+    in
+    enqueue_and_finish adapter ~token ~activity_type ~completion
+      ~accepted_result:(Rejected_result error)
+
+  (** Builds the standard adapter failure for registry, codec, and protocol
+      errors, all of which are non-retryable because retrying cannot repair the
+      worker configuration or malformed task. *)
+  let reject_task adapter ~token ~activity_type error =
+    reject_task_with_failure adapter ~token ~activity_type
+      ~failure:(failure_of_error error) error
+
+  (** Executes one start-task implementation under a final exception guard. *)
+  let process_start adapter token (start : Protocol.activity_start) =
+    let activity_type = Some start.activity_type in
+    let process () =
+      match find_definition adapter.definitions start.activity_type with
+      | Error error -> reject_task adapter ~token ~activity_type error
+      | Ok (Registered_definition definition) -> (
+          match Definition.implementation definition with
+          | None ->
+              reject_task adapter ~token ~activity_type
+                (make_error ~path:"$.variant.activity_type" "not_executable"
+                   "registered activity has no local implementation")
+          | Some implementation -> (
+              match decode_input definition start.input with
+              | Error error -> reject_task adapter ~token ~activity_type error
+              | Ok input -> (
+                  match implementation input with
+                  | Error implementation_error ->
+                      let diagnostic =
+                        application_error ~path:"$.implementation"
+                          implementation_error
+                      in
+                      begin match
+                        failure_of_application_error diagnostic implementation_error
+                      with
+                      | Error error -> reject_task adapter ~token ~activity_type error
+                      | Ok failure ->
+                          reject_task_with_failure adapter ~token ~activity_type
+                            ~failure diagnostic
+                      end
+                  | Ok output -> (
+                      match
+                        Codec.encode (Definition.output definition) output
+                      with
+                      | Error error ->
+                          reject_task adapter ~token ~activity_type
+                            (application_error ~path:"$.implementation.output"
+                               error)
+                      | Ok payload -> (
+                          match
+                            protocol_payload "$.completion.result" payload
+                          with
+                          | Error error ->
+                              reject_task adapter ~token ~activity_type error
+                          | Ok payload ->
+                              let completion =
+                                Protocol.
+                                  {
+                                    task_token = Bytes.copy token;
+                                    result = Completed (Some payload);
+                                  }
+                              in
+                              enqueue_and_finish adapter ~token ~activity_type
+                                ~completion
+                                ~accepted_result:(Completed_result Succeeded))))
+              ))
+    in
+    try process ()
+    with exception_ ->
+      reject_task adapter ~token ~activity_type
+        (exception_error ~path:"$.implementation" exception_)
+
+  (** Converts a cancellation task into a canceled completion. Cancellation has
+      no activity type in the native task shape, so the outcome leaves that
+      optional diagnostic field unset. *)
+  let process_cancel adapter token (cancel : Protocol.activity_cancel) =
+    let completion =
+      Protocol.
+        {
+          task_token = Bytes.copy token;
+          result = Cancelled (cancellation_failure cancel.reason);
+        }
+    in
+    enqueue_and_finish adapter ~token ~activity_type:None ~completion
+      ~accepted_result:(Completed_result Cancelled)
+
+  (** Processes one decoded task after copying its token. The extra empty-token
+      check protects the adapter if a test or future supervisor bypasses the
+      strict JSON decoder. *)
+  let process_task adapter (task : Protocol.task) =
+    let token = Bytes.copy task.task_token in
+    if Bytes.length token = 0 then
+      Error
+        (make_error ~path:"$.task_token" "invalid_message"
+           "activity task token must not be empty")
+    else
+      match task.variant with
+      | Protocol.Start start -> process_start adapter token start
+      | Cancel cancel -> process_cancel adapter token cancel
+
+  (** Serializes pending-completion retry, native polling, implementation
+      execution, and completion submission. The mutex covers the complete
+      transaction, including the user implementation, so the map cannot race
+      with another poll and no token can be dispatched twice. *)
+  let poll adapter =
+    Mutex.lock adapter.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock adapter.mutex)
+      (fun () ->
+        match Token_map.min_binding_opt adapter.leases with
+        | Some (_, lease) -> finish_lease adapter lease
+        | None -> (
+            let polled =
+              try Ok (Supervisor.try_poll_activity adapter.supervisor)
+              with exception_ ->
+                Error (exception_error ~path:"$.poll" exception_)
+            in
+            let* polled = polled in
+            match polled with
+            | Error source_error ->
+                Error
+                  (supervisor_error ~path:"$.poll"
+                     ~error_code:Supervisor.error_code
+                     ~error_message:Supervisor.error_message source_error)
+            | Ok None ->
+                report Logs.Debug ~operation:"activity_poll_not_ready" ();
+                Ok Not_ready
+            | Ok (Some task) -> process_task adapter task))
+end
+
+(** Hides the existential constructor from callers while retaining the shared
+    [Definition.t] representation used by public activity definitions. *)
+let register definition = Activity definition

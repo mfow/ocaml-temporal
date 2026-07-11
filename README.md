@@ -2,6 +2,8 @@
 
 [![Build](https://github.com/mfow/ocaml-temporal/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/mfow/ocaml-temporal/actions/workflows/build.yml)
 
+> **Community-maintained and unofficial. Not affiliated with or endorsed by Temporal Technologies, Inc.**
+
 OCaml Temporal is a pre-release SDK for writing durable Temporal workflows in
 modern OCaml 5. Workflow code uses ordinary functions, explicit `result`
 values, typed codecs and futures, and private algebraic effects for

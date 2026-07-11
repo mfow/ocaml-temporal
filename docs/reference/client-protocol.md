@@ -88,8 +88,12 @@ The wait request contains exactly the three identity fields:
 ```
 
 There is intentionally no `follow_runs` member. Rust performs a close-event
-history long poll with the equivalent of `follow_runs = false`. The response
-always names the exact run requested:
+history long poll with the equivalent of `follow_runs = false`, bounded to
+100 ms per native call. When the run is still open, the call returns
+`STATUS_NOT_READY` and no response object; the caller or a later orchestration
+loop can retry the same request through its mailbox. A timeout is therefore a
+pending observation, not a workflow failure. A terminal response always names
+the exact run requested:
 
 ```json
 {

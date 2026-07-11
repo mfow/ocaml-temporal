@@ -136,10 +136,13 @@ The private Rust bridge now exposes strict JSON operations for starting a
 workflow and waiting for one exact run. It uses Temporal Core's raw workflow
 service trait, so dynamic OCaml workflow type names and payloads do not need a
 Rust-side generated workflow registry. Start returns the server-assigned run
-ID. Wait long-polls close-event history with a fixed `follow_runs = false`
-policy, preserving completed/failed/timed-out successor metadata and returning
-continued-as-new as a terminal result for the requested run rather than
-silently switching to its successor.
+ID. Wait performs a close-event history long poll with a fixed
+`follow_runs = false` policy for at most 100 ms per native call. An open run
+returns `NOT_READY`, allowing the OCaml caller or a later orchestration loop to
+regain the owner Domain and retry through the mailbox. Terminal
+completed/failed/timed-out outcomes preserve successor metadata, while
+continued-as-new is returned as a terminal result for the requested run rather
+than silently switching to its successor.
 
 Requests, responses, successor identities, terminal outcomes, and structured
 AlreadyStarted/RPC failures use closed schemas under `docs/schemas/bridge/`.

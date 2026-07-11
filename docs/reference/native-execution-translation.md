@@ -76,6 +76,7 @@ the complete result before returning it to the bridge.
 | Runtime command | Protocol command | Notes |
 | --- | --- | --- |
 | `Request_cancel_activity` | `Request_cancel_activity` | The sequence is range-checked. |
+| `Schedule_activity` | `Schedule_activity` | Activity ID, type, task queue, argument payloads, timeout policies, cancellation policy, and eager-execution flag are validated and copied without defaults at this boundary. |
 | `Start_timer` | `Start_timer` | Non-negative milliseconds are split into exact seconds and nanoseconds; no floating-point conversion is used. |
 | `Cancel_timer` | `Cancel_timer` | The sequence is range-checked. |
 | `Complete_workflow` with the canonical unit/null payload | `Complete_workflow { result = None }` | The nullable protocol result is preserved. |
@@ -83,22 +84,37 @@ the complete result before returning it to the bridge.
 | `Fail_workflow` | `Fail_workflow` with an OCaml application or cancellation failure | Details are copied and the runtime category/retryability are retained. Recursive Core-only fields are represented in a bounded diagnostic until the runtime has a richer error type. |
 | `Cancel_workflow_execution` | `Cancel_workflow_execution` | This is already an exact marker. |
 
-Two commands intentionally return a typed `Unsupported` error today:
+One command intentionally returns a typed `Unsupported` error today:
 
-- `Schedule_activity` in the runtime has only a sequence, name, and one input
-  payload. The protocol also requires an activity ID, task queue, argument
-  list, timeout policies, cancellation type, and eager-execution flag. The
-  adapter cannot invent those values or silently discard them.
 - `Start_child_workflow` exists in the synthetic runtime, but the first
   semantic protocol has no child-workflow command variant. Returning
   `Unsupported` is safer than emitting a different command or pretending that
   a child was scheduled.
 
+### Activity command defaults and options
+
+`Temporal.Activity.start` keeps its original two-argument form and also accepts
+labelled options for the Core fields. The activity type comes from the
+definition name, and the input is sent as the one-element argument list.
+Omitting an activity ID creates `ocaml-activity-<sequence>` from the
+workflow-local deterministic sequence. Omitting a task queue uses the queue
+captured in the execution context; native workers populate that value from
+their worker configuration, while synthetic executions use `default`.
+
+Temporal requires either a schedule-to-close or start-to-close timeout. If no
+timeout is supplied, the context emits a deterministic 60-second
+start-to-close timeout so existing workflows remain valid. All supplied
+timeouts are exact non-negative milliseconds and are converted to normalized
+protocol durations without floating-point arithmetic. Cancellation defaults to
+`Try_cancel`, and `do_not_eagerly_execute` defaults to `false`. Invalid IDs,
+queues, payload metadata, negative durations, and missing required timeout
+policies return typed translation errors before a completion is emitted.
+
 These errors are a planned compatibility boundary, not a hidden drop path.
-The next protocol expansion must add the missing records and tests on both
-sides before these commands are enabled. The same rule applies to a future
-child-workflow resolution job: it must be represented in the protocol before
-the adapter accepts it.
+Activity scheduling is enabled because the runtime, protocol, and translator
+now carry the complete Core record. The same rule applies to a future
+child-workflow command or resolution job: it must be represented in the
+protocol and tested on both sides before the adapter accepts it.
 
 ## Error and ownership rules
 

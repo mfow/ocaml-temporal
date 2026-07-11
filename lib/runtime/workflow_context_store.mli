@@ -3,8 +3,10 @@
     workflow's OCaml code. *)
 type t
 
-(** Creates an empty context whose futures use [scheduler]. *)
-val create : Scheduler.t -> t
+(** Creates an empty context whose futures use [scheduler]. [task_queue] is the
+    deterministic default used by activities that do not override their queue;
+    a worker supplies its own queue when it creates an execution. *)
+val create : ?task_queue:string -> Scheduler.t -> t
 
 (** Returns the context installed on the current OCaml Domain, if any. *)
 val current : unit -> t option
@@ -30,13 +32,24 @@ val detached_error :
   message:string -> ('value, Temporal_base.Error.t) Future_store.t
 
 (** Assigns a sequence number, records how to decode the eventual result,
-    produces a schedule-activity command, and returns a future for the decoded
-    output. *)
+    produces a complete schedule-activity command, and returns a future for the
+    decoded output. [activity_id] and [task_queue] default deterministically;
+    when all timeout options are absent, a 60-second start-to-close timeout is
+    used because Temporal requires at least one activity timeout. *)
 val schedule_activity :
   t ->
   name:string ->
   input:Temporal_base.Codec.payload ->
+  ?activity_id:string ->
+  ?task_queue:string ->
+  ?schedule_to_close_timeout:int64 ->
+  ?schedule_to_start_timeout:int64 ->
+  ?start_to_close_timeout:int64 ->
+  ?heartbeat_timeout:int64 ->
+  ?cancellation_type:Activation.activity_cancellation_type ->
+  ?do_not_eagerly_execute:bool ->
   decode:(Temporal_base.Codec.payload -> ('output, Temporal_base.Error.t) result) ->
+  unit ->
   ('output, Temporal_base.Error.t) Future_store.t
 
 (** Assigns a private correlation sequence, records how to decode the child

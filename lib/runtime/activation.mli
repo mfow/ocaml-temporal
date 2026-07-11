@@ -16,14 +16,30 @@ type job =
   | Cancel_workflow
   | Remove_from_cache
 
+(** How an activity reacts after workflow cancellation reaches its task. *)
+type activity_cancellation_type =
+  | Try_cancel
+  | Wait_cancellation_completed
+  | Abandon
+
 (** An instruction produced by workflow code for Temporal Core. Commands are
     returned in the order they were created because Temporal records that order
-    in workflow history and expects replay to reproduce it. *)
+    in workflow history and expects replay to reproduce it. Activity timeout
+    values are exact non-negative milliseconds; [None] means that policy is not
+    supplied. *)
 type command =
   | Schedule_activity of {
       seq : int64;
-      name : string;
-      input : Temporal_base.Codec.payload;
+      activity_id : string;
+      activity_type : string;
+      task_queue : string;
+      arguments : Temporal_base.Codec.payload list;
+      schedule_to_close_timeout : int64 option;
+      schedule_to_start_timeout : int64 option;
+      start_to_close_timeout : int64 option;
+      heartbeat_timeout : int64 option;
+      cancellation_type : activity_cancellation_type;
+      do_not_eagerly_execute : bool;
     }
   | Start_child_workflow of {
       seq : int64;

@@ -49,14 +49,11 @@ After protocol decoding, the private pure-OCaml
 into the deterministic execution kernel and translates its commands back into
 the checked completion model. It preserves activation metadata, initialization
 records, sequence ordering, cancellation reasons, eviction details, and copied
-payload bytes without exposing Rust state. A valid command is accepted only
-when its fields have an exact protocol representation. The current runtime
-activity command is missing Core's activity ID, task queue, argument list,
-timeouts, and cancellation policy, and the first protocol has no child
-workflow command; those commands return typed `unsupported` errors until both
-schemas grow. No Temporal defaults are guessed and no command is silently
-dropped. See the translation reference for the complete mapping table and
-test coverage.
+payload bytes without exposing Rust state. Activity commands now carry every
+Core-required field and are accepted only after exact validation; child
+workflow commands still return typed `unsupported` errors because the first
+semantic protocol has no child command variant. No field is silently dropped.
+See the translation reference for the complete mapping table and test coverage.
 
 ## Native client start and exact-run wait
 

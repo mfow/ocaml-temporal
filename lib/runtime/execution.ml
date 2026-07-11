@@ -28,14 +28,14 @@ type ('input, 'output) t = {
 
 (** Creates execution state without calling user workflow code. The code starts
     only after Temporal delivers a start job, matching replay behavior. *)
-let start definition input =
+let start ?(task_queue = "default") definition input =
   let scheduler = Scheduler.create () in
   let execution =
     {
       definition;
       input;
       scheduler;
-      context = Workflow_context_store.create scheduler;
+      context = Workflow_context_store.create ~task_queue scheduler;
       started = false;
       terminal = false;
       evicted = false;

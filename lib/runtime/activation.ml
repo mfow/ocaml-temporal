@@ -16,13 +16,31 @@ type job =
   | Cancel_workflow
   | Remove_from_cache
 
-(** Commands contain only immutable data needed by the future Protobuf
-    translator; they never expose the runtime's mutable execution state. *)
+(** How an activity reacts after workflow cancellation reaches its task.  The
+    values deliberately mirror Temporal Core's three cancellation policies but
+    remain a runtime type so the public API does not expose protocol records. *)
+type activity_cancellation_type =
+  | Try_cancel
+  | Wait_cancellation_completed
+  | Abandon
+
+(** Commands contain only immutable data needed by the semantic JSON
+    translator; they never expose the runtime's mutable execution state.  The
+    activity record carries every field Core needs to schedule a task, rather
+    than making the translation layer invent an identifier, queue, or timeout. *)
 type command =
   | Schedule_activity of {
       seq : int64;
-      name : string;
-      input : Temporal_base.Codec.payload;
+      activity_id : string;
+      activity_type : string;
+      task_queue : string;
+      arguments : Temporal_base.Codec.payload list;
+      schedule_to_close_timeout : int64 option;
+      schedule_to_start_timeout : int64 option;
+      start_to_close_timeout : int64 option;
+      heartbeat_timeout : int64 option;
+      cancellation_type : activity_cancellation_type;
+      do_not_eagerly_execute : bool;
     }
   | Start_child_workflow of {
       seq : int64;

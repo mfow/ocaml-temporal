@@ -8,8 +8,9 @@ exceptions.
 This guide describes the API that compiles today. The current runtime uses a
 synthetic activation interpreter for tests and is not yet a production worker
 connected to Temporal Server. Child invocation and future aggregation compile
-and run against that interpreter; cancellation scopes and the live Core command
-translation remain future work.
+and run against that interpreter; cancellation scopes and live Core worker
+wiring remain future work. The pure-OCaml command translator already preserves
+the complete activity record and validates it before the native boundary.
 
 ## Typed payload codecs
 
@@ -170,6 +171,20 @@ let enrich document =
 followed by `Future.await`. Both return expected failures through `result`.
 Calling an operation outside an active workflow returns a structured defect.
 The internal suspension effect never escapes to application code.
+
+Both activity functions also accept labelled scheduling options. Supply
+`~activity_id` when the activity needs a stable, application-chosen identity;
+otherwise the runtime derives a deterministic ID from the command sequence.
+`~task_queue` overrides the execution's queue, while omitting it uses the
+queue captured when the execution started (the synthetic interpreter defaults
+to `"default"`). Timeout labels use `Temporal.Duration.t` and are encoded as
+exact integer milliseconds. If neither schedule-to-close nor start-to-close
+is supplied, the SDK uses a deterministic 60-second start-to-close default;
+the command translator rejects a schedule that would leave both absent.
+`~heartbeat_timeout`, cancellation policy, and eager-execution preference map
+directly to Temporal's activity command fields. Empty, non-UTF-8, NUL-bearing,
+or overlong identifiers fail as typed workflow errors before a command is
+emitted, so a validation failure cannot consume a sequence number.
 
 Child workflows follow the same start-now or execute-and-wait pattern. Their
 ID is mandatory because it is durable Temporal identity, not a private local

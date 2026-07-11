@@ -123,10 +123,9 @@ and bridge, read the [documentation guide](../README.md) first.
   kernel uses only a marker job. Eviction is acknowledged with an empty
   completion and never emits workflow commands.
 - A valid value with no lossless representation is an explicit typed
-  `unsupported` error. In particular, the current runtime activity command
-  lacks the protocol's activity ID, task queue, arguments, timeout, and
-  cancellation fields, and the first protocol has no child-workflow command;
-  the adapter never fabricates defaults or silently drops either command.
+  `unsupported` error. Activity commands now carry and validate every Core
+  field; child-workflow commands still have no semantic protocol record, so
+  the adapter never fabricates a child command or silently drops it.
 - Unknown or duplicate operation sequences are bridge defects. They fail the
   execution rather than being ignored, because ignoring them would make
   replay diverge from the history supplied by Core.

@@ -77,17 +77,21 @@ module Make (Supervisor : SUPERVISOR) : sig
   type t
 
   (** Creates a registry after validating every executable definition and
-      rejecting duplicate Temporal workflow type names. No native operation is
-      performed and no workflow function is called during creation. *)
+      rejecting duplicate Temporal workflow type names. [task_queue] is copied
+      into every execution context so an activity without an explicit queue is
+      sent back to the same queue as its workflow worker. No native operation
+      is performed and no workflow function is called during creation. *)
   val create :
+    ?task_queue:string ->
     supervisor:Supervisor.t ->
     workflows:registered_workflow list ->
+    unit ->
     (t, error_view) result
 
   (** Polls at most one activation, applies it to the deterministic execution
       selected by its run ID, and submits exactly one completion. Empty native
-      lanes return [Ok Not_ready]. Unsupported runtime commands, unknown run
-      IDs, and invalid initialization inputs are converted to typed
+      lanes return [Ok Not_ready]. Unsupported child-workflow commands, unknown
+      run IDs, and invalid initialization inputs are converted to typed
       non-retryable workflow failures and reported as [Ok (Rejected _)] after
       their lease is retired. *)
   val poll : t -> (outcome, error_view) result

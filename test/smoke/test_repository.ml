@@ -80,7 +80,24 @@ let test_static_foreign_archives () =
     failwith
       "lib/core_bridge/dune must not build a temporary native-stubs DLL"
 
+(** Ensures the reusable mailbox remains an internal build unit rather than an
+    installed sublibrary visible to [temporal-sdk] consumers. *)
+let test_mailbox_is_private () =
+  let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
+  let dune = Filename.concat source_root "lib/mailbox_processor/dune" in
+  let interface =
+    Filename.concat source_root "lib/mailbox_processor/mailbox_processor.mli"
+  in
+  require_text ~path:dune ~needle:"(name temporal_mailbox_processor)";
+  require_text
+    ~path:interface
+    ~needle:"must not call [post], [call], or [join] on that same processor";
+  require_text ~path:interface ~needle:"Calling [close] from the handler is safe";
+  if contains ~needle:"public_name" (read dune) then
+    failwith "the mailbox processor must remain a Dune-private library"
+
 let () =
   test_license ();
   test_package_metadata ();
-  test_static_foreign_archives ()
+  test_static_foreign_archives ();
+  test_mailbox_is_private ()

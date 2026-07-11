@@ -24,6 +24,10 @@ opam exec -- dune build @install
 test -s "$package_root/internal_core_bridge/libocaml_temporal_core_bridge.a"
 test ! -e "$package_root/internal_core_bridge/ocaml_temporal_core.h"
 test ! -e "$package_root/internal_core_bridge/abi.rs"
+if find "$package_root" -iname '*mailbox*' -print | grep -q .; then
+  echo "private mailbox processor leaked into the install tree" >&2
+  exit 1
+fi
 
 mkdir -p "$output_dir"
 cp "$root/test/fixtures/install-consumer/dune-project" "$output_dir/"

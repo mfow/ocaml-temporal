@@ -5,6 +5,9 @@
   ../../dune-workspace
   ../../dune-project
   ../../lib/core_bridge/dune
+  ../../lib/mailbox_processor/dune
+  ../../lib/mailbox_processor/mailbox_processor.mli
+  ../../scripts/build-rust-bridge.sh
   ../../temporal-sdk.opam
   ../../temporal-sdk.opam.locked)
  (action
@@ -15,8 +18,6 @@
 
 (rule
  (alias runtest)
- (deps
-  ../../scripts/render-rust-link-flags.sh
-  test_rust_link_flags.sh)
+ (deps ../../scripts/render-rust-link-flags.sh test_rust_link_flags.sh)
  (action
   (run sh %{dep:test_rust_link_flags.sh} %{workspace_root})))

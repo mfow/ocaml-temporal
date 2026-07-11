@@ -1,5 +1,5 @@
 type payload = Payload.t = { metadata : (string * string) list; data : bytes }
-type 'a t
+type 'a t = 'a Temporal_base.Codec.t
 (** A bidirectional, typed Temporal payload codec. *)
 
 val make :

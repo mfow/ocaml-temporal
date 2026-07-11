@@ -58,3 +58,42 @@ application logging and policy decisions stable.
 Workflow definitions, activities, futures, and direct-style suspension are
 introduced by the next runtime milestones; their APIs will build on these same
 codec and error contracts.
+
+## Definitions and ordinary helpers
+
+A definition gives Temporal a stable type name and codecs while leaving the
+implementation as a normal OCaml function:
+
+```ocaml
+let normalize name = String.trim name
+let greet name = "Hello, " ^ normalize name
+
+let greeting_workflow input = Ok (greet input)
+
+let greeting =
+  Temporal.Workflow.define
+    ~name:"greeting"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+    greeting_workflow
+```
+
+`normalize` and `greet` need no registration, SDK type, or special syntax.
+Calling a helper is an ordinary in-process function call and does not create a
+Temporal history boundary. Only explicit activity or child-workflow operations
+will create those boundaries.
+
+Use `Activity.remote` or `Workflow.remote` to declare code implemented by
+another worker while retaining typed inputs and outputs:
+
+```ocaml
+let call_llm =
+  Temporal.Activity.remote
+    ~name:"call_llm"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+```
+
+Definition names must be non-empty and cannot contain NUL bytes. Invalid names
+raise `Invalid_argument` during worker configuration because they are
+programmer defects, not workflow execution failures.

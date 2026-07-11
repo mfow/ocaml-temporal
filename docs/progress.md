@@ -67,3 +67,24 @@ Evidence:
   OCaml 5.5.
 
 Next phase: typed workflow and activity definitions.
+
+## 2026-07-11: Typed workflow and activity definitions
+
+Status: verified.
+
+Local and remote workflows and activities now share an internal typed
+definition representation while exposing separate abstract public types.
+Definitions retain their input/output codecs and optional implementation;
+public callers can inspect only the stable Temporal name.
+
+Evidence:
+
+- The initial focused test failed with unbound `Temporal.Activity` and
+  `Temporal.Workflow` modules.
+- `make verify` passed the full build, policy, and test gates on OCaml 5.2.1.
+- The unit and smoke suites passed on the OCaml 5.5 Compose image.
+- `dune build @install` and `opam lint temporal.opam` passed.
+- Name tests cover local/remote definitions and reject empty or NUL-containing
+  names during configuration.
+
+Next phase: deterministic futures and effect scheduler.

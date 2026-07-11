@@ -459,7 +459,7 @@ Expected: public kernel commit with green unit and policy gates.
 - Consumes: `'a Codec.t` and `Error.t` from Task 3.
 - Produces: `Workflow.define`, `Workflow.remote`, `Workflow.name`, `Activity.define`, `Activity.remote`, `Activity.name`, with abstract two-parameter definition types.
 
-- [ ] **Step 1: Write type-directed definition tests**
+- [x] **Step 1: Write type-directed definition tests**
 
 ```ocaml
 let greeting =
@@ -483,13 +483,13 @@ let test_names () =
     (Temporal.Workflow.name greeting_workflow)
 ```
 
-- [ ] **Step 2: Run the test to verify typed definitions are absent**
+- [x] **Step 2: Run the test to verify typed definitions are absent**
 
 Run: `docker compose run --rm dev opam exec -- dune runtest test/unit/test_definition.exe`
 
 Expected: FAIL with unbound modules `Temporal.Activity` and `Temporal.Workflow`.
 
-- [ ] **Step 3: Implement abstract shared definitions**
+- [x] **Step 3: Implement abstract shared definitions**
 
 Use one private representation in `Definition`:
 
@@ -516,13 +516,13 @@ type ('input, 'output) implementation = 'input -> ('output, Error.t) result
 
 Both public `t` types remain abstract and do not expose `Definition.t`.
 
-- [ ] **Step 4: Run compile-time and runtime checks**
+- [x] **Step 4: Run compile-time and runtime checks**
 
 Run: `make test-unit && make lint`
 
 Expected: name tests pass, examples compile, and no private record field is accessible through `Temporal`.
 
-- [ ] **Step 5: Document ordinary helpers and commit**
+- [x] **Step 5: Document ordinary helpers and commit**
 
 Add a helper example where a normal OCaml function calls two other normal functions and is passed to `Workflow.define`; explicitly state that helper calls do not create history boundaries.
 

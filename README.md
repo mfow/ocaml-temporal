@@ -42,6 +42,7 @@ make build
 make test-unit
 make test-runtime
 make verify
+make quality
 make license-check
 make test-temporal-integration
 ```
@@ -65,6 +66,15 @@ Server backed by PostgreSQL, checks both SQL schemas and the frontend gRPC
 health API, and then removes its test data. It does not yet execute an OCaml
 workflow; see the [local stack reference](docs/reference/local-temporal-stack.md)
 for lifecycle commands and current scope.
+
+`make quality` is the separate, one-shot repository gate for pinned native
+quality tools. It checks the locked Cargo graph for RustSec advisories and
+unapproved package sources, detects unused direct Rust dependencies, and scans
+OCaml, Rust, documentation, and configuration for likely spelling mistakes.
+Install the exact versions listed in the [quality-gate reference](docs/reference/quality-gates.md)
+before running it locally. GitHub Actions installs checksum-verified release
+artifacts and runs this gate once per change rather than once in every OCaml
+matrix job.
 
 ## Logging
 
@@ -114,6 +124,7 @@ not a claim that a production worker can connect yet.
 - [Native Core bridge and ownership](docs/reference/core-bridge.md)
 - [Logging and observability](docs/reference/observability.md)
 - [Local Temporal and PostgreSQL stack](docs/reference/local-temporal-stack.md)
+- [Quality and security gates](docs/reference/quality-gates.md)
 - [Temporal Core boundary decision](docs/decisions/0001-temporal-core-c-boundary.md)
 - [Dependency and license inventory](docs/dependencies.md)
 - [Verified progress](docs/progress.md)

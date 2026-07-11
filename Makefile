@@ -19,8 +19,11 @@ NATIVE_RUST_VERSION ?= 1.94.1
 NATIVE_ARCH ?=
 NATIVE_RUST_HOST ?=
 NATIVE_ENV := CARGO_TARGET_DIR="$(NATIVE_CARGO_TARGET_DIR)"
+QUALITY_CARGO_DENY_VERSION ?= 0.20.2
+QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
+QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build test test-unit test-runtime test-rust test-bridge test-install test-temporal-config test-temporal-integration temporal-start temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-integration temporal-start temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -38,6 +41,7 @@ test:
 	$(MAKE) test-rust
 	$(MAKE) test-bridge
 	$(MAKE) test-install
+	$(MAKE) test-quality-contract
 
 test-rust:
 	$(COMPOSE_RUN) sh test/smoke/test_rust_toolchain.sh
@@ -48,6 +52,9 @@ test-bridge:
 
 test-install:
 	$(COMPOSE_RUN) sh test/bridge/test_install.sh
+
+test-quality-contract:
+	sh test/smoke/test_quality_contract.sh .
 
 test-temporal-config:
 	sh test/smoke/test_temporal_compose_config.sh
@@ -113,6 +120,32 @@ lint-rust:
 fmt:
 	$(COMPOSE_RUN) sh scripts/check-format.sh
 
+# These release binaries are intentionally separate from the development
+# image. CI installs their pinned, checksum-verified artifacts once, while a
+# contributor can install the same versions and invoke the identical Make gate.
+quality: quality-rust quality-spelling
+
+quality-tool-version-check:
+	@actual="$$(cargo deny --version | awk '{ print $$2 }')"; \
+	if [ "$$actual" != "$(QUALITY_CARGO_DENY_VERSION)" ]; then \
+		echo "expected cargo-deny $(QUALITY_CARGO_DENY_VERSION), got $$actual" >&2; exit 1; \
+	fi
+	@actual="$$(cargo machete --version | awk '{ print $$1 }')"; \
+	if [ "$$actual" != "$(QUALITY_CARGO_MACHETE_VERSION)" ]; then \
+		echo "expected cargo-machete $(QUALITY_CARGO_MACHETE_VERSION), got $$actual" >&2; exit 1; \
+	fi
+	@actual="$$(typos --version | awk '{ print $$2 }')"; \
+	if [ "$$actual" != "$(QUALITY_TYPOS_VERSION)" ]; then \
+		echo "expected typos $(QUALITY_TYPOS_VERSION), got $$actual" >&2; exit 1; \
+	fi
+
+quality-rust: quality-tool-version-check
+	cargo deny --manifest-path $(CARGO_MANIFEST) --locked --all-features check advisories sources
+	cargo machete --with-metadata rust
+
+quality-spelling: quality-tool-version-check
+	typos
+
 license-check:
 	$(COMPOSE_RUN) sh scripts/check-licenses.sh
 
@@ -155,7 +188,7 @@ native-build:
 	$(NATIVE_ENV) $(NATIVE_RUN) dune build @install
 	$(NATIVE_ENV) cargo build --manifest-path $(CARGO_MANIFEST) --locked
 
-native-test: native-test-rust native-test-install
+native-test: native-test-rust native-test-install test-quality-contract
 	$(NATIVE_ENV) $(NATIVE_RUN) dune runtest
 
 native-test-rust:

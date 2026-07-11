@@ -2,6 +2,8 @@
  (name test_repository)
  (deps
   ../../LICENSE
+  ../../Makefile
+  ../../deny.toml
   ../../dune-workspace
   ../../dune-project
   ../../lib/core_bridge/dune

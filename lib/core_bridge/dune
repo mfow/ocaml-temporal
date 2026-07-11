@@ -6,7 +6,8 @@
  (deps
   (source_tree ../../rust)
   ../../scripts/build-rust-bridge.sh
-  ../../scripts/copy-rust-bridge-artifacts.sh)
+  ../../scripts/copy-rust-bridge-artifacts.sh
+  ../../scripts/render-rust-link-flags.sh)
  (action
   (run
    sh

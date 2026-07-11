@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+workspace_root=$1
+temporary_root=$(mktemp -d)
+trap 'rm -rf "$temporary_root"' EXIT HUP INT TERM
+
+search_dir="$temporary_root/registry with space/winapi/lib"
+build_dir=$temporary_root/target/debug/build/winapi-x86_64-pc-windows-gnu-test
+mkdir -p "$search_dir" "$build_dir"
+: >"$search_dir/libwinapi_ntdll.a"
+printf 'cargo:rustc-link-search=native=%s\n' "$search_dir" >"$build_dir/output"
+
+output=$temporary_root/flags.sexp
+sh "$workspace_root/scripts/render-rust-link-flags.sh" \
+  'MINGW64_NT-test' \
+  "$temporary_root/target" \
+  "$output" \
+  '-lwinapi_ntdll -lbcrypt'
+
+expected=$(printf '("-L%s" -lwinapi_ntdll -lbcrypt)\n' "$search_dir")
+actual=$(cat "$output")
+if [ "$actual" != "$expected" ]; then
+  printf 'unexpected Windows Rust link flags\nexpected: %s\nactual:   %s\n' \
+    "$expected" "$actual" >&2
+  exit 1
+fi
+
+non_windows_output=$temporary_root/non-windows-flags.sexp
+sh "$workspace_root/scripts/render-rust-link-flags.sh" \
+  'Linux' \
+  "$temporary_root/target" \
+  "$non_windows_output" \
+  '-lpthread -ldl'
+printf '(-lpthread -ldl)\n' >"$temporary_root/expected-non-windows.sexp"
+cmp "$temporary_root/expected-non-windows.sexp" "$non_windows_output"

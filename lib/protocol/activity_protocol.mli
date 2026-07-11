@@ -1,0 +1,168 @@
+(** Typed private JSON semantics for remote activity tasks and completions.
+    Official Temporal protobuf values remain confined to the Rust bridge. *)
+
+(** Binary Temporal payload with binary metadata preserved losslessly. *)
+type payload = Workflow_protocol.payload = {
+  metadata : (string * bytes) list;
+  data : bytes;
+}
+
+(** Exact protobuf timestamp components without floating-point conversion. *)
+type timestamp = Workflow_protocol.timestamp = {
+  seconds : int64;
+  nanoseconds : int;
+}
+
+(** Normalized nonnegative protobuf duration. *)
+type duration = Workflow_protocol.duration = {
+  seconds : int64;
+  nanoseconds : int;
+}
+
+(** Workflow and run identity that scheduled an activity. *)
+type workflow_execution = Workflow_protocol.workflow_execution = {
+  workflow_id : string;
+  run_id : string;
+}
+
+(** Matching priority with the exact IEEE-754 fairness-weight bit pattern. *)
+type workflow_priority = Workflow_protocol.workflow_priority = {
+  priority_key : int;
+  fairness_key : string;
+  fairness_weight_bits : int64;
+}
+
+(** Retry state retained by a structured Temporal activity failure. *)
+type retry_state = Workflow_protocol.retry_state =
+  | Unspecified
+  | In_progress
+  | Non_retryable_failure
+  | Timeout
+  | Maximum_attempts_reached
+  | Retry_policy_not_set
+  | Internal_server_error
+  | Cancel_requested
+
+(** Supported closed set of structured Temporal failure details. *)
+type failure_info = Workflow_protocol.failure_info =
+  | Application of {
+      type_name : string;
+      non_retryable : bool;
+      details : payload list;
+    }
+  | Canceled of { details : payload list; identity : string }
+  | Activity of {
+      scheduled_event_id : int64;
+      started_event_id : int64;
+      identity : string;
+      activity_type : string;
+      activity_id : string;
+      retry_state : retry_state;
+    }
+
+(** Recursive Temporal failure shared with workflow activation semantics. *)
+type failure = Workflow_protocol.failure = {
+  message : string;
+  source : string;
+  stack_trace : string;
+  encoded_attributes : payload option;
+  cause : failure option;
+  info : failure_info;
+}
+
+(** Effective server-normalized retry policy for an activity attempt.
+    [backoff_coefficient_bits] is canonical unsigned 64-bit decimal text so
+    every possible IEEE-754 bit pattern survives OCaml's signed integers. *)
+type retry_policy = {
+  initial_interval : duration option;
+  backoff_coefficient_bits : string;
+  maximum_interval : duration option;
+  maximum_attempts : int;
+  non_retryable_error_types : string list;
+}
+
+(** Complete execution context needed to invoke one remote activity attempt.
+    Association lists are normalized by key when encoded. *)
+type activity_start = {
+  workflow_namespace : string;
+  workflow_type : string;
+  workflow_execution : workflow_execution;
+  activity_id : string;
+  activity_type : string;
+  header_fields : (string * payload) list;
+  input : payload list;
+  heartbeat_details : payload list;
+  scheduled_time : timestamp option;
+  current_attempt_scheduled_time : timestamp option;
+  started_time : timestamp option;
+  attempt : int64;
+  schedule_to_close_timeout : duration option;
+  start_to_close_timeout : duration option;
+  heartbeat_timeout : duration option;
+  retry_policy : retry_policy option;
+  priority : workflow_priority option;
+  standalone_run_id : string;
+}
+
+(** Stable semantic names for official Core cancellation reasons. *)
+type cancel_reason =
+  | Cancellation_not_found
+  | Cancellation_requested
+  | Cancellation_timed_out
+  | Cancellation_worker_shutdown
+  | Cancellation_paused
+  | Cancellation_reset
+
+(** Independent cancellation facts supplied by newer Core paths. *)
+type cancellation_details = {
+  is_not_found : bool;
+  is_cancelled : bool;
+  is_paused : bool;
+  is_timed_out : bool;
+  is_worker_shutdown : bool;
+  is_reset : bool;
+}
+
+(** Cancellation context for an already outstanding activity attempt. *)
+type activity_cancel = {
+  reason : cancel_reason;
+  details : cancellation_details option;
+}
+
+(** Closed set of activity-task variants delivered by the Rust bridge. *)
+type task_variant = Start of activity_start | Cancel of activity_cancel
+
+(** One leased activity task. [task_token] is opaque binary correlation data
+    and must be copied unchanged into its completion. *)
+type task = { task_token : bytes; variant : task_variant }
+
+(** Terminal outcomes accepted by Temporal Core for an activity attempt. *)
+type completion_result =
+  | Completed of payload option
+  | Failed of failure
+  | Cancelled of failure
+  | Will_complete_async
+
+(** One terminal response to a leased activity task token. *)
+type completion = { task_token : bytes; result : completion_result }
+
+type error
+(** Opaque semantic or strict-JSON validation failure. *)
+
+type error_view = { code : string; path : string; message : string }
+(** Privacy-safe diagnostics that never contain source payload bytes. *)
+
+val error_view : error -> error_view
+(** Copies the stable error classification, path, and diagnostic. *)
+
+val decode_task : string -> (task, error) result
+(** Strictly decodes and validates one activity-task document. *)
+
+val encode_task : task -> (string, error) result
+(** Validates, normalizes, and semantically reparses an outgoing task. *)
+
+val decode_completion : string -> (completion, error) result
+(** Strictly decodes and validates one activity-completion document. *)
+
+val encode_completion : completion -> (string, error) result
+(** Validates, normalizes, and semantically reparses an outgoing completion. *)

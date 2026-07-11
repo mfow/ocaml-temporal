@@ -151,4 +151,4 @@ AI coding tools were used to generate substantial portions of this project. All 
 AI models used to help build this project:
 
 - GPT 5.6 Sol
-- GPT-5
+- GPT-5.6 Terra

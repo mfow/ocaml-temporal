@@ -201,6 +201,46 @@ Evidence:
   to the Docker Compose acceptance test and will be wired after the OCaml
   supervisor can call these two operations.
 
+## 2026-07-12: Public client routing through the native supervisor
+
+Status: focused public-client and supervisor builds/tests pass locally; this
+milestone does not claim a live Temporal Server worker acceptance run.
+
+The public `Temporal.Client` now selects the deterministic `mock://` ledger only
+for tests. HTTP(S) targets build a private supervisor graph, connect the Rust
+Temporal Core client, and route typed start and exact-run wait requests through
+the closed JSON protocol. Asynchronous start tickets are waited in bounded
+steps, so the owner Domain can service lifecycle messages between attempts;
+open exact runs use the same bounded `Not_ready` retry rather than blocking an
+OCaml workflow scheduler. Protocol failures, duplicate workflow IDs, terminal
+failure details, binary-safe payloads, and zero/multiple output payloads are
+mapped to structured public `result` errors.
+
+The supervisor now also exposes runtime-lock-free workflow/activity readiness
+wait operations for the next worker slice. These operations remain private and
+are serialized with all other native handles; no Rust thread calls an OCaml
+closure. Internal mailbox and supervisor libraries use explicit internal OPAM
+names so Dune can enforce the public dependency graph without exposing their
+implementation modules in the `Temporal` API.
+
+The public `Temporal.Client.start` surface now accepts an optional caller-owned
+Temporal `request_id`. Applications can reuse that key when a start result is
+uncertain, while omitted keys are generated once per logical call. The native
+start request and every bounded ticket poll preserve the same key. Empty and
+NUL-containing keys are rejected before the request reaches the backend.
+
+Evidence:
+
+- `dune build --root . test/unit/test_client_worker.exe` and its executable pass
+  on the representative host toolchain.
+- Unit coverage proves deterministic mock start/wait behavior, shutdown
+  idempotence, malformed HTTP endpoint validation at the native boundary, and
+  that public HTTP routing no longer returns the old "native adapter is not
+  connected" path.
+- The live two-binary Compose acceptance remains disabled until native worker
+  polling, activity conversion, readiness signalling, and public dispatch are
+  complete.
+
 ## 2026-07-12: Private OCaml/C poll and completion bindings
 
 Status: focused C and OCaml boundary tests verified locally; the live worker

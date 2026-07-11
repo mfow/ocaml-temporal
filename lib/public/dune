@@ -5,4 +5,7 @@
  (libraries
   temporal-sdk.internal_base
   temporal-sdk.internal_core_bridge
-  temporal-sdk.runtime))
+  temporal-sdk.internal_protocol
+  temporal_sdk_supervisor
+  temporal-sdk.runtime
+  threads))

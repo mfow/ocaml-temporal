@@ -4,7 +4,9 @@
     backend value owns all native resources for this SDK instance. *)
 type t = {
   backend : Backend.client;
-  mutable closed : bool;
+  closed : bool Atomic.t;
+  shutdown_mutex : Mutex.t;
+  mutable shutdown_result : (unit, Error.t) result option;
 }
 
 (** A handle retains the definition codecs and exact execution identity. *)
@@ -53,24 +55,41 @@ let create ?(identity = default_identity) ~target_url ~namespace () =
             { target_url; namespace; identity; task_queue = None }
           in
           Result.map
-            (fun backend -> { backend; closed = false })
+            (fun backend ->
+              {
+                backend;
+                closed = Atomic.make false;
+                shutdown_mutex = Mutex.create ();
+                shutdown_result = None;
+              })
             (Backend.client_create config))
 
-(** Validates a durable workflow ID and task queue before encoding input. *)
-let validate_start_fields ~id ~task_queue =
-  match validate_name "workflow id" id with
+(** Validates the optional Temporal idempotency key, durable workflow ID, and
+    task queue before encoding input or constructing a native request. Keeping
+    these checks here makes malformed caller input a typed result and prevents
+    it from crossing the supervisor boundary. *)
+let validate_start_fields ~request_id ~id ~task_queue =
+  let request_result =
+    match request_id with
+    | None -> Ok ()
+    | Some request_id -> validate_name "request id" request_id
+  in
+  match request_result with
   | Error _ as error -> error
-  | Ok () -> validate_name "task queue" task_queue
+  | Ok () -> (
+      match validate_name "workflow id" id with
+      | Error _ as error -> error
+      | Ok () -> validate_name "task queue" task_queue)
 
 (** Starts a workflow after encoding its typed input and checking the backend's
     response still refers to the request. The response check prevents an
     adapter bug from creating a handle for a different execution. *)
-let start client ~workflow ~task_queue ~id ~input =
-  if client.closed then
+let start client ?request_id ~workflow ~task_queue ~id ~input () =
+  if Atomic.get client.closed then
     Error
       (Temporal_base.Error.make ~category:`Bridge ~message:"client is shut down" ())
   else
-    match validate_start_fields ~id ~task_queue with
+    match validate_start_fields ~request_id ~id ~task_queue with
     | Error error -> Error error
     | Ok () -> (
         match Codec.encode (Temporal_base.Definition.input workflow) input with
@@ -78,6 +97,7 @@ let start client ~workflow ~task_queue ~id ~input =
         | Ok encoded_input ->
             let request : Backend.start_request =
               {
+                request_id;
                 workflow_name = Workflow.name workflow;
                 workflow_id = id;
                 task_queue;
@@ -105,7 +125,7 @@ let start client ~workflow ~task_queue ~id ~input =
 (** Decodes a completed payload and maps terminal failures without exposing the
     private backend constructors. *)
 let wait handle =
-  if handle.client.closed then
+  if Atomic.get handle.client.closed then
     Error
       (Temporal_base.Error.make ~category:`Bridge ~message:"client is shut down" ())
   else
@@ -130,12 +150,32 @@ let workflow_id handle = handle.workflow_id
 (** Returns the exact server run identity retained by a handle. *)
 let run_id handle = handle.run_id
 
-(** Closes backend resources once and remembers that later calls are closed. *)
+(** Closes backend resources once and returns the same cached result to later
+    shutdown callers.
+    Native supervisor shutdown is terminal and cached: even when its result is
+    an error, the backend contract says the complete graph was consumed or
+    invalidated, so the atomic state transition cannot hide a live resource. *)
 let shutdown client =
-  if client.closed then Ok ()
-  else
-    match Backend.client_shutdown client.backend with
-    | Ok () as result ->
-        client.closed <- true;
+  Mutex.lock client.shutdown_mutex;
+  let result =
+    match client.shutdown_result with
+    | Some result -> result
+    | None ->
+        (* Close admission before entering native teardown. Concurrent starts
+           that already passed their check are ordered by the supervisor; later
+           callers observe the closed bit and cannot enqueue new work. *)
+        Atomic.set client.closed true;
+        let result =
+          try Backend.client_shutdown client.backend with
+          | exception_ ->
+              Error
+                (Error.defect
+                   ~message:
+                     (Printf.sprintf "client shutdown raised: %s"
+                        (Printexc.to_string exception_)))
+        in
+        client.shutdown_result <- Some result;
         result
-    | Error _ as error -> error
+  in
+  Mutex.unlock client.shutdown_mutex;
+  result

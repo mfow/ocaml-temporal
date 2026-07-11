@@ -87,12 +87,12 @@ let run () =
         let* fan_handle =
           Client.start client ~workflow:Definitions.fan_out
             ~task_queue:Definitions.task_queue ~id:"two-binary-fan-out"
-            ~input:"smoke"
+            ~input:"smoke" ()
         in
         let* timer_handle =
           Client.start client ~workflow:Definitions.timer_then_activity
             ~task_queue:Definitions.task_queue
-            ~id:"two-binary-timer-then-activity" ~input:"smoke"
+            ~id:"two-binary-timer-then-activity" ~input:"smoke" ()
         in
         (* Both starts intentionally happen before the first wait.  This is
            the assertion that the client can retain independent exact-run

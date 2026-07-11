@@ -24,8 +24,20 @@ opam exec -- dune build @install
 test -s "$package_root/internal_core_bridge/libocaml_temporal_core_bridge.a"
 test ! -e "$package_root/internal_core_bridge/ocaml_temporal_core.h"
 test ! -e "$package_root/internal_core_bridge/abi.rs"
-if find "$package_root" -iname '*mailbox*' -print | grep -q .; then
-  echo "private mailbox processor leaked into the install tree" >&2
+# Dune's `(package temporal-sdk)` mechanism is the supported way for a public
+# library to link a private implementation library. It installs that library
+# only below `temporal-sdk/__private__/`; this is package-private linkage, not a
+# top-level findlib package or a module in the public `Temporal` signature.
+# Reject any mailbox/supervisor artifact outside that reserved subtree so a
+# future stanza cannot accidentally publish the implementation as a dependency.
+if find "$package_root" -path "$package_root/__private__" -prune \
+  -o -iname '*mailbox*' -print | grep -q .; then
+  echo "private mailbox processor leaked outside Dune's package-private tree" >&2
+  exit 1
+fi
+if find "$package_root" -path "$package_root/__private__" -prune \
+  -o -iname '*supervisor*' -print | grep -q .; then
+  echo "private SDK supervisor leaked outside Dune's package-private tree" >&2
   exit 1
 fi
 

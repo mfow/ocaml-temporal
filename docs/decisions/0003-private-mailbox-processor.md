@@ -39,6 +39,13 @@ Primary references:
 ## Decision
 
 Add `lib/mailbox_processor/` as a Dune-private library with no `public_name`.
+Because the public `temporal-sdk` library now links the supervisor which uses
+this implementation, its Dune stanza sets `(package temporal-sdk)`. Dune then
+installs the archive and interface only below the package's reserved
+`__private__/` directory; it is not a top-level findlib package and no
+`Mailbox_processor` module appears in the public `Temporal` signature. The
+install smoke test rejects any artifact outside that reserved path.
+
 It is a functor over a GADT request family:
 
 ```ocaml

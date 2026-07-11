@@ -36,13 +36,21 @@ val create :
 
 (** Starts a typed workflow execution and returns the exact server run handle.
     Encoding happens before the backend receives the request, so codec errors
-    cannot create a partial workflow history entry. *)
+    cannot create a partial workflow history entry.
+
+    [request_id] is an optional caller-owned Temporal idempotency key. When a
+    start result is uncertain, retry the same logical start with the same
+    [request_id] so Temporal can deduplicate an already accepted request. If
+    omitted, the SDK allocates a fresh request ID for this call. Do not reuse
+    one ID for unrelated workflow starts. *)
 val start :
   t ->
+  ?request_id:string ->
   workflow:('input, 'output) Workflow.t ->
   task_queue:string ->
   id:string ->
   input:'input ->
+  unit ->
   (('input, 'output) handle, Error.t) result
 
 (** Waits for the exact workflow ID and run ID returned by [start]. A

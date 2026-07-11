@@ -1,11 +1,11 @@
-(** The private deterministic backend seam used by the public client and
-    worker modules' unit tests.
+(** The private transport boundary used by the public client and worker.
 
-    This interface deliberately contains only owned OCaml values and is not a
-    promise that the native adapter will implement these mock task shapes. The
-    Rust/Core integration will use separate activation/completion semantic
-    types plus an explicit admission/begin-shutdown/finalize lifecycle. None
-    of those native details are exposed by the public package. *)
+    [mock://] targets use the deterministic in-memory records below for unit
+    tests. HTTP(S) targets are routed through the private supervisor and its
+    Rust/Core protocol; that path uses separate activation/completion semantic
+    values and an explicit native lifecycle. Keeping those representations
+    private lets the installed [Temporal] API avoid Rust handles, JSON bytes,
+    and transport-specific ownership rules. *)
 
 (** A validated connection configuration shared by client and worker graphs. *)
 type config = {
@@ -17,6 +17,9 @@ type config = {
 
 (** The request sent when a typed client starts one workflow execution. *)
 type start_request = {
+  (* Optional caller-owned idempotency key. [None] asks the native adapter to
+     allocate a fresh request ID for this start call. *)
+  request_id : string option;
   workflow_name : string;
   workflow_id : string;
   task_queue : string;
@@ -50,8 +53,8 @@ type terminal_result =
 
 (** A synthetic workflow task used only by the deterministic unit-test seam.
     Native Core activations carry replay metadata, jobs, and history context;
-    the future adapter will translate those through separate private semantic
-    types rather than widening this mock record. *)
+    the native worker adapter translates those through separate private
+    semantic types rather than widening this mock record. *)
 type workflow_task = {
   task_token : string;
   workflow_name : string;
@@ -104,9 +107,9 @@ type client
 (** An opaque worker backend instance owned by one public [Worker.t]. *)
 type worker
 
-(** Creates a deterministic client test seam. The in-memory transport is used
-    only by unit tests; production URLs are reserved for the future Rust/Core
-    adapter, whose semantic types and lifecycle are separate from this seam. *)
+(** Creates a client transport after validating its configuration. The
+    deterministic [mock://] ledger is test-only; HTTP(S) creates and connects
+    one private supervisor graph before publishing the client value. *)
 val client_create : config -> (client, Error.t) result
 
 (** Starts one workflow after validating the request in the backend boundary. *)
@@ -115,7 +118,9 @@ val client_start : client -> start_request -> (start_response, Error.t) result
 (** Waits for the exact workflow/run pair and returns its terminal outcome. *)
 val client_wait : client -> wait_request -> (terminal_result, Error.t) result
 
-(** Closes a client backend. Repeated calls are harmless and return [Ok ()]. *)
+(** Closes a client backend. Native shutdown is serialized and terminal even
+    when it returns an error; the public client caches that exact result so a
+    repeated call cannot hide a failed teardown. *)
 val client_shutdown : client -> (unit, Error.t) result
 
 (** Creates a deterministic worker test seam and records the task queue and

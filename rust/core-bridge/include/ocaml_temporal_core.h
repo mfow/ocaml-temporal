@@ -96,6 +96,28 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_client_start_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* Admit one workflow start without waiting for the RPC. The successful value
+ * is an opaque JSON ticket. The caller must later poll or wait that ticket;
+ * the Rust owner keeps its Core connection and Tokio task alive until one
+ * terminal result is observed or the runtime is closed. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_client_begin_start_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Poll one asynchronous start ticket without waiting. STATUS_NOT_READY means
+ * the RPC remains in flight. A terminal success value is a closed JSON object
+ * with kind accepted, rejected, or unknown; the ticket is then retired. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_client_poll_start_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Wait for one asynchronous start ticket for a bounded interval. The C stub
+ * must release the OCaml runtime lock. A timeout is STATUS_NOT_READY so the
+ * supervisor can service its mailbox and retry. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_client_wait_start_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
 /* Wait for one exact run using fixed follow_runs=false semantics. Each call
  * keeps the close-event history long poll for at most 100 ms. An open run
  * returns NOT_READY (status 10) without terminal JSON so the caller can retry;

@@ -17,8 +17,10 @@ gRPC through the official Rust client implementation.
 Every operation copies input bytes before Rust releases the OCaml runtime lock.
 Rust copies its output into an owned result buffer. The OCaml C stub copies that
 buffer into an OCaml `bytes` value and frees the native result in a protected
-cleanup path. No JSON string, payload pointer, or Rust future survives the
-call.
+cleanup path. Synchronous operations do not retain a JSON string or payload
+pointer after the call. The asynchronous start operation retains only a
+Rust-owned typed request inside its bounded Tokio task; its ticket and final
+outcome cross the same copied JSON result boundary.
 
 ## Start a workflow
 
@@ -26,6 +28,7 @@ The OCaml side sends one closed object:
 
 ```json
 {
+  "request_id": "start-summarize-1",
   "namespace": "default",
   "workflow_id": "summarize-1",
   "workflow_type": "summarize_document",
@@ -56,7 +59,10 @@ Rust validates every identifier, rejects NUL bytes, rejects duplicate or
 unknown members, validates payloads, and then calls Core's raw
 `WorkflowService::start_workflow_execution`. The first slice deliberately
 uses Temporal Server's documented defaults for optional start policies; it does
-not invent OCaml-side defaults.
+not invent OCaml-side defaults. `request_id` is chosen by the OCaml caller and
+is sent unchanged to Temporal. It identifies one logical start, so a retry of
+the begin call can recover the same in-flight ticket instead of starting a
+second workflow.
 
 On success Rust returns:
 
@@ -74,6 +80,46 @@ OCaml checks that the returned namespace and workflow ID still match the
 request before exposing the run ID. The complete shape is documented by
 [`client-start-request.schema.json`](../schemas/bridge/client-start-request.schema.json)
 and [`client-start-response.schema.json`](../schemas/bridge/client-start-response.schema.json).
+
+### Asynchronous start tickets
+
+The owner supervisor can submit the same request through the private
+`begin_start_workflow_json` operation when it must keep servicing other
+messages while Temporal performs the RPC. Rust returns an opaque ticket:
+
+```json
+{"ticket":"4a7c3e0e-3e3d-4b9f-9df2-6e55d3b2b4b7"}
+```
+
+The supervisor supplies that object to either `poll_start_workflow_json` or
+`wait_start_workflow_json`. Poll returns immediately; wait blocks for at most
+the bridge's short bounded interval and then returns `STATUS_NOT_READY`, so a
+mailbox loop can handle shutdown and other lifecycle messages between waits.
+When the RPC is terminal, the ticket is retired and Rust returns one of these
+closed values:
+
+```json
+{"kind":"accepted","execution":{"namespace":"default","workflow_id":"summarize-1","run_id":"run-1"}}
+```
+
+```json
+{"kind":"rejected","error":{"kind":"already_started","workflow_id":"summarize-1","existing_run_id":null}}
+```
+
+```json
+{"kind":"unknown","request_id":"start-summarize-1","workflow_id":"summarize-1"}
+```
+
+`accepted` is proof that Temporal allocated the run. `rejected` is used only
+when the returned status proves the start was not accepted. `unknown` is
+deliberately not a retry instruction: a timeout, transport failure, or
+response-conversion failure may have happened after Temporal accepted the
+request. The caller must reconcile that logical request using its stable
+`request_id` and workflow identity before deciding what to do next. The ticket
+and outcome schemas are
+[`client-start-ticket.schema.json`](../schemas/bridge/client-start-ticket.schema.json)
+and
+[`client-start-outcome.schema.json`](../schemas/bridge/client-start-outcome.schema.json).
 
 ## Wait for one exact run
 

@@ -5,8 +5,9 @@
   "description": "Closed JSON document used only by the private Rust client bridge. Runtime validators also enforce 65,536-byte UTF-8 string limits, duplicate-key rejection, NUL-free identifiers, canonical payload encoding, and whole-document resource bounds. maxLength is the character-count bound expressible in standard JSON Schema; the runtime byte limit remains authoritative.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["namespace", "workflow_id", "workflow_type", "task_queue", "input"],
+  "required": ["request_id", "namespace", "workflow_id", "workflow_type", "task_queue", "input"],
   "properties": {
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
     "namespace": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
     "workflow_id": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
     "workflow_type": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},

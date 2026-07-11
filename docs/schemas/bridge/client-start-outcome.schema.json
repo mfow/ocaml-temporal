@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-start-outcome.schema.json",
+  "title": "OCaml Temporal native client asynchronous start outcome",
+  "description": "Closed terminal value produced when a private asynchronous start ticket is accepted, deterministically rejected, or cannot be proven because a transport/response failure may have occurred after acceptance.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "execution"],
+      "properties": {
+        "kind": {"const": "accepted"},
+        "execution": {"$ref": "client-execution-ref.schema.json"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "error"],
+      "properties": {
+        "kind": {"const": "rejected"},
+        "error": {"$ref": "client-error.schema.json"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "request_id", "workflow_id"],
+      "properties": {
+        "kind": {"const": "unknown"},
+        "request_id": {"type": "string", "minLength": 1},
+        "workflow_id": {"type": "string", "minLength": 1}
+      }
+    }
+  ]
+}

@@ -16,7 +16,6 @@ use temporalio_common::protos::temporal::api::{
     taskqueue::v1::TaskQueue,
     workflowservice::v1::{GetWorkflowExecutionHistoryRequest, StartWorkflowExecutionRequest},
 };
-use uuid::Uuid;
 
 use crate::{protocol, workflow_protocol};
 
@@ -36,6 +35,14 @@ pub struct ExecutionRef {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StartWorkflowRequest {
+    /// Caller-chosen identifier for this logical start operation.
+    ///
+    /// The bridge passes this value unchanged to Temporal's
+    /// `StartWorkflowExecution.request_id` field.  It is deliberately part of
+    /// the private protocol rather than generated for each transport attempt:
+    /// a retry or reconciliation path must be able to refer to the same
+    /// logical request without accidentally creating a second operation.
+    pub request_id: String,
     /// Namespace in which Core should start the execution.
     pub namespace: String,
     /// User-supplied workflow identifier.
@@ -54,6 +61,41 @@ pub struct StartWorkflowRequest {
 pub struct StartWorkflowResponse {
     /// Execution allocated by Temporal Server.
     pub execution: ExecutionRef,
+}
+
+/// Opaque ticket returned while an asynchronous start is still in flight.
+///
+/// The ticket is intentionally a closed JSON object rather than a raw UUID at
+/// the FFI boundary.  That keeps the representation extensible while the
+/// supervisor treats the value as an opaque capability and never constructs
+/// or parses it itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartTicketDocument {
+    /// Random, process-local identifier for the pending operation.
+    ticket: String,
+}
+
+/// Result of one asynchronous start ticket.
+///
+/// The operation is deliberately represented as a successful JSON document
+/// after a ticket becomes terminal.  `Rejected` means the server returned a
+/// response that proves the start was not accepted.  `Unknown` is different:
+/// the transport or response conversion failed after the request may have
+/// reached Temporal, so the bridge never retries it or pretends it failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StartWorkflowOutcome {
+    /// Temporal returned an execution reference for this logical start.
+    Accepted(StartWorkflowResponse),
+    /// A deterministic server/client error proves that no start was accepted.
+    Rejected(ClientOperationError),
+    /// The request outcome cannot be proven from the available response.
+    Unknown {
+        /// Stable request identifier supplied to Temporal.
+        request_id: String,
+        /// Workflow identity used for later reconciliation.
+        workflow_id: String,
+    },
 }
 
 /// Request to wait for one exact workflow run.
@@ -158,7 +200,7 @@ pub enum ClientOperationError {
 /// Closed JSON body used when a start call reports `AlreadyStarted`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum ClientErrorDocument {
+pub(crate) enum ClientErrorDocument {
     /// Existing workflow identity returned by Temporal status details.
     AlreadyStarted {
         /// Workflow ID that could not be started.
@@ -178,34 +220,123 @@ enum ClientErrorDocument {
     },
 }
 
+/// Wire representation of one terminal asynchronous-start outcome.
+///
+/// This is kept separate from [`StartWorkflowOutcome`] so the latter can carry
+/// the rich Rust error enum while the JSON boundary remains closed and safe.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum StartWorkflowOutcomeDocument {
+    /// The server allocated a concrete run.
+    Accepted {
+        /// Exact execution returned by Temporal.
+        execution: ExecutionRef,
+    },
+    /// The start was rejected with a structured, privacy-safe error body.
+    Rejected {
+        /// Stable error category and code.
+        error: ClientErrorDocument,
+    },
+    /// The request may have reached Temporal, but no acceptance is proven.
+    Unknown {
+        /// Stable logical request identifier supplied by the caller.
+        request_id: String,
+        /// Workflow ID useful to a later reconciliation operation.
+        workflow_id: String,
+    },
+}
+
+/// Converts an internal client error into the closed JSON document used by
+/// both synchronous failures and asynchronous rejected outcomes.
+fn error_document(error: &ClientOperationError) -> ClientErrorDocument {
+    match error {
+        ClientOperationError::AlreadyStarted {
+            workflow_id,
+            existing_run_id,
+        } => ClientErrorDocument::AlreadyStarted {
+            workflow_id: workflow_id.clone(),
+            existing_run_id: existing_run_id.clone(),
+        },
+        ClientOperationError::Rpc { code } => ClientErrorDocument::Rpc { code: code.clone() },
+        ClientOperationError::Core(conversion) => ClientErrorDocument::Protocol {
+            code: match conversion.code {
+                workflow_protocol::CoreConversionErrorCode::Unsupported => {
+                    "core_unsupported".to_owned()
+                }
+                workflow_protocol::CoreConversionErrorCode::InvalidCore => {
+                    "core_invalid".to_owned()
+                }
+            },
+        },
+    }
+}
+
+/// Validates the closed object used by an asynchronous-start ticket result.
+fn validate_start_outcome_document(
+    document: &StartWorkflowOutcomeDocument,
+) -> Result<(), protocol::ProtocolError> {
+    match document {
+        StartWorkflowOutcomeDocument::Accepted { execution } => {
+            validate_execution(execution, "$.execution")?
+        }
+        StartWorkflowOutcomeDocument::Rejected { error } => match error {
+            ClientErrorDocument::AlreadyStarted {
+                workflow_id,
+                existing_run_id,
+            } => {
+                validate_identifier(workflow_id, "$.error.workflow_id")?;
+                if let Some(run_id) = existing_run_id {
+                    validate_identifier(run_id, "$.error.existing_run_id")?;
+                }
+            }
+            ClientErrorDocument::Rpc { code } => validate_identifier(code, "$.error.code")?,
+            ClientErrorDocument::Protocol { code } => validate_identifier(code, "$.error.code")?,
+        },
+        StartWorkflowOutcomeDocument::Unknown {
+            request_id,
+            workflow_id,
+        } => {
+            validate_identifier(request_id, "$.request_id")?;
+            validate_identifier(workflow_id, "$.workflow_id")?;
+        }
+    }
+    Ok(())
+}
+
 impl ClientOperationError {
     /// Encodes a privacy-safe structured error body for the ABI error buffer.
     pub(crate) fn to_json(&self) -> String {
-        let document = match self {
-            Self::AlreadyStarted {
-                workflow_id,
-                existing_run_id,
-            } => ClientErrorDocument::AlreadyStarted {
-                workflow_id: workflow_id.clone(),
-                existing_run_id: existing_run_id.clone(),
-            },
-            Self::Rpc { code } => ClientErrorDocument::Rpc { code: code.clone() },
-            Self::Core(error) => ClientErrorDocument::Protocol {
-                code: match error.code {
-                    workflow_protocol::CoreConversionErrorCode::Unsupported => {
-                        "core_unsupported".to_owned()
-                    }
-                    workflow_protocol::CoreConversionErrorCode::InvalidCore => {
-                        "core_invalid".to_owned()
-                    }
-                },
-            },
-        };
+        let document = error_document(self);
         // All variants contain validated identifiers or a bounded tonic code;
         // serialization cannot fail.  Keep a defensive fallback that cannot
         // expose a Rust panic through the ABI if a future variant changes.
         serde_json::to_string(&document)
             .unwrap_or_else(|_| "{\"kind\":\"rpc\",\"code\":\"internal\"}".to_owned())
+    }
+
+    /// Reports whether a failed start has an outcome that cannot be proven.
+    ///
+    /// Transport failures such as `Unavailable` may occur after Temporal has
+    /// accepted the request, so callers must reconcile them rather than retry
+    /// with a new logical request.  Validation and authorization failures are
+    /// deterministic rejections; `AlreadyStarted` is also terminal because
+    /// the server supplied the conflicting workflow identity.
+    pub(crate) fn uncertain_start(&self) -> bool {
+        match self {
+            Self::AlreadyStarted { .. } => false,
+            Self::Core(_) => true,
+            Self::Rpc { code } => matches!(
+                code.as_str(),
+                "cancelled"
+                    | "unknown"
+                    | "deadline_exceeded"
+                    | "resource_exhausted"
+                    | "aborted"
+                    | "internal"
+                    | "unavailable"
+                    | "data_loss"
+            ),
+        }
     }
 }
 
@@ -216,6 +347,25 @@ pub fn decode_start_request(input: &str) -> Result<StartWorkflowRequest, protoco
         .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client start request"))?;
     validate_start_request(&request)?;
     Ok(request)
+}
+
+/// Decodes one opaque start ticket returned by the asynchronous begin call.
+pub(crate) fn decode_start_ticket(input: &str) -> Result<String, protocol::ProtocolError> {
+    protocol::decode_object(input)?;
+    let document: StartTicketDocument = serde_json::from_str(input)
+        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid start ticket"))?;
+    validate_identifier(&document.ticket, "$.ticket")?;
+    Ok(document.ticket)
+}
+
+/// Encodes one opaque start ticket and strictly reparses the result before it
+/// leaves Rust.  The private ticket value is never exposed as an OCaml string
+/// until the normal native result decoder copies the response buffer.
+pub(crate) fn encode_start_ticket(ticket: &str) -> Result<String, protocol::ProtocolError> {
+    validate_identifier(ticket, "$.ticket")?;
+    encode_document(&StartTicketDocument {
+        ticket: ticket.to_owned(),
+    })
 }
 
 /// Strictly parses one exact-run wait request.
@@ -233,6 +383,32 @@ pub fn encode_start_response(
 ) -> Result<String, protocol::ProtocolError> {
     validate_execution(&response.execution, "$.execution")?;
     encode_document(response)
+}
+
+/// Encodes one terminal asynchronous-start outcome and reparses the bytes
+/// before ownership leaves Rust.  The closed object keeps `Unknown` explicit
+/// instead of overloading a transport error status that could be mistaken for
+/// a proven rejection.
+pub(crate) fn encode_start_outcome(
+    outcome: &StartWorkflowOutcome,
+) -> Result<String, protocol::ProtocolError> {
+    let document = match outcome {
+        StartWorkflowOutcome::Accepted(response) => StartWorkflowOutcomeDocument::Accepted {
+            execution: response.execution.clone(),
+        },
+        StartWorkflowOutcome::Rejected(error) => StartWorkflowOutcomeDocument::Rejected {
+            error: error_document(error),
+        },
+        StartWorkflowOutcome::Unknown {
+            request_id,
+            workflow_id,
+        } => StartWorkflowOutcomeDocument::Unknown {
+            request_id: request_id.clone(),
+            workflow_id: workflow_id.clone(),
+        },
+    };
+    validate_start_outcome_document(&document)?;
+    encode_document(&document)
 }
 
 /// Encodes and reparses an exact-run wait response before ownership leaves Rust.
@@ -266,7 +442,7 @@ pub async fn start_workflow(
                     normal_name: String::new(),
                 }),
                 identity: connection.identity().to_owned(),
-                request_id: Uuid::new_v4().to_string(),
+                request_id: request.request_id,
                 // The first slice intentionally uses server defaults for all
                 // optional start policies; adding them is a later protocol
                 // extension, not an implicit semantic default here.
@@ -522,6 +698,7 @@ fn rpc_code(code: Code) -> &'static str {
 
 /// Validates one start request's identifiers and payload ownership bounds.
 fn validate_start_request(value: &StartWorkflowRequest) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.request_id, "$.request_id")?;
     validate_identifier(&value.namespace, "$.namespace")?;
     validate_identifier(&value.workflow_id, "$.workflow_id")?;
     validate_identifier(&value.workflow_type, "$.workflow_type")?;
@@ -687,6 +864,7 @@ mod tests {
     /// Builds the smallest valid start document used by strict-parser tests.
     fn start_json() -> String {
         serde_json::json!({
+            "request_id":"request-1",
             "namespace":"default",
             "workflow_id":"workflow-1",
             "workflow_type":"smoke",
@@ -707,9 +885,70 @@ mod tests {
     }
 
     #[test]
+    /// Requires the stable logical ID used to correlate asynchronous retries.
+    fn start_request_requires_request_id() {
+        let json = serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "workflow_type":"smoke",
+            "task_queue":"queue",
+            "input":[]
+        })
+        .to_string();
+        assert!(decode_start_request(&json).is_err());
+    }
+
+    #[test]
+    /// Tickets round-trip through a closed object and reject extra members.
+    fn start_ticket_round_trips_as_an_opaque_value() {
+        let encoded = encode_start_ticket("ticket-1").expect("ticket encodes");
+        assert_eq!(
+            decode_start_ticket(&encoded).expect("ticket decodes"),
+            "ticket-1"
+        );
+        assert!(decode_start_ticket(r#"{"ticket":"ticket-1","extra":true}"#).is_err());
+    }
+
+    #[test]
+    /// Terminal outcomes preserve acceptance and expose uncertain transport
+    /// failures without pretending that Temporal rejected the request.
+    fn start_outcomes_are_closed_and_uncertainty_is_explicit() {
+        let accepted = StartWorkflowOutcome::Accepted(StartWorkflowResponse {
+            execution: ExecutionRef {
+                namespace: "default".to_owned(),
+                workflow_id: "workflow-1".to_owned(),
+                run_id: "run-1".to_owned(),
+            },
+        });
+        assert_eq!(
+            encode_start_outcome(&accepted).expect("accepted outcome encodes"),
+            r#"{"kind":"accepted","execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"}}"#
+        );
+
+        let rejected = ClientOperationError::Rpc {
+            code: "invalid_argument".to_owned(),
+        };
+        assert!(!rejected.uncertain_start());
+        assert!(
+            ClientOperationError::Rpc {
+                code: "unavailable".to_owned()
+            }
+            .uncertain_start()
+        );
+        let unknown = StartWorkflowOutcome::Unknown {
+            request_id: "request-1".to_owned(),
+            workflow_id: "workflow-1".to_owned(),
+        };
+        assert_eq!(
+            encode_start_outcome(&unknown).expect("unknown outcome encodes"),
+            r#"{"kind":"unknown","request_id":"request-1","workflow_id":"workflow-1"}"#
+        );
+    }
+
+    #[test]
     /// Rejects duplicate members before serde's map conversion can erase one.
     fn duplicate_start_member_is_rejected_before_serde_map_conversion() {
-        let json = r#"{"namespace":"default","namespace":"other","workflow_id":"id","workflow_type":"type","task_queue":"queue","input":[]}"#;
+        let json = r#"{"request_id":"request-1","namespace":"default","namespace":"other","workflow_id":"id","workflow_type":"type","task_queue":"queue","input":[]}"#;
         assert!(decode_start_request(json).is_err());
     }
 
@@ -943,6 +1182,7 @@ mod tests {
     /// Accepts a workflow start with no argument payloads.
     fn empty_payload_vector_is_valid_for_no_argument_workflow() {
         let json = serde_json::json!({
+            "request_id":"request-1",
             "namespace":"default",
             "workflow_id":"workflow-1",
             "workflow_type":"smoke",

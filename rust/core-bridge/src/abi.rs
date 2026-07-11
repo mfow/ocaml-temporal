@@ -6,13 +6,17 @@ use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
+use std::sync::mpsc::{
+    Receiver, RecvTimeoutError, SyncSender, TryRecvError, channel, sync_channel,
+};
 use std::time::Duration;
 use temporalio_client::{Connection, ConnectionOptions};
 use temporalio_sdk_core::{
     CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, WorkerConfig,
     WorkerVersioningStrategy,
 };
+use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 /// Version of the native ABI implemented by this crate.
 pub const ABI_VERSION: u32 = 1;
@@ -73,6 +77,17 @@ const MAX_GRACEFUL_SHUTDOWN_MS: u64 = 24 * 60 * 60 * 1_000;
 /// its mailbox can admit shutdown or another lifecycle operation before it
 /// retries the wait.
 const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
+/// Bounds the number of in-flight client starts retained by one supervisor.
+///
+/// Each entry owns one Tokio task, a response channel, and the validated
+/// request payload until the RPC completes. A finite ceiling prevents a caller
+/// that forgets tickets from turning the supervisor into an unbounded task
+/// registry; the caller can submit more work after polling or closing
+/// completed tickets.
+const MAX_PENDING_STARTS: usize = 64;
+/// Maximum time spent in one wait-ticket ABI call before the owner regains
+/// control of its mailbox and can service lifecycle messages.
+const START_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 
 const _: () = assert!(size_of::<Status>() == 4);
 
@@ -184,7 +199,48 @@ pub struct Runtime {
     worker: Option<PollLanes>,
     workflow_activations: HashMap<String, workflow_protocol::Activation>,
     activity_tasks: HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
+    pending_starts: HashMap<String, PendingStart>,
     cleanup: std::sync::mpsc::Sender<RuntimeCleanup>,
+}
+
+/// One Rust-owned asynchronous start operation indexed by an opaque ticket.
+///
+/// The response channel is a one-shot handoff from a Tokio task to the sole
+/// runtime owner. No Tokio task invokes OCaml or mutates [`Runtime`]; it only
+/// sends the typed result and exits. The owner removes the entry exactly once
+/// when a terminal result is observed, then joins the task before releasing
+/// the connection clone it captured.
+struct PendingStart {
+    /// Stable logical identifier sent unchanged to Temporal.
+    request_id: String,
+    /// Namespace retained to reject accidental cross-namespace ID reuse.
+    namespace: String,
+    /// Workflow ID retained for an explicit `Unknown` outcome.
+    workflow_id: String,
+    /// One-shot result channel serviced only by the owner Domain.
+    receiver: Receiver<
+        std::result::Result<
+            client_protocol::StartWorkflowResponse,
+            client_protocol::ClientOperationError,
+        >,
+    >,
+    /// Tokio task performing the network call through Core's runtime.
+    task: JoinHandle<()>,
+}
+
+/// Result of one owner-side ticket-channel read.
+enum StartRead {
+    /// The Tokio task supplied a terminal typed result.
+    Ready(
+        std::result::Result<
+            client_protocol::StartWorkflowResponse,
+            client_protocol::ClientOperationError,
+        >,
+    ),
+    /// No result is available in the selected poll interval.
+    NotReady,
+    /// The task exited without publishing a result, so acceptance is unknown.
+    Disconnected,
 }
 
 /// Ownership transfer consumed by the runtime's dedicated cleanup thread.
@@ -235,6 +291,7 @@ impl Runtime {
             worker: None,
             workflow_activations: HashMap::new(),
             activity_tasks: HashMap::new(),
+            pending_starts: HashMap::new(),
             cleanup,
         })
     }
@@ -307,6 +364,212 @@ impl Runtime {
         let encoded =
             client_protocol::encode_start_response(&response).map_err(protocol_failure)?;
         Ok(encoded.into_bytes())
+    }
+
+    /// Begins one workflow start without waiting for the RPC response.
+    ///
+    /// The owner Domain performs only validation, ticket bookkeeping, and
+    /// Tokio task admission here. The task owns a cloned Core connection and
+    /// sends exactly one typed result over a standard-library channel; it
+    /// never touches this runtime or calls into OCaml. A repeated request ID
+    /// while an operation is pending returns the original ticket, preventing a
+    /// caller retry from issuing a second Temporal start.
+    fn begin_start_workflow_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let request = client_protocol::decode_start_request(text).map_err(protocol_failure)?;
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+
+        // A caller that retries a begin request with the same logical ID must
+        // observe the existing ticket. Reusing an ID for a different workflow
+        // is rejected rather than silently aliasing the other operation.
+        if let Some((ticket, pending)) = self
+            .pending_starts
+            .iter()
+            .find(|(_, pending)| pending.request_id == request.request_id)
+        {
+            if pending.namespace != request.namespace || pending.workflow_id != request.workflow_id
+            {
+                return Err(Failure {
+                    status: STATUS_PROTOCOL,
+                    message: "start request_id is already pending for another execution".to_owned(),
+                });
+            }
+            return Ok(client_protocol::encode_start_ticket(ticket)
+                .map_err(protocol_failure)?
+                .into_bytes());
+        }
+        if self.pending_starts.len() >= MAX_PENDING_STARTS {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "too many Temporal workflow starts are pending".to_owned(),
+            });
+        }
+
+        let request_id = request.request_id.clone();
+        let namespace = request.namespace.clone();
+        let workflow_id = request.workflow_id.clone();
+        let ticket = loop {
+            let candidate = Uuid::new_v4().to_string();
+            if !self.pending_starts.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        let encoded_ticket = client_protocol::encode_start_ticket(&ticket)
+            .map_err(protocol_failure)?
+            .into_bytes();
+        let (sender, receiver) = channel();
+        let task = handle.spawn(async move {
+            let result = client_protocol::start_workflow(connection, request).await;
+            // A closed receiver means the owner is shutting down or has
+            // already consumed the terminal result. Dropping this send is
+            // intentional; task ownership remains entirely on the Tokio side.
+            let _ = sender.send(result);
+        });
+
+        self.pending_starts.insert(
+            ticket.clone(),
+            PendingStart {
+                request_id,
+                namespace,
+                workflow_id,
+                receiver,
+                task,
+            },
+        );
+        Ok(encoded_ticket)
+    }
+
+    /// Polls one start ticket without waiting for the RPC task.
+    fn poll_start_workflow_json(&mut self, input: &[u8]) -> Operation {
+        self.read_start_workflow_json(input, false)
+    }
+
+    /// Waits up to the bounded ticket interval, then returns control to the
+    /// supervisor even when Temporal has not produced a response yet.
+    fn wait_start_workflow_json(&mut self, input: &[u8]) -> Operation {
+        self.read_start_workflow_json(input, true)
+    }
+
+    /// Shared ticket decoder and one-shot channel handoff for poll and wait.
+    fn read_start_workflow_json(&mut self, input: &[u8], wait: bool) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let ticket = client_protocol::decode_start_ticket(text).map_err(protocol_failure)?;
+        let read = {
+            let pending = self
+                .pending_starts
+                .get_mut(&ticket)
+                .ok_or_else(|| Failure {
+                    status: STATUS_PROTOCOL,
+                    message: "unknown Temporal workflow start ticket".to_owned(),
+                })?;
+            if wait {
+                match pending.receiver.recv_timeout(START_WAIT_TIMEOUT) {
+                    Ok(result) => StartRead::Ready(result),
+                    Err(RecvTimeoutError::Timeout) => StartRead::NotReady,
+                    Err(RecvTimeoutError::Disconnected) => StartRead::Disconnected,
+                }
+            } else {
+                match pending.receiver.try_recv() {
+                    Ok(result) => StartRead::Ready(result),
+                    Err(TryRecvError::Empty) => StartRead::NotReady,
+                    Err(TryRecvError::Disconnected) => StartRead::Disconnected,
+                }
+            }
+        };
+
+        match read {
+            StartRead::NotReady => Err(not_ready()),
+            StartRead::Ready(result) => self.finish_start(ticket, Some(result)),
+            StartRead::Disconnected => self.finish_start(ticket, None),
+        }
+    }
+
+    /// Removes a terminal ticket, joins its Tokio task, and encodes the
+    /// explicit accepted/rejected/unknown outcome. Joining after the channel
+    /// handoff proves the task no longer holds a Core connection clone before
+    /// the map entry is released.
+    fn finish_start(
+        &mut self,
+        ticket: String,
+        result: Option<
+            std::result::Result<
+                client_protocol::StartWorkflowResponse,
+                client_protocol::ClientOperationError,
+            >,
+        >,
+    ) -> Operation {
+        let pending = self.pending_starts.remove(&ticket).ok_or_else(|| Failure {
+            status: STATUS_PROTOCOL,
+            message: "unknown Temporal workflow start ticket".to_owned(),
+        })?;
+
+        if let Some(core) = self.core.as_ref() {
+            // The task has sent its one-shot result before this join. The
+            // bounded join therefore only drains its final bookkeeping and
+            // cannot wait on a second network operation.
+            let _ = core.tokio_handle().block_on(pending.task);
+        } else {
+            // Runtime closure is serialized through the same owner, but keep a
+            // defensive abort path if an internal caller ever reaches this
+            // method after Core ownership was removed.
+            pending.task.abort();
+        }
+
+        let outcome = match result {
+            Some(Ok(response)) => client_protocol::StartWorkflowOutcome::Accepted(response),
+            Some(Err(error)) if error.uncertain_start() => {
+                client_protocol::StartWorkflowOutcome::Unknown {
+                    request_id: pending.request_id,
+                    workflow_id: pending.workflow_id,
+                }
+            }
+            Some(Err(error)) => client_protocol::StartWorkflowOutcome::Rejected(error),
+            None => client_protocol::StartWorkflowOutcome::Unknown {
+                request_id: pending.request_id,
+                workflow_id: pending.workflow_id,
+            },
+        };
+        client_protocol::encode_start_outcome(&outcome)
+            .map(|encoded| encoded.into_bytes())
+            .map_err(protocol_failure)
+    }
+
+    /// Aborts and joins every in-flight start before Core enters cleanup.
+    ///
+    /// This is called by the owner before moving the runtime graph to the
+    /// cleanup thread. It prevents a detached Tokio task from retaining a
+    /// `Connection` or sending into a channel after the native handle has
+    /// become unreachable.
+    fn abort_pending_starts(&mut self, wait: bool) {
+        let handle = self.core.as_ref().map(|core| core.tokio_handle());
+        let tasks = self
+            .pending_starts
+            .drain()
+            .map(|(_, pending)| pending.task)
+            .collect::<Vec<_>>();
+        for task in &tasks {
+            task.abort();
+        }
+        if wait {
+            if let Some(handle) = handle {
+                handle.block_on(async {
+                    for task in tasks {
+                        let _ = task.await;
+                    }
+                });
+            }
+        }
     }
 
     /// Waits for one exact run with fixed `follow_runs = false` semantics.
@@ -651,6 +914,13 @@ impl Runtime {
                 message: "Temporal client cannot disconnect while its worker is running".to_owned(),
             });
         }
+        if !self.pending_starts.is_empty() {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal client cannot disconnect while workflow starts are pending"
+                    .to_owned(),
+            });
+        }
         self.client.take();
         Ok(Vec::new())
     }
@@ -660,6 +930,7 @@ impl Runtime {
     /// Explicit close waits while the OCaml lock is released. GC fallback does
     /// not wait, so a custom-block finalizer never stalls the collector.
     fn close(mut self, wait: bool) -> Status {
+        self.abort_pending_starts(wait);
         let Some(core) = self.core.take() else {
             return STATUS_OK;
         };
@@ -1336,6 +1607,103 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_client_start_workflow_json(
                     message: "runtime pointer is null".to_owned(),
                 })?
                 .start_workflow_json(input)
+        })
+    }
+}
+
+/// Begin one workflow start and return an opaque asynchronous ticket.
+///
+/// The native call only validates and admits the request, then schedules the
+/// Tokio operation. Poll or wait on the returned ticket to obtain a terminal
+/// accepted/rejected/unknown outcome. A pending entry is owned by the runtime
+/// supervisor and is never accessed concurrently from a Tokio task.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle. The input span
+/// is borrowed only for this admission call and `output` follows the standard
+/// initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_begin_start_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .begin_start_workflow_json(input)
+        })
+    }
+}
+
+/// Poll one asynchronous workflow-start ticket without waiting.
+///
+/// `STATUS_NOT_READY` is an expected result while the RPC remains in flight.
+/// Once terminal, the successful value is a strict start-outcome document and
+/// the ticket is retired, so a second poll reports an unknown-ticket protocol
+/// error rather than duplicating or replaying the result.
+///
+/// # Safety
+///
+/// The runtime, input, and output contracts match
+/// [`ocaml_temporal_core_v1_client_begin_start_workflow_json`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_poll_start_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .poll_start_workflow_json(input)
+        })
+    }
+}
+
+/// Wait for one asynchronous workflow-start ticket for a bounded interval.
+///
+/// The wait never blocks the OCaml runtime lock: the C stub releases that lock
+/// around this ABI call, and the owner Domain regains control after at most
+/// [`START_WAIT_TIMEOUT`]. A timeout is returned as `STATUS_NOT_READY`; the
+/// caller can continue servicing its mailbox and wait again.
+///
+/// # Safety
+///
+/// The runtime, input, and output contracts match
+/// [`ocaml_temporal_core_v1_client_begin_start_workflow_json`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_wait_start_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .wait_start_workflow_json(input)
         })
     }
 }

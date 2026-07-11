@@ -153,3 +153,32 @@ than publishing a Cargo `license` expression: `temporalio-client`,
 for those exact package names, the immutable Core git revision, and a file
 named `LICENSE.txt`; the reviewed upstream license is MIT. See
 [ADR 0001](decisions/0001-temporal-core-c-boundary.md).
+
+## CI-only quality tools
+
+The independent quality job installs checksum-verified release artifacts with
+`taiki-e/install-action` 2.83.1, pinned in the workflow by immutable commit.
+The action is MIT OR Apache-2.0 and is configured with no installation
+fallback. It installs these exact tools without adding them to the SDK's
+runtime or build dependency graph:
+
+| Tool | Version | License | Distinct purpose |
+|---|---:|---|---|
+| cargo-deny | 0.20.2 | MIT OR Apache-2.0 | RustSec advisory and Cargo source-provenance checks |
+| cargo-machete | 0.9.2 | MIT | Fast detection of unused direct Rust dependencies |
+| typos | 1.48.0 | MIT OR Apache-2.0 | Low-noise spelling checks across source, documentation, and configuration |
+
+The versions are also enforced by `make quality` for contributors who install
+the binaries locally. Cargo-deny's license check is deliberately disabled:
+the repository's existing scanner has stricter reviewed exceptions for the
+pinned Temporal Core workspace and remains the single Cargo licence authority
+in the standalone dependency-audit job.
+
+No additional OCaml semantic analyzer was selected. Dune and the OCaml
+compiler already fail build warnings, while the mature documentation compiler
+`odoc` 3.2.1 currently depends on `tyxml` under
+`LGPL-2.1-only WITH OCaml-LGPL-linking-exception`. This project's policy does
+not extend its narrowly approved compiler and `ocamlbuild` exceptions to
+ordinary tooling packages. `ocamlformat` remains excluded for the separate
+copyleft closure documented above. The language-neutral typo gate still checks
+OCaml identifiers, comments, and interfaces without weakening the policy.

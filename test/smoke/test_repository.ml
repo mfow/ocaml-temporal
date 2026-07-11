@@ -149,10 +149,28 @@ let test_sdk_supervisor_is_private () =
   if contains ~needle:"public_name" (read dune) then
     failwith "the SDK supervisor must remain a Dune-private library"
 
+(** Protects the one-shot quality gate from drifting into the per-version
+    compiler matrix. The Make targets remain the local interface, while CI
+    pins the scanner actions independently of mutable release tags. *)
+let test_quality_gate_contract () =
+  let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
+  let source path = Filename.concat source_root path in
+  let makefile = source "Makefile" in
+  let deny = source "deny.toml" in
+  require_text ~path:makefile ~needle:"quality: quality-rust quality-spelling";
+  require_text ~path:makefile ~needle:"cargo deny --manifest-path";
+  require_text ~path:makefile ~needle:"cargo machete --with-metadata rust";
+  require_text ~path:makefile ~needle:"typos";
+  require_text ~path:deny ~needle:"required-git-spec = \"rev\"";
+  require_text
+    ~path:deny
+    ~needle:"https://github.com/temporalio/sdk-core"
+
 let () =
   test_line_ending_normalization ();
   test_license ();
   test_package_metadata ();
   test_static_foreign_archives ();
   test_mailbox_is_private ();
-  test_sdk_supervisor_is_private ()
+  test_sdk_supervisor_is_private ();
+  test_quality_gate_contract ()

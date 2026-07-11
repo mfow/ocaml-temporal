@@ -342,7 +342,7 @@ Expected: committed lockfile, checker, fixtures, and inventory with `make licens
 - Consumes: only OCaml Stdlib.
 - Produces: `Payload.t`, abstract `'a Codec.t`, `Codec.payload`, primitive codecs, `Codec.encode`, `Codec.decode`, abstract `Error.t`, stable `Error.view`, and `Temporal.Result_syntax`.
 
-- [ ] **Step 1: Write codec round-trip and metadata tests**
+- [x] **Step 1: Write codec round-trip and metadata tests**
 
 ```ocaml
 let test_string_round_trip () =
@@ -366,13 +366,13 @@ let test_reject_wrong_encoding () =
   | Ok _ -> Alcotest.fail "wrong encoding accepted"
 ```
 
-- [ ] **Step 2: Run the unit test to verify modules are absent**
+- [x] **Step 2: Run the unit test to verify modules are absent**
 
 Run: `docker compose run --rm dev opam exec -- dune runtest test/unit/test_codec.exe`
 
 Expected: FAIL because library `temporal` and module `Temporal.Codec` do not exist.
 
-- [ ] **Step 3: Implement the minimal stable public contracts**
+- [x] **Step 3: Implement the minimal stable public contracts**
 
 Break the potential `Codec`/`Error` dependency cycle with a lower-level payload type. `Error` depends on `Payload`; `Codec` depends on both. Public wrappers preserve type equality. Expose these interfaces:
 
@@ -425,13 +425,13 @@ Keep constructors private. `Temporal.Result_syntax` defines `let*` and `let+` ex
 
 Remove `(allow_empty)` from the `temporal` package stanza now that `lib/public/dune` provides the installable public library.
 
-- [ ] **Step 4: Run focused and aggregate tests**
+- [x] **Step 4: Run focused and aggregate tests**
 
 Run: `make test-unit && make lint && make license-check`
 
 Expected: all codec/error tests pass; public `.mli` files compile without exposing constructors.
 
-- [ ] **Step 5: Document usage and commit**
+- [x] **Step 5: Document usage and commit**
 
 Add compiling examples for explicit codec errors and `let*` composition to `docs/guides/workflows.md`.
 

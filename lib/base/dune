@@ -1,0 +1,3 @@
+(library
+ (name temporal_base)
+ (public_name temporal.internal_base))

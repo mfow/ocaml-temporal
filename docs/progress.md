@@ -46,3 +46,24 @@ Evidence:
 - `git diff --check` reported no whitespace errors.
 
 Next phase: typed codecs and structured errors.
+
+## 2026-07-11: Typed codecs and structured errors
+
+Status: verified.
+
+The first installable `temporal` library now provides typed payload codecs,
+UTF-8 JSON string handling, byte and null encodings, abstract structured
+errors, stable error views, and `result` binding syntax. Internal constructors
+live in the explicitly unstable `temporal.internal_base` library.
+
+Evidence:
+
+- The initial focused test failed because the `temporal` library was absent.
+- `make test-unit` passed codec, error, and repository tests on OCaml 5.2.1.
+- Codec tests cover escaping, surrogate-pair decoding, invalid UTF-8, copied
+  byte storage, encoding mismatch, and `None`/`Some` payload behavior.
+- `make lint` and `make license-check` passed.
+- The same unit and smoke suite passed with the Compose `dev-current` image on
+  OCaml 5.5.
+
+Next phase: typed workflow and activity definitions.

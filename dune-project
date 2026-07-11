@@ -8,7 +8,6 @@
 
 (package
  (name temporal)
- (allow_empty)
  (synopsis "Temporal workflows in modern OCaml")
  (description "A typed OCaml 5 workflow SDK backed by Temporal Core")
  (depends

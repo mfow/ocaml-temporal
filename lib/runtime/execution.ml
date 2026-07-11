@@ -69,8 +69,8 @@ let emit_terminal execution command =
         report ~src:Observability.Source.workflow Logs.Info ~tags
           "workflow completed"
     | Fail_workflow _ | Cancel_workflow_execution
-    | Schedule_activity _ | Request_cancel_activity _ | Start_timer _
-    | Cancel_timer _ -> ())
+    | Schedule_activity _ | Start_child_workflow _ | Request_cancel_activity _
+    | Start_timer _ | Cancel_timer _ -> ())
 
 (** Fails the workflow through the same one-terminal-command check. *)
 let fail execution error =
@@ -129,6 +129,12 @@ let process_job execution = function
   | Activation.Start_workflow -> start_workflow execution
   | Resolve_activity { seq; result } -> (
       match Workflow_context_store.resolve_activity execution.context ~seq result with
+      | Ok () -> ()
+      | Error error -> fail execution error)
+  | Resolve_child_workflow { seq; result } -> (
+      match
+        Workflow_context_store.resolve_child_workflow execution.context ~seq result
+      with
       | Ok () -> ()
       | Error error -> fail execution error)
   | Fire_timer { seq } -> (

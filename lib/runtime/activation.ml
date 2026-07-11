@@ -8,6 +8,10 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  | Resolve_child_workflow of {
+      seq : int64;
+      result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
+    }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow
   | Remove_from_cache
@@ -17,6 +21,12 @@ type job =
 type command =
   | Schedule_activity of {
       seq : int64;
+      name : string;
+      input : Temporal_base.Codec.payload;
+    }
+  | Start_child_workflow of {
+      seq : int64;
+      id : string;
       name : string;
       input : Temporal_base.Codec.payload;
     }

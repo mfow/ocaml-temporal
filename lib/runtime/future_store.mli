@@ -22,6 +22,9 @@ type ('value, 'error) t
     [Invalid_argument], because one Temporal operation cannot have two results. *)
 type ('value, 'error) resolver = ('value, 'error) result -> unit
 
+(** The result of a heterogeneous two-way race. *)
+type ('left, 'right) race = Left of 'left | Right of 'right
+
 (** Internal OCaml 5 effect used when [await] needs to pause a workflow fiber.
     Only [Scheduler] handles it; it is not exposed by the public SDK. *)
 type _ Effect.t +=
@@ -69,9 +72,33 @@ val map_error :
 (** Completes after both inputs have results. If both fail, returns the left
     error. Both futures must belong to the same workflow scheduler. *)
 val both :
+  ownership_error:(unit -> 'error) ->
   ('left, 'error) t ->
   ('right, 'error) t ->
   ('left * 'right, 'error) t
+
+(** Completes after every input. Successful values and a selected error retain
+    input order. The empty list completes immediately with [[]]. *)
+val all :
+  ownership_error:(unit -> 'error) ->
+  ('value, 'error) t list ->
+  ('value list, 'error) t
+
+(** Completes with the first observed result from two differently typed inputs.
+    A completion error wins just like a successful value. *)
+val race :
+  ownership_error:(unit -> 'error) ->
+  ('left, 'error) t ->
+  ('right, 'error) t ->
+  (('left, 'right) race, 'error) t
+
+(** Completes with the first observed result from a non-empty homogeneous
+    collection. It does not cancel or stop observing losing inputs. *)
+val first :
+  ownership_error:(unit -> 'error) ->
+  ('value, 'error) t ->
+  ('value, 'error) t list ->
+  ('value, 'error) t
 
 (** Reports whether a result is available without suspending. *)
 val is_ready : ('value, 'error) t -> bool

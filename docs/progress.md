@@ -8,6 +8,40 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-11: Direct-style workflow orchestration API
+
+Status: full local OCaml build and test suite verified; live Temporal Core
+translation and GitHub Actions verification follow this milestone.
+
+The synthetic workflow runtime now supports explicit child-workflow starts,
+non-blocking durable timers, wait-all aggregation, and deterministic
+first-completed selection. Public workflow code remains ordinary direct-style
+OCaml: private effects suspend only `Future.await`, while expected failures are
+structured `result` values. Child IDs are supplied explicitly as durable
+identity rather than invented from replay-local state.
+
+Evidence:
+
+- Focused tests first failed because the child module and activation variants
+  did not exist, then passed for command emission, shared sequencing, typed
+  input/output codecs, remote errors, and unknown or duplicate completion jobs.
+- Scheduler tests cover ordered `all`, ready and pending `race`/`first`, error
+  winners, retained losers, and typed cross-execution defects for every
+  aggregator, including `both`.
+- Timer tests cover multiple starts before waiting, zero-duration readiness,
+  command order, and detached typed failure.
+- A compile-checked unit fixture passes partially applied activity and child
+  starters through ordinary higher-order helpers for homogeneous fan-out and
+  heterogeneous racing.
+- `dune build --root . @install`, the complete local OCaml and Rust test suites,
+  Rust formatting and Clippy with warnings denied, the installed-package smoke
+  test, repository formatting, OPAM lint, and diff checks passed. The host did
+  not have the pinned one-shot scanner binaries, so GitHub Actions remains the
+  scanner gate.
+
+This evidence is for the synthetic interpreter. It does not claim that Core can
+yet poll or complete these commands against a live Temporal Server.
+
 ## 2026-07-11: One-shot quality and security scans
 
 Status: focused contract and scanner checks verified locally; complete GitHub

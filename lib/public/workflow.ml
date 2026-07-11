@@ -20,16 +20,21 @@ let remote ~name ~input ~output =
 
 let name = Temporal_base.Definition.name
 
-(** Implements durable sleep through the active deterministic execution. The
-    zero case avoids adding a meaningless timer command to history. *)
-let sleep duration =
+(** Starts a durable timer without waiting for it. The active workflow context
+    owns both the future and its history command; zero duration is represented
+    by a context-owned ready future without adding a meaningless command. *)
+let start_sleep duration =
   match Temporal_runtime.Workflow_context_store.current () with
   | None ->
-      Error
-        (Error.defect ~message:"workflow sleep used outside a workflow execution")
+      Temporal_runtime.Workflow_context_store.detached_error
+        ~message:"workflow sleep used outside a workflow execution"
   | Some context ->
       let milliseconds = Duration.to_ms duration in
-      if milliseconds = 0L then Ok ()
+      if milliseconds = 0L then
+        Temporal_runtime.Workflow_context_store.resolved context (Ok ())
       else
         Temporal_runtime.Workflow_context_store.start_timer context milliseconds
-        |> Future.await
+
+(** Implements direct-style durable sleep as timer creation followed by a
+    future wait, so helpers may choose either blocking or start-now behavior. *)
+let sleep duration = Future.await (start_sleep duration)

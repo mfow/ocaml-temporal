@@ -21,8 +21,9 @@ val define :
   ('input, 'output) implementation ->
   ('input, 'output) t
 
-(** Creates a typed reference to a workflow implemented by another worker. It
-    will be usable as a child-workflow target when that API is added. *)
+(** Creates a typed reference to a workflow implemented by another worker. Use
+    it with [Child_workflow.start] or [Child_workflow.execute] when invoking the
+    workflow as a child. *)
 val remote :
   name:string ->
   input:'input Codec.t ->
@@ -32,6 +33,12 @@ val remote :
 (** Returns the workflow type name used for registration and commands. *)
 val name : ('input, 'output) t -> string
 
-(** Starts a durable Temporal timer and waits until it fires. A zero duration
-    returns immediately without recording a timer. *)
+(** Starts a durable Temporal timer and returns immediately. Starting several
+    timers before awaiting one emits them in call order. A zero duration returns
+    a ready future without recording a timer. *)
+val start_sleep : Duration.t -> (unit, Error.t) Future.t
+
+(** Starts a durable Temporal timer and waits until it fires. This is equivalent
+    to [Future.await (start_sleep duration)]. A zero duration returns
+    immediately without recording a timer. *)
 val sleep : Duration.t -> (unit, Error.t) result

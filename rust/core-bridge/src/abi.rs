@@ -424,6 +424,14 @@ impl Runtime {
             });
         }
 
+        // Reserve the registry slot before spawning Tokio work.  Once the
+        // task owns a Core connection clone, every unwind path must find its
+        // JoinHandle in `pending_starts` so shutdown can abort and join it.
+        // `try_reserve` turns a recoverable allocation failure into a typed
+        // operation error instead of leaving a detached task behind if the
+        // later map insertion were to trigger allocation.
+        reserve_pending_start_slots(&mut self.pending_starts, 1)?;
+
         let ticket = loop {
             let candidate = Uuid::new_v4().to_string();
             if !self.pending_starts.contains_key(&candidate) {
@@ -1133,6 +1141,23 @@ fn decode_semantic_input(input: &[u8]) -> std::result::Result<&str, Failure> {
     std::str::from_utf8(input).map_err(|_| Failure {
         status: STATUS_PROTOCOL,
         message: "Temporal semantic JSON is not UTF-8".to_owned(),
+    })
+}
+
+/// Reserves registry capacity before a Tokio start task is admitted.
+///
+/// The runtime owner inserts the corresponding [`PendingStart`] only after
+/// spawning the task, so this reservation is part of the ownership protocol:
+/// a recoverable allocation failure must be reported before any task captures
+/// a Core connection clone.  The caller should invoke this immediately before
+/// task admission and insert no more than `additional` entries afterwards.
+fn reserve_pending_start_slots(
+    pending: &mut HashMap<String, PendingStart>,
+    additional: usize,
+) -> std::result::Result<(), Failure> {
+    pending.try_reserve(additional).map_err(|error| Failure {
+        status: STATUS_INTERNAL,
+        message: format!("could not reserve Temporal workflow start slots: {error}"),
     })
 }
 
@@ -2296,6 +2321,32 @@ mod client_wait_tests {
         let result = runtime.block_on(bounded_client_wait(async { Ok(response.clone()) }));
 
         assert_eq!(result, Ok(Some(response)));
+    }
+}
+
+#[cfg(test)]
+mod pending_start_reservation_tests {
+    use super::{HashMap, PendingStart, STATUS_INTERNAL, reserve_pending_start_slots};
+
+    /// A normal admission reservation creates room for the one entry that is
+    /// inserted after the Tokio task is spawned.
+    #[test]
+    fn reserves_capacity_for_one_pending_start() {
+        let mut pending: HashMap<String, PendingStart> = HashMap::new();
+        reserve_pending_start_slots(&mut pending, 1)
+            .expect("one pending-start slot should be reservable");
+        assert!(pending.capacity() > pending.len());
+    }
+
+    /// Capacity overflow is converted into an internal operation error while
+    /// the registry remains untouched, so task admission has not begun.
+    #[test]
+    fn rejects_unrepresentable_reservation_before_task_admission() {
+        let mut pending: HashMap<String, PendingStart> = HashMap::new();
+        let failure = reserve_pending_start_slots(&mut pending, usize::MAX)
+            .expect_err("an impossible reservation must fail before spawning");
+        assert_eq!(failure.status, STATUS_INTERNAL);
+        assert!(pending.is_empty());
     }
 }
 

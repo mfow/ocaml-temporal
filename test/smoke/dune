@@ -8,6 +8,7 @@
   ../../lib/mailbox_processor/dune
   ../../lib/mailbox_processor/mailbox_processor.mli
   ../../scripts/build-rust-bridge.sh
+  ../bridge/dune
   ../../temporal-sdk.opam
   ../../temporal-sdk.opam.locked)
  (action

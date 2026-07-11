@@ -1,0 +1,6 @@
+{
+  "operation": "worker.poll",
+  "body": {"z": [3, 2, 1], "a": true},
+  "correlation_id": "0123456789abcdef0123456789abcdef",
+  "kind": "request"
+}

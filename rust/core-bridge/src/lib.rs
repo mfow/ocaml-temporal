@@ -4,6 +4,7 @@
 //! executable which links this implementation detail.
 
 mod abi;
+pub mod protocol;
 
 pub use abi::*;
 

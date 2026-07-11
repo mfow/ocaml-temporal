@@ -51,6 +51,12 @@ attributes them to the reviewed compiler distribution.
 | base-threads | base | compiler virtual package | runtime capability | no | no | No independent source; part of OCaml distribution |
 | base-unix | base | compiler virtual package | runtime capability | no | no | No independent source; part of OCaml distribution |
 
+Protocol conformance tests use a small repository-owned standard-library
+harness. Alcotest itself is ISC, but its complete OPAM test closure includes
+ordinary LGPL packages outside the compiler/runtime exception allowed by this
+project, so it is intentionally neither used nor declared as a package test
+dependency.
+
 ## Reviewed OCaml linking exceptions
 
 | Package | Exact version | License | Scope | Rationale |
@@ -97,6 +103,12 @@ including the project bridge itself. The Core dependency disables default
 features and currently enables only `tls-ring`. The project bridge is
 Apache-2.0 and emits a native `staticlib` for OCaml plus an internal `rlib` for
 Rust integration tests.
+
+The bridge declares `serde` 1.0.228 (MIT OR Apache-2.0), `serde_json` 1.0.150
+(MIT OR Apache-2.0), and `base64` 0.22.1 (MIT OR Apache-2.0) directly for its
+private control protocol. All three were already present at those exact
+versions in the locked Temporal Core closure, so this changes package ownership
+metadata but adds no package to the 319-dependency graph.
 
 Dependabot checks the Cargo workspace under `/rust` every Monday and targets
 updates at `master`. OCaml and OPAM are intentionally absent because GitHub

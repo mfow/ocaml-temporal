@@ -1,0 +1,1 @@
+{"operation":"worker.poll","error":{"retryable":false,"message":"request body was invalid","code":"invalid_message"},"correlation_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","kind":"error"}

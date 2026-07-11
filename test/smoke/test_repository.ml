@@ -58,10 +58,12 @@ let test_package_metadata () =
   require_text ~path:dune_project ~needle:"(maintenance_intent \"(latest)\")";
   require_text ~path:dune_project ~needle:"(name temporal-sdk)";
   require_text ~path:dune_project ~needle:"(logs (>= 0.10))";
-  require_text ~path:dune_project ~needle:"(yojson (>= 3.0))"
+  require_text ~path:dune_project ~needle:"(yojson (>= 3.0))";
+  if contains ~needle:"alcotest" (read (source "test/bridge/dune")) then
+    failwith "bridge protocol tests must not add an Alcotest dependency"
 
-(** Ensures Dune never attempts to turn the statically linked Rust bridge into
-    a dynamically loadable OCaml stub library. Rust reports GNU-style native
+(** Ensures Dune never attempts to turn the statically linked Rust bridge into a
+    dynamically loadable OCaml stub library. Rust reports GNU-style native
     linker flags on Windows, but FlexDLL cannot consume those flags while
     constructing a DLL. The SDK intentionally ships an OCaml-owned executable
     with the Rust bridge linked into it, so static foreign archives are the
@@ -70,8 +72,7 @@ let test_static_foreign_archives () =
   let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
   let workspace = Filename.concat source_root "dune-workspace" in
   let bridge = Filename.concat source_root "lib/core_bridge/dune" in
-  require_text
-    ~path:workspace
+  require_text ~path:workspace
     ~needle:"(disable_dynamically_linked_foreign_archives true)";
   require_text ~path:bridge ~needle:"(foreign_library";
   require_text ~path:bridge ~needle:"(archive_name temporal_native_stubs)";
@@ -80,8 +81,7 @@ let test_static_foreign_archives () =
     ~path:(Filename.concat source_root "scripts/build-rust-bridge.sh")
     ~needle:"scripts/render-rust-link-flags.sh";
   if contains ~needle:"(foreign_stubs" (read bridge) then
-    failwith
-      "lib/core_bridge/dune must not build a temporary native-stubs DLL"
+    failwith "lib/core_bridge/dune must not build a temporary native-stubs DLL"
 
 (** Ensures the reusable mailbox remains an internal build unit rather than an
     installed sublibrary visible to [temporal-sdk] consumers. *)

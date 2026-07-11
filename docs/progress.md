@@ -8,6 +8,30 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-11: Strict JSON control-protocol foundation
+
+Status: focused OCaml and Rust conformance tests verified locally; complete
+native and GitHub Actions verification follows the milestone commit.
+
+The private boundary now has a closed request/response/error envelope, a
+once-per-runtime compatibility number, bounded strict JSON parsing, structured
+privacy-safe errors, normalized output, and canonical padded base64 wrappers
+for opaque payload bytes. Both implementations reject duplicate members before
+converting objects into lookup structures. Future worker operations will add
+closed body validators without exposing Temporal/Core protobuf to OCaml.
+
+Evidence:
+
+- Shared positive and malformed fixtures drive both language suites.
+- Each suite passes five conformance groups covering normalized envelopes,
+  missing/unknown/duplicate/wrong fields, correlation identifiers, fractional
+  numbers, base64, oversized/deep input, compatibility, and outgoing
+  self-validation.
+- Draft 2020-12 schemas and the contributor reference document the tooling
+  contract and the properties that schemas cannot enforce.
+- Direct Rust serde, serde_json, and base64 declarations reuse already locked
+  permissive packages and do not expand the dependency closure.
+
 ## 2026-07-11: Application-configurable OCaml logging
 
 Status: verified locally; GitHub Actions verification follows the milestone

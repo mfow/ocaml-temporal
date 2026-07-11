@@ -3,9 +3,11 @@
 ## Status
 
 Accepted and implemented on 2026-07-11. The native graph contains the real
-Rust runtime, one official client connection, and one workflow-only worker.
-Polling and completion will extend the same typed graph rather than create
-additional supervisors.
+Rust runtime, one official client connection, and one worker configured for
+workflows and remote activities. Typed nonblocking polling, completion, and
+rejection now use the same graph. The native boundary also provides bounded
+wakeable readiness; integrating it into the supervisor's production scheduling
+loop remains Phase 2 work.
 
 ## Context
 
@@ -22,8 +24,10 @@ remaining need is a resource-graph lifecycle layer which never leaks backend
 state through a callback or result.
 
 The bridge first established runtime ownership; it now also exposes real client
-connection and validated workflow-worker lifecycle. Polling and completion are
-still deliberately absent until their strict JSON protocol is implemented.
+connection, validated workflow-worker lifecycle, and strict JSON poll and
+completion operations. The native boundary now also provides bounded readiness
+waits that release the OCaml runtime lock. The production loop must coordinate
+those waits with the typed supervisor operations and deterministic executor.
 
 ## Decision
 
@@ -46,8 +50,12 @@ handle cannot be returned accidentally by a generic `with_handle` callback.
 The production specialization owns one abstract
 `Temporal_core_bridge.Native_bridge.runtime`, inside which Rust retains the
 client and worker children. Its GADT operations check compatibility, connect a
-client, start a validated workflow-only worker, stop that worker, and disconnect
-the client. Polling and completion will be added to this same typed language.
+client, start a validated workflow/remote-activity worker, stop that worker,
+and disconnect the client. The same typed language drains already-ready
+workflow and remote-activity tasks, completes them, and rejects an exact
+malformed polled document without leaking its retained native lease. The
+bridge's bounded readiness operations remain private and will be composed into
+this language by the production scheduling loop.
 
 ## Lifecycle and failure rules
 
@@ -102,9 +110,10 @@ offload and resolve a fiber-safe promise afterwards. Workflow effect handlers
 must never call these functions directly while running their deterministic
 scheduler.
 
-The owner Domain may later block in a Rust polling C stub only when that stub
-has released the OCaml runtime lock. Rust/Tokio threads signal native readiness
-and never call arbitrary OCaml closures. The supervisor itself introduces no
+The owner Domain may use the bounded Rust readiness C stubs because they release
+the OCaml runtime lock. Rust/Tokio threads signal native readiness and never
+call arbitrary OCaml closures. Each wait returns after at most 100 ms so the
+owner can service queued lifecycle operations; the supervisor introduces no
 timer polling or foreign callback.
 
 ## Verification
@@ -139,5 +148,6 @@ Focused tests prove:
   API.
 - Cooperative runtime adapters are still required and must not weaken the
   blocking boundary.
-- This milestone connects and validates a worker but does not yet poll or
-  complete workflow tasks; that live execution loop remains Phase 2 work.
+- The supervisor can perform one nonblocking poll or completion operation, but
+  the production execution loop that coordinates those operations with the
+  existing wakeable readiness seam remains Phase 2 work.

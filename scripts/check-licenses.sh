@@ -81,8 +81,8 @@ if [ "$#" -gt 0 ]; then
     check_opam_file "$file"
   done
 else
-  check_opam_file temporal.opam
-  dependencies=$(sed -n 's/^  "\([^"]*\)" {= "\([^"]*\)".*/\1 \2/p' temporal.opam.locked)
+  check_opam_file temporal-sdk.opam
+  dependencies=$(sed -n 's/^  "\([^"]*\)" {= "\([^"]*\)".*/\1 \2/p' temporal-sdk.opam.locked)
   while read -r package version; do
     [ -n "$package" ] || continue
     value=$(opam show "$package.$version" --field=license 2>/dev/null || true)

@@ -16,7 +16,7 @@
 
 (library
  (name temporal_core_bridge)
- (public_name temporal.internal_core_bridge)
+ (public_name temporal-sdk.internal_core_bridge)
  (modules native_bridge)
  (foreign_stubs
   (language c)

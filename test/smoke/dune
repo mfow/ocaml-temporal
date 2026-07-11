@@ -1,5 +1,10 @@
 (test
  (name test_repository)
+ (deps
+  ../../LICENSE
+  ../../dune-project
+  ../../temporal-sdk.opam
+  ../../temporal-sdk.opam.locked)
  (action
   (setenv
    TEMPORAL_SOURCE_ROOT

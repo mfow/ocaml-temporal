@@ -81,7 +81,7 @@ The intended top-level layout is:
 ├── Makefile
 ├── compose.yaml
 ├── dune-project
-├── temporal.opam
+├── temporal-sdk.opam
 ├── Cargo.toml
 ├── Cargo.lock
 ├── lib/
@@ -111,7 +111,7 @@ The intended top-level layout is:
     └── superpowers/
 ```
 
-The public OPAM package will be named `temporal` if the name remains available at publication time. The Rust toolchain is a build dependency, not an application programming dependency. Cargo dependencies are locked, and the public OCaml package version controls which Core revision it embeds.
+The experimental public OPAM package is named `temporal-sdk`. The Rust toolchain is a build dependency, not an application programming dependency. Cargo dependencies are locked, and the public OCaml package version controls which Core revision it embeds.
 
 ## 6. Public OCaml Programming Model
 

@@ -3,7 +3,7 @@ set -eu
 
 root=$(pwd)
 install_root="$root/_build/install/default/lib"
-package_root="$install_root/temporal"
+package_root="$install_root/temporal-sdk"
 output_dir="$root/_build/test/install-smoke"
 dune_install_root=$install_root
 dune_output_dir=$output_dir

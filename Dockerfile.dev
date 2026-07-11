@@ -23,7 +23,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 
 USER opam
 WORKDIR /workspace
-COPY --chown=opam:opam temporal.opam dune-project ./
+COPY --chown=opam:opam temporal-sdk.opam dune-project ./
 RUN opam install --deps-only --with-test -y .
 
 CMD ["opam", "exec", "--", "dune", "build"]

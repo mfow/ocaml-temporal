@@ -1,11 +1,13 @@
 opam-version: "2.0"
-name: "temporal"
+name: "temporal-sdk"
 version: "~dev"
-synopsis: "Temporal workflows in modern OCaml"
-description: "A typed OCaml 5 workflow SDK backed by Temporal Core"
-maintainer: "OCaml Temporal contributors"
-authors: "OCaml Temporal contributors"
+synopsis: "Experimental Temporal workflows in modern OCaml"
+description: "An experimental typed OCaml 5 workflow SDK backed by Temporal Core"
+maintainer: "Michael Fowlie"
+authors: "Michael Fowlie"
 license: "Apache-2.0"
+tags: [ "temporal" "workflow" "sdk" "experimental" ]
+x-maintenance-intent: [ "(latest)" ]
 homepage: "https://github.com/mfow/ocaml-temporal"
 bug-reports: "https://github.com/mfow/ocaml-temporal/issues"
 depends: [

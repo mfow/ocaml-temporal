@@ -40,7 +40,7 @@ Evidence:
   OCaml linking exception, and a mixed MIT/GPL declaration.
 - The same fixture accepted MIT.
 - `make license-check` accepted every exact package in
-  `temporal.opam.locked` and printed its decision.
+  `temporal-sdk.opam.locked` and printed its decision.
 - `make verify` completed the build, formatting gate, and test suite, and the
   separate `make license-check` audit completed successfully.
 - `git diff --check` reported no whitespace errors.
@@ -51,14 +51,14 @@ Next phase: typed codecs and structured errors.
 
 Status: verified.
 
-The first installable `temporal` library now provides typed payload codecs,
+The first installable `temporal-sdk` library now provides typed payload codecs,
 UTF-8 JSON string handling, byte and null encodings, abstract structured
 errors, stable error views, and `result` binding syntax. Internal constructors
-live in the explicitly unstable `temporal.internal_base` library.
+live in the explicitly unstable `temporal-sdk.internal_base` library.
 
 Evidence:
 
-- The initial focused test failed because the `temporal` library was absent.
+- The initial focused test failed because the `temporal-sdk` library was absent.
 - `make test-unit` passed codec, error, and repository tests on OCaml 5.2.1.
 - Codec tests cover escaping, surrogate-pair decoding, invalid UTF-8, copied
   byte storage, encoding mismatch, and `None`/`Some` payload behavior.
@@ -82,7 +82,7 @@ Evidence:
   `Temporal.Workflow` modules.
 - `make verify` passed the full build, policy, and test gates on OCaml 5.2.1.
 - The unit and smoke suites passed on the OCaml 5.5 Compose image.
-- `dune build @install` and `opam lint temporal.opam` passed.
+- `dune build @install` and `opam lint temporal-sdk.opam` passed.
 - Name tests cover local/remote definitions and reject empty or NUL-containing
   names during configuration.
 
@@ -113,7 +113,7 @@ Scheduler invariants:
 
 Evidence:
 
-- The initial runtime test failed because `temporal.runtime` did not exist.
+- The initial runtime test failed because `temporal-sdk.runtime` did not exist.
 - `make test-runtime`, `make test-unit`, `make lint`, and `make license-check`
   passed on OCaml 5.2.1.
 - The runtime, unit, and smoke suites passed on OCaml 5.5. The current compiler
@@ -324,7 +324,8 @@ first-class SDK responsibilities alongside start/result client operations.
 
 ## 2026-07-11: OCaml-owned native static link
 
-Status: verified locally and on the Linux CI matrix; native desktop CI pending.
+Status: verified locally and across the complete Linux and native desktop CI
+matrix.
 
 The public OCaml package now links the project Rust bridge through private C
 stubs. `Temporal.Runtime_info.native_bridge_abi_version` negotiates ABI v1 from
@@ -341,14 +342,14 @@ inspects an OCaml heap value.
 
 The staged package contains the native archive and compiled private stubs but
 does not install the C header or Rust source. A fresh `ocamlfind ocamlopt`
-consumer links only the installed `temporal` package and successfully calls
+consumer links only the installed `temporal-sdk` package and successfully calls
 the Rust ABI. The stateful worker implementation will use one OCaml supervisor
 actor per SDK instance to own the runtime/client/worker handle graph; it will
 not create an actor for every individual handle.
 
 Local evidence:
 
-- The focused test first failed because `temporal.internal_core_bridge` did
+- The focused test first failed because `temporal-sdk.internal_core_bridge` did
   not exist, then passed through the real Rust archive.
 - A second OCaml Domain progressed while the first waited in Rust, exercising
   the runtime-lock release/reacquire path.
@@ -362,7 +363,17 @@ Local evidence:
   passed the standalone dependency audit and all eight Linux OCaml 5.2 through
   5.5 amd64/arm64 jobs with the linked Rust bridge.
 
-Next compatibility gate: native OCaml 5.5 builds and tests on Windows x64 and
-macOS ARM64. Those jobs deliberately avoid Docker and validate the actual host
+Native desktop evidence:
+
+- Windows x64 builds the OCaml-owned executable with OCaml 5.5 and the pinned
+  GNU Rust toolchain, then passes the Rust ABI tests, Clippy, rustfmt, OCaml
+  tests, and the fresh installed-package consumer.
+- macOS ARM64 performs the same native verification with OCaml 5.5 and the
+  pinned Apple ARM Rust toolchain.
+- [GitHub Actions run 29143621807](https://github.com/mfow/ocaml-temporal/actions/runs/29143621807)
+  passed both native desktop jobs, all eight Linux OCaml 5.2 through 5.5
+  amd64/arm64 jobs, and the standalone dependency audit.
+
+The native jobs deliberately avoid Docker and validate the actual host
 compiler, architecture, Rust target, OCaml tests, Rust tests, Clippy, rustfmt,
 and fresh installed-package consumer.

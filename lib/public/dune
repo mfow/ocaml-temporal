@@ -1,7 +1,7 @@
 (library
  (name temporal)
- (public_name temporal)
+ (public_name temporal-sdk)
  (libraries
-  temporal.internal_base
-  temporal.internal_core_bridge
-  temporal.runtime))
+  temporal-sdk.internal_base
+  temporal-sdk.internal_core_bridge
+  temporal-sdk.runtime))

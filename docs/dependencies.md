@@ -1,7 +1,7 @@
 # Dependency and License Inventory
 
 All project and build dependencies are checked before a milestone commit.
-`make license-check` reads `temporal.opam.locked`, asks OPAM for each package's
+`make license-check` reads `temporal-sdk.opam.locked`, asks OPAM for each package's
 exact license metadata, and rejects missing or unapproved values. The
 standalone GitHub Actions license job streams `cargo metadata --locked` into
 the repository scanner running in a separate official Python container. Cargo

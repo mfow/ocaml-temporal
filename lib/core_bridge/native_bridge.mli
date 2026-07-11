@@ -82,9 +82,11 @@ val client_connect : runtime -> client_config -> (unit, error) result
     structured error document. *)
 val client_start_workflow_json : runtime -> bytes -> (bytes, error) result
 
-(** Waits for one exact workflow run. The call may block in Rust while the C
-    stub releases the OCaml runtime lock; continued-as-new is returned as a
-    terminal response and is never followed implicitly. *)
+(** Waits for one exact workflow run. Rust performs a close-event long poll for
+    at most 100 ms while the C stub releases the OCaml runtime lock. An open
+    run returns [Not_ready] without a terminal response so a caller can retry;
+    continued-as-new is returned as a terminal response and is never followed
+    implicitly. *)
 val client_wait_workflow_json : runtime -> bytes -> (bytes, error) result
 
 (** Constructs a workflow-only worker and completes Core namespace validation

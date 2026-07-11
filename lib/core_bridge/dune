@@ -1,7 +1,7 @@
 (rule
  (targets
   libocaml_temporal_core_bridge.a
-  dllocaml_temporal_core_bridge.so
+  dllocaml_temporal_core_bridge%{ext_dll}
   rust_static_link_flags.sexp)
  (deps
   (source_tree ../../rust)
@@ -9,6 +9,7 @@
   ../../scripts/copy-rust-bridge-artifacts.sh)
  (action
   (run
+   sh
    %{workspace_root}/scripts/build-rust-bridge.sh
    %{workspace_root}
    %{targets})))

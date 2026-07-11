@@ -24,7 +24,7 @@ cargo build \
 native_link_output=$(mktemp)
 trap 'rm -f "$native_link_output"' EXIT HUP INT TERM
 
-if ! cargo rustc \
+if ! CARGO_TERM_COLOR=never cargo rustc \
   --manifest-path "$workspace_root/rust/Cargo.toml" \
   --package ocaml-temporal-core-bridge \
   --locked \

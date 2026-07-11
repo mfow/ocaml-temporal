@@ -143,11 +143,16 @@ flags from a generated S-expression file. This keeps platform linker knowledge
 owned by the pinned Rust compiler instead of duplicating a fragile Linux,
 macOS, and Windows library list in the OCaml build.
 
-The workspace disables dynamically linked foreign archives. The supported
-deployment artifact is an OCaml-owned native executable with the Rust archive
-linked into it; the project does not need a separately loadable bridge DLL.
-This distinction is important on Windows: Rust correctly reports GNU linker
-tokens for the final native link, but FlexDLL cannot reinterpret all of those
-tokens while constructing an intermediate OCaml stub DLL. Keeping the bridge
-static removes that unnecessary and less portable link step without changing
+The C binding is a Dune `foreign_library`, so Dune first compiles it into a
+plain static archive without applying Rust's system-library flags. The OCaml
+library then references both that C archive and the Rust archive, and applies
+the generated flags only when linking a consumer. The workspace also disables
+dynamically linked foreign archives.
+
+The supported deployment artifact is an OCaml-owned native executable; the
+project does not need a separately loadable bridge DLL. This distinction is
+important on Windows: Rust correctly reports GNU linker tokens for the final
+native link, but FlexDLL cannot reinterpret all of those tokens while
+constructing an intermediate OCaml stub DLL. Keeping the C and Rust inputs as
+static foreign archives removes that unnecessary link step without changing
 the installed OCaml API or final executable.

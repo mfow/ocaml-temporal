@@ -14,15 +14,17 @@
    %{workspace_root}
    %{targets})))
 
+(foreign_library
+ (archive_name temporal_native_stubs)
+ (language c)
+ (names native_stubs)
+ (include_dirs ../../rust/core-bridge/include)
+ (flags :standard -Wall -Wextra -Werror))
+
 (library
  (name temporal_core_bridge)
  (public_name temporal-sdk.internal_core_bridge)
  (modules native_bridge)
- (foreign_stubs
-  (language c)
-  (names native_stubs)
-  (include_dirs ../../rust/core-bridge/include)
-  (flags :standard -Wall -Wextra -Werror))
- (foreign_archives ocaml_temporal_core_bridge)
+ (foreign_archives temporal_native_stubs ocaml_temporal_core_bridge)
  (c_library_flags
   (:include rust_static_link_flags.sexp)))

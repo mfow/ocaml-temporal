@@ -66,9 +66,15 @@ let test_package_metadata () =
 let test_static_foreign_archives () =
   let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
   let workspace = Filename.concat source_root "dune-workspace" in
+  let bridge = Filename.concat source_root "lib/core_bridge/dune" in
   require_text
     ~path:workspace
-    ~needle:"(disable_dynamically_linked_foreign_archives true)"
+    ~needle:"(disable_dynamically_linked_foreign_archives true)";
+  require_text ~path:bridge ~needle:"(foreign_library";
+  require_text ~path:bridge ~needle:"(archive_name temporal_native_stubs)";
+  if contains ~needle:"(foreign_stubs" (read bridge) then
+    failwith
+      "lib/core_bridge/dune must not build a temporary native-stubs DLL"
 
 let () =
   test_license ();

@@ -4,6 +4,7 @@
   ../../LICENSE
   ../../dune-workspace
   ../../dune-project
+  ../../lib/core_bridge/dune
   ../../temporal-sdk.opam
   ../../temporal-sdk.opam.locked)
  (action

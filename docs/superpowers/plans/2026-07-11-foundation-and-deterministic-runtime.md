@@ -552,7 +552,7 @@ Expected: definition commit with public API documentation.
 - Consumes: `Error.t`; OCaml 5 `Effect` and `Effect.Deep`.
 - Produces: abstract `('a, 'e) Future.t`; `Future.await`, `map`, `map_error`, `both`, readiness inspection; private `Scheduler.run` returning `Complete`, `Failed`, or `Blocked` plus deterministic trace.
 
-- [ ] **Step 1: Write failing FIFO and suspension tests**
+- [x] **Step 1: Write failing FIFO and suspension tests**
 
 ```ocaml
 let test_fifo_resume () =
@@ -590,13 +590,13 @@ let test_double_resolution_rejected () =
   | _ -> Alcotest.fail "future resolved twice"
 ```
 
-- [ ] **Step 2: Run tests to verify runtime modules are absent**
+- [x] **Step 2: Run tests to verify runtime modules are absent**
 
 Run: `docker compose run --rm dev opam exec -- dune runtest test/runtime/test_scheduler.exe`
 
 Expected: FAIL because `Scheduler` and `Future` do not exist.
 
-- [ ] **Step 3: Implement private suspension and deterministic queues**
+- [x] **Step 3: Implement private suspension and deterministic queues**
 
 The private promise retains its type parameters, so no `Obj.magic` is needed:
 
@@ -617,13 +617,13 @@ Each promise owns waiters of its own result type. Resolution converts each captu
 
 `Future.both` resolves only after both inputs resolve and keeps left/right result positions independent of resolution order. If either side fails, return that error after observing both readiness states without canceling the sibling in this phase.
 
-- [ ] **Step 4: Run scheduler tests under both supported compiler targets**
+- [x] **Step 4: Run scheduler tests under both supported compiler targets**
 
 Run: `make test-runtime && make test-unit && docker compose run --rm dev-current opam exec -- dune runtest test/runtime`
 
 Expected: FIFO, suspension, immediate-await, double-resolution, `map`, `map_error`, and `both` tests pass on both the 5.2 compatibility image and 5.5 current-stable image.
 
-- [ ] **Step 5: Record invariants and commit**
+- [x] **Step 5: Record invariants and commit**
 
 Add scheduler invariants and measured test commands to `docs/progress.md`.
 

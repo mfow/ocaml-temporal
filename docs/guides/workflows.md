@@ -97,3 +97,24 @@ let call_llm =
 Definition names must be non-empty and cannot contain NUL bytes. Invalid names
 raise `Invalid_argument` during worker configuration because they are
 programmer defects, not workflow execution failures.
+
+## Futures and direct-style waiting
+
+Temporal operations return typed `('value, 'error) Temporal.Future.t` values.
+`Future.await` returns a `result`: it returns immediately for a ready future or
+uses a private OCaml 5 effect to suspend only the current workflow fiber. The
+effect constructor and captured continuation are not public API.
+
+Futures support ordinary typed composition:
+
+```ocaml
+let await_pair first second =
+  Temporal.Future.both
+    (Temporal.Future.map String.length first)
+    second
+  |> Temporal.Future.await
+```
+
+`Future.both` observes both inputs before it settles and does not implicitly
+cancel a sibling when one side fails. Later activity and child-workflow APIs
+will supply explicit structured-cancellation scopes.

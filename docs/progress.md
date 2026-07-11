@@ -88,3 +88,41 @@ Evidence:
   names during configuration.
 
 Next phase: deterministic futures and effect scheduler.
+
+## 2026-07-11: Deterministic futures and effect scheduler
+
+Status: verified.
+
+The runtime now has typed promises, a private OCaml 5 deep effect for
+suspension, and a deterministic FIFO runnable queue. Public futures expose
+`await`, `map`, `map_error`, `both`, `is_ready`, and `peek` without exposing
+effect constructors or continuation values.
+
+Scheduler invariants:
+
+- Every scheduler and queued runnable receives a monotonic identity.
+- Resolution is single-assignment; a second resolution raises
+  `Invalid_argument` at the internal defect boundary.
+- Waiters resume in registration order and resolution jobs enqueue in the
+  caller-provided order.
+- A continuation is captured only while its owning scheduler is running.
+- `both` settles after both siblings and selects the left error first when both
+  fail.
+- Callback exceptions become scheduler failures rather than escaping the run
+  loop.
+- Shutdown discontinues captured continuations and drops queued work.
+
+Evidence:
+
+- The initial runtime test failed because `temporal.runtime` did not exist.
+- `make test-runtime`, `make test-unit`, `make lint`, and `make license-check`
+  passed on OCaml 5.2.1.
+- The runtime, unit, and smoke suites passed on OCaml 5.5. The current compiler
+  gate caught and removed one newly reserved identifier before commit.
+- Tests cover FIFO resolution order, immediate waits, multiple waiters,
+  double-resolution rejection, owner mismatch, mapping, mapped errors, pairing,
+  sibling settlement after failure, callback defects, and shutdown disposal.
+- A source scan found no `Obj.magic` or other `Obj` representation casts.
+- `dune build @install` and `git diff --check` passed.
+
+Next phase: synthetic activation interpreter and command API.

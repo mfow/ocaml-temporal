@@ -1,4 +1,4 @@
 (library
  (name temporal)
  (public_name temporal)
- (libraries temporal.internal_base))
+ (libraries temporal.internal_base temporal.runtime))

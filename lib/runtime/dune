@@ -1,0 +1,3 @@
+(library
+ (name temporal_runtime)
+ (public_name temporal.runtime))

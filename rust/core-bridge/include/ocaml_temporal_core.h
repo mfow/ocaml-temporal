@@ -25,7 +25,8 @@ enum {
   OCAML_TEMPORAL_CORE_STATUS_WORKER = 8,
   OCAML_TEMPORAL_CORE_STATUS_OUTSTANDING_TASKS = 9,
   OCAML_TEMPORAL_CORE_STATUS_NOT_READY = 10,
-  OCAML_TEMPORAL_CORE_STATUS_PROTOCOL = 11
+  OCAML_TEMPORAL_CORE_STATUS_PROTOCOL = 11,
+  OCAML_TEMPORAL_CORE_STATUS_ALREADY_STARTED = 12
 };
 
 /* Rust-owned byte allocation. `{ NULL, 0 }` is the sole empty representation. */
@@ -85,6 +86,20 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_runtime_new(
  * retained on failure. The input is borrowed only for this blocking call.
  */
 ocaml_temporal_core_status ocaml_temporal_core_v1_client_connect_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Start one dynamically named workflow using strict JSON. The successful
+ * value is an execution reference. An AlreadyStarted failure has status 12
+ * and a closed JSON body in `error` containing workflow_id and existing_run_id. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_client_start_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Wait for one exact run using fixed follow_runs=false semantics. A
+ * continued-as-new close is returned as a terminal outcome with successor
+ * metadata; the bridge never follows it implicitly. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_client_wait_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 

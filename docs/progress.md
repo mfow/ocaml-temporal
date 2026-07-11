@@ -8,6 +8,40 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+## 2026-07-12: Raw client start and exact-run wait adapter
+
+Status: Rust unit, ABI, formatting, and warnings-as-errors checks pass locally;
+the OCaml supervisor adapter and live Temporal integration remain follow-up
+work.
+
+The private Rust bridge now exposes strict JSON operations for starting a
+workflow and waiting for one exact run. It uses Temporal Core's raw workflow
+service trait, so dynamic OCaml workflow type names and payloads do not need a
+Rust-side generated workflow registry. Start returns the server-assigned run
+ID. Wait long-polls close-event history with a fixed `follow_runs = false`
+policy, preserving completed/failed/timed-out successor metadata and returning
+continued-as-new as a terminal result for the requested run rather than
+silently switching to its successor.
+
+Requests, responses, successor identities, terminal outcomes, and structured
+AlreadyStarted/RPC failures use closed schemas under `docs/schemas/bridge/`.
+Duplicate and unknown fields, identifier and payload limits, canonical payload
+encoding, and output round trips are validated before bytes cross the ABI.
+The ABI result owns diagnostics and reports AlreadyStarted distinctly while
+discarding raw server status text that could contain user data.
+
+Evidence:
+
+- `cargo test --locked --all-targets` passes the complete Rust suite, including
+  client protocol and C ABI tests for malformed JSON, exact-run semantics,
+  successor retention, structured errors, null handles, lifecycle state, and
+  owned result cleanup.
+- `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --all`
+  pass locally.
+- The live Temporal Server path is intentionally not claimed here: it belongs
+  to the Docker Compose acceptance test and will be wired after the OCaml
+  supervisor can call these two operations.
+
 ## 2026-07-12: Private OCaml/C poll and completion bindings
 
 Status: focused C and OCaml boundary tests verified locally; the live worker

@@ -145,6 +145,35 @@ path, limit name, and stable error code. They must never contain source JSON,
 payload base64, decoded payload bytes, workflow inputs/results, auth material,
 or Core diagnostics that might embed those values.
 
+## Client start and exact-run wait semantics
+
+The private client operations are separate from the worker activation protocol.
+`client_start_workflow_json` accepts a closed object with `namespace`,
+`workflow_id`, `workflow_type`, `task_queue`, and an ordered array of the
+canonical Temporal payload objects. The bridge passes those fields to Core's
+raw `StartWorkflowExecution` request and returns an execution reference with
+the server-assigned run ID. Start options not represented by this first schema
+are left at Core's documented defaults rather than being guessed by the
+language layer.
+
+`client_wait_workflow_json` accepts exactly one execution identity. It issues
+close-event history long polls with `wait_new_event = true` and a fixed
+`follow_runs = false` policy. A completed, failed, or timed-out event carries
+an optional successor reference when Core provides one. A continued-as-new
+event is itself terminal for the requested run and must contain the successor
+reference; the bridge does not follow the successor and therefore cannot
+silently change the run returned to the caller. Cancelled and terminated
+outcomes preserve their ordered detail payloads.
+
+The ABI error buffer uses a closed `client-error.schema.json` body for
+AlreadyStarted, stable RPC-code failures, and stable Core protocol categories.
+It never contains raw gRPC status text, which can include workflow identifiers
+or payload-derived diagnostics.
+The Rust validator checks duplicate object members before typed serde parsing,
+canonical base64, identifier byte limits, and output round trips. These client
+documents are intentionally private until the OCaml supervisor adapter adds
+its own bilateral typed validators.
+
 ## Workflow activation and completion semantics
 
 An activation is a closed object sent from Rust to OCaml. It identifies one

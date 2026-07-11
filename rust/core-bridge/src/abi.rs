@@ -1,5 +1,5 @@
 use crate::worker_bridge::{PollLaneError, PollLanes, WorkerBridgeError};
-use crate::{activity_protocol, workflow_protocol};
+use crate::{activity_protocol, client_protocol, workflow_protocol};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -43,6 +43,9 @@ pub const STATUS_OUTSTANDING_TASKS: Status = 9;
 pub const STATUS_NOT_READY: Status = 10;
 /// A semantic workflow or activity document failed strict validation.
 pub const STATUS_PROTOCOL: Status = 11;
+/// Temporal rejected a workflow start because the workflow ID is already in
+/// use; the error buffer contains a closed client-error JSON document.
+pub const STATUS_ALREADY_STARTED: Status = 12;
 
 /// Maximum accepted lifecycle configuration document size.
 const MAX_LIFECYCLE_CONFIG_BYTES: usize = 64 * 1024;
@@ -234,6 +237,62 @@ impl Runtime {
             })?;
         self.client = Some(connection);
         Ok(Vec::new())
+    }
+
+    /// Starts one dynamically named workflow through the connected Core
+    /// client and returns a strict execution-reference JSON document.
+    ///
+    /// The request and response are intentionally separate from the public
+    /// OCaml `Client` API.  This ABI slice is a low-level adapter that keeps
+    /// dynamic workflow names and opaque payloads out of Rust's typed
+    /// workflow-definition API until the native OCaml adapter is complete.
+    fn start_workflow_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let request = client_protocol::decode_start_request(text).map_err(protocol_failure)?;
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+        let response = handle
+            .block_on(client_protocol::start_workflow(connection, request))
+            .map_err(client_operation_failure)?;
+        let encoded =
+            client_protocol::encode_start_response(&response).map_err(protocol_failure)?;
+        Ok(encoded.into_bytes())
+    }
+
+    /// Waits for one exact run with fixed `follow_runs = false` semantics.
+    ///
+    /// A continued-as-new close event is returned as a terminal outcome with
+    /// successor metadata; the bridge never follows it implicitly.
+    fn wait_workflow_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let request = client_protocol::decode_wait_request(text).map_err(protocol_failure)?;
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+        let response = handle
+            .block_on(client_protocol::wait_workflow(connection, request))
+            .map_err(client_operation_failure)?;
+        let encoded = client_protocol::encode_wait_response(&response).map_err(protocol_failure)?;
+        Ok(encoded.into_bytes())
     }
 
     /// Constructs and validates one official workflow-only Core worker.
@@ -577,6 +636,21 @@ fn worker_bridge_failure(error: WorkerBridgeError) -> Failure {
     Failure {
         status,
         message: format!("Temporal worker bridge failed: {error:?}"),
+    }
+}
+
+/// Maps the low-level client adapter to a stable ABI status and a structured
+/// privacy-safe error body.  In particular, Temporal's AlreadyStarted result
+/// is machine-readable JSON rather than a server diagnostic string.
+fn client_operation_failure(error: client_protocol::ClientOperationError) -> Failure {
+    let status = match &error {
+        client_protocol::ClientOperationError::AlreadyStarted { .. } => STATUS_ALREADY_STARTED,
+        client_protocol::ClientOperationError::Rpc { .. } => STATUS_CONNECTION,
+        client_protocol::ClientOperationError::Core(_) => STATUS_PROTOCOL,
+    };
+    Failure {
+        status,
+        message: error.to_json(),
     }
 }
 
@@ -1026,6 +1100,70 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_client_connect_json(
             })?;
             let config = decode_config::<ClientConfig>(input, input_len)?;
             runtime.connect_client(config)
+        })
+    }
+}
+
+/// Start one dynamically named workflow through the connected Core client.
+///
+/// The input is a strict client-start JSON document.  The successful value is
+/// a strict execution-reference response.  Temporal AlreadyStarted failures
+/// use `STATUS_ALREADY_STARTED` and place a closed JSON error body in `error`.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle.  The input
+/// span is borrowed only for this synchronous call and `output` follows the
+/// standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_start_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .start_workflow_json(input)
+        })
+    }
+}
+
+/// Wait for one exact workflow run without following continued-as-new.
+///
+/// The successful value is a strict terminal-outcome document.  A
+/// continued-as-new event is returned with its successor metadata instead of
+/// being followed by the Rust bridge.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle.  The input
+/// span is borrowed only for this synchronous call and `output` follows the
+/// standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_wait_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .wait_workflow_json(input)
         })
     }
 }

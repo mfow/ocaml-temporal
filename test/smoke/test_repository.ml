@@ -7,10 +7,7 @@ let read path =
 let test_license () =
   let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
   let license = Filename.concat source_root "LICENSE" in
-  Alcotest.(check bool)
-    "Apache marker" true
-    (String.starts_with ~prefix:"Apache License" (read license))
+  if not (String.starts_with ~prefix:"Apache License" (read license)) then
+    failwith "LICENSE does not begin with the Apache License marker"
 
-let () =
-  Alcotest.run "repository"
-    [ ("metadata", [ Alcotest.test_case "license" `Quick test_license ]) ]
+let () = test_license ()

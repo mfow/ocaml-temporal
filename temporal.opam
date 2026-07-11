@@ -10,8 +10,6 @@ dev-repo: "git+https://github.com/ocaml-temporal/ocaml-temporal.git"
 depends: [
   "ocaml" {>= "5.2"}
   "dune" {>= "3.17"}
-  "alcotest" {with-test & >= "1.8"}
-  "ocamlformat" {with-dev-setup & = "0.28.1"}
 ]
 build: [
   ["dune" "subst"] {dev}

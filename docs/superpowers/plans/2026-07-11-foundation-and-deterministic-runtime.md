@@ -242,7 +242,7 @@ Expected: one clean root-layout commit after the architecture commit.
 - Consumes: `temporal.opam`, `temporal.opam.locked`, and installed OPAM package metadata.
 - Produces: `make license-check`, which exits nonzero for prohibited or unknown declared dependency licenses and records the narrow OCaml linking exception explicitly.
 
-- [ ] **Step 1: Write a failing policy fixture test**
+- [x] **Step 1: Write a failing policy fixture test**
 
 ```sh
 #!/bin/sh
@@ -260,13 +260,13 @@ printf '%s\n' 'name: "good"' 'license: "MIT"' > "$tmp/good.opam"
 scripts/check-licenses.sh "$tmp/good.opam"
 ```
 
-- [ ] **Step 2: Run the fixture to verify the checker is missing**
+- [x] **Step 2: Run the fixture to verify the checker is missing**
 
 Run: `docker compose run --rm dev sh test/smoke/test_license_policy.sh`
 
 Expected: FAIL with `scripts/check-licenses.sh: not found`.
 
-- [ ] **Step 3: Implement exact SPDX allowlisting**
+- [x] **Step 3: Implement exact SPDX allowlisting**
 
 The checker accepts file arguments for fixtures and defaults to the installed dependency closure. Normalize whitespace but do not use substring acceptance. Its allowed expressions are:
 
@@ -299,13 +299,13 @@ license-check:
 verify: lint license-check test
 ```
 
-- [ ] **Step 4: Run positive, negative, and real-closure checks**
+- [x] **Step 4: Run positive, negative, and real-closure checks**
 
 Run: `docker compose run --rm dev sh test/smoke/test_license_policy.sh && make license-check`
 
 Expected: GPL fixture rejected, MIT fixture accepted, actual locked closure accepted with each package and SPDX expression printed.
 
-- [ ] **Step 5: Document and commit the audited closure**
+- [x] **Step 5: Document and commit the audited closure**
 
 `docs/dependencies.md` must list package, exact version, license, scope, linked into release (`yes` or `no`), redistributed (`yes` or `no`), and review note. Record builder-image tooling separately so ambient tools are not confused with linked or shipped code.
 

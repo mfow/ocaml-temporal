@@ -3,8 +3,7 @@ FROM ${OCAML_IMAGE}
 
 WORKDIR /workspace
 COPY --chown=opam:opam temporal.opam dune-project ./
-RUN opam install --deps-only --with-test -y . \
-    && opam install -y ocamlformat.0.28.1
+RUN opam install --deps-only --with-test -y .
 
 USER opam
 CMD ["opam", "exec", "--", "dune", "build"]

@@ -20,9 +20,29 @@ Evidence:
 - `docker compose run --rm dev ocamlc -version` reported OCaml 5.2.1.
 - `git diff --check` reported no whitespace errors.
 
-The first image build also verified the OPAM 2.1 compatibility path: project
-and test dependencies use `--with-test`, while the development-only formatter
-is installed explicitly because OPAM 2.1 does not expose
-`--with-dev-setup`.
+The initial formatter experiment was removed during the dependency audit:
+although `ocamlformat` itself is MIT licensed, its build closure contains GPL
+tools. Repository-owned whitespace checks provide the current formatting gate
+without adding prohibited dependencies.
 
-Next phase: typed public kernel.
+## 2026-07-11: Executable dependency policy
+
+Status: verified.
+
+The locked project closure is intentionally small: OCaml 5.2.1, Dune 3.24.0,
+compiler selection packages, and compiler virtual packages. `make
+license-check` rejects missing, unknown, or prohibited licenses and is part of
+`make verify`.
+
+Evidence:
+
+- The policy fixture rejected GPL-3.0-only, missing metadata, an unreviewed
+  OCaml linking exception, and a mixed MIT/GPL declaration.
+- The same fixture accepted MIT.
+- `make license-check` accepted every exact package in
+  `temporal.opam.locked` and printed its decision.
+- `make verify` completed the build, formatting gate, license audit, and test
+  suite successfully.
+- `git diff --check` reported no whitespace errors.
+
+Next phase: typed codecs and structured errors.

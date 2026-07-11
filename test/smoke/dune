@@ -1,6 +1,5 @@
 (test
  (name test_repository)
- (libraries alcotest)
  (action
   (setenv
    TEMPORAL_SOURCE_ROOT

@@ -13,5 +13,4 @@
  (description "A typed OCaml 5 workflow SDK backed by Temporal Core")
  (depends
   (ocaml (>= 5.2))
-  (dune (>= 3.17))
-  (alcotest (and :with-test (>= 1.8)))))
+  (dune (>= 3.17))))

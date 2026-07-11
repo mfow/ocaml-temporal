@@ -242,7 +242,7 @@ verified to publish the corresponding native manifest.
 
 ## 2026-07-11: Pinned Rust and Temporal Core build foundation
 
-Status: locally verified; native CI matrix rerun pending.
+Status: verified locally and on the native CI matrix.
 
 The development image now copies Rust 1.94.1 from a digest-pinned official
 multi-architecture image and installs only Core's protobuf build tools. The
@@ -286,3 +286,35 @@ container to a network-disabled, read-only, digest-pinned official Python
 container. Every OCaml/compiler architecture cell runs the Rust build, Clippy,
 and Rust tests through `make verify`; GitHub Actions is the compatibility gate
 for OCaml 5.3 through 5.5 and native amd64/arm64.
+
+## 2026-07-11: Versioned native ABI foundation
+
+Status: locally verified; native CI matrix pending.
+
+The Rust bridge now exports a version-1 C ABI with explicitly numbered status
+codes and one documented `repr(C)` result shape. Success and error bytes are
+Rust-owned, empty buffers have the canonical null/zero representation, and one
+idempotent disposal function clears both allocations. The C header reserves
+opaque runtime, internal connection-client, and worker handles without exposing
+Rust layouts.
+
+Every fallible exported operation is panic-contained. A hidden Rust-only probe
+deliberately panics through the shared wrapper and verifies that the caller
+receives `STATUS_PANIC` plus an owned diagnostic instead of an unwind crossing
+C. The public header contains no test-panic symbol.
+
+Local evidence:
+
+- The ABI integration test first failed because none of the new symbols or
+  types existed, then all six ownership, negotiation, pointer, disposal, and
+  panic-containment tests passed.
+- Clippy with warnings denied, rustfmt checking, the complete locked Rust test
+  suite, repository formatting, and `git diff --check` pass.
+- A strict C11 harness compiles against the canonical header, links the actual
+  Rust static archive, and passes under AddressSanitizer and
+  UndefinedBehaviorSanitizer.
+
+This is an OCaml Temporal SDK, not only a Temporal service client. The future
+Core client handle is an internal connection component; worker polling,
+deterministic workflow execution, replay, and workflow command production are
+first-class SDK responsibilities alongside start/result client operations.

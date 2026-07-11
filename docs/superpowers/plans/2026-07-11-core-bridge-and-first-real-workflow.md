@@ -79,24 +79,24 @@ new OCaml runtime dependency.
 `rust/core-bridge/src/lib.rs`, `scripts/check-cargo-licenses.py`, and focused
 policy/toolchain tests.
 
-- [ ] Add a failing smoke test that requires `rustc 1.94`, `cargo`, a
+- [x] Add a failing smoke test that requires `rustc 1.94`, `cargo`, a
   `staticlib` artifact, a locked Cargo build, and rejection of GPL, LGPL,
   AGPL, MPL, missing, and unknown fixture licenses.
-- [ ] Copy the Rust 1.94 toolchain from a pinned official Bookworm Rust image
+- [x] Copy the Rust 1.94 toolchain from a pinned official Bookworm Rust image
   stage into the parameterized OCaml development image; record provenance and
   redistribution status.
-- [ ] Add a minimal Apache-2.0 Rust workspace and `staticlib` crate. Pin
+- [x] Add a minimal Apache-2.0 Rust workspace and `staticlib` crate. Pin
   Temporal Core and related first-party crates by the immutable Git revision,
   disable unnecessary default features, and commit `Cargo.lock`.
-- [ ] Implement a standard-library Python Cargo metadata checker. Evaluate
+- [x] Implement a standard-library Python Cargo metadata checker. Evaluate
   SPDX `AND`, `OR`, parentheses, and approved exceptions conservatively;
   require a documented chosen permissive branch for dual-licensed packages.
-- [ ] Integrate `cargo fmt --check`, `cargo clippy --locked -- -D warnings`,
+- [x] Integrate `cargo fmt --check`, `cargo clippy --locked -- -D warnings`,
   and `cargo test --locked` into the build/test Make target. Run the Cargo
   scanner from a separate pinned official Python image entirely inside the
   single standalone GitHub Actions license job; do not put it in the Makefile
   or duplicate it across the compiler/architecture matrix.
-- [ ] Run focused tests and `make verify` locally on OCaml 5.2, update the
+- [x] Run focused tests and `make verify` locally on OCaml 5.2, update the
   dependency inventory, push, and use the amd64/arm64 GitHub matrix as the
   compatibility gate for OCaml 5.3 through 5.5. Reproduce another compiler
   locally only if its CI cell fails.
@@ -107,14 +107,14 @@ policy/toolchain tests.
 `rust/core-bridge/include/ocaml_temporal_core.h`, Rust unit tests, and a C ABI
 harness under `test/bridge/`.
 
-- [ ] Write failing tests for ABI version negotiation, explicit status codes,
+- [x] Write failing tests for ABI version negotiation, explicit status codes,
   owned success/error buffers, zero-length buffers, double-free prevention by
   contract, invalid pointers, and a deliberately caught Rust panic.
-- [ ] Define opaque runtime/client/worker handles and a single owned result
+- [x] Define opaque runtime/client/worker handles and a single owned result
   shape. Keep exported symbols prefixed `ocaml_temporal_core_v1_`.
-- [ ] Contain every exported function with `catch_unwind`; never unwind across
+- [x] Contain every exported function with `catch_unwind`; never unwind across
   C and never expose a Rust layout other than documented `repr(C)` values.
-- [ ] Add compile-time header/layout checks and a C executable that links the
+- [x] Add compile-time header/layout checks and a C executable that links the
   static archive, calls the ABI, frees every returned allocation, and exits
   cleanly under sanitizers where available.
 - [ ] Run Rust, C, license, and aggregate verification; document ABI ownership

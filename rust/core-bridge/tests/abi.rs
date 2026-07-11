@@ -5,7 +5,11 @@ use ocaml_temporal_core_bridge::{
     STATUS_OK, STATUS_PANIC, ocaml_temporal_core_v1_check_abi_version,
     ocaml_temporal_core_v1_conformance_wait_ms, ocaml_temporal_core_v1_echo,
     ocaml_temporal_core_v1_result_free, ocaml_temporal_core_v1_runtime_dispose,
-    ocaml_temporal_core_v1_runtime_free, ocaml_temporal_core_v1_runtime_new, test_invoke_panic,
+    ocaml_temporal_core_v1_runtime_free, ocaml_temporal_core_v1_runtime_new,
+    ocaml_temporal_core_v1_worker_complete_activity_json,
+    ocaml_temporal_core_v1_worker_complete_workflow_json,
+    ocaml_temporal_core_v1_worker_try_poll_activity,
+    ocaml_temporal_core_v1_worker_try_poll_workflow, test_invoke_panic,
 };
 
 /// Produces writable initialized storage matching the C caller contract.
@@ -99,6 +103,58 @@ fn rejects_null_required_pointers() {
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_result_free(ptr::null_mut()) },
         STATUS_INVALID_ARGUMENT
+    );
+}
+
+/// Confirms every new private poll/completion symbol initializes its result and
+/// rejects a missing runtime before touching semantic input.
+#[test]
+fn task_bridge_exports_reject_null_runtime_handles() {
+    let mut result = empty_result();
+    let statuses = [
+        unsafe { ocaml_temporal_core_v1_worker_try_poll_workflow(ptr::null_mut(), &mut result) },
+        {
+            assert_eq!(
+                unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+                STATUS_OK
+            );
+            unsafe { ocaml_temporal_core_v1_worker_try_poll_activity(ptr::null_mut(), &mut result) }
+        },
+        {
+            assert_eq!(
+                unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+                STATUS_OK
+            );
+            unsafe {
+                ocaml_temporal_core_v1_worker_complete_workflow_json(
+                    ptr::null_mut(),
+                    ptr::null(),
+                    0,
+                    &mut result,
+                )
+            }
+        },
+        {
+            assert_eq!(
+                unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+                STATUS_OK
+            );
+            unsafe {
+                ocaml_temporal_core_v1_worker_complete_activity_json(
+                    ptr::null_mut(),
+                    ptr::null(),
+                    0,
+                    &mut result,
+                )
+            }
+        },
+    ];
+    for status in statuses {
+        assert_eq!(status, STATUS_INVALID_ARGUMENT);
+    }
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
     );
 }
 

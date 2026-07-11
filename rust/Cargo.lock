@@ -1201,8 +1201,9 @@ dependencies = [
  "serde_json",
  "temporalio-client",
  "temporalio-common",
- "temporalio-sdk-core",
  "temporalio-protos",
+ "temporalio-sdk-core",
+ "tokio",
 ]
 
 [[package]]

@@ -116,7 +116,7 @@ clients and the runtime. Rust retains internal Tokio concurrency; workflow
 executions retain their separate deterministic effect schedulers.
 
 The implemented private supervisor owns the real runtime, one official client
-connection, and one workflow-only Core worker. Its backend protocol exposes
+connection, and one Core worker for workflows and remote activities. Its backend protocol exposes
 typed GADT operations but never the owner-confined state, preventing a raw
 handle from escaping through an otherwise convenient callback. See
 [ADR 0004](../decisions/0004-sdk-instance-supervisor.md) for its lifecycle,
@@ -146,16 +146,32 @@ failed connection publishes no client. A failed worker construction or
 validation gracefully finalizes the temporary worker and leaves the client
 available for a corrected retry.
 
-This lifecycle slice has no worker poll loop and therefore no readiness
-notification path yet. The next poll/complete slice must be event-driven
-without a foreign-thread OCaml callback: Rust will queue readiness and signal a
-native condition/event primitive, while the supervisor's dedicated Domain/OS
-thread waits in a C stub with its OCaml runtime lock released. No workflow
-effect continuation or general cooperative scheduler may perform that blocking
-wait. After the stub returns, the actor will drain ready Core work; shutdown
-must signal the same wait path. This design avoids timer polling while also
-avoiding runtime registration, reentrancy, and teardown races from Tokio
-threads entering OCaml.
+The worker owns two Tokio poll lanes: exactly one calls Core's workflow poll and
+exactly one calls its remote-activity poll. Local activities and Nexus remain
+disabled. Each lane writes without waiting to its own ready queue. Core's
+configured outstanding-task permits bound the number of queued tasks; using a
+second bounded send would deadlock shutdown if the supervisor joined a lane
+while that lane waited for the supervisor to drain its full queue. The OCaml
+supervisor takes ready work through non-blocking ABI operations; no Tokio thread
+enters OCaml and no long Core poll occupies the supervisor Domain. Keeping the
+lanes independent prevents an idle activity poll from delaying workflow
+completion, or vice versa.
+
+One mutex-protected ledger is the authority for every task Core expects the
+language runtime to complete. A task enters the ledger before its ready message
+is queued, changes from Rust-owned ready state to OCaml-leased state at the
+non-blocking handoff, and leaves only after Core accepts the exact matching run
+ID or opaque activity token. Activity cancellation reuses the original token
+and therefore does not create a second completion debt.
+
+Shutdown first closes ledger admission, then asks Core to wake both polls, then
+joins both lane tasks. Existing ready and leased work remains completable while
+the worker drains. Core finalization is refused until the ledger is empty, and
+only then consumes the worker before client and runtime destruction. The
+garbage-collection fallback cannot obtain missing language completions; after
+waking and joining the lanes it force-drops an undrained worker on the dedicated
+cleanup thread. This preserves memory ownership and collector progress, while
+explicit supervisor shutdown remains the required graceful path.
 
 ### Runtime destruction
 

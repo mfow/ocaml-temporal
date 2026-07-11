@@ -16,7 +16,7 @@ use crate::protocol::{self, JsonValue, MAX_PAYLOAD_BYTES, MAX_STRING_BYTES, Prot
 /// Serde otherwise maps both an omitted `Option` field and JSON `null` to
 /// `None`. The private protocol distinguishes those cases: fields declared
 /// required by the schema must appear, even when their value is null.
-fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -470,7 +470,7 @@ fn from_serde(value: serde_json::Value) -> Result<JsonValue, ProtocolError> {
 }
 
 /// Requires a bounded nonempty Temporal identifier.
-fn identifier(value: &str, path: &str) -> Result<(), ProtocolError> {
+pub(crate) fn identifier(value: &str, path: &str) -> Result<(), ProtocolError> {
     if value.is_empty() || value.len() > MAX_STRING_BYTES {
         Err(ProtocolError::invalid(
             path,
@@ -495,7 +495,7 @@ fn bounded_text(value: &str, path: &str) -> Result<(), ProtocolError> {
 }
 
 /// Validates exact protobuf time component ranges.
-fn validate_time(
+pub(crate) fn validate_time(
     seconds: i64,
     nanos: i32,
     duration: bool,
@@ -517,7 +517,7 @@ fn validate_time(
 }
 
 /// Validates failure identifiers recursively.
-fn validate_failure(value: &Failure, path: &str) -> Result<(), ProtocolError> {
+pub(crate) fn validate_failure(value: &Failure, path: &str) -> Result<(), ProtocolError> {
     bounded_text(&value.message, path)?;
     bounded_text(&value.source, path)?;
     bounded_text(&value.stack_trace, path)?;
@@ -849,7 +849,7 @@ pub struct CoreConversionError {
 }
 
 /// Constructs an unsupported-conversion error without copying source values.
-fn unsupported(message: &'static str) -> CoreConversionError {
+pub(crate) fn unsupported(message: &'static str) -> CoreConversionError {
     CoreConversionError {
         code: CoreConversionErrorCode::Unsupported,
         message,
@@ -857,7 +857,7 @@ fn unsupported(message: &'static str) -> CoreConversionError {
 }
 
 /// Constructs a malformed-Core error without copying source values.
-fn invalid_core(message: &'static str) -> CoreConversionError {
+pub(crate) fn invalid_core(message: &'static str) -> CoreConversionError {
     CoreConversionError {
         code: CoreConversionErrorCode::InvalidCore,
         message,
@@ -873,7 +873,9 @@ use temporalio_protos::{
 };
 
 /// Copies one Core payload while rejecting external references this JSON slice cannot preserve.
-fn payload_from_core(value: &api_common::Payload) -> Result<Payload, CoreConversionError> {
+pub(crate) fn payload_from_core(
+    value: &api_common::Payload,
+) -> Result<Payload, CoreConversionError> {
     if !value.external_payloads.is_empty() {
         return Err(unsupported("external payload references are not supported"));
     }
@@ -905,7 +907,7 @@ fn payload_from_core(value: &api_common::Payload) -> Result<Payload, CoreConvers
 }
 
 /// Builds a Core payload whose allocation ownership is transferred into protobuf values.
-fn payload_to_core(value: &Payload) -> Result<api_common::Payload, CoreConversionError> {
+pub(crate) fn payload_to_core(value: &Payload) -> Result<api_common::Payload, CoreConversionError> {
     if value.data.len() > MAX_PAYLOAD_BYTES
         || value
             .metadata
@@ -1044,7 +1046,9 @@ fn failure_from_core(value: &api_failure::Failure) -> Result<Failure, CoreConver
 }
 
 /// Builds an official failure using only options represented in semantic JSON.
-fn failure_to_core(value: &Failure) -> Result<api_failure::Failure, CoreConversionError> {
+pub(crate) fn failure_to_core(
+    value: &Failure,
+) -> Result<api_failure::Failure, CoreConversionError> {
     use api_failure::failure::FailureInfo as Core;
     let failure_info = Some(match &value.info {
         FailureInfo::Application {
@@ -1331,7 +1335,7 @@ pub fn activation_from_core(
 }
 
 /// Converts one semantic duration to the protobuf representation.
-fn duration_to_core(value: Duration) -> prost_wkt_types::Duration {
+pub(crate) fn duration_to_core(value: Duration) -> prost_wkt_types::Duration {
     prost_wkt_types::Duration {
         seconds: value.seconds,
         nanos: value.nanoseconds,
@@ -1339,7 +1343,9 @@ fn duration_to_core(value: Duration) -> prost_wkt_types::Duration {
 }
 
 /// Converts and validates one protobuf duration.
-fn duration_from_core(value: &prost_wkt_types::Duration) -> Result<Duration, CoreConversionError> {
+pub(crate) fn duration_from_core(
+    value: &prost_wkt_types::Duration,
+) -> Result<Duration, CoreConversionError> {
     let duration = Duration {
         seconds: value.seconds,
         nanoseconds: value.nanos,

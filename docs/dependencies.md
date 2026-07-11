@@ -54,3 +54,12 @@ their own package/SBOM audit before publication.
 build closure includes ordinary GPL packages (`menhir` and `fix`), which this
 project's all-dependencies policy prohibits. `make lint` and `make fmt`
 currently enforce repository-owned whitespace rules instead.
+
+## Planned Temporal Core dependency
+
+Temporal Core is not yet part of the locked build. Phase 2 begins from
+immutable upstream commit `95e97686a079dcfe6c42e3254b2f3f5e3d97408f`, whose
+root license is MIT. No Core or Cargo package is approved for redistribution
+until `Cargo.lock`, a complete transitive license inventory, native-library
+review, and the executable license gate are committed. See
+[ADR 0001](decisions/0001-temporal-core-c-boundary.md).

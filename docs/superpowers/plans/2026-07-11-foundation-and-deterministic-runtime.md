@@ -754,7 +754,7 @@ Expected: synthetic end-to-end workflow kernel committed with explicit limitatio
 - Consumes: all Phase 1 code and tests.
 - Produces: clean-checkout verification evidence and the fixed assumptions required for the Phase 2 Core bridge plan.
 
-- [ ] **Step 1: Prove the public entry point is absent**
+- [x] **Step 1: Prove the public entry point is absent**
 
 Run:
 
@@ -764,7 +764,7 @@ test -f README.md
 
 Expected: FAIL because the repository does not yet have its public `README.md` entry point.
 
-- [ ] **Step 2: Document the Core boundary decision with current upstream evidence**
+- [x] **Step 2: Document the Core boundary decision with current upstream evidence**
 
 The decision record must state:
 
@@ -774,7 +774,7 @@ The decision record must state:
 - Upstream C bridge headers and behavior are reference material; no source is copied without provenance and Apache-2.0/MIT notice review.
 - Workflow activation and completion protobuf bytes are the Phase 2 data boundary.
 
-- [ ] **Step 3: Run the complete Phase 1 matrix**
+- [x] **Step 3: Run the complete Phase 1 matrix**
 
 Run:
 
@@ -792,11 +792,11 @@ git diff --check
 
 Expected: every command exits zero; compiler reports an OCaml 5.2 patch release; no generated or formatted diff remains.
 
-- [ ] **Step 4: Update user and maintainer documentation**
+- [x] **Step 4: Update user and maintainer documentation**
 
 `README.md` must label the library pre-release, show only commands that currently work, link the approved architecture, roadmap, workflow guide, dependency audit, and runtime invariants, and avoid claiming live Temporal connectivity before Phase 2. `docs/progress.md` must include the exact verification commands, date, commit IDs for Tasks 1-6, known limitations, and next objective.
 
-- [ ] **Step 5: Commit the verified Phase 1 handoff**
+- [x] **Step 5: Commit the verified Phase 1 handoff**
 
 Run: `git add README.md docs && git diff --cached --check && git commit -m "docs: record deterministic runtime milestone"`
 

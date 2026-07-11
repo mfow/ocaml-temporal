@@ -156,3 +156,59 @@ Evidence:
   unsafe-cast scan, and `git diff --check` passed.
 
 Next phase: Phase 1 documentation and clean-checkout handoff.
+
+## 2026-07-11: Phase 1 deterministic runtime handoff
+
+Status: verified.
+
+Phase 1 establishes the typed public kernel, effect scheduler, and synthetic
+activation proof needed before binding to Temporal Core. Milestone commits are:
+
+| Task | Commit | Outcome |
+|---|---|---|
+| Architecture | `5e80c6a` | Approved OCaml-over-Core design |
+| Plan | `6d6d8b8` | Foundation/runtime implementation plan |
+| 1 | `855d6b2` | Docker, Make, Dune, and package foundation |
+| 2 | `174ad92` | Executable dependency-license gate |
+| Repository metadata | `d1f84af` | GitHub location and `master` publication |
+| 3 | `5c70b93` | Typed codecs and structured errors |
+| 4 | `f4a49eb` | Typed workflows and activities |
+| 5 | `fc352d1` | Deterministic effect scheduler |
+| 6 | `a0e157d` | Synthetic activation interpreter |
+
+The clean matrix executed from the repository root on 2026-07-11:
+
+```sh
+make clean
+make build
+make test-unit
+make test-runtime
+make license-check
+make lint
+make verify
+docker compose run --rm dev opam exec -- ocamlc -version
+git diff --check
+```
+
+Every command exited zero, and the compatibility image reported OCaml 5.2.1.
+The complete runtime/unit/smoke suite also passed on OCaml 5.5.0 during the Task
+6 compatibility gate. OPAM lint, the install target, and an explicit unsafe
+`Obj` cast scan passed before handoff.
+
+Known limitations:
+
+- There is no live Temporal Core or Server connection yet.
+- Compose does not yet include Temporal Server, PostgreSQL, UI, or a
+  cross-language activity worker; those arrive with the first real bridge
+  vertical slice.
+- The synthetic protocol currently covers activities, timers, cancellation,
+  completion, failure, and eviction only.
+- Child workflows, structured cancellation, signals, queries, updates,
+  continue-as-new, versioning, local activities, Nexus, replay-safe side
+  effects, and the remaining parity surface are still planned.
+- The current formatting gate checks repository whitespace because the
+  formatter closure violated the all-dependencies license policy.
+
+Next objective: pin and audit the Rust/Cargo closure, link the project-owned
+Core static bridge into an OCaml-built worker, and run the same direct-style
+workflow against Temporal Server and PostgreSQL in Docker Compose.

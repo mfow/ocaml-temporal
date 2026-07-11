@@ -425,8 +425,8 @@ The project goal is complete only when current evidence demonstrates all of the 
 
 ## 17. Primary References
 
-- [Temporal Core SDK architecture](https://github.com/temporalio/sdk-rust/blob/main/ARCHITECTURE.md)
-- [Temporal Rust and Core SDK repository](https://github.com/temporalio/sdk-rust)
+- [Temporal Core SDK architecture](https://github.com/temporalio/sdk-core/blob/95e97686a079dcfe6c42e3254b2f3f5e3d97408f/ARCHITECTURE.md)
+- [Temporal Core SDK repository](https://github.com/temporalio/sdk-core)
 - [OCaml 5 Effect module](https://ocaml.org/manual/5.4/api/Effect.html)
 - [OCaml C interoperability and embedding](https://ocaml.org/manual/5.5/intfc.html)
 - [Temporal workflow determinism](https://docs.temporal.io/workflow-definition)

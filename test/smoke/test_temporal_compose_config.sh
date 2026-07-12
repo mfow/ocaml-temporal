@@ -52,17 +52,18 @@ require_text 'test -s /tmp/ocaml-temporal-two-binary-worker.ready'
 require_text 'stop_grace_period: 30s'
 
 # The two-binary fixture must keep the heartbeat scenario in the shared
-# definitions module. These source-level assertions are intentionally small:
-# they catch an accidentally removed registration or driver assertion without
-# requiring Docker, Temporal Server, or a built native bridge. The actual
-# payload/detail and timeout semantics remain covered by the OCaml and Rust
-# protocol/runtime tests and by the live Compose job when its environment is
-# available.
+# definitions module and must preserve the two process roles. These
+# source-level assertions are intentionally small: they catch an accidentally
+# removed registration, client assertion, worker loop, or executable definition
+# without requiring Docker, Temporal Server, or a built native bridge. The
+# actual payload/detail and timeout semantics remain covered by the OCaml and
+# Rust protocol/runtime tests and by the live Compose job when its environment
+# is available.
 require_source_text() {
   path=$1
   needle=$2
   if ! grep -F -- "$needle" "$path" >/dev/null; then
-    echo "activity heartbeat acceptance source is missing: $needle ($path)" >&2
+    echo "two-binary acceptance source is missing: $needle ($path)" >&2
     exit 1
   fi
 }
@@ -70,6 +71,30 @@ require_source_text() {
 definitions="$fixture/common/smoke_definitions.ml"
 driver="$fixture/driver/smoke_driver.ml"
 worker="$fixture/worker/smoke_worker.ml"
+driver_dune="$fixture/driver/dune"
+worker_dune="$fixture/worker/dune"
+
+# The driver is an independent OCaml test client. It must use the public
+# client operations to start, cancel, and await exact workflow executions;
+# merely sharing workflow definitions or naming a second executable would not
+# prove that it exercises the server as a client process.
+require_source_text "$driver_dune" '(name smoke_driver)'
+require_source_text "$driver_dune" 'temporal_two_binary_smoke_common'
+require_source_text "$driver" 'module Client = Temporal.Client'
+require_source_text "$driver" 'Client.start client ~workflow'
+require_source_text "$driver" 'Client.cancel ~request_id:'
+require_source_text "$driver" 'Client.wait handle'
+
+# The worker is the separate implementation process. Its source must create
+# the public Worker, register the shared definitions, run the native loop, and
+# shut it down; a client-only executable cannot satisfy this contract.
+require_source_text "$worker_dune" '(name smoke_worker)'
+require_source_text "$worker_dune" 'temporal_two_binary_smoke_common'
+require_source_text "$worker" 'module Worker = Temporal.Worker'
+require_source_text "$worker" 'Worker.create ~target_url ~namespace'
+require_source_text "$worker" 'Worker.run worker'
+require_source_text "$worker" 'Worker.shutdown worker'
+
 require_source_text "$definitions" 'Temporal.Activity.define_with_context ~name:"smoke.heartbeat_retry"'
 require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat_timeout'
 require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat context'

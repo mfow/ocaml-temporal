@@ -37,6 +37,24 @@ quality`. This runs once on Ubuntu for each pull request and push to `master`;
 the OCaml version matrix and Windows/macOS native compatibility jobs are
 unchanged.
 
+## When Actions remain queued
+
+A check whose GitHub Actions status remains `queued` has not run, so it is not
+verification and must not be treated as a pass. If repository quota or runner
+availability leaves a check queued indefinitely, use the documented local
+gates as interim evidence:
+
+```sh
+make verify
+make quality
+make native-verify
+```
+
+These commands exercise the repository's compiler, test, quality, and native
+compatibility checks on the available host. They do not weaken required CI or
+turn an unexecuted check green; required GitHub checks still need to complete
+successfully when Actions is available again.
+
 ## Rust dependency advisories and sources
 
 [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) checks the complete

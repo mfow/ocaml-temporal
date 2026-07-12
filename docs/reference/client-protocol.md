@@ -257,6 +257,13 @@ failures use `{"kind":"protocol","code":"core_invalid"}` or
 `core_unsupported`. The complete code vocabulary is enumerated in the JSON
 schema and checked by both Rust and OCaml decoders.
 
+Status details are server input too. Rust includes an existing run ID only
+when it is non-empty, within the protocol string limit, and free of NUL bytes.
+If the optional detail is malformed, the error remains `already_started` but
+its `existing_run_id` is `null`. This keeps the status category and JSON body
+consistent with the same identifier validation used for OCaml-originated
+requests.
+
 The OCaml protocol exposes an abstract `error` and a small `error_view` with a
 code, JSON path, and safe message. Payload bytes and raw input documents never
 appear in that view. Public API conversion is a later layer; this private

@@ -81,6 +81,42 @@ let test_completion_variants () =
       check_string "completion" encoded (unwrap (Protocol.encode_completion reparsed)))
     documents
 
+(** Heartbeats retain ordered binary detail payloads and the exact opaque token
+    while using the same closed-object validation as task completions. *)
+let test_heartbeat_round_trip () =
+  let heartbeat : Protocol.heartbeat =
+    {
+      task_token = Bytes.of_string "\000heartbeat\255";
+      details =
+        [
+          {
+            metadata = [ ("encoding", Bytes.of_string "binary/plain") ];
+            data = Bytes.of_string "\000progress\255";
+          };
+        ];
+    }
+  in
+  let encoded = unwrap (Protocol.encode_heartbeat heartbeat) in
+  let decoded = unwrap (Protocol.decode_heartbeat encoded) in
+  if not (Bytes.equal heartbeat.task_token decoded.task_token) then
+    failwith "heartbeat task token changed";
+  match decoded.details with
+  | [ payload ] when Bytes.equal payload.data (Bytes.of_string "\000progress\255") -> ()
+  | _ -> failwith "heartbeat detail payload changed"
+
+(** Heartbeat documents reject drift in required fields, token encoding, and
+    payload wrappers before they can reach the native supervisor. *)
+let test_heartbeat_validation () =
+  List.iter
+    (fun json -> require_error (Protocol.decode_heartbeat json))
+    [
+      {|{"task_token":"AA==","details":[],"extra":true}|};
+      {|{"task_token":"","details":[]}|};
+      {|{"task_token":"AA","details":[]}|};
+      {|{"task_token":"AA=="}|};
+      {|{"task_token":"AA==","details":[{"metadata":{},"data":{"encoding":"raw","data":"AA=="}}]}|};
+    ]
+
 (** Closed-object and required-nullable validation rejects protocol drift at
     every nesting level before a future worker can act on the task. *)
 let test_closed_documents () =
@@ -232,6 +268,8 @@ let () =
   run "activity start round trip" test_start_round_trip;
   run "activity cancel round trip" test_cancel_round_trip;
   run "activity completion variants" test_completion_variants;
+  run "activity heartbeat round trip" test_heartbeat_round_trip;
+  run "activity heartbeat validation" test_heartbeat_validation;
   run "closed activity documents" test_closed_documents;
   run "activity semantic validation" test_semantic_validation;
   run "outgoing activity headers" test_outgoing_header_validation;

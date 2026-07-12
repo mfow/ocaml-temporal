@@ -15,6 +15,7 @@ use std::sync::mpsc::{
 };
 use std::time::Duration;
 use temporalio_client::{Connection, ConnectionOptions};
+use temporalio_common::protos::coresdk::ActivityHeartbeat as CoreActivityHeartbeat;
 use temporalio_sdk_core::{
     CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, WorkerConfig,
     WorkerVersioningStrategy,
@@ -1031,6 +1032,34 @@ impl Runtime {
             .block_on(worker.complete_activity(completion))
             .map_err(worker_bridge_failure)?;
         retire_activity_semantics(&mut self.activity_tasks, &task_token);
+        Ok(Vec::new())
+    }
+
+    /// Strictly validates and records progress for one leased remote activity.
+    /// A heartbeat is not terminal, so the semantic task map and native ledger
+    /// remain leased for the later completion or cancellation path.
+    fn record_activity_heartbeat(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let semantic = activity_protocol::decode_heartbeat(text).map_err(protocol_failure)?;
+        let task_token =
+            activity_protocol::decode_token(&semantic.task_token).map_err(protocol_failure)?;
+        let details = semantic
+            .details
+            .iter()
+            .map(workflow_protocol::payload_to_core)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(core_conversion_failure)?;
+        let worker = self.worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker is not running".to_owned(),
+        })?;
+        let heartbeat = CoreActivityHeartbeat {
+            task_token,
+            details,
+        };
+        worker
+            .record_activity_heartbeat(heartbeat)
+            .map_err(worker_bridge_failure)?;
         Ok(Vec::new())
     }
 
@@ -2188,6 +2217,33 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_complete_activity_json(
                     message: "runtime pointer is null".to_owned(),
                 })?
                 .complete_activity(input)
+        })
+    }
+}
+
+/// Validate and submit one remote activity heartbeat JSON document.
+///
+/// # Safety
+///
+/// The runtime and output contracts match the activity poll operation. A
+/// nonzero input length requires that many readable bytes for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_record_activity_heartbeat_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .record_activity_heartbeat(input)
         })
     }
 }

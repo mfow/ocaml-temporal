@@ -1,8 +1,10 @@
 use ocaml_temporal_core_bridge::activity_protocol::{
     ActivityCancel, ActivityCancelReason, ActivityCompletion, ActivityCompletionResult,
-    ActivityTask, ActivityTaskVariant, completion_to_core, decode_completion, decode_task,
-    encode_completion, encode_task,
+    ActivityHeartbeat, ActivityTask, ActivityTaskVariant, completion_to_core, decode_completion,
+    decode_heartbeat, decode_task, encode_completion, encode_heartbeat, encode_task,
 };
+use ocaml_temporal_core_bridge::workflow_protocol::Payload;
+use std::collections::BTreeMap;
 
 /// A complete start-task fixture exercises every nullable field, the retry
 /// policy, priority, headers, and both payload collection shapes.
@@ -56,6 +58,39 @@ fn activity_documents_are_closed_and_tokens_are_canonical() {
         decode_completion(r#"{"task_token":"AA","result":{"kind":"will_complete_async"}}"#)
             .is_err()
     );
+}
+
+/// Heartbeats preserve the opaque token and binary detail payloads while
+/// keeping the JSON object closed for forward-compatible validation.
+#[test]
+fn activity_heartbeat_round_trips_binary_details() {
+    let mut metadata = BTreeMap::new();
+    metadata.insert("encoding".to_owned(), b"binary/plain".to_vec());
+    let heartbeat = ActivityHeartbeat {
+        task_token: "AAEC/v8=".to_owned(),
+        details: vec![Payload {
+            metadata,
+            data: vec![0, 1, 2, 254, 255],
+        }],
+    };
+
+    let encoded = encode_heartbeat(&heartbeat).expect("heartbeat should encode");
+    assert_eq!(decode_heartbeat(&encoded), Ok(heartbeat));
+    assert!(encoded.contains("\"task_token\":\"AAEC/v8=\""));
+    assert!(encoded.contains("\"details\""));
+}
+
+/// The heartbeat decoder rejects unknown fields, empty/non-canonical tokens,
+/// and payload encodings that are not the canonical binary representation.
+#[test]
+fn activity_heartbeat_rejects_unsafe_documents() {
+    assert!(decode_heartbeat(r#"{"task_token":"AAEC/v8=","details":[],"extra":true}"#).is_err());
+    assert!(decode_heartbeat(r#"{"task_token":"","details":[]}"#).is_err());
+    assert!(decode_heartbeat(r#"{"task_token":"AAE","details":[]}"#).is_err());
+    assert!(decode_heartbeat(
+        r#"{"task_token":"AAEC/v8=","details":[{"metadata":{},"data":{"encoding":"raw","data":"AA=="}}]}"#
+    )
+    .is_err());
 }
 
 /// Cancellation tasks retain the stable reason while preserving the single

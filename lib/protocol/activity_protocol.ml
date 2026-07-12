@@ -105,6 +105,10 @@ type completion_result =
   | Will_complete_async
 
 type completion = { task_token : bytes; result : completion_result }
+
+(** Progress details submitted for one currently leased activity token. Rust
+    converts the opaque token back to the official Core protobuf. *)
+type heartbeat = { task_token : bytes; details : payload list }
 type error = Workflow.error
 type error_view = Workflow.error_view = { code : string; path : string; message : string }
 
@@ -584,4 +588,31 @@ let encode_completion (value : completion) =
   | Error error -> Error (Shared.of_control_error "$" error)
   | Ok output ->
       let* _ = decode_completion output in
+      Ok output
+
+(** Decodes a heartbeat object after closing its exact two-member shape. *)
+let heartbeat_from_json json =
+  let* entries = Shared.exact_object "$" [ "task_token"; "details" ] json in
+  let* token_json = required "$" "task_token" entries in
+  let* task_token = task_token "$.task_token" token_json in
+  let* details_json = required "$" "details" entries in
+  let* details = Shared.list "$.details" Shared.payload details_json in
+  Ok { task_token; details }
+
+(** Strictly decodes one activity-heartbeat JSON document. *)
+let decode_heartbeat input =
+  match Control.decode_payload_object input with
+  | Error error -> Error (Shared.of_control_error "$" error)
+  | Ok json -> heartbeat_from_json json
+
+(** Encodes and reparses a heartbeat before sending it across the native
+    boundary, so malformed metadata cannot reach Core. *)
+let encode_heartbeat (value : heartbeat) =
+  let* token = task_token_json "$.task_token" value.task_token in
+  let* details = payloads_json value.details in
+  let json = `Assoc [ ("task_token", token); ("details", details) ] in
+  match Control.encode_payload_object json with
+  | Error error -> Error (Shared.of_control_error "$" error)
+  | Ok output ->
+      let* _ = decode_heartbeat output in
       Ok output

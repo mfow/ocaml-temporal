@@ -147,6 +147,11 @@ val worker_wait_activity : runtime -> (unit, error) result
 val worker_complete_activity_json :
   runtime -> bytes -> (unit, error) result
 
+(** Validates and submits progress for a currently leased remote activity. The
+    task remains outstanding for its later terminal completion. *)
+val worker_record_activity_heartbeat_json :
+  runtime -> bytes -> (unit, error) result
+
 (** Returns the exact Rust-produced task after an OCaml semantic decode
     failure. Rust matches the complete retained task, extracts its canonical
     opaque token, and retires that native obligation exactly once. *)

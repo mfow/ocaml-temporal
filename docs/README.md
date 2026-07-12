@@ -24,7 +24,9 @@ The remaining reference documents are useful when changing one subsystem:
 - [Native client JSON protocol](reference/client-protocol.md) documents typed
   workflow-start and exact-run-wait messages.
 - [OCaml activity protocol adapter](reference/activity-protocol.md) documents
-  remote activity tasks, completions, and opaque task-token ownership.
+  remote activity tasks, completions, heartbeats, and opaque task-token
+  ownership. The heartbeat schema is
+  [`activity-heartbeat.schema.json`](schemas/bridge/activity-heartbeat.schema.json).
 - [Native workflow execution](reference/native-worker-execution.md) documents
   the current native worker command slice and two-stage child resolution.
 - [Native activity execution](reference/native-activity-execution.md) documents

@@ -140,6 +140,11 @@ module Activity_source = struct
   let complete_activity supervisor completion =
     Native.perform supervisor (Native.Complete_activity completion)
 
+  (** Records progress for the currently leased activity through the same
+      supervisor mailbox as polling and completion. *)
+  let record_activity_heartbeat supervisor heartbeat =
+    Native.perform supervisor (Native.Record_activity_heartbeat heartbeat)
+
   (** Returns the stable classification used in adapter diagnostics. *)
   let error_code error = fst (native_error_view error)
 

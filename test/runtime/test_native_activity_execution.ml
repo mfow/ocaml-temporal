@@ -50,10 +50,15 @@ let base_codec (codec : 'a Temporal.Codec.t) : 'a Temporal_base.Codec.t =
     native adapter. This is deliberately confined to this low-level test. *)
 let base_activity (definition : ('input, 'output) Temporal.Activity.t) =
   let implementation =
-    Option.map
-      (fun implementation input ->
-        Result.map_error base_error (implementation input))
-      (Temporal.Activity.implementation definition)
+    match Temporal.Activity.implementation_with_context definition with
+    | Some implementation ->
+        Some (fun context input ->
+            Result.map_error base_error (implementation context input))
+    | None ->
+        Option.map
+          (fun implementation _context input ->
+            Result.map_error base_error (implementation input))
+          (Temporal.Activity.implementation definition)
   in
   Temporal_base.Definition.make ~name:(Temporal.Activity.name definition)
     ~input:(base_codec (Temporal.Activity.input definition))
@@ -74,6 +79,7 @@ type fake_supervisor = {
   queue : Protocol.task Queue.t;
   leased : bytes list ref;
   completions : Protocol.completion list ref;
+  heartbeats : Protocol.heartbeat list ref;
   reject_next_completion : bool ref;
   poll_error : source_error option ref;
 }
@@ -87,6 +93,7 @@ let fake_supervisor () =
     queue = Queue.create ();
     leased = ref [];
     completions = ref [];
+    heartbeats = ref [];
     reject_next_completion = ref false;
     poll_error = ref None;
   }
@@ -101,6 +108,16 @@ let copy_completion completion =
       match Protocol.decode_completion json with
       | Ok value -> value
       | Error _ -> failwith "fake source could not reparse its own completion")
+
+(** Copies a heartbeat through the strict protocol codec so the fake source
+    cannot accidentally retain mutable buffers owned by an activity context. *)
+let copy_heartbeat heartbeat =
+  match Protocol.encode_heartbeat heartbeat with
+  | Error _ -> failwith "adapter submitted an invalid heartbeat to fake source"
+  | Ok json -> (
+      match Protocol.decode_heartbeat json with
+      | Ok value -> value
+      | Error _ -> failwith "fake source could not reparse its own heartbeat")
 
 (** Removes one exact opaque token from a list and reports whether it was found.
     [Bytes.equal] is intentional: tokens are binary correlation data, not text.
@@ -156,6 +173,21 @@ module Fake_supervisor = struct
         Ok ()
       end
 
+  (** Accepts progress only while the activity token is leased. The focused
+      dispatch tests do not retain heartbeat bodies; the lease check still
+      verifies that the adapter never sends a heartbeat after completion. *)
+  let record_activity_heartbeat supervisor (heartbeat : Protocol.heartbeat) =
+    if
+      List.exists
+        (fun token -> Bytes.equal token heartbeat.Protocol.task_token)
+        !(supervisor.leased)
+    then begin
+      supervisor.heartbeats :=
+        copy_heartbeat heartbeat :: !(supervisor.heartbeats);
+      Ok ()
+    end
+    else Error { code = "stale_lease"; message = "activity token is not leased" }
+
   (** Exposes the bounded source classification expected by the adapter. *)
   let error_code error = error.code
 
@@ -205,7 +237,8 @@ let decode_output codec (payload : Protocol.payload) =
 (** Constructs the complete start-task context required by the strict protocol.
     Optional timing/retry fields stay absent because dispatch tests focus on the
     activity type, token, input, and completion semantics. *)
-let start_task ~token ~activity_type ~input : Protocol.task =
+let start_task_fields ~heartbeat_details ~heartbeat_timeout ~token ~activity_type
+    ~input : Protocol.task =
   let start : Protocol.activity_start =
     {
       workflow_namespace = "default";
@@ -216,20 +249,33 @@ let start_task ~token ~activity_type ~input : Protocol.task =
       activity_type;
       header_fields = [];
       input;
-      heartbeat_details = [];
+      heartbeat_details;
       scheduled_time = None;
       current_attempt_scheduled_time = None;
       started_time = None;
       attempt = 1L;
       schedule_to_close_timeout = None;
       start_to_close_timeout = None;
-      heartbeat_timeout = None;
+      heartbeat_timeout;
       retry_policy = None;
       priority = None;
       standalone_run_id = "";
     }
   in
   { Protocol.task_token = Bytes.copy token; variant = Start start }
+
+(** Builds the ordinary task shape used by tests that do not exercise
+    heartbeat context state. *)
+let start_task ~token ~activity_type ~input =
+  start_task_fields ~heartbeat_details:[] ~heartbeat_timeout:None ~token
+    ~activity_type ~input
+
+(** Builds a task with server-supplied heartbeat state for contextual activity
+    tests while keeping ordinary fixture call sites concise. *)
+let start_task_with_heartbeat ~heartbeat_details ~heartbeat_timeout ~token
+    ~activity_type ~input =
+  start_task_fields ~heartbeat_details ~heartbeat_timeout ~token ~activity_type
+    ~input
 
 (** Constructs a cancellation task while retaining arbitrary binary token bytes,
     including values that are not valid UTF-8 text. *)
@@ -448,6 +494,79 @@ let test_completion_retry_does_not_redo_activity () =
   if !(supervisor.leased) <> [] then
     failwith "retried completion left lease active"
 
+(** A contextual activity receives the previous attempt's heartbeat details,
+    reports a typed progress value through the supervisor, and cannot submit a
+    second heartbeat after terminal completion invalidates its context. *)
+let test_contextual_heartbeat_lifecycle () =
+  let supervisor = fake_supervisor () in
+  let retained_context = ref None in
+  let activity =
+    Temporal.Activity.define_with_context ~name:"native_activity_heartbeat"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.string
+      (fun context () ->
+        retained_context := Some context;
+        let previous = Temporal.Activity.Context.details context in
+        begin
+          match previous with
+          | [ payload ] when decode_output Temporal.Codec.string (protocol_payload payload) = "prior" ->
+              ()
+          | _ -> failwith "activity did not receive prior heartbeat details"
+        end;
+        begin
+          match Temporal.Activity.Context.heartbeat_timeout context with
+          | Some timeout when Temporal.Duration.to_ms timeout = 2_000L -> ()
+          | _ -> failwith "activity heartbeat timeout was not converted exactly"
+        end;
+        match Temporal.Activity.Context.heartbeat context Temporal.Codec.string
+                "progress" with
+        | Ok () -> Ok "done"
+        | Error error -> Error error)
+  in
+  (* The native adapter only receives the package-private base definition.
+     This assertion protects the conversion that must retain a contextual
+     callback as executable code instead of treating [define_with_context] as
+     a remote-only reference. *)
+  let converted = base_activity activity in
+  begin
+    match Temporal_base.Definition.implementation converted with
+    | Some _ -> ()
+    | None -> failwith "contextual activity conversion lost its implementation"
+  end;
+  let token = Bytes.of_string "heartbeat-token" in
+  let prior = encode_input Temporal.Codec.string "prior" in
+  enqueue supervisor
+    (start_task_with_heartbeat ~heartbeat_details:[ prior ]
+       ~heartbeat_timeout:(Some (Protocol.{ seconds = 2L; nanoseconds = 0 }))
+       ~token ~activity_type:"native_activity_heartbeat"
+       ~input:[ encode_input Temporal.Codec.unit () ]);
+  let worker = worker supervisor [ Adapter.register activity ] in
+  expect_completed Adapter.Succeeded (Worker.poll worker);
+  begin
+    match !(supervisor.heartbeats) with
+    | [ heartbeat ] ->
+        if not (Bytes.equal heartbeat.Protocol.task_token token) then
+          failwith "heartbeat changed the opaque task token";
+        begin
+          match heartbeat.Protocol.details with
+          | [ payload ]
+            when decode_output Temporal.Codec.string payload = "progress" ->
+              ()
+          | _ -> failwith "heartbeat detail payload was not preserved"
+        end
+    | _ -> failwith "contextual activity did not submit exactly one heartbeat"
+  end;
+  begin
+    match !(retained_context) with
+    | None -> failwith "contextual activity did not retain its test context"
+    | Some context -> (
+        match
+          Temporal.Activity.Context.heartbeat context Temporal.Codec.string
+            "after-completion"
+        with
+        | Error _ -> ()
+        | Ok () -> failwith "heartbeat succeeded after activity completion")
+  end
+
 (** More than one input payload is rejected explicitly rather than silently
     dropping later values. *)
 let test_extra_input_is_rejected () =
@@ -546,6 +665,7 @@ let () =
   test_unknown_activity_retires_lease ();
   test_cancellation ();
   test_completion_retry_does_not_redo_activity ();
+  test_contextual_heartbeat_lifecycle ();
   test_extra_input_is_rejected ();
   test_registration_validation ();
   test_implementation_exception_is_retired ();

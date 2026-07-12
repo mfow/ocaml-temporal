@@ -9,7 +9,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use temporalio_common::protos::coresdk::{
-    ActivityTaskCompletion,
+    ActivityHeartbeat, ActivityTaskCompletion,
     activity_result::ActivityExecutionResult,
     activity_task::{ActivityTask, activity_task},
     workflow_activation::WorkflowActivation,
@@ -659,6 +659,22 @@ impl PollLanes {
             .unwrap_or_else(|error| error.into_inner())
             .complete_activity(&task_token)
             .map_err(WorkerBridgeError::Completion)
+    }
+
+    /// Records progress for a leased activity without retiring its ledger
+    /// entry. Core performs any batching and network work internally; the
+    /// bridge only checks ownership before handing over the owned protobuf.
+    pub fn record_activity_heartbeat(
+        &self,
+        heartbeat: ActivityHeartbeat,
+    ) -> Result<(), WorkerBridgeError> {
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .ensure_activity_leased(&heartbeat.task_token)
+            .map_err(WorkerBridgeError::Completion)?;
+        self.worker.record_activity_heartbeat(heartbeat);
+        Ok(())
     }
 
     /// Fails an activation that could not cross the semantic JSON boundary.

@@ -8,10 +8,16 @@
     adapters while retaining its typed implementation callback. *)
 let to_base (definition : ('input, 'output) Activity.t) =
   let implementation =
-    Option.map
-      (fun implementation input ->
-        Result.map_error Error_private.to_base (implementation input))
-      (Activity.implementation definition)
+    match Activity.implementation_with_context definition with
+    | Some implementation ->
+        Some (fun context input ->
+            Result.map_error Error_private.to_base
+              (implementation context input))
+    | None ->
+        Option.map
+          (fun implementation _context input ->
+            Result.map_error Error_private.to_base (implementation input))
+          (Activity.implementation definition)
   in
   Temporal_base.Definition.make
     ~name:(Activity.name definition)

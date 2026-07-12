@@ -77,6 +77,12 @@ module Fake_supervisor = struct
         Ok ()
       end
 
+  (** Heartbeats are not part of this completion-ownership regression; the
+      fake accepts them so the adapter's expanded supervisor contract remains
+      explicit without hiding a native operation. *)
+  let record_activity_heartbeat _supervisor (_heartbeat : Protocol.heartbeat) =
+    Ok ()
+
   (** Exposes the source classification expected by the adapter signature. *)
   let error_code error = error.code
 
@@ -121,7 +127,7 @@ let worker supervisor calls =
     Temporal_base.Definition.make ~name:"native_activity_lifecycle"
       ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
       ~implementation:
-        (Some (fun () ->
+        (Some (fun _context () ->
           incr calls;
           Ok ()))
   in

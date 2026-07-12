@@ -12,6 +12,7 @@ module Definition = Temporal_base.Definition
 module Codec = Temporal_base.Codec
 module Base_error = Temporal_base.Error
 module Observability = Temporal_base.Observability
+module Activity_context = Temporal_base.Activity_context
 
 (** Result-bind notation keeps expected protocol and codec failures on typed
     paths rather than using exceptions as ordinary activity control flow. *)
@@ -27,6 +28,7 @@ module type SUPERVISOR = sig
 
   val try_poll_activity : t -> (Protocol.task option, error) result
   val complete_activity : t -> Protocol.completion -> (unit, error) result
+  val record_activity_heartbeat : t -> Protocol.heartbeat -> (unit, error) result
   val error_code : error -> string
   val error_message : error -> string
 end
@@ -38,7 +40,10 @@ type error_view = { code : string; path : string; message : string }
     input/output types can share one name-indexed registry. *)
 type registered_activity =
   | Activity :
-      ('input, 'output, 'input -> ('output, Base_error.t) result) Definition.t
+      ( 'input,
+        'output,
+        Activity_context.t -> 'input -> ('output, Base_error.t) result )
+      Definition.t
       -> registered_activity
 
 (** Completion classes exposed in the small private outcome summary. *)
@@ -59,7 +64,10 @@ type outcome =
 (** Heterogeneous definition registry values. *)
 type registered_definition =
   | Registered_definition :
-      ('input, 'output, 'input -> ('output, Base_error.t) result) Definition.t
+      ( 'input,
+        'output,
+        Activity_context.t -> 'input -> ('output, Base_error.t) result )
+      Definition.t
       -> registered_definition
 
 (** Immutable comparison for copied opaque task-token bytes. The adapter never
@@ -243,6 +251,56 @@ let protocol_payload path (payload : Temporal_base.Codec.payload) =
   let* metadata = metadata_loop [] payload.metadata in
   Ok Protocol.{ metadata; data = Bytes.copy payload.data }
 
+(** Converts a Core duration into the runtime's millisecond-only value without
+    silently rounding. Core can represent sub-millisecond durations, but the
+    public OCaml duration intentionally cannot; rejecting those values keeps a
+    heartbeat timeout exact instead of changing its meaning at the boundary. *)
+let runtime_duration path (duration : Protocol.duration) =
+  if Int64.compare duration.seconds 0L < 0 then
+    Error
+      (make_error ~path:(path ^ ".seconds") "invalid_message"
+         "duration must not be negative")
+  else if duration.nanoseconds < 0 || duration.nanoseconds >= 1_000_000_000 then
+    Error
+      (make_error ~path:(path ^ ".nanoseconds") "invalid_message"
+         "nanoseconds are outside protobuf range")
+  else if duration.nanoseconds mod 1_000_000 <> 0 then
+    Error
+      (make_error ~path:(path ^ ".nanoseconds") "unsupported"
+         "sub-millisecond durations are not representable by the runtime")
+  else
+    let milliseconds_per_second = 1_000L in
+    let milliseconds = Int64.of_int (duration.nanoseconds / 1_000_000) in
+    let maximum_seconds = Int64.div Int64.max_int milliseconds_per_second in
+    let maximum_remainder =
+      Int64.rem Int64.max_int milliseconds_per_second
+    in
+    if Int64.compare duration.seconds maximum_seconds > 0
+       || (Int64.equal duration.seconds maximum_seconds
+          && Int64.compare milliseconds maximum_remainder > 0)
+    then
+      Error
+        (make_error ~path "unsupported"
+           "duration exceeds the runtime millisecond range")
+    else
+      Ok
+        (Temporal_base.Duration.of_ms
+           (Int64.add
+              (Int64.mul duration.seconds milliseconds_per_second)
+              milliseconds))
+
+(** Converts a list of protocol payloads while preserving order and copying
+    every body. The indexed path makes malformed metadata diagnosable without
+    exposing the payload bytes themselves. *)
+let runtime_payloads path payloads =
+  let rec loop index reversed = function
+    | [] -> Ok (List.rev reversed)
+    | payload :: rest ->
+        let* payload = runtime_payload (Printf.sprintf "%s[%d]" path index) payload in
+        loop (index + 1) (payload :: reversed) rest
+  in
+  loop 0 [] payloads
+
 (** Converts an activity implementation's structured error while preserving its
     retryability classification and every application-supplied detail payload.
     Adapter-generated input/registry errors use [failure_of_error] and are
@@ -374,6 +432,61 @@ module Make (Supervisor : SUPERVISOR) = struct
 
   type t = adapter_state
 
+  (** Builds the context passed to one activity attempt. Heartbeats go back
+      through the same typed supervisor mailbox as polling and completion; the
+      callback never captures a raw Rust pointer and the token is copied for
+      each request. Contexts are invalidated by [process_start] before it
+      returns, so retaining one in user code cannot submit progress for a later
+      attempt. *)
+  let activity_context adapter ~token ~details ~heartbeat_timeout =
+    let heartbeat payloads =
+      let rec convert index reversed = function
+        | [] -> Ok (List.rev reversed)
+        | payload :: rest ->
+            let path = Printf.sprintf "$.heartbeat.details[%d]" index in
+            (match protocol_payload path payload with
+            | Error error ->
+                Error
+                  (Base_error.make ~category:`Codec
+                     ~message:(
+                       Printf.sprintf
+                         "activity heartbeat payload rejected at %s: %s"
+                         error.path error.message)
+                     ())
+            | Ok payload -> convert (index + 1) (payload :: reversed) rest)
+      in
+      match convert 0 [] payloads with
+      | Error _ as error -> error
+      | Ok details ->
+          let heartbeat = Protocol.{ task_token = Bytes.copy token; details } in
+          try
+            match
+              Supervisor.record_activity_heartbeat adapter.supervisor heartbeat
+            with
+            | Ok () -> Ok ()
+            | Error source_error ->
+                let source =
+                  supervisor_error ~path:"$.heartbeat"
+                    ~error_code:Supervisor.error_code
+                    ~error_message:Supervisor.error_message source_error
+                in
+                Error
+                  (Base_error.make ~category:`Bridge
+                     ~message:(
+                       Printf.sprintf "activity heartbeat failed (%s): %s"
+                         source.code source.message)
+                     ())
+          with exception_ ->
+            let source = exception_error ~path:"$.heartbeat" exception_ in
+            Error
+              (Base_error.make ~category:`Bridge
+                 ~message:(
+                   Printf.sprintf "activity heartbeat failed (%s): %s"
+                     source.code source.message)
+                 ())
+    in
+    Activity_context.create ~heartbeat ~details ~heartbeat_timeout
+
   (** Creates the registry without contacting native Core or invoking user code.
   *)
   let create ~supervisor ~activities =
@@ -452,6 +565,7 @@ module Make (Supervisor : SUPERVISOR) = struct
   *)
   let enqueue_and_finish adapter ~token ~activity_type ~completion
       ~accepted_result =
+    let (completion : Protocol.completion) = completion in
     let token = Bytes.copy token in
     let completion =
       Protocol.{ completion with task_token = Bytes.copy completion.task_token }
@@ -482,56 +596,76 @@ module Make (Supervisor : SUPERVISOR) = struct
     let process () =
       match find_definition adapter.definitions start.activity_type with
       | Error error -> reject_task adapter ~token ~activity_type error
-      | Ok (Registered_definition definition) -> (
-          match Definition.implementation definition with
+      | Ok (Registered_definition definition) ->
+          (match Definition.implementation definition with
           | None ->
               reject_task adapter ~token ~activity_type
                 (make_error ~path:"$.variant.activity_type" "not_executable"
                    "registered activity has no local implementation")
-          | Some implementation -> (
-              match decode_input definition start.input with
+          | Some implementation ->
+              (match decode_input definition start.input with
               | Error error -> reject_task adapter ~token ~activity_type error
-              | Ok input -> (
-                  match implementation input with
-                  | Error implementation_error ->
-                      let diagnostic =
-                        application_error ~path:"$.implementation"
-                          implementation_error
-                      in
-                      begin match
-                        failure_of_application_error diagnostic implementation_error
-                      with
-                      | Error error -> reject_task adapter ~token ~activity_type error
-                      | Ok failure ->
-                          reject_task_with_failure adapter ~token ~activity_type
-                            ~failure diagnostic
-                      end
-                  | Ok output -> (
-                      match
-                        Codec.encode (Definition.output definition) output
-                      with
-                      | Error error ->
-                          reject_task adapter ~token ~activity_type
-                            (application_error ~path:"$.implementation.output"
-                               error)
-                      | Ok payload -> (
-                          match
-                            protocol_payload "$.completion.result" payload
-                          with
+              | Ok input ->
+                  let* details =
+                    runtime_payloads "$.variant.heartbeat_details"
+                      start.heartbeat_details
+                  in
+                  let* heartbeat_timeout =
+                    match start.heartbeat_timeout with
+                    | None -> Ok None
+                    | Some timeout ->
+                        Result.map (fun timeout -> Some timeout)
+                          (runtime_duration "$.variant.heartbeat_timeout" timeout)
+                  in
+                  let context =
+                    activity_context adapter ~token ~details ~heartbeat_timeout
+                  in
+                  Fun.protect
+                    ~finally:(fun () -> Activity_context.invalidate context)
+                    (fun () ->
+                      match implementation context input with
+                      | Error implementation_error ->
+                          let diagnostic =
+                            application_error ~path:"$.implementation"
+                              implementation_error
+                          in
+                          begin
+                            match
+                              failure_of_application_error diagnostic
+                                implementation_error
+                            with
+                            | Error error ->
+                                reject_task adapter ~token ~activity_type error
+                            | Ok failure ->
+                                reject_task_with_failure adapter ~token
+                                  ~activity_type ~failure diagnostic
+                          end
+                      | Ok output ->
+                          (match
+                             Codec.encode (Definition.output definition) output
+                           with
                           | Error error ->
-                              reject_task adapter ~token ~activity_type error
+                              reject_task adapter ~token ~activity_type
+                                (application_error
+                                   ~path:"$.implementation.output" error)
                           | Ok payload ->
-                              let completion =
-                                Protocol.
-                                  {
-                                    task_token = Bytes.copy token;
-                                    result = Completed (Some payload);
-                                  }
-                              in
-                              enqueue_and_finish adapter ~token ~activity_type
-                                ~completion
-                                ~accepted_result:(Completed_result Succeeded))))
-              ))
+                              (match
+                                 protocol_payload "$.completion.result" payload
+                               with
+                              | Error error ->
+                                  reject_task adapter ~token ~activity_type error
+                              | Ok payload ->
+                                  let completion =
+                                    Protocol.
+                                      {
+                                        task_token = Bytes.copy token;
+                                        result = Completed (Some payload);
+                                      }
+                                  in
+                                  enqueue_and_finish adapter ~token
+                                    ~activity_type ~completion
+                                    ~accepted_result:
+                                      (Completed_result Succeeded))))))
     in
     try process ()
     with exception_ ->

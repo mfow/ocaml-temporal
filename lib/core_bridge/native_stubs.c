@@ -430,6 +430,15 @@ CAMLprim value ocaml_temporal_worker_complete_activity_json(value runtime,
       runtime, input, ocaml_temporal_core_v1_worker_complete_activity_json);
 }
 
+/* Submit one heartbeat without exposing the native task token to OCaml. */
+CAMLprim value
+ocaml_temporal_worker_record_activity_heartbeat_json(value runtime,
+                                                     value input) {
+  return invoke_runtime_json(
+      runtime, input,
+      ocaml_temporal_core_v1_worker_record_activity_heartbeat_json);
+}
+
 /* Return the original Rust-produced activity document after OCaml decode
  * failure. Rust matches the retained task before the native ledger retires
  * its exact opaque token. */

@@ -186,6 +186,12 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_worker_complete_activity_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* Record progress for one currently leased remote activity task. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_worker_record_activity_heartbeat_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
 /* Reparse and reject the exact Rust-produced activity-task document when the
  * OCaml semantic decoder cannot accept it after lease handoff. */
 ocaml_temporal_core_status ocaml_temporal_core_v1_worker_reject_activity_json(

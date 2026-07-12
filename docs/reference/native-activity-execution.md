@@ -12,6 +12,9 @@ try_poll_activity :
 
 complete_activity :
   supervisor -> Activity_protocol.completion -> (unit, native_error) result
+
+record_activity_heartbeat :
+  supervisor -> Activity_protocol.heartbeat -> (unit, native_error) result
 ```
 
 The adapter is deliberately independent of the concrete Rust supervisor.  A
@@ -45,13 +48,44 @@ adapter mutex:
 2. Find the activity type in the immutable registry.
 3. Decode zero arguments as the canonical unit payload, one argument with the
    registered input codec, or reject more than one argument.
-4. Invoke the implementation and convert its typed `result` into either an
+4. Build an attempt context from the server's heartbeat details and timeout,
+   then invoke the implementation and convert its typed `result` into either an
    encoded payload or a structured application failure. Application failure
    retryability and every binary-safe detail payload supplied in `Error.t` are
    copied into the Temporal failure rather than reduced to a message only.
 5. Validate the completion through the strict activity-protocol encoder.
 6. Submit the completion to the supervisor and remove the token only after the
    supervisor returns `Ok ()`.
+
+The context-aware form is authored with `Temporal.Activity.define_with_context`:
+
+```ocaml
+let summarize =
+  Temporal.Activity.define_with_context
+    ~name:"summarize"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+    (fun context text ->
+      match Temporal.Activity.Context.heartbeat context Temporal.Codec.string text with
+      | Error error -> Error error
+      | Ok () -> Ok (String.uppercase_ascii text))
+```
+
+`Temporal.Activity.Context.details` returns the ordered payloads from the
+previous attempt's heartbeat, and `heartbeat_timeout` returns the server's
+configured interval when one was supplied. `Context.heartbeat` and
+`Context.heartbeat_payloads` copy their payloads, validate them through the
+same strict activity JSON codec as completions, and send them through the
+supervisor mailbox. The mailbox serializes heartbeats with polling,
+completion, and shutdown; an arbitrary Rust thread never calls an OCaml
+callback.
+
+The context is valid only while its activity attempt is executing. The adapter
+invalidates it before returning from dispatch, including exceptional and
+completion-error paths. A retained context therefore returns a typed error
+instead of retaining a native pointer or accidentally heartbeating a later
+task. A successful heartbeat does not acknowledge or retire the activity lease;
+the terminal completion retry map remains the sole owner of completion debt.
 
 An implementation exception is caught at this boundary and becomes a typed
 non-retryable failure.  Exceptions are therefore a last-resort defect guard,
@@ -101,11 +135,12 @@ and the completion is submitted once; retrying never repeats user work.
 ## Current boundary and deliberate limits
 
 This slice implements typed local activity dispatch, failure/cancellation
-completions, strict completion validation, transport retry, and public worker
-wiring. The first local activity success path has been exercised by the live
-Docker Compose gate. Heartbeats, asynchronous activity completion, and
-activity retry policy decisions still require additional semantic protocol
-fields and dedicated live scenarios.
+completions, strict completion and heartbeat validation, transport retry, and
+public worker wiring. The native heartbeat path is covered by focused Rust and
+OCaml tests, including binary detail preservation, prior-attempt detail
+delivery, lease retention, and context invalidation. A live Temporal heartbeat
+scenario, asynchronous activity completion, and timeout/retry behavior still
+require dedicated acceptance scenarios.
 
 The semantic wire shape already carries the full decoded Temporal activity
 context (headers, heartbeat details, timeouts, retry policy, priority, and

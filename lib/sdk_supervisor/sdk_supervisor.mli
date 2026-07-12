@@ -123,6 +123,11 @@ module Native : sig
       (bytes, Temporal_core_bridge.Native_bridge.error) result
     (** Canonically serializes and reparses one remote activity completion. *)
 
+    val encode_activity_heartbeat :
+      Temporal_protocol.Activity_protocol.heartbeat ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes and reparses one activity heartbeat. *)
+
     val encode_client_start_request :
       Temporal_protocol.Client_protocol.start_request ->
       (bytes, Temporal_core_bridge.Native_bridge.error) result
@@ -264,6 +269,9 @@ module Native : sig
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
         (** Validates and submits one typed remote activity completion. *)
+    | Record_activity_heartbeat :
+        Temporal_protocol.Activity_protocol.heartbeat -> unit operation
+        (** Records progress for a leased activity without retiring it. *)
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation
 

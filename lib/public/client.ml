@@ -211,25 +211,24 @@ let run_id handle = handle.run_id
     invalidated, so the atomic state transition cannot hide a live resource. *)
 let shutdown client =
   Mutex.lock client.shutdown_mutex;
-  let result =
-    match client.shutdown_result with
-    | Some result -> result
-    | None ->
-        (* Close admission before entering native teardown. Concurrent starts
-           that already passed their check are ordered by the supervisor; later
-           callers observe the closed bit and cannot enqueue new work. *)
-        Atomic.set client.closed true;
-        let result =
-          try Backend.client_shutdown client.backend with
-          | exception_ ->
-              Error
-                (Error.defect
-                   ~message:
-                     (Printf.sprintf "client shutdown raised: %s"
-                        (Printexc.to_string exception_)))
-        in
-        client.shutdown_result <- Some result;
-        result
-  in
-  Mutex.unlock client.shutdown_mutex;
-  result
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock client.shutdown_mutex)
+    (fun () ->
+      match client.shutdown_result with
+      | Some result -> result
+      | None ->
+          (* Close admission before entering native teardown. Concurrent starts
+             that already passed their check are ordered by the supervisor; later
+             callers observe the closed bit and cannot enqueue new work. *)
+          Atomic.set client.closed true;
+          let result =
+            try Backend.client_shutdown client.backend with
+            | exception_ ->
+                Error
+                  (Error.defect
+                     ~message:
+                       (Printf.sprintf "client shutdown raised: %s"
+                          (Printexc.to_string exception_)))
+          in
+          client.shutdown_result <- Some result;
+          result)

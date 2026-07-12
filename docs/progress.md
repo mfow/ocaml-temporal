@@ -8,6 +8,12 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
+Entries marked "Historical snapshot" preserve the status at an earlier
+milestone. Their follow-up wording is not a claim about the current
+implementation when a later entry documents that work as complete. The
+two-binary Temporal acceptance path remains pending unless an entry explicitly
+records a successful live run.
+
 ## 2026-07-12: Complete native activity command translation
 
 Status: focused runtime, worker-adapter, and native translation tests pass
@@ -120,6 +126,11 @@ mapping and ownership rules.
 
 ## 2026-07-12: Typed supervisor worker operations
 
+Historical snapshot: This milestone predates the wakeable readiness seam
+documented above. The readiness follow-up described below records the state at
+this commit; it does not mean that the current ABI lacks the readiness
+operation.
+
 Status: focused native-supervisor and protocol tests verified locally; a
 wakeable readiness ABI and production worker loop remain follow-up work.
 
@@ -159,6 +170,10 @@ activity tokens, changed same-identity content, duplicate poll preservation,
 rejection cleanup, and shutdown drainage.
 
 ## 2026-07-12: Raw client start and exact-run wait adapter
+
+Historical snapshot: This milestone predates the public client routing
+milestone below. Its status and live-path follow-up describe what remained at
+this commit, not the current public `Temporal.Client` implementation.
 
 Status: Rust and OCaml protocol, ABI, formatting, and warnings-as-errors checks
 pass locally; public client wiring and live Temporal integration remain

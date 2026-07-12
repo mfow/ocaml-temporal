@@ -94,6 +94,80 @@ services:
     networks:
       - temporal-network
 
+  # The acceptance worker is a separate OCaml process from the driver. Both
+  # services extend the same development image so they exercise the exact
+  # public package and Rust bridge that a checked-out application would build.
+  smoke-worker:
+    profiles: [temporal]
+    extends:
+      service: dev
+    # The source tree and Dune build directory are shared with the preceding
+    # Compose build step. Running both processes as the same host UID prevents
+    # the default image user from opening a lock created by that step.
+    # The worker gets its own Dune build directory so its long-lived `dune exec`
+    # lock cannot block the separately launched driver.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      SMOKE_WORKER_READY_FILE: /tmp/ocaml-temporal-two-binary-worker.ready
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/smoke-worker
+      - test/integration/temporal/worker/smoke_worker.exe
+    healthcheck:
+      test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-two-binary-worker.ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 10s
+    # The executable converts SIGTERM into Worker.shutdown and needs enough
+    # time for Core to release any in-flight workflow/activity lease.
+    stop_grace_period: 30s
+    init: true
+
+  # The driver is run with `docker compose run` by the Makefile after the
+  # worker health check succeeds. Keeping it as a service still gives Compose
+  # one normalized model to validate and makes the two-process topology clear.
+  smoke-driver:
+    profiles: [temporal]
+    extends:
+      service: dev
+    # Keep the driver on the same bind-mounted build ownership as the worker;
+    # this also makes repeated local runs independent of the image's opam UID.
+    # Its private Dune build directory is required because the worker remains
+    # alive while this process is built and executed.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      smoke-worker:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      SMOKE_DRIVER_TIMEOUT_SECONDS: "${SMOKE_DRIVER_TIMEOUT_SECONDS:-120}"
+    command:
+      - timeout
+      - --signal=TERM
+      - --kill-after=10s
+      - "${SMOKE_DRIVER_TIMEOUT_SECONDS:-120}"
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/smoke-driver
+      - test/integration/temporal/driver/smoke_driver.exe
+    init: true
+
 networks:
   temporal-network:
     driver: bridge

@@ -34,6 +34,20 @@ let () =
   | Error { status = Configuration; message } ->
       assert (String.length message > 0)
   | _ -> failwith "invalid client configuration was accepted");
+  (* The sender-side mirror rejects the Core cache invariant before JSON is
+     serialized, so this invalid document cannot reach native worker startup. *)
+  (match
+     Bridge.worker_config ~namespace:"temporal-sdk-test"
+       ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
+       ~max_cached_workflows:100 ~max_outstanding_workflow_tasks:100
+       ~max_concurrent_workflow_task_polls:1 ~graceful_shutdown_timeout_ms:1_000L
+   with
+  | Error { status = Configuration; message } ->
+      assert
+        (String.starts_with
+           ~prefix:"max_concurrent_workflow_task_polls must be at least 2"
+           message)
+  | _ -> failwith "cached worker configuration with one poller was accepted");
   let worker_config =
     unwrap
       (Bridge.worker_config ~namespace:"temporal-sdk-test"

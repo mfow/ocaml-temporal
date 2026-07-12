@@ -27,6 +27,16 @@ const MAX_RUN_ID_BYTES: usize = 64 * 1024;
 /// Maximum opaque task-token length admitted into the private bridge.
 const MAX_TASK_TOKEN_BYTES: usize = 128 * 1024 * 1024;
 
+/// Builds the bounded failure text sent to Core when a workflow activation
+/// cannot cross the private semantic boundary.
+///
+/// The caller can provide only a process-static string. This keeps payloads,
+/// headers, run identifiers, and other workflow-controlled data out of the
+/// server-visible diagnostic while still identifying the conversion category.
+pub fn workflow_rejection_message(reason: &'static str) -> String {
+    format!("OCaml bridge could not represent the workflow activation: {reason}")
+}
+
 /// Returns the exact Core task surface implemented by the first worker slice.
 pub fn bridge_task_types() -> WorkerTaskTypes {
     WorkerTaskTypes {
@@ -462,6 +472,20 @@ impl PollLanes {
     /// fatal worker error, but it must not also fabricate an eternally leased
     /// task that prevents deterministic shutdown.
     pub async fn reject_workflow_delivery(&self, run_id: &str) -> Result<(), WorkerBridgeError> {
+        self.reject_workflow_delivery_with_reason(
+            run_id,
+            "semantic workflow activation conversion failed",
+        )
+        .await
+    }
+
+    /// Rejects a leased activation with a privacy-safe static conversion
+    /// category and then retires the lease exactly once.
+    pub async fn reject_workflow_delivery_with_reason(
+        &self,
+        run_id: &str,
+        reason: &'static str,
+    ) -> Result<(), WorkerBridgeError> {
         self.ledger
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -469,7 +493,7 @@ impl PollLanes {
             .map_err(WorkerBridgeError::Completion)?;
         let completion = WorkflowActivationCompletion::fail(
             run_id,
-            "OCaml bridge could not represent the workflow activation".into(),
+            workflow_rejection_message(reason).into(),
             Some(WorkflowTaskFailedCause::WorkflowWorkerUnhandledFailure),
         );
         let core_result = self

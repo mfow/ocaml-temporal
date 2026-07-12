@@ -299,6 +299,10 @@ fn preserves_realistic_first_workflow_activation() {
             seconds: 1_720_000_000,
             nanos: 123,
         }),
+        // Temporal Server emits an explicit zero first-task backoff for an
+        // ordinary non-cron start. The bridge accepts this canonical default
+        // but does not expose it as workflow metadata.
+        cron_schedule_to_schedule_interval: Some(prost_wkt_types::Duration::default()),
         priority: Some(temporalio_protos::temporal::api::common::v1::Priority {
             priority_key: 2,
             fairness_key: "tenant-a".to_owned(),
@@ -349,6 +353,25 @@ fn preserves_realistic_first_workflow_activation() {
     assert_eq!(
         workflow_protocol::decode_activation(&json).unwrap(),
         semantic
+    );
+
+    // A non-zero first-task backoff carries scheduling semantics and must not
+    // be silently discarded while this protocol slice has no representation
+    // for it.
+    let mut unsupported_backoff = core.clone();
+    let Some(Variant::InitializeWorkflow(initialize)) =
+        unsupported_backoff.jobs[0].variant.as_mut()
+    else {
+        panic!("realistic activation must contain initialization");
+    };
+    initialize.cron_schedule_to_schedule_interval = Some(prost_wkt_types::Duration {
+        seconds: 1,
+        nanos: 0,
+    });
+    let error = workflow_protocol::activation_from_core(&unsupported_backoff).unwrap_err();
+    assert_eq!(
+        error.code,
+        workflow_protocol::CoreConversionErrorCode::Unsupported
     );
 
     let mut unknown_suggestion = core;
@@ -604,6 +627,24 @@ fn enforces_core_absence_and_eviction_invariants() {
             .code,
         workflow_protocol::CoreConversionErrorCode::InvalidCore
     );
+
+    // Core's cache-removal acknowledgement is a successful completion with
+    // no commands or metadata; this is the only valid response after a
+    // terminal run has already left the language worker's registry.
+    let empty = workflow_protocol::Completion {
+        run_id: eviction.run_id.clone(),
+        commands: Vec::new(),
+    };
+    let empty_core =
+        workflow_protocol::completion_to_core_for_activation(&eviction, &empty).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        empty_core.status.as_ref()
+    else {
+        panic!("cache eviction acknowledgement must be successful");
+    };
+    assert!(success.commands.is_empty());
+    assert!(success.used_internal_flags.is_empty());
+    assert_eq!(success.versioning_behavior, 0);
 
     let absent_command = core_commands::WorkflowCommand {
         user_metadata: None,

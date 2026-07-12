@@ -60,15 +60,15 @@ jobs:
   temporal-integration:
     name: Temporal/PostgreSQL integration smoke (OCaml 5.5)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
-      # Keep this as one explicit compatibility lane. The same job will build
-      # the OCaml client and worker when the live workflow test is added.
+      # Keep this as one explicit compatibility lane because it starts the
+      # complete PostgreSQL/Temporal stack and two OCaml processes.
       OCAML_VERSION: "5.5"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-      - name: Run the real Temporal Compose smoke
+      - name: Run the live two-OCaml-binary Temporal Compose smoke
         run: make test-temporal-integration
 
   verify:

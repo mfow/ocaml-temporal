@@ -44,6 +44,14 @@ accepted only at their documented default; a non-default value returns a typed
 [protocol reference](core-protocol.md), machine-readable schemas, and
 [ADR 0006](../decisions/0006-first-workflow-semantic-protocol.md).
 
+There is one normal-start compatibility default in the initializer: Temporal
+Core maps the server's `first_workflow_task_backoff` to
+`cron_schedule_to_schedule_interval`, and Temporal Server sends an explicit
+zero duration for an ordinary non-cron start. The bridge accepts exactly that
+zero value because it carries no scheduling meaning. A non-zero duration (or a
+cron schedule) remains `Unsupported` until the semantic protocol models the
+delay explicitly.
+
 After protocol decoding, the private pure-OCaml
 [`Native_execution`](native-execution-translation.md) adapter translates jobs
 into the deterministic execution kernel and translates its commands back into
@@ -287,6 +295,11 @@ assemble these strings themselves. The client document contains exactly
 `max_outstanding_workflow_tasks`, `max_concurrent_workflow_task_polls`, and
 `graceful_shutdown_timeout_ms`. Closed Draft 2020-12 schemas live under
 `docs/schemas/bridge/`.
+
+Temporal Core requires at least two workflow-task pollers when
+`max_cached_workflows` is non-zero. The OCaml validator, the Rust validator,
+and the JSON Schema all enforce that relationship before worker construction;
+the public native worker default is two pollers.
 
 Both sides reject missing, unknown, wrongly typed, empty required, and
 out-of-range values. The whole document and each individual string have a

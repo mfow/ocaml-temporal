@@ -63,6 +63,11 @@ let max_transport_string_bytes = 65_536
 (** Resource ceiling mirrored by the Rust worker-config adapter. *)
 let max_worker_count = 1_000_000
 
+(** Temporal Core rejects a cached-workflow worker unless it has at least two
+    workflow-task pollers. Keep this sender-side invariant mirrored in Rust so
+    invalid JSON cannot reach Core through another bridge entry point. *)
+let min_cached_workflow_polls = 2
+
 (** Maximum accepted graceful shutdown period in milliseconds. *)
 let max_graceful_shutdown_timeout_ms = 86_400_000L
 
@@ -239,6 +244,13 @@ let worker_config ~namespace ~task_queue ~build_id ~max_cached_workflows
         max_outstanding_workflow_tasks;
       validate_count ~allow_zero:false "max_concurrent_workflow_task_polls"
         max_concurrent_workflow_task_polls;
+      (if
+         max_cached_workflows > 0
+         && max_concurrent_workflow_task_polls < min_cached_workflow_polls
+       then
+         configuration_error
+           "max_concurrent_workflow_task_polls must be at least 2 when max_cached_workflows is greater than zero"
+       else Ok ());
       (if
          Int64.compare graceful_shutdown_timeout_ms 0L >= 0
          && Int64.compare graceful_shutdown_timeout_ms

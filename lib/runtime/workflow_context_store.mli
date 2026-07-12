@@ -48,10 +48,14 @@ val detached_error :
   message:string -> ('value, Temporal_base.Error.t) Future_store.t
 
 (** Assigns a sequence number, records how to decode the eventual result,
-    produces a complete schedule-activity command, and returns a future for the
-    decoded output. [activity_id] and [task_queue] default deterministically;
-    when all timeout options are absent, a 60-second start-to-close timeout is
-    used because Temporal requires at least one activity timeout. *)
+    produces a complete schedule-activity command, and returns the decoded
+    output future together with an owner-checked cancellation operation.
+    [activity_id] and [task_queue] default deterministically; when all timeout
+    options are absent, a 60-second start-to-close timeout is used because
+    Temporal requires at least one activity timeout. The cancellation operation
+    emits at most one [Request_cancel_activity] command for its sequence and
+    remains a valid no-op after a terminal result or activity-start failure.
+    Calls made without this context current are typed lifecycle defects. *)
 val schedule_activity :
   t ->
   name:string ->
@@ -67,7 +71,8 @@ val schedule_activity :
   ?do_not_eagerly_execute:bool ->
   decode:(Temporal_base.Codec.payload -> ('output, Temporal_base.Error.t) result) ->
   unit ->
-  ('output, Temporal_base.Error.t) Future_store.t
+  ( ('output, Temporal_base.Error.t) Future_store.t
+  * (unit -> (unit, Temporal_base.Error.t) result) )
 
 (** Assigns a private correlation sequence, records how to decode the child
     result, emits a command containing the application-supplied durable [id]

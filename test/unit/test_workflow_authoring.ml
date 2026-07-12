@@ -3,6 +3,10 @@ let summarize =
   Temporal.Activity.remote ~name:"summarize" ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
 
+(** Retains the opaque definition while [test_ordinary_helper_composition]
+    creates a partially applied starter with the same name. *)
+let summarize_definition = summarize
+
 (** Remote child workflow with the same result type, suitable for homogeneous
     aggregation alongside [summarize]. *)
 let review =
@@ -65,7 +69,15 @@ let test_activity_option_validation_precedes_encoding () =
   expect_detached "invalid activity queue"
     (Temporal.Activity.start ~task_queue:"" tracked_activity "document");
   if !tracked_activity_encode_calls <> 0 then
-    failwith "invalid activity option invoked the input codec"
+    failwith "invalid activity option invoked the input codec";
+  let handle =
+    Temporal.Activity.start_handle ~task_queue:"" tracked_activity "document"
+  in
+  expect_detached "invalid activity handle" (Temporal.Activity.future handle);
+  match Temporal.Activity.cancel handle with
+  | Error error when String.equal (Temporal.Error.kind error) "defect" -> ()
+  | Error _ -> failwith "invalid activity handle returned the wrong error"
+  | Ok () -> failwith "invalid activity handle cancellation unexpectedly succeeded"
 
 (** Compile-checks that partial application and higher-order wrappers retain
     normal OCaml function composition for all and heterogeneous race. *)
@@ -74,7 +86,15 @@ let test_ordinary_helper_composition () =
   let review = Temporal.Child_workflow.start ~id:"review-1" review in
   expect_detached "fan out" (fan_out [ summarize; review ] "document");
   let render = Temporal.Child_workflow.start ~id:"render-1" render in
-  expect_detached "heterogeneous race" (fastest summarize render "document")
+  expect_detached "heterogeneous race" (fastest summarize render "document");
+  let handle =
+    Temporal.Activity.start_handle summarize_definition "document"
+  in
+  expect_detached "detached activity handle" (Temporal.Activity.future handle);
+  match Temporal.Activity.cancel handle with
+  | Error error when String.equal (Temporal.Error.kind error) "defect" -> ()
+  | Error _ -> failwith "detached activity handle returned the wrong error"
+  | Ok () -> failwith "detached activity handle cancellation unexpectedly succeeded"
 
 (** Executes the standalone authoring and validation checks. *)
 let () =

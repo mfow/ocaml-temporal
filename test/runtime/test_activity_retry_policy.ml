@@ -67,7 +67,7 @@ let make_workflow ?policy name =
                  (Temporal_base.Error.defect
                     ~message:"retry-policy test ran outside workflow")
            | Some context ->
-               let future =
+               let future, _cancel =
                  Context.schedule_activity context ~name:"retryable_activity"
                    ~input:(encode_input input) ?retry_policy:policy
                    ~decode:(Temporal_base.Codec.decode Temporal_base.Codec.string)

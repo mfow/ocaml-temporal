@@ -398,6 +398,16 @@ joined by the cleanup thread rather than detached. Keeping the counter and
 task-drop assertions in separate test sources prevents a future lifecycle
 change from being hidden by the broad ABI test binary.
 
+The lifecycle regression corpus also covers the two less visible ownership
+edges. The mailbox test abandons an admitted terminal reply while the owner is
+still processing earlier work and proves that the owner settles the reply and
+joins without a waiting caller. The pending-start transition test publishes a
+terminal result and then races cancellation; shutdown must drain the ticket,
+join the still-running Tokio task, and release Core only after that task is
+gone. The ABI suite repeats disposal for an error diagnostic as well as a
+success value, proving that both result buffers share the same idempotent
+cleanup rule.
+
 The Dune rule asks `rustc --print=native-static-libs` for the exact native
 libraries required by the static archive and consumes the resulting ordered
 flags from a generated S-expression file. This keeps platform linker knowledge

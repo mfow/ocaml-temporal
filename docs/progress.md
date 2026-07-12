@@ -14,6 +14,20 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Per-run worker shutdown evidence
+
+The two-binary Compose teardown now removes a per-run marker before stopping
+the worker and accepts shutdown only after the current worker publishes the
+exact `worker-stopped` value. This avoids a false positive caused by
+`docker compose logs`, whose aggregate output can retain a successful marker
+line from an earlier container instance. The marker writer uses the same
+temporary-file-and-rename rule as readiness publication, and a Docker-free
+contract test seeds a stale log before proving that validation fails until the
+current marker exists. Local validation passed with `dash -n`, the Compose
+configuration contract, the worker-stop contract, and the restart/replay
+contract; GitHub Actions is treated as pending infrastructure evidence rather
+than a local correctness signal.
+
 ## 2026-07-13: Acceptance validator and client-boundary hardening (#164–#165)
 
 The merged tip is `1fa679c`: [#164](https://github.com/mfow/ocaml-temporal/pull/164)

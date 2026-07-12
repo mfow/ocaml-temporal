@@ -41,6 +41,7 @@ require_text '--build-dir=/workspace/_build/smoke-worker'
 require_text '--build-dir=/workspace/_build/smoke-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "120"'
 require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready'
+require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
 require_text '--kill-after=10s'
 expected_uid=${HOST_UID:-1000}
 expected_gid=${HOST_GID:-1000}
@@ -101,6 +102,8 @@ require_source_text "$worker" 'module Worker = Temporal.Worker'
 require_source_text "$worker" 'Worker.create ~target_url ~namespace'
 require_source_text "$worker" 'Worker.run worker'
 require_source_text "$worker" 'Worker.shutdown worker'
+require_source_text "$worker" 'let publish_stopped path'
+require_source_text "$worker" 'publish_stopped stopped_file'
 
 require_source_text "$definitions" 'Temporal.Activity.define_with_context ~name:"smoke.heartbeat_retry"'
 require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat_timeout'
@@ -116,7 +119,7 @@ if ! grep -F 'temporal workflow describe' "$makefile" >/dev/null; then
   echo "failure diagnostics must use the official Temporal CLI workflow describe command" >&2
   exit 1
 fi
-for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-two-binary test-temporal-integration; do
+for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration; do
   if ! grep -E "^${target}:" "$makefile" >/dev/null; then
     echo "Makefile does not define required target: $target" >&2
     exit 1

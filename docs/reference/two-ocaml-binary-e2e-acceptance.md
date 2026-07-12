@@ -521,11 +521,14 @@ claims become live evidence:
 The driver logs no-payload phase records for starts, exact-run cancellation,
 exact-run waits, terminal classes, and operation latency. The Makefile requires
 the driver's `client_shutdown status=ok` marker, and after that stops the
-worker and requires `two-binary worker stopped cleanly`. The harness captures
-these records only for failure diagnosis; result assertions, not log text, are
-the workflow success oracle. Per-activation/task identifiers and completion
-latency are a future observability enhancement and must remain payload-free if
-added.
+worker and requires the current run's exact `worker-stopped` marker. The
+`two-binary worker stopped cleanly` line remains useful human-readable
+diagnostic output, but aggregated Compose logs are not used as the teardown
+oracle because they can include output from an earlier container instance. The
+harness captures these records only for failure diagnosis; result assertions,
+not log text, are the workflow success oracle. Per-activation/task identifiers
+and completion latency are a future observability enhancement and must remain
+payload-free if added.
 
 The first live test is intentionally small. With this success path verified,
 extend the same two-binary topology rather than adding a separate pseudo-worker

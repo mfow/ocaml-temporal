@@ -115,6 +115,7 @@ services:
       TEMPORAL_ADDRESS: http://temporal:7233
       TEMPORAL_NAMESPACE: temporal-sdk-test
       SMOKE_WORKER_READY_FILE: /tmp/ocaml-temporal-two-binary-worker.ready
+      SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped
       SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready
     command:
       - opam

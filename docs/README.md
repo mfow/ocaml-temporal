@@ -36,6 +36,9 @@ The remaining reference documents are useful when changing one subsystem:
 - [Two-OCaml-binary acceptance design](reference/two-ocaml-binary-e2e-acceptance.md)
   records the planned live driver/worker result test. Its scaffold is not a
   passing live acceptance test yet.
+- [Live acceptance coverage](reference/live-acceptance-coverage.md) separates
+  synthetic evidence, the current real-server lifecycle smoke, and planned
+  two-binary workflow assertions.
 - [Quality and security gates](reference/quality-gates.md) documents pinned
   scanners and the checks run locally and in CI.
 - [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)

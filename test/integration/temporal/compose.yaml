@@ -104,6 +104,8 @@ services:
     # The source tree and Dune build directory are shared with the preceding
     # Compose build step. Running both processes as the same host UID prevents
     # the default image user from opening a lock created by that step.
+    # The worker gets its own Dune build directory so its long-lived `dune exec`
+    # lock cannot block the separately launched driver.
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     depends_on:
       temporal:
@@ -119,6 +121,7 @@ services:
       - --
       - dune
       - exec
+      - --build-dir=_build/smoke-worker
       - test/integration/temporal/worker/smoke_worker.exe
     healthcheck:
       test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-two-binary-worker.ready"]
@@ -140,6 +143,8 @@ services:
       service: dev
     # Keep the driver on the same bind-mounted build ownership as the worker;
     # this also makes repeated local runs independent of the image's opam UID.
+    # Its private Dune build directory is required because the worker remains
+    # alive while this process is built and executed.
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     depends_on:
       smoke-worker:
@@ -154,6 +159,7 @@ services:
       - --
       - dune
       - exec
+      - --build-dir=_build/smoke-driver
       - test/integration/temporal/driver/smoke_driver.exe
     init: true
 

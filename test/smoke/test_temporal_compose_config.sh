@@ -37,6 +37,8 @@ require_text 'smoke-driver:'
 require_text 'TEMPORAL_TWO_BINARY_LIVE: "1"'
 require_text 'smoke_worker.exe'
 require_text 'smoke_driver.exe'
+require_text '--build-dir=_build/smoke-worker'
+require_text '--build-dir=_build/smoke-driver'
 require_text 'user: 1000:1000'
 if ! grep -F 'user: "${HOST_UID:-1000}:${HOST_GID:-1000}"' "$compose_file" >/dev/null; then
   echo "smoke services must inherit the invoking host UID/GID" >&2

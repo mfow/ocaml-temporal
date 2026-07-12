@@ -116,7 +116,11 @@ The Compose services are `postgresql`, `temporal`, `smoke-worker`, and
 image and repository checkout, but execute different Dune binaries. This
 proves that the public library can be linked into more than one OCaml-owned
 binary; it does not imply that an application must share a Rust runtime across
-processes.
+processes. Each process uses its own Dune build directory (`_build/smoke-worker`
+or `_build/smoke-driver`). Dune keeps a build-directory lock for the lifetime
+of `dune exec`; separate directories are therefore required while the worker
+is running, otherwise the driver's build can wait forever on the worker's lock
+before its OCaml code starts.
 
 The worker health check may become healthy only after it has connected,
 validated its worker, registered its OCaml definitions, and started both

@@ -182,6 +182,23 @@ static owned_response *require_live(value response) {
   return owned;
 }
 
+/* Copy one Rust-owned byte span without passing its canonical null pointer to
+ * the OCaml initialized-string primitive.  The Rust ABI deliberately uses
+ * `{ NULL, 0 }` for an empty allocation; allocating an empty OCaml string
+ * directly avoids making a zero-length `memcpy` depend on whether a particular
+ * OCaml runtime build tolerates a null source pointer.  A nonempty null span
+ * is an ABI defect, so fail before dereferencing it rather than crashing. */
+static value copy_owned_buffer(const ocaml_temporal_core_buffer *buffer) {
+  if (buffer->len == 0) {
+    return caml_alloc_string(0);
+  }
+  if (buffer->ptr == NULL) {
+    caml_invalid_argument("Temporal native response has a null nonempty buffer");
+  }
+  return caml_alloc_initialized_string((mlsize_t)buffer->len,
+                                        (const char *)buffer->ptr);
+}
+
 /* Negotiate ABI compatibility without blocking; the returned custom block owns
  * any diagnostic allocated by Rust. */
 CAMLprim value ocaml_temporal_check_abi_version(value requested_version) {
@@ -442,29 +459,23 @@ CAMLprim value ocaml_temporal_response_status(value response) {
 /* Copy successful Rust bytes into GC-owned OCaml storage before cleanup. */
 CAMLprim value ocaml_temporal_response_value(value response) {
   CAMLparam1(response);
-  CAMLlocal1(output);
   owned_response *owned = require_live(response);
 
   if (owned->result.status != OCAML_TEMPORAL_CORE_STATUS_OK) {
     caml_invalid_argument("Temporal native response does not contain a value");
   }
-  output = caml_alloc_initialized_string(owned->result.value.len,
-                                         (const char *)owned->result.value.ptr);
-  CAMLreturn(output);
+  CAMLreturn(copy_owned_buffer(&owned->result.value));
 }
 
 /* Copy failure diagnostics into GC-owned OCaml storage before cleanup. */
 CAMLprim value ocaml_temporal_response_error(value response) {
   CAMLparam1(response);
-  CAMLlocal1(output);
   owned_response *owned = require_live(response);
 
   if (owned->result.status == OCAML_TEMPORAL_CORE_STATUS_OK) {
     caml_invalid_argument("Temporal native response does not contain an error");
   }
-  output = caml_alloc_initialized_string(owned->result.error.len,
-                                         (const char *)owned->result.error.ptr);
-  CAMLreturn(output);
+  CAMLreturn(copy_owned_buffer(&owned->result.error));
 }
 
 /* Explicit cleanup used by [Fun.protect]; finalization remains a fallback. */

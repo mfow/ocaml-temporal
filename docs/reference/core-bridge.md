@@ -165,7 +165,10 @@ rooted/finalizable owner rather than orphaning Rust memory. Disposal is
 idempotent, so a later finalizer after deterministic disposal is harmless.
 
 Returned bytes are copied once, directly from the live Rust buffer into the
-OCaml string/bytes allocation. Inputs that must survive a blocking call are
+OCaml string/bytes allocation. For the canonical empty `{ NULL, 0 }` case, the
+C binding allocates an empty OCaml value without passing the null pointer to
+the runtime's initialized-string primitive. A nonempty null span is rejected
+before dereference as an ABI defect. Inputs that must survive a blocking call are
 copied to temporary C storage before the runtime lock is released, then freed
 immediately after the lock is reacquired. Neither side directly frees an
 allocation made by the other side.

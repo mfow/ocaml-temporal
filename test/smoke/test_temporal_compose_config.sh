@@ -42,7 +42,14 @@ require_text '--build-dir=/workspace/_build/smoke-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "120"'
 require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready'
 require_text '--kill-after=10s'
-require_text 'user: 1000:1000'
+expected_uid=${HOST_UID:-1000}
+expected_gid=${HOST_GID:-1000}
+if ! grep -F -- "user: ${expected_uid}:${expected_gid}" "$rendered" >/dev/null \
+  && ! grep -F -- "user: \"${expected_uid}:${expected_gid}\"" "$rendered" >/dev/null; then
+  echo "normalized Compose model is missing the configured service user: \
+${expected_uid}:${expected_gid}" >&2
+  exit 1
+fi
 if ! grep -F 'user: "${HOST_UID:-1000}:${HOST_GID:-1000}"' "$compose_file" >/dev/null; then
   echo "smoke services must inherit the invoking host UID/GID" >&2
   exit 1

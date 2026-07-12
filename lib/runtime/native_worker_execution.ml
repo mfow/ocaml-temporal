@@ -584,50 +584,80 @@ module Make (Supervisor : SUPERVISOR) = struct
     match Native_execution.translate_activation activation with
     | Error error ->
         retire_with_failure adapter activation (native_error error)
-    | Ok _translated -> (
-        match initialization activation with
-        | Error error -> retire_with_failure adapter activation error
-        | Ok (Some init) ->
-            if Run_map.mem activation.run_id adapter.runs then
-              retire_with_failure adapter activation
-                (make_error ~path:"$.run_id" "duplicate_run_id"
-                   "workflow run is already present in the execution registry")
-            else (
-              match find_definition adapter.definitions init.workflow_type with
-              | Error error ->
-                  retire_with_failure adapter activation error
-              | Ok (Registered_definition definition) -> (
-                  match decode_input definition init.arguments with
-                  | Error error ->
-                      retire_with_failure adapter activation error
-                  | Ok input ->
-                      let execution =
-                        Execution.start ~task_queue:adapter.task_queue definition
-                          input
-                      in
-                      let run = Run { definition; execution } in
-                      adapter.runs <- Run_map.add activation.run_id run adapter.runs;
-                      match Native_execution.activate execution activation with
-                      | Error error ->
-                          retire_with_failure ~remove_run:true adapter activation
-                            (native_error error)
-                      | Ok completion ->
-                          submit_completion adapter activation completion
-                            ~run_id:activation.run_id))
-        | Ok None -> (
-            match Run_map.find_opt activation.run_id adapter.runs with
-            | None ->
-                retire_with_failure adapter activation
-                  (make_error ~path:"$.run_id" "unknown_run_id"
-                     "activation does not identify a registered running workflow")
-            | Some (Run { execution; _ }) -> (
-                match Native_execution.activate execution activation with
-                | Error error ->
-                    retire_with_failure ~remove_run:true adapter activation
-                      (native_error error)
-                | Ok completion ->
-                    submit_completion adapter activation completion
-                      ~run_id:activation.run_id)))
+    | Ok translated ->
+        begin
+          match
+            ( translated.cache_removal,
+              Run_map.find_opt activation.run_id adapter.runs )
+          with
+          | Some _, None ->
+              (* Core can evict a run after the OCaml registry has already
+                 removed it for a terminal completion. The eviction still owns
+                 a native lease and must receive the exact successful empty
+                 completion; a failure command is invalid for this activation. *)
+              submit_completion adapter activation
+                Protocol.{ run_id = activation.run_id; commands = [] }
+                ~run_id:activation.run_id
+          | _ ->
+              begin
+                match initialization activation with
+                | Error error -> retire_with_failure adapter activation error
+                | Ok (Some init) ->
+                    if Run_map.mem activation.run_id adapter.runs then
+                      retire_with_failure adapter activation
+                        (make_error ~path:"$.run_id" "duplicate_run_id"
+                           "workflow run is already present in the execution registry")
+                    else
+                      begin
+                        match find_definition adapter.definitions init.workflow_type with
+                        | Error error -> retire_with_failure adapter activation error
+                        | Ok (Registered_definition definition) ->
+                            begin
+                              match decode_input definition init.arguments with
+                              | Error error -> retire_with_failure adapter activation error
+                              | Ok input ->
+                                  let execution =
+                                    Execution.start ~task_queue:adapter.task_queue
+                                      definition input
+                                  in
+                                  let run = Run { definition; execution } in
+                                  adapter.runs <-
+                                    Run_map.add activation.run_id run adapter.runs;
+                                  begin
+                                    match
+                                      Native_execution.activate execution activation
+                                    with
+                                    | Error error ->
+                                        retire_with_failure ~remove_run:true adapter
+                                          activation (native_error error)
+                                    | Ok completion ->
+                                        submit_completion adapter activation completion
+                                          ~run_id:activation.run_id
+                                  end
+                            end
+                      end
+                | Ok None ->
+                    begin
+                      match Run_map.find_opt activation.run_id adapter.runs with
+                      | None ->
+                          retire_with_failure adapter activation
+                            (make_error ~path:"$.run_id" "unknown_run_id"
+                               "activation does not identify a registered running workflow")
+                      | Some (Run { execution; _ }) ->
+                          begin
+                            match
+                              Native_execution.activate execution activation
+                            with
+                            | Error error ->
+                                retire_with_failure ~remove_run:true adapter activation
+                                  (native_error error)
+                            | Ok completion ->
+                                submit_completion adapter activation completion
+                                  ~run_id:activation.run_id
+                          end
+                    end
+              end
+        end
 
   (** Applies one activation with a final cleanup guard. All expected
       rejections already use [retire_with_failure]; this catch handles a

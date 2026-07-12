@@ -628,6 +628,24 @@ fn enforces_core_absence_and_eviction_invariants() {
         workflow_protocol::CoreConversionErrorCode::InvalidCore
     );
 
+    // Core's cache-removal acknowledgement is a successful completion with
+    // no commands or metadata; this is the only valid response after a
+    // terminal run has already left the language worker's registry.
+    let empty = workflow_protocol::Completion {
+        run_id: eviction.run_id.clone(),
+        commands: Vec::new(),
+    };
+    let empty_core =
+        workflow_protocol::completion_to_core_for_activation(&eviction, &empty).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        empty_core.status.as_ref()
+    else {
+        panic!("cache eviction acknowledgement must be successful");
+    };
+    assert!(success.commands.is_empty());
+    assert!(success.used_internal_flags.is_empty());
+    assert_eq!(success.versioning_behavior, 0);
+
     let absent_command = core_commands::WorkflowCommand {
         user_metadata: None,
         variant: None,

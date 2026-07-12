@@ -268,6 +268,48 @@ let test_eviction () =
   | _ -> failwith "evicted run remained in the execution registry"
   end
 
+(** A normal terminal completion removes its run before Core sends the later
+    cache-eviction activation. The adapter must still acknowledge that leased
+    eviction with Core's exact successful empty completion instead of trying
+    to report an invalid workflow failure. *)
+let test_eviction_after_terminal_completion () =
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_terminal_eviction"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () -> Ok ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-terminal-eviction"
+       [ initialize ~run_id:"run-terminal-eviction"
+           ~workflow_type:"native_worker_terminal_eviction" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (eviction_activation ~run_id:"run-terminal-eviction"
+       [ Protocol.Remove_from_cache
+           {
+             message = "terminal run eviction";
+             reason = Protocol.Cache_full;
+           } ]);
+  begin
+    match Worker.poll worker with
+    | Ok
+        (Adapter.Completed
+          { run_id = "run-terminal-eviction"; command_count = 0; terminal = false }) ->
+        ()
+    | Ok _ -> failwith "terminal eviction did not return an empty completion"
+    | Error error ->
+        failwith
+          (Printf.sprintf "terminal eviction was rejected: %s" error.message)
+  end;
+  begin
+    match (latest_completion supervisor).commands with
+    | [] -> ()
+    | _ -> failwith "terminal eviction emitted a workflow command"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "terminal eviction left a native lease outstanding"
+
 (** An exception from an ordinary completion is caught at the transaction
     boundary. The adapter makes one explicit failure-completion attempt, so the
     lease is retired rather than escaping with an unacknowledged task. *)
@@ -596,6 +638,7 @@ let () =
   test_timer_suspension_and_resume ();
   test_cancellation ();
   test_eviction ();
+  test_eviction_after_terminal_completion ();
   test_unexpected_completion_exception_is_retried ();
   test_completion_rejection_is_drained_without_redo ();
   test_failure_completion_exception_is_typed ();

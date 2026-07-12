@@ -26,6 +26,26 @@ let boundary_retry_policy : Activation.retry_policy =
     non_retryable_error_types = [];
   }
 
+(** Compares the runtime's millisecond retry policy with the protocol's
+    protobuf-shaped duration records. These are intentionally different types:
+    the runtime keeps exact milliseconds for replay, while the protocol stores
+    normalized seconds and nanoseconds for Core. *)
+let retry_policy_equal (protocol : Protocol.retry_policy)
+    (activation : Activation.retry_policy) =
+  let duration_of_milliseconds milliseconds : Protocol.duration =
+    Protocol.
+      {
+        seconds = Int64.div milliseconds 1_000L;
+        nanoseconds = Int64.to_int (Int64.rem milliseconds 1_000L) * 1_000_000;
+      }
+  in
+  protocol.initial_interval = duration_of_milliseconds activation.initial_interval
+  && String.equal protocol.backoff_coefficient_bits
+       activation.backoff_coefficient_bits
+  && protocol.maximum_interval = duration_of_milliseconds activation.maximum_interval
+  && protocol.maximum_attempts = activation.maximum_attempts
+  && protocol.non_retryable_error_types = activation.non_retryable_error_types
+
 (** Encodes one string argument using the same base codec the public activity
     adapter supplies before it reaches the private workflow context. *)
 let encode_input input =
@@ -150,7 +170,7 @@ let test_subsecond_boundary_translation () =
           retry_policy = Some policy;
           _;
         })
-    when policy = boundary_retry_policy -> ()
+    when retry_policy_equal policy boundary_retry_policy -> ()
   | _ -> failwith "sub-second timeout or retry policy precision was lost"
 
 let () =

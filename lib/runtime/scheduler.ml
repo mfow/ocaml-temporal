@@ -66,7 +66,13 @@ let handle scheduler thunk =
   Effect.Deep.match_with thunk ()
     {
       retc = (fun () -> ());
-      exnc = (fun exception_ -> scheduler.failures <- exception_ :: scheduler.failures);
+      exnc =
+        (fun exception_ ->
+          (* Scheduler_shutdown only releases paused fibers during teardown; it
+             is control flow, not a workflow defect. *)
+          match exception_ with
+          | Future_store.Scheduler_shutdown -> ()
+          | _ -> scheduler.failures <- exception_ :: scheduler.failures);
       effc =
         (fun (type result) (operation : result Effect.t) ->
           match operation with
@@ -96,7 +102,8 @@ let run scheduler =
         let (Runnable (sequence, thunk)) = Queue.pop scheduler.queue in
         scheduler.trace_rev <- sequence :: scheduler.trace_rev;
         (try thunk ()
-         with exception_ -> scheduler.failures <- exception_ :: scheduler.failures)
+         with Future_store.Scheduler_shutdown -> ()
+         | exception_ -> scheduler.failures <- exception_ :: scheduler.failures)
       done;
       match List.rev scheduler.failures with
       | failure :: _ -> Failed failure

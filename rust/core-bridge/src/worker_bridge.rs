@@ -647,19 +647,11 @@ async fn run_workflow_lane(
                 }
             }
             Ok(Admission::Duplicate) | Ok(Admission::ExistingCancellation) => {
-                // ExistingCancellation is not produced for workflows today; it
-                // is handled here so a future ledger change cannot drop a Core
-                // task. Completing the undeliverable activation does not touch
-                // the first outstanding ledger entry for the same run ID.
-                let run_id = activation.run_id.clone();
-                force_fail_undeliverable_workflow(
-                    worker.as_ref(),
-                    &run_id,
-                    "duplicate workflow activation identity",
-                )
-                .await;
-                let error = PollLaneError::DuplicateIdentity;
-                if !signal.enqueue(&sender, Err(error)) {
+                // Core workflow completions are keyed only by run_id. Force-
+                // failing a duplicate would complete the already-outstanding
+                // activation that is still queued or leased to OCaml.
+                drop(activation);
+                if !signal.enqueue(&sender, Err(PollLaneError::DuplicateIdentity)) {
                     return;
                 }
             }
@@ -754,17 +746,21 @@ async fn run_activity_lane(
                 }
             }
             Err(error) => {
-                // InvalidIdentity on Start and UnknownActivityCancellation may
-                // still leave Core holding the polled task. Force-fail using
-                // the opaque token so the poll debt cannot outlive the lane.
-                let reason = match error {
-                    AdmitError::InvalidIdentity => "invalid activity task token",
-                    AdmitError::Draining => "worker is draining and cannot admit new work",
-                    AdmitError::UnknownActivityCancellation => {
-                        "activity cancellation for an unknown task token"
-                    }
-                };
-                force_fail_undeliverable_activity(worker.as_ref(), &task.task_token, reason).await;
+                // Only Start-shaped debts need a Core completion. Unknown
+                // cancel notifications do not create a second obligation.
+                if kind == ActivityAdmission::Start
+                    && matches!(error, AdmitError::InvalidIdentity | AdmitError::Draining)
+                {
+                    let reason = match error {
+                        AdmitError::InvalidIdentity => "invalid activity task token",
+                        AdmitError::Draining => "worker is draining and cannot admit new work",
+                        _ => unreachable!(),
+                    };
+                    force_fail_undeliverable_activity(worker.as_ref(), &task.task_token, reason)
+                        .await;
+                } else {
+                    drop(task);
+                }
                 if !signal.enqueue(&sender, Err(PollLaneError::Admission(error))) {
                     return;
                 }

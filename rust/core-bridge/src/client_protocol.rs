@@ -532,6 +532,15 @@ pub fn encode_wait_response(
     encode_document(response)
 }
 
+/// Maximum time one start RPC may block the supervisor owner or a Tokio task.
+///
+/// A hung Temporal start must not pin the sole owner Domain forever (sync ABI)
+/// or exhaust the pending-start registry (async begin). The timeout is applied
+/// outside the gRPC future so cancellation drops the in-flight request. The
+/// resulting `deadline_exceeded` status is classified as an uncertain start:
+/// Temporal may have accepted the workflow after the client gave up.
+const START_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Starts one workflow through Core's raw workflow service trait.
 pub async fn start_workflow(
     connection: Connection,
@@ -540,8 +549,9 @@ pub async fn start_workflow(
     let payloads = payloads_to_core(&request.input).map_err(ClientOperationError::Core)?;
     let workflow_id = request.workflow_id.clone();
     let mut service = connection.workflow_service();
-    let response = service
-        .start_workflow_execution(
+    let response = match tokio::time::timeout(
+        START_RPC_TIMEOUT,
+        service.start_workflow_execution(
             StartWorkflowExecutionRequest {
                 namespace: request.namespace.clone(),
                 input: Some(payloads),
@@ -562,10 +572,18 @@ pub async fn start_workflow(
                 ..Default::default()
             }
             .into_request(),
-        )
-        .await
-        .map_err(|status| map_start_status(&workflow_id, status))?
-        .into_inner();
+        ),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(|status| map_start_status(&workflow_id, status))?,
+        Err(_elapsed) => {
+            return Err(ClientOperationError::Rpc {
+                code: "deadline_exceeded".to_owned(),
+            });
+        }
+    }
+    .into_inner();
 
     let run_id = response.run_id;
     if run_id.is_empty() {
@@ -1094,6 +1112,14 @@ mod tests {
         assert!(
             ClientOperationError::Rpc {
                 code: "unavailable".to_owned()
+            }
+            .uncertain_start()
+        );
+        // Start RPC timeouts use the same uncertain classification so a hung
+        // server cannot be treated as a proven rejection.
+        assert!(
+            ClientOperationError::Rpc {
+                code: "deadline_exceeded".to_owned()
             }
             .uncertain_start()
         );

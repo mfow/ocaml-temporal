@@ -1,10 +1,11 @@
 (** Worker process for the two-OCaml-binary live acceptance test.
 
-    The worker registers the same shared workflow definitions as the driver and
-    keeps the public native worker loop alive until graceful shutdown. The
-    executable remains guarded by [TEMPORAL_TWO_BINARY_LIVE] so a local run
-    cannot accidentally connect to a developer's Temporal endpoint; the
-    Compose job is the only place that enables the live gate. *)
+    The worker registers the same shared workflow definitions as the driver,
+    including the context-aware heartbeat/retry scenario, and keeps the public
+    native worker loop alive until graceful shutdown. The executable remains
+    guarded by [TEMPORAL_TWO_BINARY_LIVE] so a local run cannot accidentally
+    connect to a developer's Temporal endpoint; the Compose job is the only
+    place that enables the live gate. *)
 
 module Worker = Temporal.Worker
 module Error = Temporal.Error
@@ -142,6 +143,7 @@ let run () =
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;
               Worker.workflow Definitions.activity_retry;
+              Worker.workflow Definitions.activity_heartbeat_retry;
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
               Worker.workflow Definitions.non_retryable_failure;
@@ -151,6 +153,7 @@ let run () =
             [
               Worker.activity Definitions.mock_transform;
               Worker.activity Definitions.retry_once_activity;
+              Worker.activity Definitions.heartbeat_retry_activity;
               Worker.activity Definitions.cancellation_ready_activity;
             ]
           ()

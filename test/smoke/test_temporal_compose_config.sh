@@ -51,6 +51,34 @@ require_text 'SMOKE_WORKER_READY_FILE'
 require_text 'test -s /tmp/ocaml-temporal-two-binary-worker.ready'
 require_text 'stop_grace_period: 30s'
 
+# The two-binary fixture must keep the heartbeat scenario in the shared
+# definitions module. These source-level assertions are intentionally small:
+# they catch an accidentally removed registration or driver assertion without
+# requiring Docker, Temporal Server, or a built native bridge. The actual
+# payload/detail and timeout semantics remain covered by the OCaml and Rust
+# protocol/runtime tests and by the live Compose job when its environment is
+# available.
+require_source_text() {
+  path=$1
+  needle=$2
+  if ! grep -F -- "$needle" "$path" >/dev/null; then
+    echo "activity heartbeat acceptance source is missing: $needle ($path)" >&2
+    exit 1
+  fi
+}
+
+definitions="$fixture/common/smoke_definitions.ml"
+driver="$fixture/driver/smoke_driver.ml"
+worker="$fixture/worker/smoke_worker.ml"
+require_source_text "$definitions" 'Temporal.Activity.define_with_context ~name:"smoke.heartbeat_retry"'
+require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat_timeout'
+require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat context'
+require_source_text "$definitions" 'let activity_heartbeat_retry ='
+require_source_text "$driver" 'two-binary-activity-heartbeat-retry'
+require_source_text "$driver" 'SMOKE:HEARTBEAT:RETRIED:SMOKE'
+require_source_text "$worker" 'Worker.workflow Definitions.activity_heartbeat_retry'
+require_source_text "$worker" 'Worker.activity Definitions.heartbeat_retry_activity'
+
 makefile="$root/Makefile"
 if ! grep -F 'temporal workflow describe' "$makefile" >/dev/null; then
   echo "failure diagnostics must use the official Temporal CLI workflow describe command" >&2

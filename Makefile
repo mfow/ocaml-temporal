@@ -118,8 +118,10 @@ temporal-run-driver:
 	exit "$$status"
 
 # Performs a failure-only metadata check for the known workflow IDs: the
-# driver's six top-level executions and the deterministic child created by its
-# parent workflow. The cancellation ID is intentionally listed explicitly so a
+# driver's seven top-level executions and the deterministic child created by its
+# parent workflow. The heartbeat-retry ID is also listed so an activity
+# heartbeat/detail failure is visible in best-effort diagnostics. The
+# cancellation ID is intentionally listed explicitly so a
 # missing cancellation terminal event can be distinguished from a driver that
 # never started that execution. The admin-tools output contains execution
 # status/run identity but no history or payloads, which distinguishes a start,
@@ -128,7 +130,7 @@ temporal-run-driver:
 # stalled before its first start, so every query is best effort and cannot mask
 # the original exit status.
 temporal-inspect-smoke:
-	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity two-binary-activity-retry two-binary-parent-awaits-child two-binary-non-retryable-failure two-binary-long-running-cancellation two-binary-parent-child-smoke; do \
+	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity two-binary-activity-retry two-binary-activity-heartbeat-retry two-binary-parent-awaits-child two-binary-non-retryable-failure two-binary-long-running-cancellation two-binary-parent-child-smoke; do \
 		echo "--- Temporal metadata for $$workflow_id ---"; \
 		$(TEMPORAL_COMPOSE) run --rm --no-deps temporal-admin-tools \
 			temporal workflow describe --workflow-id "$$workflow_id" \

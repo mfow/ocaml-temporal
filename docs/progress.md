@@ -45,6 +45,31 @@ tests cover binary details, malformed documents, context dispatch, heartbeat
 lease retention, and post-completion invalidation. A dedicated Docker Compose
 scenario is still required before this capability can be called live verified.
 
+## 2026-07-13: Two-binary heartbeat-detail retry acceptance fixture
+
+Status: implemented and locally contract-checked; no live Temporal Server or
+GitHub Actions success claim is made here. The Docker backend is not available
+in the current environment, so the fixture has not been run against its
+PostgreSQL and Temporal containers.
+
+The existing nested two-binary fixture now includes
+`smoke.activity_heartbeat_retry`. The workflow starts this scenario alongside
+the other smoke executions before awaiting any result. Its activity is defined
+with `Temporal.Activity.define_with_context`, receives a 500 ms heartbeat
+timeout, sends `SMOKE:HEARTBEAT:PROGRESS:1` on the first attempt, and returns a
+retryable typed activity error. The driver requires the second attempt to read
+that exact detail and timeout from Temporal through the opaque activity
+context, returning `SMOKE:HEARTBEAT:RETRIED:SMOKE` only when the server-visible
+heartbeat path worked.
+
+The worker and driver remain separate OCaml binaries, and the Makefile's
+failure-only workflow inspection lists the new workflow ID. The Docker-free
+Compose contract checks both registrations and the exact driver assertion.
+Heartbeat-timeout-triggered retries are intentionally not claimed: the
+current synchronous activity adapter treats a stale completion after a server
+timeout as a separate lifecycle capability requiring asynchronous completion
+and recovery work.
+
 ## 2026-07-13: Typed child-workflow cancellation control
 
 Status: locally verified in the OCaml activation, native translation, bridge
@@ -85,11 +110,11 @@ no new live acceptance result was produced by that documentation change.
 
 The acceptance references now distinguish the historical five-execution green
 run [`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
-from the current six-run cancellation implementation and its local protocol,
+from the current seven-run cancellation/heartbeat implementation and its local protocol,
 client, worker, and supervisor checks. The one-shot OCaml assertion driver and
 the long-lived worker are described separately. GitHub Actions run
 [`29193818312`](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
-was cancelled, so the six-run cancellation scenario remains unverified against
+was cancelled, so the seven-run cancellation and heartbeat scenarios remain unverified against
 a live Temporal Server.
 
 ## 2026-07-12: GitHub Actions capacity observation

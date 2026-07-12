@@ -7,35 +7,40 @@ for merge commit `a4eaccc8`. The retry workflow uses an explicit activity retry
 policy: its worker activity fails once, Temporal delivers a second attempt,
 and the driver asserts the exact attempt-2 result. The retry-policy constructor
 and bilateral JSON/Core conversion remain synthetic evidence; the CI run is
-the live evidence for this one server-managed retry delivery. The fifth
+the live evidence for this one server-managed retry delivery. The sixth
 top-level workflow also returns a typed non-retryable `Workflow` failure. The
-six-run exact-run cancellation path is implemented and covered by local
-acceptance checks, but it is not live-verified yet: the attempted [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
+heartbeat-detail retry workflow is implemented and locally contract-checked,
+but it has no live evidence yet. The seven-run exact-run cancellation and
+heartbeat paths are implemented and covered by local acceptance checks, but
+they are not live-verified yet: the attempted [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
 was cancelled before producing a green result. The worker and driver remain
 guarded by `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services
 set it.
 
-The current implementation starts all six top-level workflows before waiting
-for any result, and its local assertion target requires four exact successes,
+The current implementation starts all seven top-level workflows before waiting
+for any result, and its local assertion target requires five exact successes,
 one typed non-retryable failure, and one exact-run cancellation. Only the five
-baseline executions are currently backed by live CI evidence; the cancellation
-assertion remains local-only until a green live run verifies it.
+baseline executions are currently backed by live CI evidence; the heartbeat and
+cancellation assertions remain local-only until a green live run verifies them.
 
 `smoke-worker` publishes an atomic readiness marker after public
 `Temporal.Worker.create` succeeds. Compose waits for that health check before
 `smoke-driver` is run. Each acceptance run starts after `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts all six top-level workflows before
+later acceptance run. The driver starts all seven top-level workflows before
 waiting for any result. The cancellation scenario waits for the
 `smoke.cancellation_ready` activity marker after the long-running workflow has
 issued its durable-timer and marker commands in one activation, then
 acknowledges cancellation for `two-binary-long-running-cancellation` before
-the first terminal wait. Four must complete with exact payloads, one must
+the first terminal wait. Five must complete with exact payloads, one must
 return a typed non-retryable workflow failure, and the cancelled execution
 must return typed `Cancelled` metadata when the driver waits on that same exact
-handle. This prevents a TCP check or a process that merely started from being
-reported as an SDK acceptance pass.
+handle. The heartbeat scenario records a progress detail with a 500 ms timeout,
+returns a retryable activity error, and requires the second attempt to receive
+that detail and timeout through its activity context. This prevents a TCP
+check or a process that merely started from being reported as an SDK
+acceptance pass.
 
 The public `Temporal.Client` and `Temporal.Worker` now route HTTP(S) calls
 through the private Rust/Core supervisor. The deterministic `mock://` backend
@@ -58,15 +63,21 @@ the registered child waits on a short durable timer, and the driver asserts the
 parent's exact result. It also runs `smoke.activity_retry`: the first
 `smoke.retry_once` attempt returns a retryable activity error and the second
 returns `SMOKE:ATTEMPT:2`, which the driver compares as an exact terminal
-payload. The driver also starts `smoke.non_retryable_failure` and requires its
+payload. It also runs `smoke.activity_heartbeat_retry`: the first
+`smoke.heartbeat_retry` attempt records `SMOKE:HEARTBEAT:PROGRESS:1` with a
+500 ms heartbeat timeout, returns a retryable activity error, and the second
+attempt must receive that detail and timeout before returning
+`SMOKE:HEARTBEAT:RETRIED:SMOKE`. The driver also starts
+`smoke.non_retryable_failure` and requires its
 stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
 for its `smoke.cancellation_ready` marker activity (with eager execution
 disabled), sends an exact-run cancellation request, and requires the same
 handle to return a typed `Cancelled` error. The cancellation implementation and
-local assertions are ready, but this six-run path remains without green live CI
+local assertions are ready, but this seven-run path remains without green live CI
 evidence because the attempted [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
-was cancelled. Child start failures, activity retry timeouts, replay, and worker
-recovery remain separate scenarios. The
+was cancelled. Heartbeat-timeout-triggered retries, child start failures,
+activity asynchronous completion, replay, and worker recovery remain separate
+scenarios. The
 intentionally broader follow-up requirements are listed in [Required
 assertions and failure evidence](#required-assertions-and-failure-evidence).
 
@@ -272,19 +283,20 @@ The driver must:
 
 1. connect through `Temporal.Client` to the fixture namespace;
 2. start `smoke.fan_out`, `smoke.timer_then_activity`,
-   `smoke.activity_retry`, `smoke.parent_awaits_child`, and
-   `smoke.non_retryable_failure`, and `smoke.long_running_cancellation` with
-   distinct, known workflow IDs before it waits for any of them;
-3. retain the six public workflow handles returned by `start`;
+   `smoke.activity_retry`, `smoke.activity_heartbeat_retry`,
+   `smoke.parent_awaits_child`, `smoke.non_retryable_failure`, and
+   `smoke.long_running_cancellation` with distinct, known workflow IDs before
+   it waits for any of them;
+3. retain the seven public workflow handles returned by `start`;
 4. call `Temporal.Client.cancel` on the exact long-running handle and require
    its positive acknowledgement before waiting for any terminal result;
 5. wait for each handle's terminal result through the public client API; and
-6. decode and compare the four successful results, require the fifth result to
-   be a typed non-retryable workflow failure, require the sixth result to be a
-   typed `Cancelled` outcome with expected metadata, then exit zero only if
+6. decode and compare the five successful results, require the sixth result to
+   be a typed non-retryable workflow failure, require the seventh result to be
+   a typed `Cancelled` outcome with expected metadata, then exit zero only if
    every assertion succeeded.
 
-Starting all six executions before the first wait is material. It demonstrates
+Starting all seven executions before the first wait is material. It demonstrates
 that a client can hold independent workflow handles while a control request is
 issued for one exact run, and that the worker can service separate workflow
 executions rather than passing a single serial request through a readiness-only
@@ -333,10 +345,10 @@ are forbidden outside Rust. The first acceptance test uses the task token,
 activity type, workflow/run identifiers, attempt, input payloads, and
 completion variants needed for its mock activity. The heartbeat document and
 `worker.record_activity_heartbeat` operation are now implemented with strict
-bilateral validation and focused native tests, but the current live fixture
-does not yet invoke them. Live heartbeat, timeout, and retry behavior remains
-an acceptance follow-up. Local-activity and asynchronous-completion fields
-can be added as separate closed changes.
+bilateral validation and focused native tests, and the two-binary fixture
+invokes them in its heartbeat-detail retry scenario. That scenario is locally
+contract-checked but not live-verified; heartbeat-timeout-triggered retry and
+asynchronous-completion fields can be added as separate closed changes.
 
 `client.start_workflow` accepts workflow type, workflow ID, task queue, and
 typed input payloads. It returns the server-issued run ID. `client.wait_workflow_result`
@@ -348,7 +360,7 @@ continued-as-new execution (including the successor run ID), or a bridge
 transport failure. An exact-run wait does not silently follow
 continued-as-new: it returns that typed successor outcome so callers can
 explicitly decide whether to await the new run. The public OCaml API keeps the
-first six as typed workflow-result outcomes and reserves bridge transport
+seven workflow results as typed workflow-result outcomes and reserves bridge transport
 failure for `Error`.
 
 The worker operations use `request`/terminal `response` or `error` envelopes
@@ -463,18 +475,18 @@ thread.
 ## Required assertions and failure evidence
 
 The current driver's successful exit is intended to establish all of the
-following locally; a green live run is still required before the six-run
+following locally; a green live run is still required before the seven-run
 claims become live evidence:
 
 1. each top-level workflow start returned a nonempty run ID that the driver
-   retained for its corresponding exact-run wait; the driver starts six
+   retained for its corresponding exact-run wait; the driver starts seven
    distinct top-level runs before its first wait;
 2. the driver observes the atomically published
    `SMOKE_CANCELLATION_READY_FILE` marker containing the current run token,
    proving the timer and marker commands were accepted before cancellation;
 3. the cancellation request names the long-running workflow's exact retained
    workflow ID and run ID, and Temporal acknowledges it before the driver waits;
-4. all six terminal waits matched the exact workflow ID and run ID returned by
+4. all seven terminal waits matched the exact workflow ID and run ID returned by
    their own starts;
 5. `smoke.fan_out` returned the ordered result requiring both mock activity
    completions;
@@ -482,14 +494,17 @@ claims become live evidence:
    timer and its mock activity completion;
 7. `smoke.activity_retry` returned `SMOKE:ATTEMPT:2` only after its first
    activity attempt failed and Temporal scheduled the second attempt;
-8. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
+8. `smoke.activity_heartbeat_retry` recorded one typed progress detail with a
+   500 ms heartbeat timeout, then returned `SMOKE:HEARTBEAT:RETRIED:SMOKE` only
+   after the retrying attempt received that detail and timeout;
+9. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
    completed its own durable timer; and
-9. the four success responses were not workflow failures, cancellations,
+10. the five success responses were not workflow failures, cancellations,
    timeouts, terminations, continued-as-new outcomes, codec failures, or
    bridge failures; and
-10. `smoke.non_retryable_failure` returned a `Workflow` error with
+11. `smoke.non_retryable_failure` returned a `Workflow` error with
    `non_retryable=true` and the stable intentional-failure message prefix; and
-11. `smoke.long_running_cancellation` returned a `Cancelled` error with
+12. `smoke.long_running_cancellation` returned a `Cancelled` error with
    `non_retryable=false` and the stable message `workflow execution was
     cancelled`.
 
@@ -506,8 +521,9 @@ The first live test is intentionally small. With this success path verified,
 extend the same two-binary topology rather than adding a separate pseudo-worker
 test:
 
-* live activity heartbeat, timeout, and retry behavior, plus activity-level
-  non-retryable classification;
+* heartbeat-timeout-triggered retry, asynchronous activity completion, and
+  activity-level non-retryable classification (the heartbeat-detail retry path
+  is implemented but remains local-only until a live run succeeds);
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
 * child workflow start failure, cancellation, retry policy, and non-success
   terminal handling through the worker;
@@ -528,14 +544,14 @@ or recovery behavior.
 
 The full current acceptance contract will be verified in Linux CI only when all
 of the following are true. The historical live result verifies the five
-baseline executions; the six-run cancellation assertion remains local-only
+baseline executions; the seven-run heartbeat/cancellation assertion remains local-only
 until a run satisfies this complete contract:
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;
 * the worker's live Core poll/complete loops execute the registered OCaml
   workflow and mock activity code;
-* the driver starts all six top-level workflows through `temporal-sdk`, sends
+* the driver starts all seven top-level workflows through `temporal-sdk`, sends
   an exact-run cancellation request, waits for their results through
   `temporal-sdk`, and performs the listed success, typed-failure, and
   cancellation assertions;

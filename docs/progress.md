@@ -36,9 +36,8 @@ PostgreSQL volume before and after the test. The activity's attempt counter is
 process-local test state and is reset when that fresh worker process starts,
 so the assertion does not depend on history from an earlier run.
 
-Evidence to record after the CI job succeeds: `make
-test-temporal-integration`, plus the focused OCaml/Rust policy and protocol
-tests listed in the
+Evidence to record after the CI job succeeds: `make test-temporal-integration`,
+plus the focused OCaml/Rust policy and protocol tests listed in the
 [activity retry decision](decisions/0007-activity-retry-policy.md).
 
 ## 2026-07-12: Live two-OCaml-binary Compose acceptance

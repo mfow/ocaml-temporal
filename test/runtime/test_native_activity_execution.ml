@@ -76,11 +76,18 @@ type source_error = { code : string; message : string }
 (** A deterministic source error used by the fake supervisor. *)
 
 type fake_supervisor = {
+  (* Tasks waiting to be leased in producer order. *)
   queue : Protocol.task Queue.t;
+  (* Binary task tokens currently leased and requiring acknowledged completion. *)
   leased : bytes list ref;
+  (* Completions accepted by the fake source, newest first for assertions. *)
   completions : Protocol.completion list ref;
+  (* Heartbeats accepted while their corresponding token remains leased. *)
   heartbeats : Protocol.heartbeat list ref;
+  (* One-shot transport rejection used to verify completion retry without a
+     second activity invocation. *)
   reject_next_completion : bool ref;
+  (* Optional source poll failure, modelling a lower-layer typed rejection. *)
   poll_error : source_error option ref;
 }
 (** Mutable fake-supervisor state. The adapter itself serializes access to all
@@ -123,6 +130,8 @@ let copy_heartbeat heartbeat =
     [Bytes.equal] is intentional: tokens are binary correlation data, not text.
 *)
 let remove_token token tokens =
+  (* Rebuild the list without the first exact match, preserving all later token
+     order so the fake ledger models a set without changing diagnostics. *)
   let rec loop reversed = function
     | [] -> (false, List.rev reversed)
     | current :: rest when Bytes.equal current token ->
@@ -596,6 +605,8 @@ let test_context_payloads_are_copied () =
   Bytes.set source_data 0 'X';
   let expected_source = Bytes.of_string "\000prior\255" in
   let expect_source (details : Temporal.Payload.t list) message =
+    (* Compare both metadata and bytes so a shallow copy cannot pass this test
+       merely by preserving the payload shape. *)
     match details with
     | [ payload ]
       when payload.metadata = [ ("encoding", "binary/plain") ]

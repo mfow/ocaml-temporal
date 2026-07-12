@@ -74,6 +74,8 @@ type registered_definition =
     uses a token as a string, so embedded NUL bytes and non-UTF-8 bytes remain
     unchanged. *)
 module Token_map = Map.Make (struct
+  (* Keeping the key as [bytes] prevents accidental text decoding of the
+     opaque token, while [Bytes.compare] gives the retry map a stable order. *)
   type t = bytes
 
   let compare = Bytes.compare
@@ -108,6 +110,8 @@ let bounded_text ~fallback value =
   if not (Codec.valid_utf_8 value) then fallback
   else if String.length value <= maximum then value
   else
+    (* Start from the maximum useful prefix and back off until the cut lands
+       on a UTF-8 boundary; diagnostics must remain valid protocol strings. *)
     let rec prefix length =
       if length <= 0 then fallback
       else
@@ -203,6 +207,8 @@ let cancellation_failure reason : Protocol.failure =
     replacement decoding. Body and metadata bytes are copied so a task can be
     retained safely after the supervisor releases its source buffer. *)
 let runtime_payload path (payload : Protocol.payload) =
+  (* Accumulate backwards for linear construction, then reverse once so the
+     caller observes metadata in the same order as the protocol task. *)
   let rec metadata_loop reversed = function
     | [] -> Ok (List.rev reversed)
     | (key, bytes) :: rest ->
@@ -230,6 +236,8 @@ let runtime_payload path (payload : Protocol.payload) =
 (** Converts a runtime payload into the binary-safe protocol representation,
     validating metadata before copying it across the ownership boundary. *)
 let protocol_payload path (payload : Temporal_base.Codec.payload) =
+  (* Use the same order-preserving construction as [runtime_payload], but turn
+     validated strings back into freshly owned byte buffers. *)
   let rec metadata_loop reversed = function
     | [] -> Ok (List.rev reversed)
     | (key, value) :: rest ->
@@ -269,6 +277,8 @@ let runtime_duration path (duration : Protocol.duration) =
       (make_error ~path:(path ^ ".nanoseconds") "unsupported"
          "sub-millisecond durations are not representable by the runtime")
   else
+    (* Compute the largest representable whole-millisecond value before
+       multiplying seconds, avoiding an overflowing intermediate Int64. *)
     let milliseconds_per_second = 1_000L in
     let milliseconds = Int64.of_int (duration.nanoseconds / 1_000_000) in
     let maximum_seconds = Int64.div Int64.max_int milliseconds_per_second in
@@ -293,6 +303,8 @@ let runtime_duration path (duration : Protocol.duration) =
     every body. The indexed path makes malformed metadata diagnosable without
     exposing the payload bytes themselves. *)
 let runtime_payloads path payloads =
+  (* The index is part of the diagnostic path; the reversed accumulator keeps
+     traversal tail-recursive while [List.rev] restores input order. *)
   let rec loop index reversed = function
     | [] -> Ok (List.rev reversed)
     | payload :: rest ->
@@ -311,6 +323,9 @@ let runtime_payloads path payloads =
 let failure_of_application_error (diagnostic : error_view)
     (error : Base_error.t) : (Protocol.failure, error_view) result =
   let view = Base_error.view error in
+  (* Validate and copy every detail in order. A failed conversion aborts before
+     any completion is submitted, so a malformed detail cannot retire a lease
+     with a partially constructed application failure. *)
   let rec details_loop reversed = function
     | [] -> Ok (List.rev reversed)
     | payload :: rest ->
@@ -421,15 +436,24 @@ let completion_exception_error exception_ =
        (exception_error exception_).message)
 
 module Make (Supervisor : SUPERVISOR) = struct
+  (** State owned by one activity adapter. Definitions never change after
+      construction; [leases] contains only copied completions whose opaque
+      task-token acknowledgements are still uncertain. Every field is accessed
+      while [mutex] is held, including calls into the supervisor. *)
   type adapter_state = {
+    (* The owner-confined native supervisor handle. It is borrowed for each
+       serialized operation and never retained by a user activity. *)
     supervisor : Supervisor.t;
+    (* Immutable existential definitions keyed by Temporal activity type. *)
     definitions : registered_definition Name_map.t;
+    (* Owned completion leases keyed by copied binary task token. Entries remain
+       until the exact completion is acknowledged successfully. *)
     mutable leases : lease Token_map.t;
+    (* Serializes registry updates, completion retries, and source operations. *)
     mutex : Mutex.t;
   }
-  (** Mutable state is intentionally small: immutable definitions plus one map
-      of completions whose task-token leases have not yet been acknowledged. *)
 
+  (** The public worker handle is the mutex-confined state above. *)
   type t = adapter_state
 
   (** Builds the context passed to one activity attempt. Heartbeats go back
@@ -439,7 +463,12 @@ module Make (Supervisor : SUPERVISOR) = struct
       returns, so retaining one in user code cannot submit progress for a later
       attempt. *)
   let activity_context adapter ~token ~details ~heartbeat_timeout =
+    (* The callback remains valid only for this lease. It copies the token and
+       every detail before crossing to the supervisor, so a caller cannot
+       mutate a heartbeat after submission. *)
     let heartbeat payloads =
+      (* Convert public payloads with indexed paths while preserving their
+         order; conversion errors never reach the native callback. *)
       let rec convert index reversed = function
         | [] -> Ok (List.rev reversed)
         | payload :: rest ->
@@ -487,8 +516,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     in
     Activity_context.create ~heartbeat ~details ~heartbeat_timeout
 
-  (** Creates the registry without contacting native Core or invoking user code.
-  *)
+  (** Creates the registry without contacting native Core or invoking user code. *)
   let create ~supervisor ~activities =
     match build_definitions activities with
     | Error error -> Error error
@@ -593,6 +621,8 @@ module Make (Supervisor : SUPERVISOR) = struct
   (** Executes one start-task implementation under a final exception guard. *)
   let process_start adapter token (start : Protocol.activity_start) =
     let activity_type = Some start.activity_type in
+    (* Keep all local dispatch and codec failures on the completion path. The
+       outer guard catches defects so even an exception retires this lease. *)
     let process () =
       match find_definition adapter.definitions start.activity_type with
       | Error error -> reject_task adapter ~token ~activity_type error
@@ -709,6 +739,8 @@ module Make (Supervisor : SUPERVISOR) = struct
     Fun.protect
       ~finally:(fun () -> Mutex.unlock adapter.mutex)
       (fun () ->
+        (* Retry the smallest token first for deterministic shutdown behavior;
+           stop at the first failure and retain that lease for the next drain. *)
         let rec loop () =
           match Token_map.min_binding_opt adapter.leases with
           | None -> Ok ()

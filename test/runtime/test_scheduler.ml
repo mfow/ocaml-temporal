@@ -285,6 +285,20 @@ let test_shutdown_discontinues_queued_ready_continuations () =
   if not !cleaned then
     failwith "queued ready continuation was dropped without discontinue"
 
+(** A shutdown requested by one running thunk must not execute a later root
+    thunk that was already admitted. The owner still drains the queue so
+    future continuations can discontinue themselves instead of being dropped. *)
+let test_shutdown_skips_queued_root_thunks () =
+  let scheduler = Scheduler.create () in
+  let ran_after_shutdown = ref false in
+  Scheduler.spawn scheduler (fun () -> Scheduler.shutdown scheduler);
+  Scheduler.spawn scheduler (fun () -> ran_after_shutdown := true);
+  expect "shutdown drain" "complete" (Scheduler.run_label scheduler);
+  if !ran_after_shutdown then
+    failwith "queued root thunk ran after scheduler shutdown";
+  expect "shutdown trace excludes skipped thunk" [ 0 ]
+    (Scheduler.trace scheduler)
+
 let () =
   test_fifo_resume ();
   test_double_resolution ();
@@ -300,4 +314,5 @@ let () =
   test_mapper_defect_is_contained ();
   test_both_observes_sibling_after_error ();
   test_shutdown_closes_pending_continuations ();
-  test_shutdown_discontinues_queued_ready_continuations ()
+  test_shutdown_discontinues_queued_ready_continuations ();
+  test_shutdown_skips_queued_root_thunks ()

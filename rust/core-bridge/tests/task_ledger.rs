@@ -102,6 +102,23 @@ fn take_all_outstanding_drains_workflow_and_activity_debt() {
     assert!(ledger.can_finalize());
 }
 
+/// A second lease for the same identity is rejected rather than silently
+/// overwriting ownership.
+#[test]
+fn double_lease_is_rejected() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+    assert_eq!(ledger.lease_workflow("run-1"), Err(CompleteError::AlreadyLeased));
+    let token = b"activity-token";
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(ledger.lease_activity(token), Err(CompleteError::AlreadyLeased));
+}
+
 /// A dequeued activation that fails lease handoff must be removable from the
 /// ledger while still unleased so force-fail cleanup cannot leave phantom debt.
 #[test]

@@ -37,6 +37,11 @@ require_text 'smoke-driver:'
 require_text 'TEMPORAL_TWO_BINARY_LIVE: "1"'
 require_text 'smoke_worker.exe'
 require_text 'smoke_driver.exe'
+require_text 'user: 1000:1000'
+if ! grep -F 'user: "${HOST_UID:-1000}:${HOST_GID:-1000}"' "$compose_file" >/dev/null; then
+  echo "smoke services must inherit the invoking host UID/GID" >&2
+  exit 1
+fi
 require_text 'SMOKE_WORKER_READY_FILE'
 require_text 'test -s /tmp/ocaml-temporal-two-binary-worker.ready'
 require_text 'stop_grace_period: 30s'
@@ -51,6 +56,11 @@ done
 
 if ! grep -F 'schema_version' "$makefile" >/dev/null; then
   echo "temporal-health must verify the initialized Temporal SQL schema" >&2
+  exit 1
+fi
+
+if ! grep -F 'HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID)' "$makefile" >/dev/null; then
+  echo "Temporal Compose commands must propagate host UID/GID for bind-mounted builds" >&2
   exit 1
 fi
 

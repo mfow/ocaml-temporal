@@ -2,7 +2,9 @@ TEMPORAL_FIXTURE_DIR := $(CURDIR)/test/integration/temporal
 TEMPORAL_COMPOSE_FILE := $(TEMPORAL_FIXTURE_DIR)/compose.yaml
 TEMPORAL_COMPOSE_PROJECT ?= ocaml-temporal-integration
 COMPOSE := docker compose --project-directory "$(TEMPORAL_FIXTURE_DIR)" --file "$(TEMPORAL_COMPOSE_FILE)" --project-name "$(TEMPORAL_COMPOSE_PROJECT)"
-TEMPORAL_COMPOSE := $(COMPOSE) --profile temporal
+# Compose services bind-mount the repository. Propagate the invoking user's
+# numeric identity so every service can share Dune's lock and build artifacts.
+TEMPORAL_COMPOSE = HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) $(COMPOSE) --profile temporal
 SERVICE ?= dev
 OCAML_VERSION ?= 5.2
 OCAML_IMAGE ?= ocaml/opam:debian-12-ocaml-$(OCAML_VERSION)

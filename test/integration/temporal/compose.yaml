@@ -101,6 +101,10 @@ services:
     profiles: [temporal]
     extends:
       service: dev
+    # The source tree and Dune build directory are shared with the preceding
+    # Compose build step. Running both processes as the same host UID prevents
+    # the default image user from opening a lock created by that step.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     depends_on:
       temporal:
         condition: service_healthy
@@ -134,6 +138,9 @@ services:
     profiles: [temporal]
     extends:
       service: dev
+    # Keep the driver on the same bind-mounted build ownership as the worker;
+    # this also makes repeated local runs independent of the image's opam UID.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     depends_on:
       smoke-worker:
         condition: service_healthy

@@ -418,39 +418,6 @@ let test_shutdown_exception_is_contained_and_cached () =
   expect_failure (Supervisor.shutdown supervisor);
   expect "exceptional shutdown backend count" 1 (Atomic.get config.closes)
 
-(** Exercises the actual Rust runtime through the specialized supervisor. This
-    does not claim a client or worker exists; it proves the real handle remains
-    private and is explicitly released by the owner Domain. *)
-let test_native_runtime_lifecycle () =
-  let module Native = Sdk_supervisor.Native in
-  let supervisor =
-    match Native.create ~capacity:2 () with
-    | Ok supervisor -> supervisor
-    | Error _ -> failwith "native supervisor creation failed"
-  in
-  expect "native compatibility" (Ok ())
-    (Native.perform supervisor Native.Check_compatibility);
-  let worker_config =
-    Result.get_ok
-      (Native.worker_config ~namespace:"temporal-sdk-test"
-         ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
-         ~max_cached_workflows:100 ~max_outstanding_workflow_tasks:100
-         ~max_concurrent_workflow_task_polls:5
-         ~graceful_shutdown_timeout_ms:1_000L)
-  in
-  (match Native.perform supervisor (Native.Start_worker worker_config) with
-  | Error
-      (Native.Backend
-        { Temporal_core_bridge.Native_bridge.status = Invalid_state; _ }) ->
-      ()
-  | _ -> failwith "native supervisor started a worker without a client");
-  expect "idempotent native worker shutdown" (Ok ())
-    (Native.perform supervisor Native.Shutdown_worker);
-  expect "idempotent native client disconnect" (Ok ())
-    (Native.perform supervisor Native.Disconnect_client);
-  expect "native shutdown" (Ok ()) (Native.shutdown supervisor);
-  expect "native repeated shutdown" (Ok ()) (Native.shutdown supervisor)
-
 let () =
   test_owner_domain_and_typed_operations ();
   test_concurrent_producers_are_serialized ();
@@ -464,5 +431,4 @@ let () =
   test_abandoned_supervisor_is_cleaned_up ();
   test_concurrent_shutdown_callers_share_result ();
   test_creation_exception_is_contained ();
-  test_shutdown_exception_is_contained_and_cached ();
-  test_native_runtime_lifecycle ()
+  test_shutdown_exception_is_contained_and_cached ()

@@ -389,6 +389,15 @@ a native wait. An install
 smoke test builds a fresh OCaml executable from the staged package and invokes
 the negotiated ABI through the public `Temporal.Runtime_info` module.
 
+The isolated `runtime_cleanup_idempotence.rs` integration test calls native
+runtime disposal twice and waits for exactly one cleanup-counter increment.
+The no-detached-start-task regression remains in the private `abi.rs` test
+context (`tests/support/pending_start_cleanup.rs`): it observes a task-owned
+drop marker after nonblocking finalization, proving aborted Tokio handles are
+joined by the cleanup thread rather than detached. Keeping the counter and
+task-drop assertions in separate test sources prevents a future lifecycle
+change from being hidden by the broad ABI test binary.
+
 The Dune rule asks `rustc --print=native-static-libs` for the exact native
 libraries required by the static archive and consumes the resulting ordered
 flags from a generated S-expression file. This keeps platform linker knowledge

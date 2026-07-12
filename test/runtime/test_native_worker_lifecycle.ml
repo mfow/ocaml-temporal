@@ -1,0 +1,157 @@
+(** Regression tests for retryable workflow-completion ownership.
+
+    A workflow may finish executing before Core acknowledges its completion.
+    The adapter must retain the copied completion, avoid rerunning user code,
+    and leave the run lease outstanding until a later drain succeeds. This
+    focused fake rejects two consecutive completion attempts so the test covers
+    both the poll retry path and a failed shutdown-style drain before the final
+    successful drain. *)
+
+module Protocol = Temporal_protocol.Workflow_protocol
+module Adapter = Temporal_runtime.Native_worker_execution
+
+(** A deterministic source error used by the fake supervisor. *)
+type source_error = { code : string; message : string }
+
+(** Fake supervisor state. The adapter's mutex is the only permitted writer to
+    the lease and completion ledgers; the test inspects them after each call. *)
+type fake_supervisor = {
+  queue : Protocol.activation Queue.t;
+  leased : (string, unit) Hashtbl.t;
+  completions : Protocol.completion list ref;
+  completion_rejections : int ref;
+}
+
+(** Allocates an empty semantic queue and lease ledger. *)
+let fake_supervisor () =
+  {
+    queue = Queue.create ();
+    leased = Hashtbl.create 4;
+    completions = ref [];
+    completion_rejections = ref 0;
+  }
+
+(** Implements the typed supervisor contract while deliberately retaining a
+    lease whenever completion transport is unavailable. *)
+module Fake_supervisor = struct
+  type t = fake_supervisor
+  type error = source_error
+
+  (** Leases one queued activation by run ID. *)
+  let try_poll_workflow supervisor =
+    if Queue.is_empty supervisor.queue then Ok None
+    else
+      let activation = Queue.take supervisor.queue in
+      Hashtbl.replace supervisor.leased activation.run_id ();
+      Ok (Some activation)
+
+  (** Rejects the configured number of attempts before acknowledging the exact
+      run ID. A rejection leaves the lease in place for adapter retry. *)
+  let complete_workflow supervisor (completion : Protocol.completion) =
+    if !(supervisor.completion_rejections) > 0 then begin
+      decr supervisor.completion_rejections;
+      Error
+        {
+          code = "temporarily_unavailable";
+          message = "completion transport unavailable";
+        }
+    end
+    else if Hashtbl.mem supervisor.leased completion.run_id then begin
+      Hashtbl.remove supervisor.leased completion.run_id;
+      supervisor.completions := completion :: !(supervisor.completions);
+      Ok ()
+    end
+    else Error { code = "stale_lease"; message = "run is not leased" }
+
+  (** Exposes the source classification expected by the adapter signature. *)
+  let error_code error = error.code
+
+  (** Exposes the source diagnostic expected by the adapter signature. *)
+  let error_message error = error.message
+end
+
+module Worker = Adapter.Make (Fake_supervisor)
+
+(** The canonical timestamp used by the activation fixture. *)
+let timestamp : Protocol.timestamp = { seconds = 1L; nanoseconds = 0 }
+
+(** Builds the initialization job for a unit workflow. *)
+let initialize ~run_id : Protocol.activation_job =
+  Protocol.Initialize_workflow
+    {
+      workflow_id = "workflow-" ^ run_id;
+      workflow_type = "native_worker_lifecycle";
+      arguments = [];
+      randomness_seed = "1";
+      attempt = 1;
+      context = None;
+    }
+
+(** Wraps initialization in a valid activation envelope. *)
+let activation ~run_id : Protocol.activation =
+  {
+    run_id;
+    timestamp = Some timestamp;
+    is_replaying = true;
+    history_length = 1L;
+    jobs = [ initialize ~run_id ];
+    metadata = None;
+  }
+
+(** Adds one activation to the fake source queue. *)
+let enqueue supervisor activation = Queue.add activation supervisor.queue
+
+(** Builds and registers the unit workflow used by the retry assertion. *)
+let worker supervisor calls =
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_lifecycle"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        incr calls;
+        Ok ())
+  in
+  match Worker.create ~supervisor ~workflows:[ Adapter.register workflow ] () with
+  | Ok worker -> worker
+  | Error error ->
+      failwith
+        (Printf.sprintf "worker creation failed: %s at %s (%s)" error.message
+           error.path error.code)
+
+(** Requires a typed completion error from the native adapter. *)
+let expect_completion_error (type value)
+    (result : (value, Adapter.error_view) result) =
+  match result with
+  | Error { code = "completion_failed"; _ } -> ()
+  | Error error ->
+      failwith ("unexpected worker error: " ^ error.code)
+  | Ok _ -> failwith "completion transport rejection was not returned"
+
+(** Proves that repeated drain failures retain one owned completion and never
+    execute the workflow again. The second drain is the first acknowledged
+    completion, so the fake lease is then retired exactly once. *)
+let test_drain_retry_preserves_completion () =
+  let supervisor = fake_supervisor () in
+  let calls = ref 0 in
+  enqueue supervisor (activation ~run_id:"run-lifecycle");
+  (* One rejection belongs to [poll]; the second belongs to the first drain. *)
+  supervisor.completion_rejections := 2;
+  let worker = worker supervisor calls in
+  expect_completion_error (Worker.poll worker);
+  if !calls <> 1 then failwith "rejected completion reran the workflow";
+  if Hashtbl.length supervisor.leased <> 1 then
+    failwith "poll rejection retired the workflow lease prematurely";
+  expect_completion_error (Worker.drain worker);
+  if !calls <> 1 then failwith "failed drain reran the workflow";
+  if Hashtbl.length supervisor.leased <> 1 then
+    failwith "failed drain discarded the retained workflow lease";
+  begin match Worker.drain worker with
+  | Ok () -> ()
+  | Error error -> failwith ("successful retry did not drain: " ^ error.message)
+  end;
+  if !calls <> 1 then failwith "successful drain reran the workflow";
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "successful drain left a workflow lease outstanding";
+  if List.length !(supervisor.completions) <> 1 then
+    failwith "workflow completion was submitted more than once"
+
+(** Runs the focused workflow lifecycle regression. *)
+let () = test_drain_retry_preserves_completion ()

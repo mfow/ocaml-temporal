@@ -129,6 +129,18 @@ let test_map_error_and_owner_check () =
   expect "mapped error processing" "complete" (Scheduler.run_label first_scheduler);
   expect "mapped error" (Some (Error "FAILURE")) (Temporal.Future.peek mapped)
 
+(** An already-resolved future has an inert owner that delivers callbacks
+    immediately without being a valid workflow-await owner. Derived futures
+    must therefore still run their observer callbacks outside a scheduler. *)
+let test_resolved_combinator_callback_delivery () =
+  let source =
+    Temporal_runtime.Future_store.resolved
+      ~outside_error:(fun () -> outside_error ()) (Ok 4)
+  in
+  let mapped = Temporal_runtime.Future_store.map (fun value -> value + 1) source in
+  expect "resolved map callback" (Some (Ok 5))
+    (Temporal_runtime.Future_store.peek mapped)
+
 (** Verifies aggregate ownership mistakes become ready structured errors for
     every public combinator, including the pre-existing [both]. *)
 let test_aggregate_owner_errors_are_typed () =
@@ -285,6 +297,43 @@ let test_shutdown_discontinues_queued_ready_continuations () =
   if not !cleaned then
     failwith "queued ready continuation was dropped without discontinue"
 
+(** A shutdown requested by one running thunk must not execute a later root
+    thunk that was already admitted. The owner still drains the queue so
+    future continuations can discontinue themselves instead of being dropped. *)
+let test_shutdown_skips_queued_root_thunks () =
+  let scheduler = Scheduler.create () in
+  let ran_after_shutdown = ref false in
+  Scheduler.spawn scheduler (fun () -> Scheduler.shutdown scheduler);
+  Scheduler.spawn scheduler (fun () -> ran_after_shutdown := true);
+  expect "shutdown drain" "complete" (Scheduler.run_label scheduler);
+  if !ran_after_shutdown then
+    failwith "queued root thunk ran after scheduler shutdown";
+  expect "shutdown trace excludes skipped thunk" [ 0 ]
+    (Scheduler.trace scheduler)
+
+(** A derived future observer queued by a running thunk must become inert when
+    a later thunk shuts down the scheduler before that observer is drained.
+    Otherwise it could resolve a derived future that shutdown has already
+    closed and turn normal teardown into a spurious scheduler defect. *)
+let test_shutdown_skips_queued_observers () =
+  let scheduler = Scheduler.create () in
+  let source, resolve = promise scheduler ~outside_error:(fun () -> "outside") in
+  let observer_ran = ref false in
+  let derived =
+    Temporal.Future.map
+      (fun value ->
+        observer_ran := true;
+        value + 1)
+      source
+  in
+  Scheduler.spawn scheduler (fun () -> resolve (Ok 1));
+  Scheduler.spawn scheduler (fun () -> Scheduler.shutdown scheduler);
+  expect "observer shutdown drain" "complete" (Scheduler.run_label scheduler);
+  if !observer_ran then
+    failwith "queued observer ran after scheduler shutdown";
+  if Temporal.Future.is_ready derived then
+    failwith "derived future became ready after scheduler shutdown"
+
 let () =
   test_fifo_resume ();
   test_double_resolution ();
@@ -292,6 +341,7 @@ let () =
   test_outside_scheduler ();
   test_immediate_and_multiple_waiters ();
   test_map_error_and_owner_check ();
+  test_resolved_combinator_callback_delivery ();
   test_aggregate_owner_errors_are_typed ();
   test_all_order_and_errors ();
   test_all_empty ();
@@ -300,4 +350,6 @@ let () =
   test_mapper_defect_is_contained ();
   test_both_observes_sibling_after_error ();
   test_shutdown_closes_pending_continuations ();
-  test_shutdown_discontinues_queued_ready_continuations ()
+  test_shutdown_discontinues_queued_ready_continuations ();
+  test_shutdown_skips_queued_root_thunks ();
+  test_shutdown_skips_queued_observers ()

@@ -5,11 +5,16 @@ type owner
 
 (** Builds the scheduler connection used by futures. [on_create] is called once
     for each new pending future; [on_settled] is called once when that future
-    receives a result or is closed during shutdown. *)
+    receives a result or is closed during shutdown. [callbacks_live] is
+    separate from [is_running]: it permits immediate delivery for the inert
+    owner used by already-resolved outside-workflow futures, while a scheduler
+    can reject callbacks after shutdown even though its queue is still drained
+    for continuation cleanup. *)
 val make_owner :
   id:int ->
   enqueue:((unit -> unit) -> unit) ->
   is_running:(unit -> bool) ->
+  callbacks_live:(unit -> bool) ->
   on_create:(unit -> unit) ->
   on_settled:(unit -> unit) ->
   register_teardown:((unit -> unit) -> unit) ->
@@ -83,6 +88,8 @@ val add_waiter :
 (** Registers an observer that receives the future result through the owning
     scheduler. Ready and closed futures are delivered using the same scheduler
     queue, so callers never need to race a direct callback against completion.
+    A callback still queued when the owner shuts down is skipped, because
+    shutdown has already closed derived futures and released their resources.
     Observers are internal and should not capture longer-lived resources. *)
 val observe :
   ('value, 'error) t -> (('value, 'error) result -> unit) -> unit

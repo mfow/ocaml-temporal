@@ -277,19 +277,28 @@ let test_foreign_scheduler_scope_operations_are_rejected () =
   expect_error "foreign scope await" "defect"
     "Temporal.Scope.await used outside its owning workflow scheduler"
     (Option.get !foreign_await);
+  let owner_status_before = ref None in
+  let owner_check_before = ref None in
   let owner_cancel = ref None in
-  let owner_status = ref None in
+  let owner_status_after = ref None in
   with_active_context owner_scheduler owner_context (fun () ->
       match !scope_ref with
       | None -> failwith "owner scope was not retained"
       | Some scope ->
+          owner_status_before := Some (Temporal.Scope.is_cancelled scope);
+          owner_check_before := Some (Temporal.Scope.check scope);
           owner_cancel := Some (Temporal.Scope.cancel scope);
-          owner_status := Some (Temporal.Scope.is_cancelled scope));
+          owner_status_after := Some (Temporal.Scope.is_cancelled scope));
   expect "owner scope cleanup run" "complete"
     (Scheduler.run_label owner_scheduler);
+  expect "owner remains active before cleanup cancellation" (Some (Ok false))
+    !owner_status_before;
+  expect "owner check succeeds before cleanup cancellation" (Some (Ok ()))
+    !owner_check_before;
   expect "owner cancellation after foreign attempts" (Some (Ok ()))
     !owner_cancel;
-  expect "owner status after foreign attempts" (Some (Ok true)) !owner_status;
+  expect "owner status after cleanup cancellation" (Some (Ok true))
+    !owner_status_after;
   expect "scope cancellation emits no command" []
     (Workflow_context_store.take_commands owner_context);
   Workflow_context_store.shutdown owner_context;

@@ -137,6 +137,83 @@ let retry_policy =
     ~backoff_coefficient:1.0
     ~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:2 ()
 
+(** The heartbeat acceptance activity and workflow use a deliberately short
+    timeout. It is long enough for the Core heartbeat manager to flush one
+    request over the local Compose network, while still proving that the
+    timeout delivered in the next activity attempt is the value selected by
+    the workflow command. *)
+let heartbeat_timeout = Temporal.Duration.of_ms 500L
+
+(** The first heartbeat detail is a stable, human-readable marker. It is
+    written by the first activity attempt and must be returned by Temporal in
+    the retrying attempt's [Context.details] list; the driver never relies on
+    worker-local mutable state for this assertion. *)
+let heartbeat_progress_detail = "SMOKE:HEARTBEAT:PROGRESS:1"
+
+(** Verifies the timeout that Temporal attached to this activity attempt. A
+    missing or changed timeout is a protocol/configuration defect rather than
+    an ordinary retryable activity failure, so the activity reports it as a
+    non-retryable typed error. *)
+let require_heartbeat_timeout context =
+  match Temporal.Activity.Context.heartbeat_timeout context with
+  | Some timeout
+    when Int64.equal
+           (Temporal.Duration.to_ms timeout)
+           (Temporal.Duration.to_ms heartbeat_timeout) ->
+      Ok ()
+  | Some timeout ->
+      Error
+        (Temporal.Error.defect
+           ~message:
+             (Printf.sprintf
+                "heartbeat timeout was %Ldms, expected %Ldms"
+                (Temporal.Duration.to_ms timeout)
+                (Temporal.Duration.to_ms heartbeat_timeout)))
+  | None ->
+      Error
+        (Temporal.Error.defect
+           ~message:"heartbeat timeout was absent from the activity attempt")
+
+(** Sends one heartbeat, waits briefly for Core's asynchronous heartbeat
+    manager to flush it, then returns a retryable application failure. The
+    deliberate delay is activity-side code and cannot affect workflow replay;
+    it prevents the immediate failure completion from racing the heartbeat
+    request on a busy local Temporal Server. *)
+let heartbeat_retry_activity =
+  Temporal.Activity.define_with_context ~name:"smoke.heartbeat_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+    (fun context input ->
+      let open Temporal.Result_syntax in
+      let* () = require_heartbeat_timeout context in
+      match Temporal.Activity.Context.details context with
+      | [] ->
+          let* () =
+            Temporal.Activity.Context.heartbeat context Temporal.Codec.string
+              heartbeat_progress_detail
+          in
+          Unix.sleepf 0.1;
+          Error
+            (Temporal.Error.make ~category:`Activity
+               ~message:
+                 "intentional retry after recording an activity heartbeat" ())
+      | [ detail ] ->
+          let* progress = Temporal.Codec.decode Temporal.Codec.string detail in
+          if String.equal progress heartbeat_progress_detail then
+            Ok ("SMOKE:HEARTBEAT:RETRIED:" ^ String.uppercase_ascii input)
+          else
+            Error
+              (Temporal.Error.defect
+                 ~message:
+                   (Printf.sprintf
+                      "unexpected heartbeat detail %S on retry" progress))
+      | details ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "expected one heartbeat detail on retry, received %d"
+                    (List.length details))))
+
 (** Starts two independent activity commands before awaiting either result.
     [Future.all] preserves input order, making this scenario test both fan-out
     and deterministic aggregation when the live worker path exercises the
@@ -173,6 +250,20 @@ let activity_retry =
       | Ok policy ->
           Temporal.Activity.execute ~retry_policy:policy retry_once_activity
             seed)
+
+(** Schedules [heartbeat_retry_activity] with both an explicit heartbeat
+    timeout and the same bounded two-attempt retry policy used elsewhere in the
+    fixture. The first attempt records progress and fails; the second attempt
+    can finish only when Temporal has returned that progress detail and the
+    configured timeout through its activity-task context. *)
+let activity_heartbeat_retry =
+  Temporal.Workflow.define ~name:"smoke.activity_heartbeat_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match retry_policy with
+      | Error error -> Error error
+      | Ok policy ->
+          Temporal.Activity.execute ~heartbeat_timeout
+            ~retry_policy:policy heartbeat_retry_activity seed)
 
 (** A child workflow that waits on a short durable timer before deriving its
     result entirely from its input. The timer is deliberately inside the child

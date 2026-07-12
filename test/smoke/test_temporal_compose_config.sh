@@ -76,6 +76,20 @@ require_source_text() {
   fi
 }
 
+# A role must not quietly acquire the other process's responsibility. Keeping
+# this negative check beside the positive role assertions makes a future
+# refactor fail closed if somebody replaces the independent driver with a
+# worker that happens to start workflows locally, or replaces the worker with
+# a client that only waits for results.
+require_source_absent() {
+  path=$1
+  needle=$2
+  if grep -F -- "$needle" "$path" >/dev/null; then
+    echo "two-binary acceptance role is not isolated: $needle ($path)" >&2
+    exit 1
+  fi
+}
+
 definitions="$fixture/common/smoke_definitions.ml"
 driver="$fixture/driver/smoke_driver.ml"
 worker="$fixture/worker/smoke_worker.ml"
@@ -87,16 +101,20 @@ worker_dune="$fixture/worker/dune"
 # merely sharing workflow definitions or naming a second executable would not
 # prove that it exercises the server as a client process.
 require_source_text "$driver_dune" '(name smoke_driver)'
+require_source_text "$driver_dune" 'temporal-sdk'
 require_source_text "$driver_dune" 'temporal_two_binary_smoke_common'
 require_source_text "$driver" 'module Client = Temporal.Client'
 require_source_text "$driver" 'Client.start client ~workflow'
 require_source_text "$driver" 'Client.cancel ~request_id:'
 require_source_text "$driver" 'Client.wait handle'
+require_source_absent "$driver" 'Worker.create'
+require_source_absent "$driver" 'Worker.run'
 
 # The worker is the separate implementation process. Its source must create
 # the public Worker, register the shared definitions, run the native loop, and
 # shut it down; a client-only executable cannot satisfy this contract.
 require_source_text "$worker_dune" '(name smoke_worker)'
+require_source_text "$worker_dune" 'temporal-sdk'
 require_source_text "$worker_dune" 'temporal_two_binary_smoke_common'
 require_source_text "$worker" 'module Worker = Temporal.Worker'
 require_source_text "$worker" 'Worker.create ~target_url ~namespace'
@@ -104,6 +122,8 @@ require_source_text "$worker" 'Worker.run worker'
 require_source_text "$worker" 'Worker.shutdown worker'
 require_source_text "$worker" 'let publish_stopped path'
 require_source_text "$worker" 'publish_stopped stopped_file'
+require_source_absent "$worker" 'Client.start'
+require_source_absent "$worker" 'Client.wait'
 
 require_source_text "$definitions" 'Temporal.Activity.define_with_context ~name:"smoke.heartbeat_retry"'
 require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat_timeout'
@@ -121,6 +141,23 @@ if ! grep -F 'temporal workflow describe' "$makefile" >/dev/null; then
 fi
 if ! grep -F 'up --force-recreate --detach --build --wait smoke-worker' "$makefile" >/dev/null; then
   echo "worker startup must recreate the container before relying on its /tmp readiness marker" >&2
+  exit 1
+fi
+if ! grep -F 'run --rm --no-deps smoke-driver' "$makefile" >/dev/null; then
+  echo "the starter/assertion binary must run independently without creating another worker" >&2
+  exit 1
+fi
+if ! grep -F 'down --volumes --remove-orphans' "$makefile" >/dev/null; then
+  echo "integration cleanup must remove the PostgreSQL data volume" >&2
+  exit 1
+fi
+if ! grep -F 'trap cleanup EXIT' "$makefile" >/dev/null; then
+  echo "integration cleanup must run from an exit trap on success and failure" >&2
+  exit 1
+fi
+if ! grep -F '$(MAKE) temporal-clean;' "$makefile" >/dev/null \
+  || ! grep -F '$(MAKE) temporal-clean || true;' "$makefile" >/dev/null; then
+  echo "integration setup and its failure trap must both invoke temporal-clean" >&2
   exit 1
 fi
 for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration; do

@@ -263,7 +263,7 @@ else
   validate_terminal_stage "$history"
 fi
 
-event_count=$($jq_bin -r '.events | length' "$history")
+event_count=$("$jq_bin" -r '.events | length' "$history")
 printf 'restart_replay_history stage=%s workflow_id=%s run_id=%s event_count=%s\n' \
   "$stage" "$workflow_id" "$run_id" "$event_count"
 
@@ -311,7 +311,7 @@ if [ -n "$diagnostics" ]; then
     fi
   fi
 
-  diagnostic_count=$($jq_bin -r '.records | length' "$diagnostics")
+  diagnostic_count=$("$jq_bin" -r '.records | length' "$diagnostics")
   if [ "$require_replay" -eq 1 ]; then
     replay_status=true
   else

@@ -402,13 +402,14 @@ impl PollLanes {
                             &run_id,
                             "workflow activation lease handoff failed",
                         ));
-                        // Clear residual ledger debt so force-fail cannot leave
-                        // a phantom outstanding task after Core completion.
-                        let _ = error;
-                        self.ledger
-                            .lock()
-                            .unwrap_or_else(|err| err.into_inner())
-                            .abandon_workflow_admission(&run_id);
+                        // Clear residual unleased debt only. An AlreadyLeased
+                        // entry remains owned by the first handoff.
+                        if !matches!(error, CompleteError::AlreadyLeased) {
+                            self.ledger
+                                .lock()
+                                .unwrap_or_else(|err| err.into_inner())
+                                .abandon_workflow_admission(&run_id);
+                        }
                         Some(Err(PollLaneError::Admission(AdmitError::InvalidIdentity)))
                     }
                 }
@@ -444,11 +445,12 @@ impl PollLanes {
                             &task_token,
                             "activity task lease handoff failed",
                         ));
-                        let _ = error;
-                        self.ledger
-                            .lock()
-                            .unwrap_or_else(|err| err.into_inner())
-                            .abandon_activity_admission(&task_token);
+                        if !matches!(error, CompleteError::AlreadyLeased) {
+                            self.ledger
+                                .lock()
+                                .unwrap_or_else(|err| err.into_inner())
+                                .abandon_activity_admission(&task_token);
+                        }
                         Some(Err(PollLaneError::Admission(AdmitError::InvalidIdentity)))
                     }
                 }
@@ -949,6 +951,8 @@ pub enum CompleteError {
     UnknownActivity,
     /// The task is still Rust-owned and has not been handed to OCaml.
     NotLeased,
+    /// The task was already leased to OCaml and cannot be leased again.
+    AlreadyLeased,
 }
 
 /// Admission phase controlling poll delivery and final shutdown.
@@ -1066,13 +1070,18 @@ impl TaskLedger {
     }
 
     /// Marks a ready workflow activation as handed to the OCaml supervisor.
+    ///
+    /// A second lease for an already-leased identity is rejected so a confused
+    /// handoff cannot silently pretend two OCaml owners exist.
     pub fn lease_workflow(&mut self, run_id: &str) -> Result<(), CompleteError> {
-        let leased = self
-            .workflows
-            .get_mut(run_id)
-            .ok_or(CompleteError::UnknownWorkflow)?;
-        *leased = true;
-        Ok(())
+        match self.workflows.get_mut(run_id) {
+            Some(leased) if !*leased => {
+                *leased = true;
+                Ok(())
+            }
+            Some(_) => Err(CompleteError::AlreadyLeased),
+            None => Err(CompleteError::UnknownWorkflow),
+        }
     }
 
     /// Removes a workflow admission that will never be leased to OCaml.
@@ -1090,13 +1099,17 @@ impl TaskLedger {
     }
 
     /// Marks a ready activity task as handed to the OCaml supervisor.
+    ///
+    /// Mirrors [`Self::lease_workflow`]: double lease is a hard error.
     pub fn lease_activity(&mut self, task_token: &[u8]) -> Result<(), CompleteError> {
-        let state = self
-            .activities
-            .get_mut(task_token)
-            .ok_or(CompleteError::UnknownActivity)?;
-        state.leased = true;
-        Ok(())
+        match self.activities.get_mut(task_token) {
+            Some(state) if !state.leased => {
+                state.leased = true;
+                Ok(())
+            }
+            Some(_) => Err(CompleteError::AlreadyLeased),
+            None => Err(CompleteError::UnknownActivity),
+        }
     }
 
     /// Removes an activity admission that will never be leased to OCaml.

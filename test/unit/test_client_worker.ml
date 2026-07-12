@@ -207,7 +207,11 @@ let test_exact_run_cancellation () =
        handle);
   (match Temporal.Client.wait handle with
   | Ok (Temporal.Client.Cancelled error) ->
-      assert (Temporal.Error.kind error = "cancelled")
+      let view = Temporal.Error.view error in
+      assert (Temporal.Error.kind error = "cancelled");
+      assert (view.category = `Cancelled);
+      assert (not view.non_retryable);
+      assert (view.message = "workflow execution was cancelled")
   | Ok _ -> failwith "cancelled mock returned a non-cancelled terminal result"
   | Error error -> failwith (Temporal.Error.message error));
   unwrap (Temporal.Client.shutdown client)

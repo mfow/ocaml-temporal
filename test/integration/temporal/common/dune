@@ -2,4 +2,4 @@
  (name temporal_two_binary_smoke_common)
  (wrapped false)
  (modules smoke_definitions)
- (libraries temporal-sdk))
+(libraries temporal-sdk unix))

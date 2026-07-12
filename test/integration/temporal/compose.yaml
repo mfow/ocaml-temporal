@@ -115,6 +115,7 @@ services:
       TEMPORAL_ADDRESS: http://temporal:7233
       TEMPORAL_NAMESPACE: temporal-sdk-test
       SMOKE_WORKER_READY_FILE: /tmp/ocaml-temporal-two-binary-worker.ready
+      SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready
     command:
       - opam
       - exec
@@ -157,6 +158,7 @@ services:
       TEMPORAL_ADDRESS: http://temporal:7233
       TEMPORAL_NAMESPACE: temporal-sdk-test
       SMOKE_DRIVER_TIMEOUT_SECONDS: "${SMOKE_DRIVER_TIMEOUT_SECONDS:-120}"
+      SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready
     command:
       - timeout
       - --signal=TERM

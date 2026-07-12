@@ -127,6 +127,12 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* ready_file = required_env "SMOKE_WORKER_READY_FILE" in
+      let* cancellation_ready_file = Definitions.cancellation_ready_file () in
+      (* Clear any marker left by a manually interrupted local run before the
+         worker can advertise readiness. The driver performs the same cleanup
+         immediately before starting workflows, closing the stale-marker race
+         without allowing this test-only activity to touch workflow state. *)
+      let () = Definitions.clear_cancellation_ready_file cancellation_ready_file in
       let worker_result =
         Worker.create ~target_url ~namespace
           ~identity:"ocaml-temporal-two-binary-worker"
@@ -139,11 +145,13 @@ let run () =
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
               Worker.workflow Definitions.non_retryable_failure;
+              Worker.workflow Definitions.long_running_cancellation;
             ]
           ~activities:
             [
               Worker.activity Definitions.mock_transform;
               Worker.activity Definitions.retry_once_activity;
+              Worker.activity Definitions.cancellation_ready_activity;
             ]
           ()
       in
@@ -157,7 +165,9 @@ let run () =
             Error error
       in
       Fun.protect
-        ~finally:(fun () -> clear_ready ready_file)
+        ~finally:(fun () ->
+          clear_ready ready_file;
+          Definitions.clear_cancellation_ready_file cancellation_ready_file)
         (fun () ->
           phase "worker_ready" "begin";
           match publish_ready ready_file with

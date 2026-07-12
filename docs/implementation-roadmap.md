@@ -19,7 +19,7 @@ cleaner and more maintainable OCaml design.
 |---|---|---|---|
 | 1 | Repository foundation, typed public definitions, codecs, deterministic futures, effect scheduler, and synthetic activations | `make verify` runs from Docker Compose and deterministic command tests pass | Complete |
 | 2 | Rust static library, OCaml C stubs, private owner-Domain mailbox, live worker poll/completion loop, minimum OCaml client, and the real Compose smoke-test topology | An OCaml test-client container starts workflows executed by a separate OCaml worker against Temporal Server and PostgreSQL | Complete: the initial two-binary fan-out and timer/activity success paths pass in Linux CI |
-| 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | In progress: the first timer, mock-activity, and fan-out success paths are live; broader scenario coverage remains |
+| 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | In progress: timer, mock-activity, fan-out, parent/child, activity-retry, and typed non-retryable workflow-failure paths are live in CI; the current change adds marker-guarded exact-run cancellation, while restart/replay/cache and broader failure coverage remain |
 | 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes), added to the live smoke suite | Parent workflows fan out to mock activities and children, await one/all, and cancel safely through the real cluster | In progress: child command and two-stage start/terminal resolution translation are complete; one parent/child success path is wired into the live gate, while scopes and broader child lifecycle coverage remain pending |
 | 5 | Signals, queries, updates, validators, conditions, and handler policies | CLI-driven interactive workflow tests pass, including mode violations | Planned |
 | 6 | Continue-as-new, patches, side effects, external workflow operations, memo, search attributes, priority, and fairness | Recorded histories replay and advanced command integration tests pass | Planned |
@@ -79,8 +79,10 @@ essential-feature tests:
 - A separate OCaml test-client container links the same library, starts each
   test workflow, waits for its result, and checks the expected outcome.
 
-The smoke suite now contains the first two live workflows. Every subsequent
-essential capability adds scenarios to that same suite. The suite is
+The smoke suite now contains six top-level scenarios: fan-out, timer/activity,
+activity retry, parent/child, typed non-retryable workflow failure, and
+marker-guarded exact-run cancellation. Every subsequent essential capability
+adds scenarios to that same suite. The suite is
 table-driven and records both the supported case
 and its important error, cancellation, replay, or shutdown behavior. It is not
 considered complete while an essential SDK capability is exercised only by the

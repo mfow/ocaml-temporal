@@ -14,6 +14,25 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Scope, child-lifecycle, and ABI cancellation-validation coverage
+
+Status: locally verified on the merged `origin/master` tip with focused OCaml,
+Rust, and ABI tests. The work was merged in [PR #125](https://github.com/mfow/ocaml-temporal/pull/125)
+as `8e56c24`, [PR #126](https://github.com/mfow/ocaml-temporal/pull/126) as
+`43beafb`, and [PR #127](https://github.com/mfow/ocaml-temporal/pull/127) as
+`55d758c`. This entry makes no claim about a live Temporal Server run or
+GitHub Actions success.
+
+Scope operations now reject cancellation, status, checks, and awaits issued
+from a scheduler that did not create the scope, without mutating the owner's
+state. Native child-lifecycle tests cover terminal-before-start rejection,
+duplicate start acknowledgements, duplicate terminal resolutions while an
+unrelated parent timer remains pending, and retryable child-failure
+classification. Bilateral protocol tests round-trip all four child-cancellation
+policies. The client ABI test confirms malformed cancellation JSON is rejected
+before lifecycle-state lookup, preventing invalid input from being reported as
+an unrelated connection or state error.
+
 ## 2026-07-13: Activity-context lifetime regression coverage
 
 Status: locally verified in the native activity execution tests; no live

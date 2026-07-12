@@ -109,6 +109,23 @@ fn rejects_null_required_pointers() {
     );
 }
 
+/// Keeps Core-facing activation rejection diagnostics bounded to static bridge
+/// categories instead of reflecting workflow-controlled identifiers or data.
+#[test]
+fn workflow_rejection_message_contains_only_static_reason() {
+    let message = ocaml_temporal_core_bridge::worker_bridge::workflow_rejection_message(
+        "Core activation job kind is not supported",
+    );
+
+    assert_eq!(
+        message,
+        "OCaml bridge could not represent the workflow activation: Core activation job kind is not supported"
+    );
+    assert!(!message.contains("workflow_id"));
+    assert!(!message.contains("run_id"));
+    assert!(!message.contains("payload"));
+}
+
 /// Confirms every new private poll/completion symbol initializes its result and
 /// rejects a missing runtime before touching semantic input.
 #[test]

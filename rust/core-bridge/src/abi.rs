@@ -735,14 +735,17 @@ impl Runtime {
         let semantic = match workflow_protocol::activation_from_core(&activation) {
             Ok(semantic) => semantic,
             Err(error) => {
-                self.reject_workflow_delivery(&activation.run_id)?;
+                self.reject_workflow_delivery_with_reason(&activation.run_id, error.message)?;
                 return Err(core_conversion_failure(error));
             }
         };
         let encoded = match workflow_protocol::encode_activation(&semantic) {
             Ok(encoded) => encoded,
             Err(error) => {
-                self.reject_workflow_delivery(&activation.run_id)?;
+                self.reject_workflow_delivery_with_reason(
+                    &activation.run_id,
+                    "semantic activation JSON encoding failed",
+                )?;
                 return Err(protocol_failure(error));
             }
         };
@@ -871,6 +874,19 @@ impl Runtime {
 
     /// Fails and retires a workflow activation that was never exposed to OCaml.
     fn reject_workflow_delivery(&self, run_id: &str) -> std::result::Result<(), Failure> {
+        self.reject_workflow_delivery_with_reason(
+            run_id,
+            "semantic workflow activation conversion failed",
+        )
+    }
+
+    /// Fails and retires a workflow activation with a static diagnostic
+    /// describing the private conversion branch that rejected it.
+    fn reject_workflow_delivery_with_reason(
+        &self,
+        run_id: &str,
+        reason: &'static str,
+    ) -> std::result::Result<(), Failure> {
         let worker = self.worker.as_ref().ok_or_else(|| Failure {
             status: STATUS_INVALID_STATE,
             message: "Temporal worker is not running".to_owned(),
@@ -881,7 +897,7 @@ impl Runtime {
             .expect("worker retains parent runtime")
             .tokio_handle();
         handle
-            .block_on(worker.reject_workflow_delivery(run_id))
+            .block_on(worker.reject_workflow_delivery_with_reason(run_id, reason))
             .map_err(worker_bridge_failure)
     }
 

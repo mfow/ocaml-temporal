@@ -1,10 +1,11 @@
 # Installed package boundary
 
 `temporal-sdk` has one supported OCaml API: the wrapped `Temporal` library.
-The worker, runtime, JSON protocol, mailbox, supervisor, and C/Rust bridge are
-implementation details of that library. An application links `temporal-sdk`
-and writes ordinary `Temporal.Client`, `Temporal.Worker`, workflow, activity,
-and codec code; it does not depend on the implementation libraries directly.
+The native worker implementation, runtime, JSON protocol, mailbox, supervisor,
+and C/Rust bridge are implementation details of that library. An application
+links `temporal-sdk` and writes ordinary `Temporal.Client`, `Temporal.Worker`,
+workflow, activity, and codec code; it does not depend on the implementation
+libraries directly.
 
 ## Dune invariant
 
@@ -37,6 +38,17 @@ modules out of the generated `Temporal` signature. It is not a substitute for
 the package-private dependency declaration because it cannot hide a separate
 library's archive or interface.
 
+The explicit `lib/public/temporal.ml` root is the allow-list for modules
+re-exported through `Temporal`; `private_modules` complements that list by
+keeping selected implementation files out of the generated signature.
+
+The mailbox and supervisor are not public actor APIs. One supervisor owner
+Domain per SDK instance serializes operations on the complete Rust
+runtime/client/worker graph; individual client or worker handles do not receive
+separate actors. Producer Domains submit typed operations to that owner, and
+the blocking supervisor and mailbox entry points must stay off cooperative
+workflow or Eio scheduler fibers.
+
 The native bridge follows the same rule. The installed artifact contains the
 static archive needed to link an OCaml-owned executable, but does not install
 the C header or Rust source. No public type exposes a Rust handle, protobuf,
@@ -55,9 +67,10 @@ values through the facade without unsafe casts. The public `Temporal` root does
 not re-export the kernel module, and `Future.mli` exposes no constructor, record
 field, callback, or lifecycle operation. The kernel is unavailable through the
 supported `temporal-sdk` dependency and is not part of the public API. Public
-future values therefore still originate only from SDK operations such as
-timers, activities, and child workflows; an application cannot fabricate a
-scheduler-owned future or retain its callbacks.
+future values originate from SDK operations such as timers, activities, and
+child workflows, or from public combinators over those values. An application
+cannot fabricate an arbitrary scheduler-owned future or access its callbacks
+or continuations.
 
 ## Regression evidence
 
@@ -84,8 +97,9 @@ make test-install
    consumer's normal include path. The future-kernel fixture specifically
    protects the internal type-identity exception described above.
 
-The repository smoke test also checks every internal Dune stanza for the
-`(package temporal-sdk)` declaration and rejects a future `public_name`.
+The repository smoke test also checks each currently listed internal Dune stanza
+for the `(package temporal-sdk)` declaration and rejects a future
+`public_name`.
 Changes that intentionally publish an implementation component must update
 this document, the public API review, and the install regression rather than
 silently widening the package surface.

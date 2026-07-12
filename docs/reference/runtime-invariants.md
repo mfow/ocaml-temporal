@@ -42,6 +42,11 @@ and bridge, read the [documentation guide](../README.md) first.
 - `Future.race` and `Future.first` settle on the first completion, including an
   error, without cancelling losers. Already-ready inputs use registration order;
   pending inputs use deterministic callback order.
+- A `Temporal.Scope` signal belongs to the same scheduler as the workflow
+  futures it observes. Cancellation resolves only that private signal, never
+  the underlying activity, child-workflow, or timer future; a scope operation
+  from another scheduler returns a typed defect, and normal workflow teardown
+  closes any still-pending signal and its callbacks.
 - Combining futures from different executions returns a ready typed defect
   owned by the leading input rather than raising an operational exception.
 - User callback exceptions are contained and reported as scheduler defects.

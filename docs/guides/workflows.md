@@ -343,6 +343,33 @@ effect machinery is private, so workflow authors write direct-style OCaml.
 `Future.peek` and `Future.is_ready` are available when code needs to inspect a
 future without waiting, but they do not make an incomplete operation complete.
 
+### Cooperative cancellation scopes
+
+`Temporal.Scope` adds a workflow-local, structured boundary around observation
+of futures:
+
+```ocaml
+let run_with_deadline input =
+  Temporal.Scope.with_scope (fun scope ->
+    let result = Temporal.Activity.start summarize input in
+    Temporal.Scope.await scope result)
+```
+
+`Scope.create` and `Scope.with_scope` return ordinary typed `result` values.
+`Scope.cancel` is idempotent, `Scope.check` is a non-blocking cancellation
+check, and `Scope.await` returns an `Error.t` with category `Cancelled` when
+the scope has been cancelled before the observed future completes. A scope is
+owned by one workflow execution and must be cancelled from its owning
+scheduler; this keeps signal delivery deterministic across OCaml Domains.
+
+This first scope slice is intentionally cooperative. It cancels observation of
+the wrapped future and lets workflow teardown release still-pending operations;
+it does not yet emit Temporal activity or child-workflow cancellation commands.
+Use the existing activity cancellation options or the public client cancel
+operation when server-side cancellation is required. Losing futures in
+`Future.race` remain ordinary observations unless the caller explicitly uses a
+scope around the later wait.
+
 ## 6. Child workflows: authoring versus native support
 
 Child-workflow references use the same typed shape as activities:

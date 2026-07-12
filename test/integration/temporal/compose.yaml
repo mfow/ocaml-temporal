@@ -94,6 +94,62 @@ services:
     networks:
       - temporal-network
 
+  # The acceptance worker is a separate OCaml process from the driver. Both
+  # services extend the same development image so they exercise the exact
+  # public package and Rust bridge that a checked-out application would build.
+  smoke-worker:
+    profiles: [temporal]
+    extends:
+      service: dev
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      SMOKE_WORKER_READY_FILE: /tmp/ocaml-temporal-two-binary-worker.ready
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - test/integration/temporal/worker/smoke_worker.exe
+    healthcheck:
+      test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-two-binary-worker.ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 10s
+    # The executable converts SIGTERM into Worker.shutdown and needs enough
+    # time for Core to release any in-flight workflow/activity lease.
+    stop_grace_period: 30s
+    init: true
+
+  # The driver is run with `docker compose run` by the Makefile after the
+  # worker health check succeeds. Keeping it as a service still gives Compose
+  # one normalized model to validate and makes the two-process topology clear.
+  smoke-driver:
+    profiles: [temporal]
+    extends:
+      service: dev
+    depends_on:
+      smoke-worker:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - test/integration/temporal/driver/smoke_driver.exe
+    init: true
+
 networks:
   temporal-network:
     driver: bridge

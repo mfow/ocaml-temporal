@@ -2,11 +2,10 @@
 
     This executable is a deliberately small, typed harness. It starts both
     scenarios before waiting for either one, then checks the exact terminal
-    payloads returned by the public client API. It is not wired into Compose
-    yet: the native client adapter and production scheduling loop are still
-    private implementation work. Without [TEMPORAL_TWO_BINARY_LIVE=1] the
-    process exits with a distinct status instead of accidentally exercising the
-    in-memory [mock://] backend and giving a false live-smoke signal. *)
+    payloads returned by the public client API. Without
+    [TEMPORAL_TWO_BINARY_LIVE=1] the process exits with a distinct status
+    instead of accidentally exercising the in-memory [mock://] backend and
+    giving a false live-smoke signal. *)
 
 module Client = Temporal.Client
 module Error = Temporal.Error
@@ -26,9 +25,9 @@ let required_env name =
   | Some value when not (String.equal value "") -> Ok value
   | _ -> Error (Error.defect ~message:(name ^ " must not be empty"))
 
-(** Prevents this compile-time scaffold from being mistaken for a working live
-    client. The guard is removed only when the public native adapter can perform
-    a real StartWorkflowExecution and exact-run wait. *)
+(** Prevents a normal local invocation from connecting to an unintended
+    endpoint. The dedicated Compose service sets this gate only for the live
+    acceptance run. *)
 let require_live_gate () =
   match Sys.getenv_opt "TEMPORAL_TWO_BINARY_LIVE" with
   | Some "1" -> Ok ()

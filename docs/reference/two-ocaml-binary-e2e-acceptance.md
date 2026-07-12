@@ -1,30 +1,27 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The source-level driver and worker scaffold now exists under
-`test/integration/temporal/{common,driver,worker}`. It proves that both
-executables can be compiled against the same public `temporal-sdk` package,
-but it is not a live test yet. The binaries refuse to run unless
-`TEMPORAL_TWO_BINARY_LIVE=1` is set, and no Compose service enables that flag.
+**Status:** The Compose topology and Makefile lifecycle are now wired for a
+live run, but this change is not considered a passing acceptance test until
+`make test-temporal-integration` has completed successfully against the real
+Temporal/PostgreSQL services. The worker and driver remain guarded by
+`TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
 
-The public `Temporal.Client` now routes HTTP(S) start and exact-run wait calls
-through the private Rust/Core supervisor. The deterministic `mock://` backend
-remains available for unit tests. The worker still needs its native poll,
-readiness, and completion loop wired into the public registration/dispatch
-surface; running the scaffold against `temporal:7233` before those worker seams
-exist would test a partial path and could be mistaken for a green SDK
-acceptance test.
+`smoke-worker` publishes an atomic readiness marker after public
+`Temporal.Worker.create` succeeds. Compose waits for that health check before
+`smoke-driver` is run. The driver starts both workflows before waiting for
+either result, and the Makefile tears down the isolated project and volume on
+success or failure. This prevents a TCP check or a process that merely started
+from being reported as an SDK acceptance pass.
 
-The remaining blockers are concrete rather than environmental:
+During teardown, the worker's small test-process control Domain translates
+Compose's SIGTERM into `Temporal.Worker.shutdown`; the signal handler itself
+only sets an atomic flag. The 30-second worker stop grace period gives the
+bounded native waits time to leave their poll loop before the container is
+removed. This is test-process lifecycle code, not a second worker supervisor.
 
-1. connect the native workflow/activity poll and completion operations to the
-   deterministic execution registry and public worker loop; and
-2. connect the existing activity-task semantic conversion, add worker
-   readiness/health signalling, and add Compose services that run these two
-   binaries only after those operations are wired.
-
-Until those seams are complete, CI should continue running the existing
-Core-client/worker lifecycle smoke and compile the scaffold with the ordinary
-OCaml build. It must not promote the scaffold to a live acceptance target.
+The native worker implementation is being delivered separately. Until that
+implementation is present on the branch being tested, the new services may
+compile but cannot honestly be described as a live end-to-end pass.
 
 ## Purpose
 
@@ -102,7 +99,7 @@ test/integration/temporal/
     └── smoke_driver.ml
 ```
 
-The Compose services are `postgres`, `temporal`, `smoke-worker`, and
+The Compose services are `postgresql`, `temporal`, `smoke-worker`, and
 `smoke-driver`. `smoke-worker` and `smoke-driver` use the same development
 image and repository checkout, but execute different Dune binaries. This
 proves that the public library can be linked into more than one OCaml-owned
@@ -117,10 +114,12 @@ signal is the driver's exit status after its result assertions. It must not be
 replaced by a schema migration, namespace registration, TCP check, or a
 `temporal operator cluster health` check.
 
-`make temporal-test` (or the focused successor to that target) owns the
-fixture lifecycle: create its isolated Compose project, wait for the driver's
-terminal exit status, collect the worker and driver logs on failure, then tear
-the project down. Native Windows and macOS jobs do not run this Linux Compose
+`make test-temporal-integration` owns the fixture lifecycle: create its
+isolated Compose project, run the low-level lifecycle check, wait for the
+worker health marker, wait for the driver's terminal exit status, collect the
+worker logs on failure, then tear the project down. The explicit alias
+`make test-temporal-two-binary` is provided for callers that want the focused
+acceptance name. Native Windows and macOS jobs do not run this Linux Compose
 acceptance test.
 
 ## The two OCaml programs

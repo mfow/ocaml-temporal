@@ -26,7 +26,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-core-lifecycle-integration test-temporal-integration temporal-start temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver test-temporal-two-binary test-temporal-integration temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -78,6 +78,18 @@ temporal-start:
 	$(TEMPORAL_COMPOSE) up --detach --wait postgresql temporal
 	$(MAKE) temporal-health
 
+# Starts the long-lived OCaml worker only after the database and Temporal
+# frontend are healthy. The worker health check is backed by an atomic marker
+# published after public Worker.create succeeds, not merely by process liveness.
+temporal-start-worker:
+	$(TEMPORAL_COMPOSE) up --detach --build --wait smoke-worker
+
+# Runs the independent OCaml driver against the already-running worker. Using
+# `run --no-deps` avoids accidentally creating a second worker process and makes
+# the driver's exit status the acceptance test's authoritative result.
+temporal-run-driver:
+	$(TEMPORAL_COMPOSE) run --rm --no-deps smoke-driver
+
 temporal-health:
 	$(TEMPORAL_COMPOSE) exec -T postgresql pg_isready -U temporal -d postgres
 	$(TEMPORAL_COMPOSE) exec -T postgresql psql -v ON_ERROR_STOP=1 -U temporal -d temporal -tAc 'SELECT 1 FROM schema_version LIMIT 1'
@@ -88,7 +100,7 @@ temporal-status:
 	$(TEMPORAL_COMPOSE) ps
 
 temporal-logs:
-	$(TEMPORAL_COMPOSE) logs --no-color --tail 200 postgresql temporal-schema temporal
+	$(TEMPORAL_COMPOSE) logs --no-color --tail 200 postgresql temporal-schema temporal smoke-worker
 
 temporal-stop:
 	$(TEMPORAL_COMPOSE) down --remove-orphans
@@ -114,7 +126,14 @@ test-temporal-integration: test-temporal-config
 	trap 'exit 143' TERM; \
 	$(MAKE) temporal-start; \
 	$(MAKE) temporal-health; \
-	$(MAKE) test-core-lifecycle-integration
+	$(MAKE) test-core-lifecycle-integration; \
+	$(MAKE) temporal-start-worker; \
+	$(MAKE) temporal-run-driver
+
+# Explicit name for callers that want to discover the two-process acceptance
+# without reading the broader integration target. It shares the same isolated
+# lifecycle and therefore cannot leave a second Temporal stack behind.
+test-temporal-two-binary: test-temporal-integration
 
 test-unit:
 	$(RUN) dune runtest test/unit test/smoke

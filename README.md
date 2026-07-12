@@ -99,6 +99,9 @@ per matrix cell. `make quality` is the exception to the Docker-only toolchain
 path: it expects the pinned `cargo-deny`, `cargo-machete`, and `typos` binaries
 on the host (CI installs their checksum-verified versions). The license audit
 uses the development container and an isolated official Python container.
+On a memory-constrained Docker VM, bound Dune's native build concurrency with
+`make build DUNE_JOBS=1`; leaving `DUNE_JOBS` unset preserves the default
+parallelism used by CI.
 
 ### The real Temporal smoke
 

@@ -6,9 +6,9 @@
  (name test_native_worker_operations)
  (libraries
   temporal_sdk_supervisor
-  temporal-sdk.internal_protocol
+  temporal_protocol
   threads))
 
 (test
  (name test_native_lifecycle)
- (libraries temporal_sdk_supervisor temporal-sdk.internal_protocol threads))
+ (libraries temporal_sdk_supervisor temporal_protocol threads))

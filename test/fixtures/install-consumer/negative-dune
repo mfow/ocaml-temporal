@@ -1,0 +1,15 @@
+; These targets are copied into a fresh consumer directory only by
+; test/bridge/test_install.sh. They must fail because package consumers
+; receive Temporal, not implementation modules from the private dependency
+; graph.
+(executable
+ (name forbidden_mailbox)
+ (libraries temporal-sdk))
+
+(executable
+ (name forbidden_supervisor)
+ (libraries temporal-sdk))
+
+(executable
+ (name forbidden_bridge)
+ (libraries temporal-sdk))

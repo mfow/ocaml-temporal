@@ -41,6 +41,9 @@ The remaining reference documents are useful when changing one subsystem:
   two-binary workflow assertions.
 - [Quality and security gates](reference/quality-gates.md) documents pinned
   scanners and the checks run locally and in CI.
+- [Installed package boundary](reference/package-boundary.md) documents which
+  libraries are package-private and the installed-consumer regression that
+  protects the public `Temporal` surface.
 - [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
   records the long-term design. APIs described there may be future work.
 
@@ -105,6 +108,9 @@ Clippy checks, Rust tests, bridge/install smoke tests, and the repository
 quality contract. `make quality` is a separate host-tool gate and requires the
 pinned `cargo-deny`, `cargo-machete`, and `typos` binaries. The license audit is
 intentionally separate from the OCaml-version matrix and runs in containers.
+If a local Docker VM has limited memory for native linkers, set
+`DUNE_JOBS=1` (or another small value) on build/lint targets; the variable is
+empty by default so CI keeps its normal parallelism.
 For the real server smoke, the Makefile owns Compose project selection,
 readiness checks, failure logs, and volume cleanup; do not run the fixture's
 Compose file from the repository root.

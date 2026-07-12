@@ -149,6 +149,25 @@ let test_sdk_supervisor_is_private () =
   if contains ~needle:"public_name" (read dune) then
     failwith "the SDK supervisor must remain a Dune-private library"
 
+(** Ensures every implementation library linked by [Temporal] uses Dune's
+    package-private installation namespace. A missing [package] field would
+    make an internal archive discoverable as a normal findlib dependency even
+    when no public module re-exports it. *)
+let test_internal_libraries_are_package_private () =
+  let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
+  let private_libraries =
+    [ "lib/base/dune"; "lib/protocol/dune"; "lib/core_bridge/dune";
+      "lib/runtime/dune"; "lib/mailbox_processor/dune";
+      "lib/sdk_supervisor/dune" ]
+  in
+  List.iter
+    (fun relative_path ->
+      let path = Filename.concat source_root relative_path in
+      require_text ~path ~needle:"(package temporal-sdk)";
+      if contains ~needle:"(public_name" (read path) then
+        failwith (path ^ " must not declare a public findlib name"))
+    private_libraries
+
 (** Protects the one-shot quality gate from drifting into the per-version
     compiler matrix. The Make targets remain the local interface, while CI
     pins the scanner actions independently of mutable release tags. *)
@@ -173,4 +192,5 @@ let () =
   test_static_foreign_archives ();
   test_mailbox_is_private ();
   test_sdk_supervisor_is_private ();
+  test_internal_libraries_are_package_private ();
   test_quality_gate_contract ()

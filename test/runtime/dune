@@ -7,4 +7,4 @@
   test_native_worker_lifecycle
   test_native_worker_execution
   test_scheduler)
- (libraries temporal-sdk temporal-sdk.runtime))
+ (libraries temporal-sdk temporal_runtime))

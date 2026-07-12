@@ -6,9 +6,12 @@
   ../../deny.toml
   ../../dune-workspace
   ../../dune-project
+  ../../lib/base/dune
   ../../lib/core_bridge/dune
   ../../lib/mailbox_processor/dune
   ../../lib/mailbox_processor/mailbox_processor.mli
+  ../../lib/protocol/dune
+  ../../lib/runtime/dune
   ../../lib/sdk_supervisor/dune
   ../../lib/sdk_supervisor/sdk_supervisor.mli
   ../../scripts/build-rust-bridge.sh

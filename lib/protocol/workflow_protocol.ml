@@ -235,6 +235,21 @@ let string path = function
   | `String _ -> Error (invalid path "decoded JSON string limit exceeded")
   | _ -> Error (invalid path "expected JSON string")
 
+(** Checks every byte of a semantic string as one complete UTF-8 sequence.
+    Incoming JSON normally receives this check from [Control], but semantic
+    values can also be assembled directly by an OCaml translator. Keeping the
+    check here closes that second path before an invalid string reaches the
+    JSON encoder or the Rust bridge. *)
+let valid_utf_8 value =
+  let rec loop offset =
+    if offset = String.length value then true
+    else
+      let decoded = String.get_utf_8_uchar value offset in
+      Uchar.utf_decode_is_valid decoded
+      && loop (offset + Uchar.utf_decode_length decoded)
+  in
+  loop 0
+
 (** Reads a JSON Boolean. *)
 let bool path = function
   | `Bool value -> Ok value
@@ -1418,6 +1433,8 @@ let retry_policy path json =
               Error (invalid item_path "error type must not be empty")
             else if String.contains value '\000' then
               Error (invalid item_path "error type must not contain NUL")
+            else if not (valid_utf_8 value) then
+              Error (invalid item_path "error type must be valid UTF-8")
             else validate_error_types (index + 1) rest
       in
       let* () = validate_error_types 0 non_retryable_error_types in

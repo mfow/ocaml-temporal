@@ -72,27 +72,37 @@ let test_omitted_policy () =
 (** Verifies that callers of the exported one-command translator cannot bypass
     retry-policy validation by avoiding [completion_of_commands]. *)
 let test_direct_translation_validation () =
-  let malformed_policy = { retry_policy with backoff_coefficient_bits = "0" } in
-  let command =
-    Activation.Schedule_activity
-      {
-        seq = 1L;
-        activity_id = "activity-1";
-        activity_type = "retryable_activity";
-        task_queue = "default";
-        arguments = [ encode_input "input" ];
-        schedule_to_close_timeout = Some 60_000L;
-        schedule_to_start_timeout = None;
-        start_to_close_timeout = Some 30_000L;
-        heartbeat_timeout = None;
-        retry_policy = Some malformed_policy;
-        cancellation_type = Activation.Try_cancel;
-        do_not_eagerly_execute = false;
-      }
+  (* Apply one malformed policy to the same command shape and require the
+     translator to reject it before the command can reach JSON encoding. *)
+  let expect_rejected label policy =
+    let command =
+      Activation.Schedule_activity
+        {
+          seq = 1L;
+          activity_id = "activity-1";
+          activity_type = "retryable_activity";
+          task_queue = "default";
+          arguments = [ encode_input "input" ];
+          schedule_to_close_timeout = Some 60_000L;
+          schedule_to_start_timeout = None;
+          start_to_close_timeout = Some 30_000L;
+          heartbeat_timeout = None;
+          retry_policy = Some policy;
+          cancellation_type = Activation.Try_cancel;
+          do_not_eagerly_execute = false;
+        }
+    in
+    match Temporal_runtime.Native_execution.command_to_protocol command with
+    | Error _ -> ()
+    | Ok _ -> failwith ("direct command translation accepted " ^ label)
   in
-  match Temporal_runtime.Native_execution.command_to_protocol command with
-  | Error _ -> ()
-  | Ok _ -> failwith "direct command translation accepted malformed policy"
+  expect_rejected "a malformed coefficient"
+    { retry_policy with backoff_coefficient_bits = "0" };
+  expect_rejected "an invalid UTF-8 error type"
+    {
+      retry_policy with
+      non_retryable_error_types = [ String.make 1 (Char.chr 0xff) ];
+    }
 
 let () =
   test_explicit_policy ();

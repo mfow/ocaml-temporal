@@ -195,60 +195,6 @@ let is_not_ready = function
   | Native.Backend { Bridge.status = Bridge.Not_ready; _ } -> true
   | _ -> false
 
-(** Builds the native graph and both OCaml registries. Every failure after
-    [Native.create] enters [cleanup], which joins the supervisor owner Domain
-    and closes all native resources before returning. *)
-let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities () =
-  let* client_config =
-    Native.client_config ~target_url ~identity
-    |> Result.map_error (public_bridge_error "client configuration")
-  in
-  let* worker_config =
-    Native.worker_config ~namespace ~task_queue ~build_id:default_build_id
-      ~max_cached_workflows:default_max_cached_workflows
-      ~max_outstanding_workflow_tasks:default_max_outstanding_workflow_tasks
-      ~max_concurrent_workflow_task_polls:
-        default_max_concurrent_workflow_task_polls
-      ~graceful_shutdown_timeout_ms:default_graceful_shutdown_timeout_ms
-    |> Result.map_error (public_bridge_error "worker configuration")
-  in
-  let* supervisor =
-    Native.create ~capacity:supervisor_capacity ()
-    |> Result.map_error (public_native_error "native runtime creation")
-  in
-  let cleanup error =
-    ignore (Native.shutdown supervisor);
-    Error error
-  in
-  let setup =
-    let* () =
-      Native.perform supervisor (Native.Connect_client client_config)
-      |> Result.map_error (public_native_error "client connection")
-    in
-    let* () =
-      Native.perform supervisor (Native.Start_worker worker_config)
-      |> Result.map_error (public_native_error "worker startup")
-    in
-    let* workflows =
-      Workflow.create ~task_queue ~supervisor ~workflows ()
-      |> Result.map_error (public_adapter_error "workflow registration")
-    in
-    let* activities =
-      Activity.create ~supervisor ~activities
-      |> Result.map_error (public_activity_error "activity registration")
-    in
-    Ok
-      {
-        supervisor;
-        workflows;
-        activities;
-        closed = Atomic.make false;
-        shutdown_retryable = Atomic.make false;
-        run_mutex = Mutex.create ();
-      }
-  in
-  match setup with Ok worker -> Ok worker | Error error -> cleanup error
-
 (** Converts a successful adapter summary into progress. A rejected task has
     already been acknowledged with a failure completion and therefore must not
     stop the worker loop. *)
@@ -364,6 +310,82 @@ let shutdown worker =
         | Error error -> Error (public_native_error "worker shutdown" error)
   end
   else Ok ()
+
+(** Schedules forgotten-worker cleanup off the GC finalizer thread. A finalizer
+    must not block on [run_mutex] or the supervisor mailbox; the detached
+    thread runs the ordinary drain-then-shutdown path. If a system thread
+    cannot be created during process teardown, mark the worker closed and shut
+    the supervisor so native runtime dispose can still reclaim the graph. *)
+let cleanup_abandoned worker =
+  if not (Atomic.get worker.closed) then
+    match Thread.create (fun instance -> ignore (shutdown instance)) worker with
+    | _thread -> ()
+    | exception _ ->
+        Atomic.set worker.closed true;
+        ignore (Native.shutdown worker.supervisor)
+
+(** Builds the native graph and both OCaml registries. Every failure after
+    [Native.create] enters [cleanup], which joins the supervisor owner Domain
+    and closes all native resources before returning. Successful construction
+    attaches a GC finalizer so abandoned workers still drain leases. *)
+let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities () =
+  let* client_config =
+    Native.client_config ~target_url ~identity
+    |> Result.map_error (public_bridge_error "client configuration")
+  in
+  let* worker_config =
+    Native.worker_config ~namespace ~task_queue ~build_id:default_build_id
+      ~max_cached_workflows:default_max_cached_workflows
+      ~max_outstanding_workflow_tasks:default_max_outstanding_workflow_tasks
+      ~max_concurrent_workflow_task_polls:
+        default_max_concurrent_workflow_task_polls
+      ~graceful_shutdown_timeout_ms:default_graceful_shutdown_timeout_ms
+    |> Result.map_error (public_bridge_error "worker configuration")
+  in
+  let* supervisor =
+    Native.create ~capacity:supervisor_capacity ()
+    |> Result.map_error (public_native_error "native runtime creation")
+  in
+  let cleanup error =
+    ignore (Native.shutdown supervisor);
+    Error error
+  in
+  let setup =
+    let* () =
+      Native.perform supervisor (Native.Connect_client client_config)
+      |> Result.map_error (public_native_error "client connection")
+    in
+    let* () =
+      Native.perform supervisor (Native.Start_worker worker_config)
+      |> Result.map_error (public_native_error "worker startup")
+    in
+    let* workflows =
+      Workflow.create ~task_queue ~supervisor ~workflows ()
+      |> Result.map_error (public_adapter_error "workflow registration")
+    in
+    let* activities =
+      Activity.create ~supervisor ~activities
+      |> Result.map_error (public_activity_error "activity registration")
+    in
+    Ok
+      {
+        supervisor;
+        workflows;
+        activities;
+        closed = Atomic.make false;
+        shutdown_retryable = Atomic.make false;
+        run_mutex = Mutex.create ();
+      }
+  in
+  match setup with
+  | Ok worker ->
+      (* Explicit [shutdown] is the supported path. The finalizer is a last
+         resort for abandoned workers: it schedules the same drain-then-native
+         teardown so GC of a live [t] cannot leave Core leases without an
+         OCaml completion document. *)
+      Gc.finalise cleanup_abandoned worker;
+      Ok worker
+  | Error error -> cleanup error
 
 (** Reports whether the most recent shutdown failure occurred before native
     teardown. The public wrapper uses this private state to reopen its own

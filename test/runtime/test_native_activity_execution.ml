@@ -72,8 +72,12 @@ module Adapter = struct
   let register definition = Raw_adapter.register (base_activity definition)
 end
 
-type source_error = { code : string; message : string }
+type source_error = { code : string; message : string; retryable : bool }
 (** A deterministic source error used by the fake supervisor. *)
+
+(** Marker raised only by the fake completion transport to model a transient
+    exception at the native call boundary. *)
+exception Transient_completion_failure
 
 type fake_supervisor = {
   (* Tasks waiting to be leased in producer order. *)
@@ -87,6 +91,9 @@ type fake_supervisor = {
   (* One-shot transport rejection used to verify completion retry without a
      second activity invocation. *)
   reject_next_completion : bool ref;
+  (* One-shot transient exception used to prove raised completion failures
+     retain the same lease and are classified through the source boundary. *)
+  raise_next_completion : bool ref;
   (* Optional source poll failure, modelling a lower-layer typed rejection. *)
   poll_error : source_error option ref;
 }
@@ -102,6 +109,7 @@ let fake_supervisor () =
     completions = ref [];
     heartbeats = ref [];
     reject_next_completion = ref false;
+    raise_next_completion = ref false;
     poll_error = ref None;
   }
 
@@ -161,12 +169,16 @@ module Fake_supervisor = struct
       rejection leaves the native lease untouched so the adapter must retry the
       same completion without invoking the OCaml implementation again. *)
   let complete_activity supervisor (completion : Protocol.completion) =
-    if !(supervisor.reject_next_completion) then begin
+    if !(supervisor.raise_next_completion) then begin
+      supervisor.raise_next_completion := false;
+      raise Transient_completion_failure
+    end else if !(supervisor.reject_next_completion) then begin
       supervisor.reject_next_completion := false;
       Error
         {
           code = "temporarily_unavailable";
           message = "completion transport unavailable";
+          retryable = true;
         }
     end
     else
@@ -174,7 +186,12 @@ module Fake_supervisor = struct
         remove_token completion.Protocol.task_token !(supervisor.leased)
       in
       if not found then
-        Error { code = "stale_lease"; message = "activity token is not leased" }
+        Error
+          {
+            code = "stale_lease";
+            message = "activity token is not leased";
+            retryable = false;
+          }
       else begin
         supervisor.leased := remaining;
         supervisor.completions :=
@@ -195,13 +212,30 @@ module Fake_supervisor = struct
         copy_heartbeat heartbeat :: !(supervisor.heartbeats);
       Ok ()
     end
-    else Error { code = "stale_lease"; message = "activity token is not leased" }
+    else
+      Error
+        {
+          code = "stale_lease";
+          message = "activity token is not leased";
+          retryable = false;
+        }
 
   (** Exposes the bounded source classification expected by the adapter. *)
   let error_code error = error.code
 
   (** Exposes the bounded source message expected by the adapter. *)
   let error_message error = error.message
+
+  (** Only the injected transport error is retryable; stale leases are
+      protocol failures and must remain fatal. *)
+  let error_is_retryable error = error.retryable
+
+  (** The fake uses a private marker exception to model a transient owner-side
+      completion raise without treating arbitrary implementation exceptions as
+      retryable. *)
+  let exception_is_retryable = function
+    | Transient_completion_failure -> true
+    | _ -> false
 end
 
 module Worker = Adapter.Make (Fake_supervisor)
@@ -503,6 +537,43 @@ let test_completion_retry_does_not_redo_activity () =
   if !(supervisor.leased) <> [] then
     failwith "retried completion left lease active"
 
+(** A completion exception follows the same ownership rule as a typed
+    rejection when the supervisor explicitly marks that exception transient.
+    The second poll retries the copied completion and never re-enters the
+    activity implementation. *)
+let test_transient_completion_exception_does_not_redo_activity () =
+  let supervisor = fake_supervisor () in
+  let calls = ref 0 in
+  let activity =
+    Temporal.Activity.define ~name:"native_activity_raise_retry"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.string (fun () ->
+        incr calls;
+        Ok "once")
+  in
+  let token = Bytes.of_string "raise-retry-token" in
+  enqueue supervisor
+    (start_task ~token ~activity_type:"native_activity_raise_retry"
+       ~input:[ encode_input Temporal.Codec.unit () ]);
+  supervisor.raise_next_completion := true;
+  let worker = worker supervisor [ Adapter.register activity ] in
+  begin match Worker.poll worker with
+  | Error { code = "completion_failed"; retryable = true; _ } -> ()
+  | Error error ->
+      failwith
+        ("transient completion exception had the wrong classification: "
+       ^ error.code)
+  | Ok _ -> failwith "transient completion exception was silently accepted"
+  end;
+  if !calls <> 1 then failwith "raised completion reran the activity";
+  if !(supervisor.leased) = [] then
+    failwith "fake source retired raised completion lease";
+  expect_completed Adapter.Succeeded (Worker.poll worker);
+  if !calls <> 1 then failwith "raised completion retry reran activity";
+  if List.length !(supervisor.completions) <> 1 then
+    failwith "raised completion retry submitted more than one completion";
+  if !(supervisor.leased) <> [] then
+    failwith "raised completion retry left lease active"
+
 (** A contextual activity receives the previous attempt's heartbeat details,
     reports a typed progress value through the supervisor, and cannot submit a
     second heartbeat after terminal completion invalidates its context. *)
@@ -797,7 +868,12 @@ let test_implementation_exception_is_retired () =
 let test_poll_error_is_typed () =
   let supervisor = fake_supervisor () in
   supervisor.poll_error :=
-    Some { code = "poll_failed"; message = "native activity poll failed" };
+    Some
+      {
+        code = "poll_failed";
+        message = "native activity poll failed";
+        retryable = false;
+      };
   let worker = worker supervisor [] in
   begin match Worker.poll worker with
   | Error (error : Adapter.error_view)
@@ -815,6 +891,7 @@ let () =
   test_unknown_activity_retires_lease ();
   test_cancellation ();
   test_completion_retry_does_not_redo_activity ();
+  test_transient_completion_exception_does_not_redo_activity ();
   test_contextual_heartbeat_lifecycle ();
   test_context_payloads_are_copied ();
   test_context_callback_exception_and_invalidation ();

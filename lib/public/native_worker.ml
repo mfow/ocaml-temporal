@@ -12,6 +12,7 @@ module Base_error = Temporal_base.Error
 module Observability = Temporal_base.Observability
 module Workflow_adapter = Temporal_runtime.Native_worker_execution
 module Activity_adapter = Temporal_runtime.Native_activity_execution
+module Worker_loop = Temporal_runtime.Native_worker_loop
 
 (** Result-bind notation keeps expected startup and lifecycle failures typed. *)
 let ( let* ) = Result.bind
@@ -98,7 +99,7 @@ let public_adapter_error operation
 (** Activity adapter diagnostics have the same shape as workflow diagnostics
     but remain a distinct private type, so this conversion is explicit. *)
 let public_activity_error operation
-    ({ code; path; message } : Activity_adapter.error_view) =
+    ({ code; path; message; _ } : Activity_adapter.error_view) =
   Base_error.make ~category:`Bridge
     ~message:(
       Printf.sprintf "%s failed at %s (%s): %s" operation path code message)
@@ -150,6 +151,20 @@ module Activity_source = struct
 
   (** Returns the bounded diagnostic used in adapter diagnostics. *)
   let error_message error = snd (native_error_view error)
+
+  (** Only explicit transport loss is retryable at this boundary. Protocol,
+      configuration, worker-state, and supervisor-defect statuses remain
+      fatal so a malformed completion cannot be retried indefinitely. *)
+  let error_is_retryable = function
+    | Native.Backend { Bridge.status = Bridge.Connection; _ } -> true
+    | Native.Backend { Bridge.status = Bridge.Not_ready; _ } -> true
+    | _ -> false
+
+  (** Unexpected supervisor exceptions are defects, not evidence of a safe
+      transient transport failure. The adapter therefore retains them but the
+      worker loop treats them as fatal unless a private test/source explicitly
+      overrides this classification. *)
+  let exception_is_retryable _exception = false
 end
 
 (** Instantiates the workflow adapter with the production supervisor source. *)
@@ -219,7 +234,7 @@ let is_not_ready = function
 (** Converts a successful adapter summary into progress. A rejected task has
     already been acknowledged with a failure completion and therefore must not
     stop the worker loop. *)
-type progress = Progress | Not_ready
+type progress = Worker_loop.progress = Progress | Not_ready | Retry_pending
 
 (** Maps one workflow adapter poll and keeps only the scheduling information the
     outer loop needs. The adapter's detailed rejection is logged without
@@ -248,6 +263,13 @@ let poll_activity worker =
       Ok Progress
   | Ok (Activity_adapter.Rejected { error; lease_retired = false; _ }) ->
       Error (public_activity_error "activity task completion" error)
+  | Error { retryable = true; code; _ } ->
+      report Logs.Warning ~operation:"activity_completion_retry"
+        ~error_kind:code ();
+      (* The adapter has retained the exact completion. Returning a scheduling
+         result, rather than a fatal worker error, lets the generic loop apply
+         its bounded activity-lane wait before retrying it. *)
+      Ok Retry_pending
   | Error error -> Error (public_activity_error "activity task poll" error)
 
 (** Waits on one bounded native readiness lane. The C bridge releases the OCaml
@@ -281,26 +303,15 @@ let run worker =
           Atomic.set worker.run_domain None;
           Mutex.unlock worker.run_mutex)
         (fun () ->
-      let rec loop wait_workflow_lane =
-        if Atomic.get worker.closed then Ok ()
-        else
-          let workflow_result = poll_workflow worker in
-          let activity_result =
-            match workflow_result with
-            | Error _ as error -> error
-            | Ok _ -> poll_activity worker
-          in
-          match (workflow_result, activity_result) with
-          | Error _, _ | _, Error _ when Atomic.get worker.closed -> Ok ()
-          | Error error, _ -> Error error
-          | _, Error error -> Error error
-          | Ok Progress, _ | _, Ok Progress -> loop (not wait_workflow_lane)
-          | Ok Not_ready, Ok Not_ready ->
-              let* () = wait_for_lane worker ~workflow_lane:wait_workflow_lane in
-              loop (not wait_workflow_lane)
-      in
       report Logs.Info ~operation:"worker_run_started" ();
-      let result = loop true in
+      let result =
+        Worker_loop.run
+          ~closed:(fun () -> Atomic.get worker.closed)
+          ~poll_workflow:(fun () -> poll_workflow worker)
+          ~poll_activity:(fun () -> poll_activity worker)
+          ~wait_for_lane:(fun ~workflow_lane ->
+            wait_for_lane worker ~workflow_lane)
+      in
       report Logs.Info ~operation:"worker_run_finished" ();
       result))
 

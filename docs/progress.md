@@ -16,11 +16,12 @@ for the two-binary Temporal acceptance path.
 
 ## 2026-07-12: Live activity retry acceptance scenario
 
-Status: the live scenario is implemented; its live evidence is pending the
-Linux CI `Temporal/PostgreSQL integration smoke (OCaml 5.5)` job for this
-revision. The existing retry-policy constructor, JSON protocol, and Temporal
+Status: verified in Linux CI run
+[`29187733405`](https://github.com/mfow/ocaml-temporal/actions/runs/29187733405)
+for commit `b895d3c` by the `Temporal/PostgreSQL integration smoke (OCaml
+5.5)` job. The existing retry-policy constructor, JSON protocol, and Temporal
 Core conversion tests remain synthetic evidence; they prove that the policy is
-validated and preserved, but they do not prove that a server schedules a
+validated and preserved, while the linked CI run proves one server schedules a
 second activity attempt.
 
 The two-binary fixture now includes `smoke.activity_retry`. Its
@@ -36,9 +37,12 @@ PostgreSQL volume before and after the test. The activity's attempt counter is
 process-local test state and is reset when that fresh worker process starts,
 so the assertion does not depend on history from an earlier run.
 
-Evidence to record after the CI job succeeds: `make test-temporal-integration`,
-plus the focused OCaml/Rust policy and protocol tests listed in the
-[activity retry decision](decisions/0007-activity-retry-policy.md).
+Evidence: the linked CI run passed `make test-temporal-integration`, including
+the exact `SMOKE:ATTEMPT:2` assertion, plus the focused OCaml/Rust policy and
+protocol tests listed in the [activity retry decision](decisions/0007-activity-retry-policy.md).
+This proves one short success-after-retry path only; retry timeouts,
+non-retryable classification, cancellation, replay, and worker recovery remain
+separate scenarios.
 
 ## 2026-07-12: Live two-OCaml-binary Compose acceptance
 

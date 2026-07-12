@@ -1,14 +1,14 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The fan-out, timer/activity, and parent/child success scenarios
-were verified in the Linux CI Temporal/PostgreSQL integration job for the
-earlier revisions. This revision adds a fourth top-level workflow that uses an
-explicit activity retry policy: its worker activity fails once, Temporal
-delivers a second attempt, and the driver asserts the exact attempt-2 result.
-The retry-policy constructor and bilateral JSON/Core conversion remain
-synthetic evidence; a successful live integration job will be the evidence for
-server retry delivery. Until that job succeeds, the retry assertion is pending
-live CI verification. The worker and driver remain guarded by
+**Status:** The fan-out, timer/activity, parent/child, and activity-retry
+success scenarios were verified in Linux CI run
+[`29187733405`](https://github.com/mfow/ocaml-temporal/actions/runs/29187733405)
+for commit `b895d3c`. The retry workflow uses an explicit activity retry
+policy: its worker activity fails once, Temporal delivers a second attempt,
+and the driver asserts the exact attempt-2 result. The retry-policy constructor
+and bilateral JSON/Core conversion remain synthetic evidence; the CI run is
+the live evidence for this one server-managed retry delivery. The worker and
+driver remain guarded by
 `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
 
 `smoke-worker` publishes an atomic readiness marker after public
@@ -442,8 +442,9 @@ assertions, not log text, are the success oracle. Per-activation/task
 identifiers and completion latency are a future observability enhancement and
 must remain payload-free if added.
 
-The first live test is intentionally small. Once it passes, extend the same
-two-binary topology rather than adding a separate pseudo-worker test:
+The first live test is intentionally small. With this success path verified,
+extend the same two-binary topology rather than adding a separate pseudo-worker
+test:
 
 * activity retry timeout, non-retryable classification, and heartbeat;
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
@@ -455,10 +456,11 @@ two-binary topology rather than adding a separate pseudo-worker test:
 Child-start commands and both child-resolution jobs have a closed bilateral
 schema, Core conversion, pure-OCaml lifecycle tests, and this one real-server
 parent/child success assertion. The activity retry policy has the same
-separation: bilateral policy validation is synthetic, while a green CI job for
-this fixture will make its attempt-2 result live evidence for one
-server-managed retry. Neither assertion claims coverage of child failure,
-cancellation, retry, replay, or recovery behavior.
+separation: bilateral policy validation is synthetic, while CI run
+[`29187733405`](https://github.com/mfow/ocaml-temporal/actions/runs/29187733405)
+makes its attempt-2 result live evidence for one server-managed retry. Neither
+assertion claims coverage of child failure, cancellation, retry timeouts,
+replay, or recovery behavior.
 
 ## Completion criteria for this design
 

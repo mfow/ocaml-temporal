@@ -9,6 +9,7 @@ TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HO
 TEMPORAL_DRIVER_TIMEOUT_SECONDS ?= 120
 SMOKE_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.smoke-driver.log
 SMOKE_CANCELLATION_READY_FILE := $(TEMPORAL_FIXTURE_DIR)/.cancellation-ready
+SMOKE_WORKER_STOPPED_FILE := $(TEMPORAL_FIXTURE_DIR)/.worker-stopped
 SERVICE ?= dev
 OCAML_VERSION ?= 5.2
 OCAML_IMAGE ?= ocaml/opam:debian-12-ocaml-$(OCAML_VERSION)
@@ -37,7 +38,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-stop-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -56,6 +57,7 @@ cargo-metadata:
 
 test:
 	$(MAKE) test-temporal-config
+	$(MAKE) test-temporal-worker-stop-contract
 	$(RUN) dune runtest
 	$(MAKE) test-rust
 	$(MAKE) test-bridge
@@ -78,6 +80,12 @@ test-quality-contract:
 test-temporal-config:
 	sh test/smoke/test_temporal_compose_config.sh
 
+# Verifies the worker-stop evidence independently of Docker. The live teardown
+# uses this same checker after Compose stop, so a stale aggregate log cannot
+# turn a failed shutdown into a false-positive acceptance result.
+test-temporal-worker-stop-contract:
+	sh test/smoke/test_worker_stop_contract.sh
+
 # This command runs inside the OCaml development container but connects to the
 # real Temporal service on the shared Compose network.
 test-core-lifecycle-integration:
@@ -93,6 +101,7 @@ temporal-start:
 # frontend are healthy. The worker health check is backed by an atomic marker
 # published after public Worker.create succeeds, not merely by process liveness.
 temporal-start-worker:
+	@rm -f "$(SMOKE_WORKER_STOPPED_FILE)"
 	$(TEMPORAL_COMPOSE) up --detach --build --wait smoke-worker
 
 # Runs the independent OCaml driver against the already-running worker. Using
@@ -143,8 +152,9 @@ temporal-inspect-smoke:
 # proves Compose teardown did not merely kill a healthy-looking process.
 temporal-stop-worker:
 	@set -eu; \
+	rm -f "$(SMOKE_WORKER_STOPPED_FILE)"; \
 	$(TEMPORAL_COMPOSE) stop --timeout 30 smoke-worker; \
-	if ! $(TEMPORAL_COMPOSE) logs --no-color smoke-worker | grep -F "two-binary worker stopped cleanly" >/dev/null; then \
+	if ! sh test/integration/temporal/scripts/check-worker-stop-marker.sh "$(SMOKE_WORKER_STOPPED_FILE)"; then \
 		echo "smoke-worker did not report graceful shutdown" >&2; \
 		$(MAKE) temporal-logs || true; \
 		exit 1; \
@@ -168,11 +178,11 @@ temporal-logs:
 
 temporal-stop:
 	$(TEMPORAL_COMPOSE) down --remove-orphans
-	@rm -f "$(SMOKE_CANCELLATION_READY_FILE)"
+	@rm -f "$(SMOKE_CANCELLATION_READY_FILE)" "$(SMOKE_WORKER_STOPPED_FILE)"
 
 temporal-clean:
 	$(TEMPORAL_COMPOSE) down --volumes --remove-orphans
-	@rm -f "$(SMOKE_DRIVER_LOG_FILE)" "$(SMOKE_CANCELLATION_READY_FILE)"
+	@rm -f "$(SMOKE_DRIVER_LOG_FILE)" "$(SMOKE_CANCELLATION_READY_FILE)" "$(SMOKE_WORKER_STOPPED_FILE)"
 
 test-temporal-integration: test-temporal-config
 	@set -eu; \

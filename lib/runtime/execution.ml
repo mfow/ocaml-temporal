@@ -187,7 +187,9 @@ let run_scheduler execution =
     emit a terminal or eviction command, so one-shot effect continuations cannot
     leak after a rejected activation. *)
 let shutdown execution =
-  Workflow_context_store.shutdown execution.context
+  (* Teardown must not raise into lease-ack bookkeeping. Continuations that
+     mishandle the private shutdown exception are contained here. *)
+  try Workflow_context_store.shutdown execution.context with _ -> ()
 
 (** Processes jobs in order, runs fibers, and returns new commands. Cache
     removal stops processing immediately and returns no commands for the old

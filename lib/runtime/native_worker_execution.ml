@@ -474,7 +474,10 @@ module Make (Supervisor : SUPERVISOR) = struct
     match Run_map.find_opt run_id adapter.runs with
     | None -> ()
     | Some (Run { execution; _ }) ->
-        Execution.shutdown execution;
+        (* Contain teardown defects: after a completion is acknowledged the
+           lease is already retired, so a raising shutdown must not become a
+           second failure-completion attempt for a stale run. *)
+        (try Execution.shutdown execution with _ -> ());
         adapter.runs <- Run_map.remove run_id adapter.runs
 
   (** Applies bookkeeping only after the supervisor acknowledges a retained

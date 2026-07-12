@@ -230,6 +230,16 @@ cross-kind collisions are invalid. A terminal job before a successful start is
 rejected by the runtime so a parent cannot observe a child that Core has not
 started.
 
+Both language decoders validate the complete child-resolution object before an
+activation reaches the runtime. Required identifiers must be nonempty and
+within the UTF-8 safety ceiling; outcome discriminators, start causes, nullable
+payloads, and recursive failure objects are closed and type-checked; child
+failure event IDs cannot be negative. A malformed document returns the typed
+`invalid_message` protocol error and has no lifecycle side effect. Runtime
+ordering checks happen only after this parse boundary: a terminal-before-start,
+duplicate start, duplicate terminal, or unknown sequence returns a typed bridge
+defect and leaves the existing resolver state unchanged.
+
 A completion is a closed object sent from OCaml to Rust. Its ordered commands
 cover scheduling and requesting cancellation of remote activities, starting a
 child workflow with its workflow identity and input payload, starting and

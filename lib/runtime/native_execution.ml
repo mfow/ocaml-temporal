@@ -624,6 +624,7 @@ let command_to_protocol command =
         schedule_to_start_timeout;
         start_to_close_timeout;
         heartbeat_timeout;
+        retry_policy;
         cancellation_type;
         do_not_eagerly_execute;
       } ->
@@ -658,6 +659,37 @@ let command_to_protocol command =
         optional_duration_of_milliseconds "$.command.heartbeat_timeout"
           heartbeat_timeout
       in
+      let* retry_policy =
+        match retry_policy with
+        | None -> Ok None
+        | Some value ->
+            let* initial_interval =
+              duration_of_milliseconds
+                "$.command.retry_policy.initial_interval"
+                value.initial_interval
+            in
+            let* maximum_interval =
+              duration_of_milliseconds
+                "$.command.retry_policy.maximum_interval"
+                value.maximum_interval
+            in
+            let policy =
+              Protocol.
+                {
+                  initial_interval;
+                  backoff_coefficient_bits = value.backoff_coefficient_bits;
+                  maximum_interval;
+                  maximum_attempts = value.maximum_attempts;
+                  non_retryable_error_types =
+                    List.map Fun.id value.non_retryable_error_types;
+                }
+            in
+            let* () =
+              Protocol.validate_retry_policy policy
+              |> Result.map_error protocol_error
+            in
+            Ok (Some policy)
+      in
       if Option.is_none schedule_to_close_timeout
          && Option.is_none start_to_close_timeout
       then
@@ -677,6 +709,7 @@ let command_to_protocol command =
                schedule_to_start_timeout;
                start_to_close_timeout;
                heartbeat_timeout;
+               retry_policy;
                cancellation_type = protocol_cancellation_type cancellation_type;
                do_not_eagerly_execute;
              })

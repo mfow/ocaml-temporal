@@ -148,6 +148,7 @@ let test_commands_and_completion () =
           schedule_to_start_timeout = None;
           start_to_close_timeout = Some 60_000L;
           heartbeat_timeout = None;
+          retry_policy = None;
           cancellation_type = Activation.Try_cancel;
           do_not_eagerly_execute = false;
         };
@@ -193,6 +194,7 @@ let test_activity_options_and_queue () =
           schedule_to_start_timeout = None;
           start_to_close_timeout = None;
           heartbeat_timeout = Some 1_000L;
+          retry_policy = None;
           cancellation_type = Activation.Wait_cancellation_completed;
           do_not_eagerly_execute = true;
         };
@@ -531,6 +533,7 @@ let test_child_workflow_concurrency_and_decoding () =
           schedule_to_start_timeout = None;
           start_to_close_timeout = Some 60_000L;
           heartbeat_timeout = None;
+          retry_policy = None;
           cancellation_type = Activation.Try_cancel;
           do_not_eagerly_execute = false;
         };

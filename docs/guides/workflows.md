@@ -260,10 +260,32 @@ short form for `start` followed by `Future.await` when no other work needs to
 be started first.
 
 Activity scheduling accepts labelled options for a stable activity ID, task
-queue, timeout values, cancellation policy, and eager-execution preference.
-Invalid identifiers, payloads, or options produce a typed future error before
-a history command is emitted. `Temporal.Workflow.start_sleep` creates a durable
-timer without waiting; `Temporal.Workflow.sleep` is the start-and-wait form.
+queue, timeout values, cancellation policy, eager-execution preference, and an
+optional retry policy:
+
+```ocaml
+let policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 1_000L)
+    ~backoff_coefficient:1.5
+    ~maximum_interval:(Temporal.Duration.of_ms 60_000L)
+    ~maximum_attempts:4 ()
+
+let result =
+  match policy with
+  | Error error -> Error error
+  | Ok retry_policy ->
+      Temporal.Activity.execute ~retry_policy remote_activity input
+```
+
+The constructor validates positive intervals, a finite coefficient of at least
+`1.0`, and a non-negative signed 32-bit attempt limit; `0` means unlimited
+attempts. Invalid identifiers, payloads, or options produce a typed future
+error before a history command is emitted. Omitting `~retry_policy` is
+different from supplying one: the private protocol carries an explicit JSON
+`null`, so Temporal's default policy remains distinguishable from a concrete
+policy during replay. `Temporal.Workflow.start_sleep` creates a durable timer
+without waiting; `Temporal.Workflow.sleep` is the start-and-wait form.
 
 ## 5. Combine futures
 

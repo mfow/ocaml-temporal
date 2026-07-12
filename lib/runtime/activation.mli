@@ -28,6 +28,17 @@ type activity_cancellation_type =
   | Wait_cancellation_completed
   | Abandon
 
+(** A validated activity retry policy kept in exact, bridge-ready form.  The
+    coefficient is an unsigned decimal rendering of its IEEE-754 bits; the
+    other numeric fields retain their exact OCaml integer values. *)
+type retry_policy = {
+  initial_interval : int64;
+  backoff_coefficient_bits : string;
+  maximum_interval : int64;
+  maximum_attempts : int;
+  non_retryable_error_types : string list;
+}
+
 (** An instruction produced by workflow code for Temporal Core. Commands are
     returned in the order they were created because Temporal records that order
     in workflow history and expects replay to reproduce it. Activity timeout
@@ -44,6 +55,7 @@ type command =
       schedule_to_start_timeout : int64 option;
       start_to_close_timeout : int64 option;
       heartbeat_timeout : int64 option;
+      retry_policy : retry_policy option;
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }

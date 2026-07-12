@@ -26,11 +26,32 @@
     },
     "nullable_duration": {"oneOf": [{"$ref": "#/$defs/duration"}, {"type": "null"}]},
     "nullable_payload": {"oneOf": [{"$ref": "#/$defs/payload"}, {"type": "null"}]},
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initial_interval", "backoff_coefficient_bits", "maximum_interval", "maximum_attempts", "non_retryable_error_types"],
+      "properties": {
+        "initial_interval": {"$ref": "#/$defs/duration"},
+        "backoff_coefficient_bits": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical unsigned 64-bit decimal containing the IEEE-754 bits of a finite backoff coefficient at least 1.0. Runtime validation also enforces the exact unsigned range and floating-point value."
+        },
+        "maximum_interval": {"$ref": "#/$defs/duration"},
+        "maximum_attempts": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "non_retryable_error_types": {
+          "type": "array",
+          "maxItems": 201326592,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      },
+      "description": "An activity retry policy. The initial interval is positive and the maximum interval is at least as large; zero maximum attempts means unlimited attempts. The coefficient's decimal text is used instead of a JSON number so both language sides preserve its IEEE-754 bits."
+    },
     "command": {
       "oneOf": [
         {
           "type": "object", "additionalProperties": false,
-          "required": ["kind", "seq", "activity_id", "activity_type", "task_queue", "arguments", "schedule_to_close_timeout", "schedule_to_start_timeout", "start_to_close_timeout", "heartbeat_timeout", "cancellation_type", "do_not_eagerly_execute"],
+          "required": ["kind", "seq", "activity_id", "activity_type", "task_queue", "arguments", "schedule_to_close_timeout", "schedule_to_start_timeout", "start_to_close_timeout", "heartbeat_timeout", "retry_policy", "cancellation_type", "do_not_eagerly_execute"],
           "anyOf": [
             {"properties": {"schedule_to_close_timeout": {"not": {"type": "null"}}}},
             {"properties": {"start_to_close_timeout": {"not": {"type": "null"}}}}
@@ -46,6 +67,7 @@
             "schedule_to_start_timeout": {"$ref": "#/$defs/nullable_duration"},
             "start_to_close_timeout": {"$ref": "#/$defs/nullable_duration"},
             "heartbeat_timeout": {"$ref": "#/$defs/nullable_duration"},
+            "retry_policy": {"oneOf": [{"$ref": "#/$defs/retry_policy"}, {"type": "null"}]},
             "cancellation_type": {"enum": ["try_cancel", "wait_cancellation_completed", "abandon"]},
             "do_not_eagerly_execute": {"type": "boolean"}
           }

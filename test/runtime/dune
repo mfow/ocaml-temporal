@@ -6,5 +6,6 @@
   test_native_activity_lifecycle
   test_native_worker_lifecycle
   test_native_worker_execution
-  test_scheduler)
+  test_scheduler
+  test_activity_retry_policy)
  (libraries temporal-sdk temporal_runtime))

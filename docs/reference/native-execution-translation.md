@@ -83,7 +83,7 @@ the complete result before returning it to the bridge.
 | Runtime command | Protocol command | Notes |
 | --- | --- | --- |
 | `Request_cancel_activity` | `Request_cancel_activity` | The sequence is range-checked. |
-| `Schedule_activity` | `Schedule_activity` | Activity ID, type, task queue, argument payloads, timeout policies, cancellation policy, and eager-execution flag are validated and copied. Defaults are applied by the workflow context before this boundary; the translator never invents them. |
+| `Schedule_activity` | `Schedule_activity` | Activity ID, type, task queue, argument payloads, timeout policies, optional retry policy, cancellation policy, and eager-execution flag are validated and copied. Defaults are applied by the workflow context before this boundary; the translator never invents them. |
 | `Start_child_workflow` | `Start_child_workflow` | The sequence, child workflow ID and type, and one copied input payload are retained. The current runtime does not expose namespace, task queue, timeout, policy, retry, header, memo, search-attribute, versioning, or priority options, so the Rust Core command receives those fields at their documented defaults and rejects non-default values on the reverse conversion. |
 | `Start_timer` | `Start_timer` | Non-negative milliseconds are split into exact seconds and nanoseconds; no floating-point conversion is used. |
 | `Cancel_timer` | `Cancel_timer` | The sequence is range-checked. |
@@ -115,13 +115,21 @@ Temporal requires either a schedule-to-close or start-to-close timeout. If no
 timeout is supplied, the context emits a deterministic 60-second
 start-to-close timeout so existing workflows remain valid. All supplied
 timeouts are exact non-negative milliseconds and are converted to normalized
-protocol durations without floating-point arithmetic. Cancellation defaults to
-`Try_cancel`, and `do_not_eagerly_execute` defaults to `false`. Invalid IDs,
-queues, payload metadata, negative durations in an internal command, and missing
-required timeout policies return typed translation errors before a completion is
-emitted. The public `Temporal.Duration.of_ms` constructor rejects a negative
-value earlier with `Invalid_argument`, because a negative duration is a
-programmer configuration defect rather than an operational workflow failure.
+protocol durations without floating-point arithmetic. Cancellation defaults to `Try_cancel`,
+and `do_not_eagerly_execute` defaults to `false`. An optional `~retry_policy` is immutable
+and validated before the activity command is allocated. Its initial interval must
+be positive, its maximum interval must not be smaller, its finite backoff
+coefficient must be at least `1.0`, and its maximum-attempt count is a signed 32-bit
+value where `0` means unlimited attempts. The policy's coefficient crosses JSON as
+canonical unsigned decimal IEEE-754 bits rather than a JSON float; this keeps
+OCaml, Rust, and Core lossless and makes replay independent of float formatting.
+Omitting the option emits the required JSON member as `null`, preserving the
+distinction between “no policy” and a concrete policy. Invalid IDs, queues,
+payload metadata, negative durations in an internal command, malformed retry
+policies, and missing required timeout policies return typed translation errors
+before a completion is emitted. The public `Temporal.Duration.of_ms` constructor
+rejects a negative value earlier with `Invalid_argument`, because a negative duration
+is a programmer configuration defect rather than an operational workflow failure.
 
 These errors are a planned compatibility boundary, not a hidden drop path.
 Activity scheduling and child lifecycle translation are enabled because the

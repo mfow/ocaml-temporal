@@ -28,6 +28,19 @@ type activity_cancellation_type =
   | Wait_cancellation_completed
   | Abandon
 
+(** The validated retry policy attached to a scheduled remote activity.  The
+    runtime stores the backoff coefficient as its canonical unsigned IEEE-754
+    bit string so replay and the JSON bridge never depend on a decimal float
+    printer.  Durations remain exact millisecond counts until the semantic
+    protocol converts them to protobuf seconds and nanoseconds. *)
+type retry_policy = {
+  initial_interval : int64;
+  backoff_coefficient_bits : string;
+  maximum_interval : int64;
+  maximum_attempts : int;
+  non_retryable_error_types : string list;
+}
+
 (** Commands contain only immutable data needed by the semantic JSON
     translator; they never expose the runtime's mutable execution state.  The
     activity record carries every field Core needs to schedule a task, rather
@@ -43,6 +56,7 @@ type command =
       schedule_to_start_timeout : int64 option;
       start_to_close_timeout : int64 option;
       heartbeat_timeout : int64 option;
+      retry_policy : retry_policy option;
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }

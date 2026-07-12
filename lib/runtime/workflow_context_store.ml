@@ -126,7 +126,7 @@ let emit context command = context.commands_rev <- command :: context.commands_r
     ensures even an immediate synthetic result can find the pending activity. *)
 let schedule_activity context ~name ~input ?activity_id ?task_queue
     ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
-    ?heartbeat_timeout ?(cancellation_type = Activation.Try_cancel)
+    ?heartbeat_timeout ?retry_policy ?(cancellation_type = Activation.Try_cancel)
     ?(do_not_eagerly_execute = false) ~decode () =
   let seq = allocate_sequence context in
   let future, resolve = Scheduler.promise context.scheduler ~outside_error in
@@ -161,6 +161,7 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
          schedule_to_start_timeout;
          start_to_close_timeout;
          heartbeat_timeout;
+         retry_policy;
          cancellation_type;
          do_not_eagerly_execute;
        });

@@ -249,8 +249,13 @@ retry, header, memo, search-attribute, versioning, and priority fields because
 the current OCaml runtime does not expose them; Rust fills those Core fields
 with explicit defaults and rejects non-default values on reverse conversion.
 Scheduled activities require at least a schedule-to-close or start-to-close
-timeout. The completion schema records this as an `anyOf` constraint in
-addition to the per-field nullable types; runtime validation remains
+timeout. They may also carry a closed retry-policy object with positive initial
+and nondecreasing maximum intervals, a finite backoff coefficient at least 1.0,
+and a signed 32-bit maximum-attempt count. The coefficient is an unsigned
+decimal IEEE-754 bit string rather than a JSON float, and an omitted policy is
+represented by the required JSON null member. The completion schema records the
+timeout requirement as an `anyOf` constraint in addition to the
+per-field nullable types; runtime validation remains
 authoritative for duplicate members and UTF-8 byte limits. A terminal workflow
 command may occur at most once and must be last.
 When acknowledging an eviction, the completion command list must be empty and

@@ -1,6 +1,6 @@
 {
   "commands":[
-    {"kind":"schedule_activity","seq":1,"activity_id":"lookup-1","activity_type":"lookup","task_queue":"activities","arguments":[{"metadata":{},"data":{"encoding":"base64","data":"NDI="}}],"schedule_to_close_timeout":{"seconds":30,"nanoseconds":0},"schedule_to_start_timeout":null,"start_to_close_timeout":{"seconds":10,"nanoseconds":0},"heartbeat_timeout":null,"cancellation_type":"wait_cancellation_completed","do_not_eagerly_execute":false},
+    {"kind":"schedule_activity","seq":1,"activity_id":"lookup-1","activity_type":"lookup","task_queue":"activities","arguments":[{"metadata":{},"data":{"encoding":"base64","data":"NDI="}}],"schedule_to_close_timeout":{"seconds":30,"nanoseconds":0},"schedule_to_start_timeout":null,"start_to_close_timeout":{"seconds":10,"nanoseconds":0},"heartbeat_timeout":null,"retry_policy":null,"cancellation_type":"wait_cancellation_completed","do_not_eagerly_execute":false},
     {"kind":"request_cancel_activity","seq":1},
     {"kind":"start_timer","seq":2,"start_to_fire_timeout":{"seconds":1,"nanoseconds":500000000}},
     {"kind":"cancel_timer","seq":2},

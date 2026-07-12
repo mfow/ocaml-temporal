@@ -158,6 +158,9 @@ and bridge, read the [documentation guide](../README.md) first.
 - Normal close rejects new work and drains all admitted work before the owner
   stops. An unexpected handler exception rejects new work, discards queued
   posts, and settles the active and queued calls with the same failure.
+- A terminal reply remains owned by its admitted queue entry until the owner
+  settles it. Dropping the caller's pending capability cannot strand the owner
+  or change the terminal result observed by `join`.
 - Blocking mailbox entry points run only on ordinary producer Domains. Future
   Eio or workflow-effect adapters must offload them rather than blocking a
   cooperative scheduler Domain.
@@ -180,6 +183,11 @@ and bridge, read the [documentation guide](../README.md) first.
 - Shutdown is admitted in FIFO order, invalidates the graph before later work
   can use it, closes and joins the owner, and caches the exact terminal result.
   Repeated or concurrent shutdown invokes backend destruction at most once.
+- A shutdown which races a completed or abandoned asynchronous start drains
+  every pending ticket, aborts and joins each Tokio task, and only then
+  releases the client/Core graph. A result already queued for an abandoned
+  ticket is discarded with its receiver; it cannot cause a second task join or
+  a second native free.
 - A backend shutdown result, including `Error`, means the graph has been
   consumed or invalidated. A retryable operation must not masquerade as
   terminal shutdown while it still owns live resources.

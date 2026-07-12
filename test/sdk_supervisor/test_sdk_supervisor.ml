@@ -317,6 +317,16 @@ let test_shutdown_initiation_closes_admission_and_shares_result () =
   Supervisor.initiate_shutdown supervisor;
   expect "operation after shutdown initiation" (Error Supervisor.Closed)
     (Supervisor.perform supervisor (Echo 3));
+  let late_operations =
+    Array.init 16 (fun value ->
+        Domain.spawn (fun () -> Supervisor.perform supervisor (Echo value)))
+  in
+  Array.iter
+    (fun operation ->
+      expect "concurrent operation after shutdown initiation"
+        (Error Supervisor.Closed)
+        (Domain.join operation))
+    late_operations;
   expect "backend remains blocked after shutdown initiation" 0
     (Atomic.get config.closes);
   let callers =
@@ -330,7 +340,9 @@ let test_shutdown_initiation_closes_admission_and_shares_result () =
     (fun caller -> expect "initiated concurrent shutdown" expected (Domain.join caller))
     callers;
   expect "cached initiated shutdown" expected (Supervisor.shutdown supervisor);
-  expect "one initiated backend shutdown" 1 (Atomic.get config.closes)
+  expect "one initiated backend shutdown" 1 (Atomic.get config.closes);
+  expect "serialized initiated backend calls" 1
+    (Atomic.get config.maximum_active)
 
 (** A backend shutdown error is cached, while release is still attempted only
     once and later operations remain closed. *)

@@ -67,6 +67,30 @@ fn reports_an_owned_error_for_an_unsupported_version() {
 }
 
 #[test]
+/// Proves an error diagnostic has the same one-owner, repeat-safe cleanup
+/// contract as a successful value. The second call must not dereference or
+/// release the first call's allocation a second time.
+fn result_free_is_idempotent_for_an_error_result() {
+    let mut result = empty_result();
+
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_check_abi_version(ABI_VERSION + 1, &mut result) },
+        STATUS_ABI_MISMATCH
+    );
+    assert!(!result.error.ptr.is_null());
+
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(result, empty_result());
+}
+
+#[test]
 /// Exercises non-empty ownership transfer and canonical zero-length handling.
 fn owns_echoed_bytes_and_supports_zero_length_buffers() {
     let input = b"activation";

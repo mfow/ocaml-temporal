@@ -49,7 +49,11 @@ and bridge, read the [documentation guide](../README.md) first.
   while the scheduler is paused between runs), so a foreign or stale handle
   returns a typed defect rather than racing mutable state. Normal workflow
   teardown closes any still-pending signal and its callbacks. Repeating
-  cancellation is idempotent and emits no Temporal command.
+  cancellation is idempotent and emits no Temporal command. The owner check
+  compares the currently running scheduler with the scheduler that created
+  the scope, so a foreign scheduler cannot inspect or mutate the scope. A
+  rejected foreign operation leaves the owner able to query and cancel its
+  own scope, as covered by the cross-scheduler scope test.
 - Combining futures from different executions returns a ready typed defect
   owned by the leading input rather than raising an operational exception.
 - User callback exceptions are contained and reported as scheduler defects.
@@ -177,6 +181,13 @@ and bridge, read the [documentation guide](../README.md) first.
   FIFO append and `Open` to `Closing` transition happen under the same mutex;
   it may temporarily raise the waiting queue to `capacity + 1`, and no later
   normal request can be admitted ahead of it.
+- Concurrent `submit_and_close` calls linearize at that same mutex. For an
+  open mailbox, exactly one contender appends the terminal request and gets a
+  pending reply; every other contender observes `Closed`. The winning request
+  remains after work already admitted, and normal posts submitted after the
+  transition are rejected. The regression test releases multiple producer
+  Domains through a barrier before the race and checks the single winner,
+  losing results, late rejection, and FIFO drain.
 - Queue and lifecycle state are data-race free. Every condition wait rechecks
   its protected predicate after waking.
 - Normal close rejects new work and drains all admitted work before the owner

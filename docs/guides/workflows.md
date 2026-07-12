@@ -1,28 +1,80 @@
-# Writing Workflows in OCaml
+# Writing workflows in OCaml
 
-The public API is under the `Temporal` module. Workflow bodies are ordinary
-OCaml functions that return `result`. Expected failures—such as an activity
-failure, cancellation, timeout, or invalid payload—are values rather than
-exceptions.
+The public API is the `Temporal` module. A workflow body is an ordinary OCaml
+function from a typed input to `('output, Temporal.Error.t) result`. Activities
+are ordinary OCaml functions with the same result-oriented shape. The SDK uses
+private OCaml 5 algebraic effects to suspend a workflow fiber while a future is
+pending; application code never handles the effect or a saved continuation.
 
-This guide describes the API that compiles today. The `mock://` target uses a
-deterministic in-memory backend for fast unit tests. An `http://` or `https://`
-target constructs the OCaml-owned worker, routes poll/complete operations
-through the private Rust/Core bridge, and waits on native readiness without
-holding the OCaml runtime lock. The public wiring is live, while the complete
-Temporal command surface is still being expanded: activity scheduling is
-supported, and child-workflow commands remain explicitly rejected until their
-translation and replay tests are complete. The pure-OCaml command translator
-validates activity fields before the native boundary.
+This guide shows the API that compiles today and labels its execution boundary
+honestly:
 
-## Typed payload codecs
+| Target | What it is useful for today |
+| --- | --- |
+| `mock://...` | Fast deterministic unit tests for client/worker registration and dispatch. The pure runtime tests also exercise timers, activities, child scheduling, replay, cancellation, and future combinators without a server. |
+| `http://...` or `https://...` | The OCaml-owned native client/worker path backed by Rust Temporal Core. The current native command slice handles activity and timer work plus terminal, cancellation, and cache paths. It is covered by focused bridge and adapter tests. |
+| Live Compose acceptance | Real PostgreSQL and Temporal Server lifecycle validation. It does not yet run the two-OCaml-binary workflow-result scaffold. |
 
-Temporal stores inputs and results as payloads: bytes plus metadata naming the
-encoding. Temporal does not require JSON and does not interpret the bytes. A
-codec is the OCaml code that converts between a typed value and that payload.
+Child-workflow code is valid in the synthetic runtime and the semantic command
+translator. It is **not** a supported native end-to-end feature yet: the native
+worker rejects a parent completion containing a child start until Core child
+resolution jobs are represented and replay-tested.
 
-Every workflow and activity definition chooses its codecs explicitly. The
-built-in codecs cover UTF-8 strings, bytes, unit, and options:
+## 1. Write a deterministic OCaml function
+
+Start with ordinary functions and return expected failures as values:
+
+```ocaml
+let normalize name = String.trim name
+
+let greeting input =
+  let name = normalize input in
+  if String.equal name "" then
+    Error (Temporal.Error.defect ~message:"name must not be empty")
+  else
+    Ok ("Hello, " ^ name)
+
+let greeting_workflow =
+  Temporal.Workflow.define
+    ~name:"greeting"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+    greeting
+```
+
+`Workflow.define` pairs the stable Temporal workflow type name with input and
+output codecs and the local implementation. `normalize` is just a helper
+function; it needs no registration or special syntax. `Workflow.remote` makes
+a typed reference to workflow code owned by another worker and has no local
+implementation, so it cannot be registered in `Temporal.Worker.create`.
+`Temporal.Result_syntax` supplies `let*` for sequencing these ordinary
+`result` values; it does not introduce a second effect system.
+
+Workflow code must be deterministic during replay. Do not read the wall clock,
+use random values, perform filesystem or network I/O, inspect process-global
+mutable state, or rely on unordered iteration. Use SDK operations for durable
+time and for work that must appear in Temporal history. Activities are the
+place for nondeterministic or external work such as calling an LLM.
+
+## 2. Use typed codecs
+
+Temporal stores values as payloads: bytes plus metadata naming the encoding.
+Temporal does not require JSON and does not inspect the payload body. The
+built-in codecs are:
+
+- `Temporal.Codec.string`, using the interoperable `json/plain` encoding;
+- `Temporal.Codec.bytes`, using `binary/plain`;
+- `Temporal.Codec.unit`, using `binary/null`; and
+- `Temporal.Codec.option codec`, which uses the nested codec for `Some` and
+  `binary/null` for `None`.
+
+JSON here is a payload choice, not the private OCaml/Rust bridge protocol and
+not the format sent to Temporal Server. The bridge's Rust side converts its
+strict semantic JSON records to Temporal Core protobuf; see the [protocol
+reference](../reference/core-protocol.md).
+
+Codec operations return `result`, because a remote payload can be malformed or
+encoded with the wrong name:
 
 ```ocaml
 let encode_prompt prompt =
@@ -32,9 +84,7 @@ let decode_prompt payload =
   Temporal.Codec.decode Temporal.Codec.string payload
 ```
 
-`Codec.encode` and `Codec.decode` return `result`, because user codecs and
-untrusted remote payloads can fail. A custom codec supplies an encoding name
-and byte-level conversion functions:
+Define a custom deterministic codec when another encoding is more appropriate:
 
 ```ocaml
 let positive_integer =
@@ -49,149 +99,79 @@ let positive_integer =
       | _ -> Error (Temporal.Error.codec ~message:"invalid positive integer"))
 ```
 
-Strings use the optional `json/plain` codec, implemented with Yojson, because
-that encoding is understood by standard converters in other Temporal SDKs.
-Bytes use `binary/plain`, and unit or `None` use `binary/null`. `Some value`
-uses the supplied nested codec. Applications may define Protobuf or another
-deterministic binary codec instead of JSON.
+Changing a codec for an existing workflow is a compatibility change: old
+history can contain payloads written by the previous codec.
 
-Changing a codec after workflows have started is a compatibility change:
-workers must still be able to decode payloads already recorded in workflow
-history.
+## 3. Schedule activities and wait directly
 
-## Explicit error composition
-
-Open `Temporal.Result_syntax` to compose fallible helpers in direct OCaml
-style:
+Define a local activity for the worker that will execute it, or a remote
+reference for a workflow that only schedules it:
 
 ```ocaml
-let decode_then_validate payload =
-  let open Temporal.Result_syntax in
-  let* value = Temporal.Codec.decode positive_integer payload in
-  let+ doubled = Ok (value * 2) in
-  doubled
-```
-
-Use `Temporal.Error.view`, `kind`, or `message` to inspect an error. The type is
-kept abstract so the SDK can add internal detail without forcing application
-code to construct error records itself.
-
-## Definitions and ordinary helpers
-
-A definition gives Temporal a stable type name and codecs while leaving the
-implementation as a normal OCaml function:
-
-```ocaml
-let normalize name = String.trim name
-let greet name = "Hello, " ^ normalize name
-
-let greeting_workflow input = Ok (greet input)
-
-let greeting =
-  Temporal.Workflow.define
-    ~name:"greeting"
-    ~input:Temporal.Codec.string
-    ~output:Temporal.Codec.string
-    greeting_workflow
-```
-
-`normalize` and `greet` need no registration, SDK type, or special syntax.
-Calling a helper is an ordinary in-process function call and does not create a
-Temporal history boundary. Only explicit activity or child-workflow operations
-will create those boundaries.
-
-Use `Activity.remote` or `Workflow.remote` to declare code implemented by
-another worker while retaining typed inputs and outputs:
-
-```ocaml
-let call_llm =
+let summarize =
   Temporal.Activity.remote
-    ~name:"call_llm"
+    ~name:"summarize"
     ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
-```
 
-Definition names must be non-empty and cannot contain NUL bytes. Invalid names
-return a typed configuration defect during worker creation because they are
-programmer defects, not workflow execution failures.
-
-## Futures and direct-style waiting
-
-Temporal operations return typed `('value, 'error) Temporal.Future.t` values.
-`Future.await` returns a `result`. If the result is not ready, the SDK uses an
-OCaml 5 algebraic effect to pause the current workflow fiber. Other runnable
-workflow fibers and the worker process can continue. Application code never
-handles the effect or the saved continuation directly.
-
-Futures support ordinary typed composition. `both` and `all` wait for every
-input and never cancel siblings implicitly. `all` preserves input order even
-when completions arrive in another order. If several inputs fail, it waits for
-all of them and returns the first error in input order:
-
-```ocaml
-let await_pair first second =
-  Temporal.Future.both
-    (Temporal.Future.map String.length first)
-    second
-  |> Temporal.Future.await
-
-let await_all pending =
-  Temporal.Future.all pending
-  |> Temporal.Future.await
-```
-
-`Future.race left right` returns `Left value` or `Right value` for differently
-typed inputs. `Future.first leading rest` selects from a non-empty homogeneous
-collection. Both settle on the first completion, including an error, and leave
-losers running. If inputs are already ready, the left `race` argument or
-`first` list order wins; otherwise the deterministic scheduler's callback order
-wins. Explicit structured-cancellation scopes will be added later.
-
-Combining futures from different workflow executions returns a ready structured
-defect. It does not raise an exception. `Future.all []` is immediately `Ok []`;
-inside workflow code it belongs to that execution and can be combined with its
-other futures.
-
-## Activities, child workflows, timers, and concurrent scheduling
-
-`Activity.start` emits a command immediately and returns before the remote
-activity completes. Start independent work first, then await the combined
-future:
-
-```ocaml
-let enrich document =
+let summarize_document document =
   let open Temporal.Result_syntax in
   let summary = Temporal.Activity.start summarize document in
-  let entities = Temporal.Activity.start extract_entities document in
-  let* summary, entities =
-    Temporal.Future.await (Temporal.Future.both summary entities)
+  let timer = Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 10L) in
+  let* summary, () =
+    Temporal.Future.await (Temporal.Future.both summary timer)
   in
-  let* () = Temporal.Workflow.sleep (Temporal.Duration.of_ms 10L) in
-  Ok (summary, entities)
+  Ok summary
+
+let summarize_workflow =
+  Temporal.Workflow.define
+    ~name:"summarize_document"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+    summarize_document
 ```
 
-`Activity.execute definition input` is the convenience form of `start`
-followed by `Future.await`. Both return expected failures through `result`.
-Calling an operation outside an active workflow returns a structured defect.
-The internal suspension effect never escapes to application code.
+`Activity.start` emits a command and returns a future immediately. Starting
+the timer before waiting demonstrates the important pattern: schedule
+independent work first, then await a combined future. `Activity.execute` is the
+short form for start followed by `Future.await`.
 
-Both activity functions also accept labelled scheduling options. Supply
-`~activity_id` when the activity needs a stable, application-chosen identity;
-otherwise the runtime derives a deterministic ID from the command sequence.
-`~task_queue` overrides the execution's queue, while omitting it uses the
-queue captured when the execution started (the synthetic interpreter defaults
-to `"default"`). Timeout labels use `Temporal.Duration.t` and are encoded as
-exact integer milliseconds. If neither schedule-to-close nor start-to-close
-is supplied, the SDK uses a deterministic 60-second start-to-close default;
-the command translator rejects a schedule that would leave both absent.
-`~heartbeat_timeout`, cancellation policy, and eager-execution preference map
-directly to Temporal's activity command fields. Empty, non-UTF-8, NUL-bearing,
-or overlong identifiers fail as typed workflow errors before a command is
-emitted, so a validation failure cannot consume a sequence number.
+Activity scheduling accepts labelled options for a stable activity ID, task
+queue, timeout values, cancellation policy, and eager-execution preference.
+Invalid identifiers, payloads, or options produce a typed future error before
+a history command is emitted. `Temporal.Workflow.start_sleep` creates a durable
+timer without waiting; `Temporal.Workflow.sleep` is the start-and-wait form.
 
-Child workflows follow the same start-now or execute-and-wait pattern. Their
-ID is mandatory because it is durable Temporal identity, not a private local
-counter:
+## 4. Combine futures
+
+A `Temporal.Future.t` belongs to the workflow execution that created it. It is
+not a general-purpose operating-system promise. The common combinators are:
+
+```ocaml
+let await_both first second =
+  Temporal.Future.both first second |> Temporal.Future.await
+
+let await_all pending =
+  Temporal.Future.all pending |> Temporal.Future.await
+
+let await_fastest left right =
+  Temporal.Future.race left right |> Temporal.Future.await
+```
+
+`both` and `all` wait for every input and preserve deterministic input ordering;
+they do not cancel siblings implicitly. `race` can combine different output
+types and returns `Left value` or `Right value`. `first` is the homogeneous
+non-empty-list form. An error is a completion, so it may win a race. Futures
+from different workflow executions return a ready structured defect rather than
+silently sharing scheduler state.
+
+When a future is not ready, `Future.await` suspends only the current workflow
+fiber. Other runnable workflow fibers and the worker process can continue. The
+effect machinery is private, so workflow authors write direct-style OCaml.
+
+## 5. Child workflows: authoring versus native support
+
+Child-workflow references use the same typed shape as activities:
 
 ```ocaml
 let review =
@@ -200,40 +180,30 @@ let review =
     ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
 
-let summarize_and_review document =
-  let open Temporal.Result_syntax in
-  let summary = Temporal.Activity.start summarize document in
-  let review =
-    Temporal.Child_workflow.start
-      ~id:"document-review"
-      review
-      document
-  in
-  let* summary, review =
-    Temporal.Future.await (Temporal.Future.both summary review)
-  in
-  Ok (summary, review)
+let start_review document =
+  Temporal.Child_workflow.start
+    ~id:"document-review"
+    review
+    document
 ```
 
-`Child_workflow.start ~id definition input` returns immediately;
-`Child_workflow.execute` starts and waits. An ID must be non-empty, valid UTF-8,
-and no more than 65,536 UTF-8 bytes, which is the bridge's bounded-string safety
-ceiling. An invalid ID or input codec failure returns a typed failed future
-without emitting a history command or consuming a command sequence. The SDK
-does not invent child IDs, because a process-local counter cannot safely
-represent durable identity across replay and retries.
+The ID is durable Temporal identity. It must be non-empty, valid UTF-8, free of
+NUL bytes, and within the bridge's bounded length. `Child_workflow.execute`
+starts and waits in one call.
 
-Use `Workflow.start_sleep duration` to create a durable timer without waiting,
-or `Workflow.sleep duration` for the common start-and-wait form. A zero duration
-returns a ready future and emits no timer command. Starting several activities,
-children, or timers before awaiting creates deterministic concurrency: command
-order follows the workflow's OCaml call order, while completion order comes
-from recorded history.
+The definitions and calls above compile, and the synthetic runtime tests cover
+child scheduling and deterministic future resolution. The current native
+worker does not yet complete this path against Temporal Server. It can encode
+the child-start command, but the activation protocol does not yet carry the
+child-resolution job needed to resume the parent. To avoid acknowledging a
+parent task that cannot be resumed, the native adapter returns an explicit
+typed rejection. Treat child workflows as experimental/synthetic-only until
+the live acceptance test and matching resolution tests are added.
 
-## Higher-order workflow helpers
+## 6. Compose ordinary helpers
 
-Starters are ordinary functions and can be accepted or returned by application
-helpers. No registration, special syntax, or SDK base class is needed:
+Workflow starters and futures are ordinary values. Helpers can accept or return
+them without registration or a special SDK base class:
 
 ```ocaml
 let fan_out starters input =
@@ -243,82 +213,105 @@ let fan_out starters input =
 let fastest left right input =
   Temporal.Future.race (left input) (right input)
 
-let enrich document =
-  let starters =
-    [ (fun input -> Temporal.Activity.start summarize input);
-      (fun input ->
-        Temporal.Child_workflow.start ~id:"review-1" review input) ]
+let run_helpers input =
+  let starts =
+    [ (fun value -> Temporal.Activity.start summarize value);
+      (fun value ->
+        Temporal.Activity.start summarize (value ^ ":backup")) ]
   in
-  fan_out starters document
-  |> Temporal.Future.await
+  fan_out starts input |> Temporal.Future.await
 ```
 
-These helpers compose futures only; they do not hide a Temporal command or
-create a new replay boundary. Their callers still choose exactly when each
-activity, child, or timer starts and when to wait.
+These helpers still make their callers' Temporal boundaries visible: the
+caller chooses when each operation starts and when to await it. Calling a
+normal OCaml helper does not create a history event.
 
-## Client and worker lifecycle
+## 7. Register a worker
 
-The public package also has typed client and worker values. A client starts an
-execution with an explicit workflow ID and task queue, then waits for the exact
-workflow/run pair returned by the server:
+The worker registration boundary packs heterogeneous typed definitions while
+keeping each implementation and its codecs together:
 
 ```ocaml
-let client_result =
+let summarize_activity =
+  Temporal.Activity.define
+    ~name:"summarize"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+    (fun input -> Ok input)
+
+let worker_result =
+  Temporal.Worker.create
+    ~target_url:"http://127.0.0.1:7233"
+    ~namespace:"default"
+    ~task_queue:"summaries"
+    ~workflows:[ Temporal.Worker.workflow summarize_workflow ]
+    ~activities:[ Temporal.Worker.activity summarize_activity ]
+    ()
+  |> Result.bind Temporal.Worker.run
+```
+
+Use `http://` or `https://` for a real native worker. `mock://` is a private,
+deterministic test backend and does not contact Temporal Server. Registration
+rejects duplicate names and remote-only definitions before a native graph is
+created. `Temporal.Worker.run` is a blocking lifecycle loop; call it from an
+ordinary dedicated OCaml Domain or system thread rather than directly from a
+cooperative Eio/Lwt scheduler fiber. `Temporal.Worker.shutdown` is idempotent
+and drains retryable completions before releasing the native graph.
+
+The native path keeps Rust/Core and its protobufs private. The OCaml worker
+receives validated semantic activations, runs the typed function, and returns a
+validated semantic completion through the supervisor.
+
+## 8. Start and wait from a client
+
+`Temporal.Client` is useful when an application needs to submit an execution
+but does not itself run workflow code. It retains the exact workflow ID and
+server-issued run ID:
+
+```ocaml
+let result =
   let open Temporal.Result_syntax in
   let* client =
-    Temporal.Client.create ~target_url:"http://127.0.0.1:7233"
-      ~namespace:"default" ()
+    Temporal.Client.create
+      ~target_url:"http://127.0.0.1:7233"
+      ~namespace:"default"
+      ()
   in
   let* handle =
-    Temporal.Client.start client ~workflow:greeting
-      ~task_queue:"greetings" ~id:"greeting-1" ~input:"Ada" ()
+    Temporal.Client.start client
+      ~workflow:summarize_workflow
+      ~task_queue:"summaries"
+      ~id:"summary-1"
+      ~input:"document"
+      ()
   in
   Temporal.Client.wait handle
 ```
 
-For a start whose network outcome may need to be reconciled, pass a stable
-Temporal idempotency key with `~request_id:"greeting-start-1"` and use the same
-value if the application retries that logical start. If the argument is
-omitted, the SDK creates a fresh key for the call. The key is kept unchanged
-while the native supervisor polls the asynchronous start ticket.
+`Temporal.Client.wait` does not silently follow continue-as-new. It returns a
+typed terminal outcome so the application can decide whether to follow the
+successor. Pass a stable `~request_id` when retrying an uncertain start; reuse
+that ID only for the same logical start. As with the worker, expected failures
+are `result` values. Exceptions are reserved for programmer defects and are
+contained at the worker boundary.
 
-The worker registration list packs heterogeneous typed definitions at the
-registration boundary while keeping each implementation and its codecs
-together. Workflow and activity bodies remain ordinary OCaml functions:
+## 9. Validate locally
 
-```ocaml
-let worker_result =
-  Temporal.Worker.create ~target_url:"http://127.0.0.1:7233"
-    ~namespace:"default" ~task_queue:"greetings"
-    ~workflows:[ Temporal.Worker.workflow greeting ]
-    ~activities:[] ()
-  |> Result.bind Temporal.Worker.run
+From the repository root, the focused Make targets are:
+
+```sh
+make test-unit
+make test-runtime
+make verify
+make test-temporal-integration
 ```
 
-The public lifecycle surface is intentionally independent of native handles or
-Temporal protobufs. HTTP(S) clients route start and exact-run waits through the
-private Rust/Core supervisor, while HTTP(S) workers use the same supervisor to
-poll and complete typed workflow and activity tasks. Native readiness waits are
-bounded and release the OCaml runtime lock, so a concurrent `shutdown` can
-always reach the owner Domain. The `mock://` endpoint remains a private,
-deterministic seam for unit tests. Activity scheduling is currently translated
-end to end; child-workflow commands are still rejected by the first semantic
-native protocol until their complete Core fields and replay behavior are
-implemented. `Temporal.Worker.run` itself is a blocking lifecycle loop; an
-application should run it on an ordinary dedicated Domain or system thread
-rather than directly on a cooperative Eio/Lwt scheduler fiber.
+The first two use the deterministic test seams and do not require a running
+server. The integration target starts real PostgreSQL and Temporal Server,
+checks the schemas and frontend, runs the OCaml-owned Core lifecycle
+executable, and cleans its Compose volume. It is not yet the two-process
+workflow-result test described in the [acceptance design](../reference/two-ocaml-binary-e2e-acceptance.md).
 
-## Current integration boundary
-
-The workflow interpreter is still tested against a synthetic activation
-interpreter. It can deterministically emit activity, child-workflow, and timer
-commands, apply explicitly ordered resolution jobs, suspend and resume OCaml
-continuations, aggregate futures, tear down cache entries, and replay the same
-input to the same command bytes. The public client and worker paths are both
-connected to the pinned Rust Temporal Core SDK. The current Compose acceptance
-checks the lower-level native lifecycle; a later milestone will replace that
-fixture with two public OCaml binaries (a starter and a worker) and assert
-workflow results against a real Temporal Server. Until then, native child
-workflow commands remain an explicit typed rejection rather than an invented
-wire representation.
+For the complete ownership and protocol rules, read the [runtime
+invariants](../reference/runtime-invariants.md), [Core bridge reference](../reference/core-bridge.md),
+and [native worker execution reference](../reference/native-worker-execution.md).

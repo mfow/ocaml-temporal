@@ -9,7 +9,8 @@ type owner
     separate from [is_running]: it permits immediate delivery for the inert
     owner used by already-resolved outside-workflow futures, while a scheduler
     can reject callbacks after shutdown even though its queue is still drained
-    for continuation cleanup. *)
+    for continuation cleanup. [register_teardown] adds a shutdown cleanup and
+    returns an idempotent function that removes it when the future settles. *)
 val make_owner :
   id:int ->
   enqueue:((unit -> unit) -> unit) ->
@@ -17,7 +18,7 @@ val make_owner :
   callbacks_live:(unit -> bool) ->
   on_create:(unit -> unit) ->
   on_settled:(unit -> unit) ->
-  register_teardown:((unit -> unit) -> unit) ->
+  register_teardown:((unit -> unit) -> (unit -> unit)) ->
   owner
 
 (** A result that starts pending and can become ready exactly once. *)

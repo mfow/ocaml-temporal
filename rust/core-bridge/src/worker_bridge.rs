@@ -371,43 +371,90 @@ impl PollLanes {
     }
 
     /// Takes one ready activation without waiting for Core or a channel lock.
-    pub fn try_take_workflow(&mut self) -> Option<ReadyTask<WorkflowActivation>> {
+    ///
+    /// When the ready queue holds an activation but the ledger cannot lease it,
+    /// the dequeued activation is force-failed to Core before the lane error is
+    /// returned. The owner must supply the worker's Tokio handle so this
+    /// synchronous handoff can complete the undeliverable activation without
+    /// leaving an outstanding Core task.
+    pub fn try_take_workflow(
+        &mut self,
+        handle: &tokio::runtime::Handle,
+    ) -> Option<ReadyTask<WorkflowActivation>> {
         let ready = self.workflow_signal.take(&mut self.workflow_ready)?;
-        if let Ok(activation) = &ready {
-            let mut ledger = self
-                .ledger
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if let Err(error) = ledger.lease_workflow(&activation.run_id) {
-                return Some(Err(PollLaneError::Admission(match error {
-                    CompleteError::UnknownWorkflow | CompleteError::NotLeased => {
-                        AdmitError::InvalidIdentity
+        match ready {
+            Ok(activation) => {
+                let lease = self
+                    .ledger
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .lease_workflow(&activation.run_id);
+                match lease {
+                    Ok(()) => Some(Ok(activation)),
+                    Err(error) => {
+                        let run_id = activation.run_id.clone();
+                        // Drop the activation after capturing its identity so
+                        // we cannot accidentally deliver it after Core has been
+                        // told the task failed admission handoff.
+                        drop(activation);
+                        handle.block_on(force_fail_undeliverable_workflow(
+                            self.worker.as_ref(),
+                            &run_id,
+                            "workflow activation lease handoff failed",
+                        ));
+                        // Clear residual ledger debt so force-fail cannot leave
+                        // a phantom outstanding task after Core completion.
+                        let _ = error;
+                        self.ledger
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner())
+                            .abandon_workflow_admission(&run_id);
+                        Some(Err(PollLaneError::Admission(AdmitError::InvalidIdentity)))
                     }
-                    CompleteError::UnknownActivity => unreachable!(),
-                })));
+                }
             }
+            Err(error) => Some(Err(error)),
         }
-        Some(ready)
     }
 
     /// Takes one ready remote activity without blocking the supervisor Domain.
-    pub fn try_take_activity(&mut self) -> Option<ReadyTask<ActivityTask>> {
+    ///
+    /// Lease-handoff failures force-fail the dequeued task through Core so the
+    /// opaque token cannot remain outstanding after the language side never
+    /// observes it. See [`Self::try_take_workflow`] for the handle requirement.
+    pub fn try_take_activity(
+        &mut self,
+        handle: &tokio::runtime::Handle,
+    ) -> Option<ReadyTask<ActivityTask>> {
         let ready = self.activity_signal.take(&mut self.activity_ready)?;
-        if let Ok(task) = &ready {
-            let mut ledger = self
-                .ledger
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if let Err(error) = ledger.lease_activity(&task.task_token) {
-                return Some(Err(PollLaneError::Admission(match error {
-                    CompleteError::UnknownActivity | CompleteError::NotLeased => {
-                        AdmitError::InvalidIdentity
+        match ready {
+            Ok(task) => {
+                let lease = self
+                    .ledger
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .lease_activity(&task.task_token);
+                match lease {
+                    Ok(()) => Some(Ok(task)),
+                    Err(error) => {
+                        let task_token = task.task_token.clone();
+                        drop(task);
+                        handle.block_on(force_fail_undeliverable_activity(
+                            self.worker.as_ref(),
+                            &task_token,
+                            "activity task lease handoff failed",
+                        ));
+                        let _ = error;
+                        self.ledger
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner())
+                            .abandon_activity_admission(&task_token);
+                        Some(Err(PollLaneError::Admission(AdmitError::InvalidIdentity)))
                     }
-                    CompleteError::UnknownWorkflow => unreachable!(),
-                })));
+                }
             }
+            Err(error) => Some(Err(error)),
         }
-        Some(ready)
     }
 
     /// Closes admission before waking both Core poll futures for shutdown.
@@ -935,6 +982,20 @@ impl TaskLedger {
         Ok(())
     }
 
+    /// Removes a workflow admission that will never be leased to OCaml.
+    ///
+    /// Used after a dequeued activation fails lease handoff and has been
+    /// force-failed to Core. Only unleased entries are removed so a concurrent
+    /// legitimate lease cannot be erased by a confused identity.
+    pub fn abandon_workflow_admission(&mut self, run_id: &str) {
+        match self.workflows.get(run_id) {
+            Some(false) => {
+                self.workflows.remove(run_id);
+            }
+            Some(true) | None => {}
+        }
+    }
+
     /// Marks a ready activity task as handed to the OCaml supervisor.
     pub fn lease_activity(&mut self, task_token: &[u8]) -> Result<(), CompleteError> {
         let state = self
@@ -943,6 +1004,18 @@ impl TaskLedger {
             .ok_or(CompleteError::UnknownActivity)?;
         state.leased = true;
         Ok(())
+    }
+
+    /// Removes an activity admission that will never be leased to OCaml.
+    ///
+    /// Mirrors [`Self::abandon_workflow_admission`] for remote activity tokens.
+    pub fn abandon_activity_admission(&mut self, task_token: &[u8]) {
+        match self.activities.get(task_token) {
+            Some(state) if !state.leased => {
+                self.activities.remove(task_token);
+            }
+            Some(_) | None => {}
+        }
     }
 
     /// Removes the exact workflow completion obligation named by `run_id`.

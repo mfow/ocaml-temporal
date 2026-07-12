@@ -310,6 +310,32 @@ fn converts_continue_as_new_command() {
     );
 }
 
+/// Keeps the terminal-command invariant explicit for continue-as-new. A
+/// language worker must never send a follow-up timer or child command after
+/// asking Core to replace the current run; accepting that shape would make the
+/// server and the deterministic OCaml scheduler disagree about command order.
+#[test]
+fn rejects_continue_as_new_with_follow_up_command() {
+    let completion = workflow_protocol::Completion {
+        run_id: "current-run".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::ContinueAsNew {
+                workflow_type: "counter".to_owned(),
+                input: Vec::new(),
+            },
+            workflow_protocol::CompletionCommand::StartTimer {
+                seq: 1,
+                start_to_fire_timeout: workflow_protocol::Duration {
+                    seconds: 1,
+                    nanoseconds: 0,
+                },
+            },
+        ],
+    };
+    assert!(workflow_protocol::encode_completion(&completion).is_err());
+    assert!(workflow_protocol::completion_to_core(&completion).is_err());
+}
+
 /// Proves semantic exactness and range rules independently of JSON structure.
 #[test]
 fn rejects_malformed_workflow_documents() {

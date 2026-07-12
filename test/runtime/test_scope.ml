@@ -170,6 +170,35 @@ let test_cancellation_resumes_waiter () =
     (Workflow_context_store.take_commands context);
   Workflow_context_store.shutdown context
 
+(** Repeated cancellation on the owner scheduler is idempotent. The first
+    request resolves the private signal, while the retry must not attempt to
+    resolve it a second time or emit any Temporal command. *)
+let test_cancellation_is_idempotent () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let first = ref None in
+  let second = ref None in
+  let status = ref None in
+  let check = ref None in
+  with_active_context scheduler context (fun () ->
+      match Temporal.Scope.create () with
+      | Error error -> failwith (Temporal.Error.message error)
+      | Ok scope ->
+          first := Some (Temporal.Scope.cancel scope);
+          second := Some (Temporal.Scope.cancel scope);
+          status := Some (Temporal.Scope.is_cancelled scope);
+          check := Some (Temporal.Scope.check scope));
+  expect "idempotent cancellation run" "complete"
+    (Scheduler.run_label scheduler);
+  expect "first cancellation" (Some (Ok ())) !first;
+  expect "second cancellation" (Some (Ok ())) !second;
+  expect "idempotent cancellation status" (Some (Ok true)) !status;
+  expect_error "idempotent cancellation check" "cancelled"
+    "workflow scope cancelled" (Option.get !check);
+  expect "scope cancellation emits no command" []
+    (Workflow_context_store.take_commands context);
+  Workflow_context_store.shutdown context
+
 (** A scope rejects a future owned by another workflow execution as a typed
     defect instead of allowing one scheduler to await another's continuation. *)
 let test_cross_execution_future_is_rejected () =
@@ -207,4 +236,5 @@ let () =
   test_create_outside_workflow ();
   test_completed_future_and_cleanup ();
   test_cancellation_resumes_waiter ();
+  test_cancellation_is_idempotent ();
   test_cross_execution_future_is_rejected ()

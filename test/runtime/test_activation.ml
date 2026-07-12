@@ -985,6 +985,52 @@ let test_child_cancel_after_natural_completion_is_noop () =
     (Workflow_context_store.take_commands context);
   Workflow_context_store.shutdown context
 
+(** A failed child start also closes the handle's lifecycle. Retrying
+    cancellation after Core has rejected the start must therefore be a typed
+    no-op, not a second cancel command for a sequence that no longer exists. *)
+let test_child_cancel_after_start_failure_is_noop () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let future, cancel =
+    Workflow_context_store.start_child_workflow context ~id:"failed-child"
+      ~name:"child-workflow" ~input:(payload "Ada")
+      ~decode:(fun value -> Ok value) ()
+  in
+  ignore (Workflow_context_store.take_commands context);
+  let failure =
+    Temporal_base.Error.make ~non_retryable:true ~category:`Child_workflow
+      ~message:"child start rejected" ()
+  in
+  (match
+     Workflow_context_store.resolve_child_workflow_start context ~seq:1L
+       (Error failure)
+   with
+  | Ok () -> ()
+  | Error error ->
+      failwith
+        ("child start failure was rejected: " ^ public_error_message error));
+  (match Future_store.peek future with
+  | Some (Error error) when String.equal (public_error_message error) "child start rejected" ->
+      ()
+  | Some (Error error) ->
+      failwith
+        ("child start failure changed: " ^ public_error_message error)
+  | Some (Ok _) -> failwith "failed child unexpectedly succeeded"
+  | None -> failwith "failed child future remained pending");
+  let retry =
+    Workflow_context_store.with_context context (fun () ->
+        cancel ~reason:"retry after rejected start")
+  in
+  (match retry with
+  | Ok () -> ()
+  | Error error ->
+      failwith
+        ("cancel after failed child start was not idempotent: "
+        ^ public_error_message error));
+  expect "failed child retry emits no command" []
+    (Workflow_context_store.take_commands context);
+  Workflow_context_store.shutdown context
+
 (** Proves lifecycle-order and duplicate-resolution defects are non-mutating.
     A terminal result received before the start acknowledgment leaves its
     resolver pending; a duplicate start cannot replace the first run ID; and a
@@ -1071,8 +1117,10 @@ let test_cancel_and_evict () =
     (Execution.activate evicted [ Activation.Start_workflow ])
 
 (** Confirms the public continue-as-new operation buffers a terminal command,
-    stops the current workflow fiber, and preserves the successor definition's
-    encoded input through the private execution adapter. *)
+    stops the current workflow fiber before it can schedule later work, and
+    preserves the successor definition's encoded input through the private
+    execution adapter. A later activation must remain inert because the
+    current run has already been replaced by Temporal. *)
 let test_continue_as_new_terminal () =
   let successor =
     Temporal.Workflow.remote ~name:"continuation_target"
@@ -1081,7 +1129,16 @@ let test_continue_as_new_terminal () =
   let source =
     Temporal.Workflow.define ~name:"continuation_source"
       ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
-        Temporal.Workflow.continue_as_new successor ())
+        (* Bind the polymorphic terminal operation through a local value so
+           the compiler does not reject the intentionally unreachable guard
+           below as a non-returning statement. *)
+        let continue : unit -> unit = Temporal.Workflow.continue_as_new successor in
+        continue ();
+        (* If the terminal effect ever resumed this fiber, this timer would
+           append a second command after continue-as-new. The assertion below
+           therefore covers both the scheduler abort and the execution
+           terminal marker, rather than only checking the encoded command. *)
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 1L))
   in
   let execution = Execution.start source () in
   let expected_input =
@@ -1092,7 +1149,11 @@ let test_continue_as_new_terminal () =
   expect "continue-as-new command"
     [ Activation.Continue_as_new
         { workflow_type = "continuation_target"; input = expected_input } ]
-    (Execution.activate execution [ Activation.Start_workflow ])
+    (Execution.activate execution [ Activation.Start_workflow ]);
+  expect "continue-as-new activation is terminal" []
+    (Execution.activate execution [ Activation.Start_workflow ]);
+  expect "continue-as-new ignores cancellation" []
+    (Execution.activate execution [ Activation.Cancel_workflow ])
 
 let () =
   test_commands_and_completion ();
@@ -1114,6 +1175,7 @@ let () =
   test_child_workflow_failures_and_sequence_ownership ();
   test_child_start_conflicting_result_keeps_future_pending ();
   test_child_cancel_after_natural_completion_is_noop ();
+  test_child_cancel_after_start_failure_is_noop ();
   test_child_resolution_rejections_preserve_lifecycle_state ();
   test_cancel_and_evict ();
   test_continue_as_new_terminal ()

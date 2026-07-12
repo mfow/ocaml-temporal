@@ -14,6 +14,38 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Documentation evidence and navigation refresh (#129–#140)
+
+Status: documentation-only updates were merged in PRs [#129](https://github.com/mfow/ocaml-temporal/pull/129)
+(`d37f863`), [#130](https://github.com/mfow/ocaml-temporal/pull/130)
+(`857862b`), and [#131](https://github.com/mfow/ocaml-temporal/pull/131)
+(`404a7c5`) for runtime invariants, merged lifecycle evidence, and feature
+coverage; [#132](https://github.com/mfow/ocaml-temporal/pull/132)
+(`1dfc13e`), [#133](https://github.com/mfow/ocaml-temporal/pull/133)
+(`515f723`), and [#135](https://github.com/mfow/ocaml-temporal/pull/135)
+(`a656f92`) for the two-binary acceptance boundary, queued-CI fallback, and
+live-acceptance evidence; [#134](https://github.com/mfow/ocaml-temporal/pull/134)
+(`229b548`), [#137](https://github.com/mfow/ocaml-temporal/pull/137)
+(`97924c7`), and [#138](https://github.com/mfow/ocaml-temporal/pull/138)
+(`65b6441`) for native activity, client protocol, and Core-bridge contracts;
+and [#136](https://github.com/mfow/ocaml-temporal/pull/136)
+(`b487eaf`), [#139](https://github.com/mfow/ocaml-temporal/pull/139)
+(`6709fce`), and [#140](https://github.com/mfow/ocaml-temporal/pull/140)
+(`9104f3d`) for observability, workflow guidance, and documentation
+navigation.
+
+These changes clarify the current implementation and evidence boundaries but
+do not add runtime behavior or new live Temporal results. Applicable local
+format, quality-contract, configuration, and focused documentation checks were
+used for the documentation PRs; host-only `make quality` remains dependent on
+the pinned scanner binaries being installed. GitHub Actions checks may remain
+queued because of the repository quota and are not treated as passing evidence.
+The historical five-execution live result in run
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+remains the latest successful two-binary acceptance evidence; the expanded
+heartbeat and exact-run cancellation assertions remain locally covered but not
+live-verified.
+
 ## 2026-07-13: Scope, child-lifecycle, and ABI cancellation-validation coverage
 
 Status: locally verified on the merged `origin/master` tip with focused OCaml,

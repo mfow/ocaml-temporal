@@ -117,9 +117,10 @@ let start_handle ?(cancellation_type = Try_cancel) ~id definition input =
 (** Returns the typed future associated with an operation handle. *)
 let future handle = handle.future
 
-(** Requests cancellation of one pending child. Repeating the request is
-    idempotent for this handle; Core still produces the single terminal child
-    resolution that settles the future. *)
+(** Requests cancellation of one child. Repeating the request is idempotent
+    for this handle, including a valid late call after natural completion or a
+    start failure; Core still owns the single terminal resolution that settles
+    the future. *)
 let cancel ?(reason = "cancelled by workflow") handle = handle.cancel ~reason
 
 (** Starts a child workflow and returns only its future. Callers that need to

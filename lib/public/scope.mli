@@ -4,7 +4,9 @@
     on public futures. It is deliberately cooperative: cancelling a scope
     changes the result returned by [await], but does not emit an activity or
     child-workflow cancellation command. Pending Temporal operations are still
-    owned and cleaned up by the workflow execution. *)
+    owned and cleaned up by the workflow execution. Every operation on a scope
+    is owner-checked, so a handle cannot be read or mutated from another
+    Domain or after its workflow scheduler has shut down. *)
 type t
 
 (** Creates a scope for the workflow execution currently running on this
@@ -23,14 +25,18 @@ val with_scope :
     called by the owning workflow scheduler while the scope is active; an
     active scope called between scheduler runs, from another Domain, or after
     scheduler shutdown returns a typed defect. Repeating cancellation after
-    it has already been requested is always [Ok ()]. *)
+    it has already been requested is [Ok ()] when called by that scheduler. *)
 val cancel : t -> (unit, Error.t) result
 
-(** Reports whether cancellation has been requested for [scope]. *)
-val is_cancelled : t -> bool
+(** Reports whether cancellation has been requested for [scope]. The query is
+    owner-checked just like [cancel], so a foreign Domain or a retained scope
+    queried after scheduler shutdown receives a typed defect instead of racing
+    the workflow's mutable state. *)
+val is_cancelled : t -> (bool, Error.t) result
 
 (** Checks the scope without waiting. An active scope returns [Ok ()]; a
-    cancelled scope returns a typed [`Cancelled] error. *)
+    cancelled scope returns a typed [`Cancelled] error; and a foreign Domain
+    or stale handle returns a typed ownership defect. *)
 val check : t -> (unit, Error.t) result
 
 (** Awaits [future] while observing [scope]. A cancellation requested before

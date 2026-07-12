@@ -929,6 +929,62 @@ let test_child_start_conflicting_result_keeps_future_pending () =
   | Some (Ok _) -> failwith "terminal child result payload was not preserved"
   | None -> failwith "terminal child result did not resolve the child future"
 
+(** A cancellation that races with a child's natural terminal result is a
+    harmless retry, not a new bridge failure. This test drives the private
+    context directly so it can assert that the handle emits no late cancel
+    command after Core has removed the child entry and settled its future. *)
+let test_child_cancel_after_natural_completion_is_noop () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let future, cancel =
+    Workflow_context_store.start_child_workflow context ~id:"late-cancel-child"
+      ~name:"child-workflow" ~input:(payload "Ada")
+      ~decode:(fun value -> Ok value) ()
+  in
+  expect "natural-completion start command"
+    [
+      Activation.Start_child_workflow
+        {
+          seq = 1L;
+          id = "late-cancel-child";
+          name = "child-workflow";
+          input = payload "Ada";
+          cancellation_type = Activation.Child_try_cancel;
+        };
+    ]
+    (Workflow_context_store.take_commands context);
+  (match
+     Workflow_context_store.resolve_child_workflow_start context ~seq:1L
+       (Ok "child-run")
+   with
+  | Ok () -> ()
+  | Error _ -> failwith "natural-completion start acknowledgment was rejected");
+  let result = payload "done" in
+  (match
+     Workflow_context_store.resolve_child_workflow context ~seq:1L (Ok result)
+   with
+  | Ok () -> ()
+  | Error _ -> failwith "natural-completion result was rejected");
+  (match Future_store.peek future with
+  | Some (Ok value) when Bytes.equal value.data result.data -> ()
+  | Some (Error error) ->
+      failwith ("natural completion failed: " ^ public_error_message error)
+  | Some (Ok _) -> failwith "natural-completion payload was changed"
+  | None -> failwith "natural-completion result did not resolve the future");
+  let late_cancel =
+    Workflow_context_store.with_context context (fun () ->
+        cancel ~reason:"late retry after completion")
+  in
+  (match late_cancel with
+  | Ok () -> ()
+  | Error error ->
+      failwith
+        ("late cancel after natural completion failed: "
+        ^ public_error_message error));
+  expect "late cancel emits no command" []
+    (Workflow_context_store.take_commands context);
+  Workflow_context_store.shutdown context
+
 (** Proves lifecycle-order and duplicate-resolution defects are non-mutating.
     A terminal result received before the start acknowledgment leaves its
     resolver pending; a duplicate start cannot replace the first run ID; and a
@@ -1057,6 +1113,7 @@ let () =
   test_child_workflow_id_boundary ();
   test_child_workflow_failures_and_sequence_ownership ();
   test_child_start_conflicting_result_keeps_future_pending ();
+  test_child_cancel_after_natural_completion_is_noop ();
   test_child_resolution_rejections_preserve_lifecycle_state ();
   test_cancel_and_evict ();
   test_continue_as_new_terminal ()

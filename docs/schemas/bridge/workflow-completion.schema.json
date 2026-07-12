@@ -13,7 +13,7 @@
   "$defs": {
     "payload": {"$ref": "temporal-payload.schema.json"},
     "failure": {"$ref": "temporal-failure.schema.json"},
-    "identifier": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
     "u32": {"type": "integer", "minimum": 0, "maximum": 4294967295},
     "duration": {
       "type": "object",

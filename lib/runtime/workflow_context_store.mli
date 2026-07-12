@@ -75,7 +75,9 @@ val schedule_activity :
     The default policy is [Child_try_cancel], so cancellation requests the
     child unless a caller explicitly chooses [Child_abandon]. The operation is
     valid only while this context is current; it emits at most one cancellation
-    command and leaves Core to resolve the future. *)
+    command and leaves Core to resolve the future. A repeated valid call is a
+    no-op, including after Core has delivered a terminal result or start
+    failure; a call after context shutdown remains a typed lifecycle defect. *)
 val start_child_workflow :
   t ->
   id:string ->

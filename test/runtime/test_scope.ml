@@ -67,6 +67,8 @@ let test_completed_future_and_cleanup () =
   resolve (Ok 42);
   let result = ref None in
   let retained_scope = ref None in
+  let status_result = ref None in
+  let check_result = ref None in
   with_active_context scheduler context (fun () ->
       result :=
         Some
@@ -75,17 +77,50 @@ let test_completed_future_and_cleanup () =
                Temporal.Scope.await scope source)));
   expect "completed scope run" "complete" (Scheduler.run_label scheduler);
   expect "completed future result" (Some (Ok 42)) !result;
+  (* The cleanup callback ran in the first owner turn. Querying the retained
+     scope therefore has to be scheduled in a second owner turn instead of
+     reading its mutable state from the test Domain. *)
+  with_active_context scheduler context (fun () ->
+      match !retained_scope with
+      | Some scope ->
+          status_result := Some (Temporal.Scope.is_cancelled scope);
+          check_result := Some (Temporal.Scope.check scope)
+      | None -> failwith "scope was not retained");
+  expect "scope status query run" "complete" (Scheduler.run_label scheduler);
+  let stale_owner_status = ref None in
+  with_active_context scheduler context (fun () ->
+      match !retained_scope with
+      | Some scope ->
+          (* Exercise the teardown boundary while the owner ID is still
+             published. [callbacks_live] must reject the stale handle even
+             though a simple owner-ID comparison would still match. *)
+          Workflow_context_store.shutdown context;
+          stale_owner_status := Some (Temporal.Scope.is_cancelled scope)
+      | None -> failwith "scope was not retained");
+  expect "scope shutdown query run" "complete" (Scheduler.run_label scheduler);
   begin match !retained_scope with
   | Some scope ->
-      if not (Temporal.Scope.is_cancelled scope) then
-        failwith "with_scope did not cancel during cleanup";
+      expect "with_scope cancellation status" (Some (Ok true)) !status_result;
       expect_error "cleaned scope check" "cancelled" "workflow scope cancelled"
-        (Temporal.Scope.check scope)
+        (Option.get !check_result);
+      expect_error "scope status during shutdown" "defect"
+        "Temporal.Scope.is_cancelled used outside its owning workflow scheduler"
+        (Option.get !stale_owner_status);
+      (* Once the scheduler is closed, even a call made by code that happens
+         to retain the old handle must fail as a stale-handle defect. *)
+      expect_error "stale scope status" "defect"
+        "Temporal.Scope.is_cancelled used outside its owning workflow scheduler"
+        (Temporal.Scope.is_cancelled scope);
+      expect_error "stale scope check" "defect"
+        "Temporal.Scope.check used outside its owning workflow scheduler"
+        (Temporal.Scope.check scope);
+      expect_error "stale scope cancellation" "defect"
+        "Temporal.Scope.cancel used outside its owning workflow scheduler"
+        (Temporal.Scope.cancel scope)
   | None -> failwith "scope was not retained"
   end;
   expect "scope emitted no command" []
-    (Workflow_context_store.take_commands context);
-  Workflow_context_store.shutdown context
+    (Workflow_context_store.take_commands context)
 
 (** A second workflow fiber can cancel a scope while the first fiber is paused
     in [Scope.await]. The cancellation result is typed, deterministic, and does
@@ -112,8 +147,9 @@ let test_cancellation_resumes_waiter () =
       expect_error "off-scheduler cancellation" "defect"
         "Temporal.Scope.cancel used outside its owning workflow scheduler"
         (Temporal.Scope.cancel scope);
-      if Temporal.Scope.is_cancelled scope then
-        failwith "off-scheduler cancellation mutated the scope"
+      expect_error "off-scheduler status" "defect"
+        "Temporal.Scope.is_cancelled used outside its owning workflow scheduler"
+        (Temporal.Scope.is_cancelled scope)
   end;
   Scheduler.spawn scheduler (fun () ->
       match !scope_ref with

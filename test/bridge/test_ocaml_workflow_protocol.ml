@@ -114,8 +114,11 @@ let test_start_child_workflow_command () =
   if unwrap (Protocol.decode_completion encoded) <> completion then
     failwith "child command did not round-trip"
 
-(** Proves the OCaml decoder applies the same cancellation reason and policy
-    boundaries as the Rust decoder, including JSON-escaped NUL bytes. *)
+(** Proves the OCaml decoder applies the same cancellation reason, policy, and
+    child-identifier boundaries as the Rust decoder. NUL checks use JSON
+    escapes so the test exercises decoded semantic strings rather than only
+    searching the serialized source. The final cases build values directly to
+    cover the outgoing translator path as well. *)
 let test_child_cancellation_validation () =
   let document reason : Yojson.Safe.t =
     `Assoc
@@ -141,6 +144,50 @@ let test_child_cancellation_validation () =
   require_error
     (Protocol.decode_completion
        (Yojson.Safe.to_string (document (String.make 65_537 'x'))));
+  let start_document workflow_id workflow_type : Yojson.Safe.t =
+    `Assoc
+      [
+        ("run_id", `String "parent-run");
+        ( "commands",
+          `List
+            [
+              `Assoc
+                [
+                  ("kind", `String "start_child_workflow");
+                  ("seq", `Int 7);
+                  ("workflow_id", `String workflow_id);
+                  ("workflow_type", `String workflow_type);
+                  ("input", `List []);
+                  ("cancellation_type", `String "try_cancel");
+                ];
+            ] );
+      ]
+  in
+  List.iter
+    (fun (workflow_id, workflow_type) ->
+      require_error
+        (Protocol.decode_completion
+           (Yojson.Safe.to_string
+              (start_document workflow_id workflow_type))))
+    [ (String.make 1 '\000', "child"); ("child", String.make 1 '\000') ];
+  let invalid_utf8 = String.make 1 (Char.chr 0xFF) in
+  let completion : Protocol.completion =
+    {
+      run_id = "parent-run";
+      commands =
+        [
+          Start_child_workflow
+            {
+              seq = 7L;
+              workflow_id = invalid_utf8;
+              workflow_type = "child";
+              input = [];
+              cancellation_type = Child_try_cancel;
+            };
+        ];
+    }
+  in
+  require_error (Protocol.encode_completion completion);
   require_error
     (Protocol.decode_completion
        {|{"run_id":"parent-run","commands":[{"kind":"start_child_workflow","seq":7,"workflow_id":"child","workflow_type":"child","input":[],"cancellation_type":"unknown"}]}|})

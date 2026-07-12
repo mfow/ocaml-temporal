@@ -209,6 +209,34 @@ fn rejects_invalid_child_cancellation_commands() {
         }],
     });
     assert!(workflow_protocol::decode_completion(&oversized.to_string()).is_err());
+    for (workflow_id, workflow_type) in [("child\0", "child"), ("child", "child\0")] {
+        let document = serde_json::json!({
+            "run_id": "parent-run",
+            "commands": [{
+                "kind": "start_child_workflow",
+                "seq": 7,
+                "workflow_id": workflow_id,
+                "workflow_type": workflow_type,
+                "input": [],
+                "cancellation_type": "try_cancel",
+            }],
+        });
+        assert!(
+            workflow_protocol::decode_completion(&document.to_string()).is_err(),
+            "NUL-containing child identifier was accepted: {workflow_id:?}/{workflow_type:?}"
+        );
+    }
+    let outgoing_nul = workflow_protocol::Completion {
+        run_id: "parent-run".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::StartChildWorkflow {
+            seq: 7,
+            workflow_id: "child\0".to_owned(),
+            workflow_type: "child".to_owned(),
+            input: Vec::new(),
+            cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
+        }],
+    };
+    assert!(workflow_protocol::encode_completion(&outgoing_nul).is_err());
     let unknown_policy = serde_json::json!({
         "run_id": "parent-run",
         "commands": [{

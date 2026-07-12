@@ -318,12 +318,19 @@ let int32 path value =
     Error (invalid path "integer is outside signed 32-bit range")
   else Ok (Int64.to_int value)
 
-(** Requires a non-empty bounded identifier without imposing undocumented
-    character restrictions on valid Temporal names. *)
+(** Requires a non-empty bounded identifier that can safely cross the JSON
+    bridge. Temporal names may contain punctuation and non-ASCII text, so the
+    validator deliberately avoids a narrower character allow-list while still
+    rejecting embedded NUL bytes and malformed UTF-8 assembled by an OCaml
+    translator. *)
 let identifier path value =
   let* value = string path value in
   if String.length value = 0 || String.length value > protocol_string_safety_limit then
     Error (invalid path "identifier is empty or exceeds the protocol string safety limit")
+  else if String.contains value '\000' then
+    Error (invalid path "identifier must not contain NUL")
+  else if not (valid_utf_8 value) then
+    Error (invalid path "identifier must be valid UTF-8")
   else Ok value
 
 (** Validates a canonical unsigned 64-bit decimal representation. *)

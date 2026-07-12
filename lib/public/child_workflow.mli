@@ -31,7 +31,9 @@ val future : 'output handle -> ('output, Error.t) Future.t
 
 (** Requests cancellation of the exact child represented by [handle]. The
     default reason is stable and replay-safe. Repeated calls are idempotent;
-    Core determines when the future receives the typed cancellation result. *)
+    this includes a valid call that arrives after natural child completion or a
+    start failure has retired the pending entry. Core determines when the
+    future receives the typed cancellation result. *)
 val cancel :
   ?reason:string ->
   'output handle ->

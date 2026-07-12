@@ -10,6 +10,15 @@ type activity_resolution =
 type child_workflow_resolution =
   (Temporal_base.Codec.payload, Temporal_base.Error.t) result -> unit
 
+(** A child resolver survives its start acknowledgment. Core first reports the
+    assigned run ID, then later reports the terminal payload or failure. Keeping
+    both pieces in one table entry prevents a successful start from being
+    mistaken for completion and gives duplicate acknowledgments a typed error. *)
+type child_workflow_state = {
+  resolve : child_workflow_resolution;
+  mutable start_run_id : string option;
+}
+
 (** State shared by SDK operations in one workflow execution. Activities and
     timers use increasing sequence numbers so later activation jobs can identify
     the command they complete. Commands are stored in reverse order because
@@ -19,7 +28,7 @@ type t = {
   task_queue : string;
   mutable next_sequence : int64;
   activities : (int64, activity_resolution) Hashtbl.t;
-  child_workflows : (int64, child_workflow_resolution) Hashtbl.t;
+  child_workflows : (int64, child_workflow_state) Hashtbl.t;
   timers : (int64, unit -> unit) Hashtbl.t;
   mutable commands_rev : Activation.command list;
 }
@@ -163,10 +172,14 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
 let start_child_workflow context ~id ~name ~input ~decode =
   let seq = allocate_sequence context in
   let future, resolve = Scheduler.promise context.scheduler ~outside_error in
-  Hashtbl.add context.child_workflows seq (fun result ->
-      match result with
-      | Error error -> resolve (Error error)
-      | Ok payload -> resolve (decode payload));
+  Hashtbl.add context.child_workflows seq
+    {
+      resolve = (fun result ->
+        match result with
+        | Error error -> resolve (Error error)
+        | Ok payload -> resolve (decode payload));
+      start_run_id = None;
+    };
   emit context (Activation.Start_child_workflow { seq; id; name; input });
   future
 
@@ -200,16 +213,49 @@ let resolve_activity context ~seq result =
 
 (** Removes a child resolver before invoking it, so an immediate duplicate job
     is rejected without risking a second future resolution. *)
+let resolve_child_workflow_start context ~seq result =
+  match Hashtbl.find_opt context.child_workflows seq with
+  | None ->
+      Error
+        (bridge_error
+           (Printf.sprintf
+              "unknown or duplicate child workflow start sequence %Ld" seq))
+  | Some state -> (
+      match (state.start_run_id, result) with
+      | Some _, Ok _ ->
+          Error
+            (bridge_error
+               (Printf.sprintf
+                  "duplicate child workflow start sequence %Ld" seq))
+      | None, Ok run_id ->
+          if String.equal run_id "" then
+            Error (bridge_error "child workflow start returned an empty run ID")
+          else (
+            state.start_run_id <- Some run_id;
+            Ok ())
+      | _, Error error ->
+          Hashtbl.remove context.child_workflows seq;
+          state.resolve (Error error);
+          Ok ())
+
 let resolve_child_workflow context ~seq result =
   match Hashtbl.find_opt context.child_workflows seq with
   | None ->
       Error
         (bridge_error
            (Printf.sprintf "unknown or duplicate child workflow sequence %Ld" seq))
-  | Some resolve ->
-      Hashtbl.remove context.child_workflows seq;
-      resolve result;
-      Ok ()
+  | Some state -> (
+      match state.start_run_id with
+      | None ->
+          Error
+            (bridge_error
+               (Printf.sprintf
+                  "child workflow sequence %Ld resolved before start acknowledgment"
+                  seq))
+      | Some _ ->
+          Hashtbl.remove context.child_workflows seq;
+          state.resolve result;
+          Ok ())
 
 (** Removes a timer before completing its future, matching activity handling. *)
 let fire_timer context ~seq =

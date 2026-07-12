@@ -29,6 +29,15 @@ type failure_info = Workflow.failure_info =
       activity_id : string;
       retry_state : retry_state;
     }
+  | Child_workflow of {
+      namespace : string;
+      workflow_id : string;
+      run_id : string;
+      workflow_type : string;
+      initiated_event_id : int64;
+      started_event_id : int64;
+      retry_state : retry_state;
+    }
 
 type failure = Workflow.failure = {
   message : string;

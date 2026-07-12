@@ -54,10 +54,12 @@ and bridge, read the [documentation guide](../README.md) first.
 - Activity outputs are decoded before resolving the typed public future.
 - Child-workflow IDs are explicit, non-empty, valid UTF-8, and at most 65,536
   UTF-8 bytes. Invalid identity consumes neither a sequence nor a command. A
-  child resolver is registered before its command is emitted and removed before
-  its output is decoded. The native worker currently gates the resulting
-  child-start completion before submission because the matching Core
-  child-resolution activation is not yet represented.
+  child resolver is registered before its command is emitted. Core resolves a
+  child in two stages: the start acknowledgment stores its non-empty run ID,
+  while a later terminal resolution removes the resolver and decodes its
+  payload. A start failure removes and resolves the future immediately. A
+  terminal result before start, duplicate acknowledgment, or unknown sequence
+  is a non-retryable bridge defect; no event is silently dropped.
 - Activities, child workflows, and timers share one monotonic command sequence.
 - Zero-duration sleep emits no timer.
 - Positive sleep emits one timer and resumes only for its exact sequence.
@@ -126,10 +128,11 @@ and bridge, read the [documentation guide](../README.md) first.
   completion and never emits workflow commands.
 - A valid value with no lossless representation is an explicit typed
   `unsupported` error. Activity commands carry every exposed Core field, and
-  child-start commands carry the workflow identity and input payload. Options
-  not yet exposed by the OCaml runtime remain explicit Core defaults; the
-  adapter never fabricates a language-level option or silently drops a
-  non-default value.
+  child-start commands carry the workflow identity and input payload. Child
+  resolution retains start run IDs, terminal payloads, typed failure info, and
+  cancellation state. Options not yet exposed by the OCaml runtime remain
+  explicit Core defaults; the adapter never fabricates a language-level option
+  or silently drops a non-default value.
 - Unknown or duplicate operation sequences are bridge defects. They fail the
   execution rather than being ignored, because ignoring them would make
   replay diverge from the history supplied by Core.

@@ -63,6 +63,15 @@ type failure_info =
       activity_id : string;
       retry_state : retry_state;
     }
+  | Child_workflow of {
+      namespace : string;
+      workflow_id : string;
+      run_id : string;
+      workflow_type : string;
+      initiated_event_id : int64;
+      started_event_id : int64;
+      retry_state : retry_state;
+    }
 
 type failure = {
   message : string;
@@ -77,6 +86,24 @@ type activity_resolution =
   | Completed of payload option
   | Failed of failure
   | Cancelled of failure
+
+type child_workflow_start_failure_cause =
+  | Child_start_unspecified
+  | Child_start_workflow_already_exists
+
+type child_workflow_start_resolution =
+  | Child_start_succeeded of string
+  | Child_start_failed of {
+      workflow_id : string;
+      workflow_type : string;
+      cause : child_workflow_start_failure_cause;
+    }
+  | Child_start_cancelled of failure
+
+type child_workflow_resolution =
+  | Child_completed of payload option
+  | Child_failed of failure
+  | Child_cancelled of failure
 
 type eviction_reason =
   | Eviction_unspecified
@@ -101,6 +128,14 @@ type activation_job =
       context : initialize_context option;
     }
   | Resolve_activity of { seq : int64; result : activity_resolution }
+  | Resolve_child_workflow_start of {
+      seq : int64;
+      result : child_workflow_start_resolution;
+    }
+  | Resolve_child_workflow of {
+      seq : int64;
+      result : child_workflow_resolution;
+    }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow of { reason : string }
   | Remove_from_cache of { message : string; reason : eviction_reason }
@@ -459,6 +494,47 @@ let failure_info path json =
              activity_id;
              retry_state;
            })
+  | "child_workflow" ->
+      let* entries =
+        exact_object path
+          [
+            "kind";
+            "namespace";
+            "workflow_id";
+            "run_id";
+            "workflow_type";
+            "initiated_event_id";
+            "started_event_id";
+            "retry_state";
+          ]
+          json
+      in
+      let* namespace_json = field path "namespace" entries in
+      let* namespace = identifier (path ^ ".namespace") namespace_json in
+      let* workflow_id_json = field path "workflow_id" entries in
+      let* workflow_id = identifier (path ^ ".workflow_id") workflow_id_json in
+      let* run_id_json = field path "run_id" entries in
+      let* run_id = identifier (path ^ ".run_id") run_id_json in
+      let* workflow_type_json = field path "workflow_type" entries in
+      let* workflow_type = identifier (path ^ ".workflow_type") workflow_type_json in
+      let* initiated_json = field path "initiated_event_id" entries in
+      let* initiated_event_id = nonnegative_int64 (path ^ ".initiated_event_id") initiated_json in
+      let* started_json = field path "started_event_id" entries in
+      let* started_event_id = nonnegative_int64 (path ^ ".started_event_id") started_json in
+      let* retry_json = field path "retry_state" entries in
+      let* retry_name = string (path ^ ".retry_state") retry_json in
+      let* retry_state = retry_state (path ^ ".retry_state") retry_name in
+      Ok
+        (Child_workflow
+           {
+             namespace;
+             workflow_id;
+             run_id;
+             workflow_type;
+             initiated_event_id;
+             started_event_id;
+             retry_state;
+           })
   | _ -> Error (invalid (path ^ ".kind") "unsupported failure info kind")
 
 (** Decodes a recursive failure. JSON depth limits bound cause recursion before
@@ -522,6 +598,28 @@ let rec failure_info_json = function
             ("identity", `String identity);
             ("activity_type", `String activity_type);
             ("activity_id", `String activity_id);
+            ("retry_state", `String (retry_state_string retry_state));
+          ])
+  | Child_workflow
+      {
+        namespace;
+        workflow_id;
+        run_id;
+        workflow_type;
+        initiated_event_id;
+        started_event_id;
+        retry_state;
+      } ->
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "child_workflow");
+            ("namespace", `String namespace);
+            ("workflow_id", `String workflow_id);
+            ("run_id", `String run_id);
+            ("workflow_type", `String workflow_type);
+            ("initiated_event_id", `Intlit (Int64.to_string initiated_event_id));
+            ("started_event_id", `Intlit (Int64.to_string started_event_id));
             ("retry_state", `String (retry_state_string retry_state));
           ])
 
@@ -591,6 +689,103 @@ let activity_resolution_json = function
       Ok (`Assoc [ ("kind", `String "failed"); ("failure", failure) ])
   | Cancelled value ->
       let* failure = failure_json value in
+      Ok (`Assoc [ ("kind", `String "cancelled"); ("failure", failure) ])
+
+(** Decodes the initial child-workflow start result. A successful start carries
+    only the run identity; the child remains pending until a later terminal
+    child resolution is delivered. *)
+let child_workflow_start_failure_cause path = function
+  | "unspecified" -> Ok Child_start_unspecified
+  | "workflow_already_exists" -> Ok Child_start_workflow_already_exists
+  | _ -> Error (invalid path "unknown child workflow start failure cause")
+
+let child_workflow_start_failure_cause_string = function
+  | Child_start_unspecified -> "unspecified"
+  | Child_start_workflow_already_exists -> "workflow_already_exists"
+
+let child_workflow_start_resolution path json =
+  let* entries =
+    match json with
+    | `Assoc entries -> Ok entries
+    | _ -> Error (invalid path "expected JSON object")
+  in
+  let* kind_json = field path "kind" entries in
+  let* kind = string (path ^ ".kind") kind_json in
+  match kind with
+  | "succeeded" ->
+      let* entries = exact_object path [ "kind"; "run_id" ] json in
+      let* run_id_json = field path "run_id" entries in
+      let* run_id = identifier (path ^ ".run_id") run_id_json in
+      Ok (Child_start_succeeded run_id)
+  | "failed" ->
+      let* entries =
+        exact_object path [ "kind"; "workflow_id"; "workflow_type"; "cause" ] json
+      in
+      let* workflow_id_json = field path "workflow_id" entries in
+      let* workflow_id = identifier (path ^ ".workflow_id") workflow_id_json in
+      let* workflow_type_json = field path "workflow_type" entries in
+      let* workflow_type = identifier (path ^ ".workflow_type") workflow_type_json in
+      let* cause_json = field path "cause" entries in
+      let* cause_name = string (path ^ ".cause") cause_json in
+      let* cause = child_workflow_start_failure_cause (path ^ ".cause") cause_name in
+      Ok (Child_start_failed { workflow_id; workflow_type; cause })
+  | "cancelled" ->
+      let* entries = exact_object path [ "kind"; "failure" ] json in
+      let* failure_json = field path "failure" entries in
+      let* failure = failure (path ^ ".failure") failure_json in
+      Ok (Child_start_cancelled failure)
+  | _ -> Error (invalid (path ^ ".kind") "unknown child workflow start resolution kind")
+
+let child_workflow_start_resolution_json = function
+  | Child_start_succeeded run_id ->
+      Ok (`Assoc [ ("kind", `String "succeeded"); ("run_id", `String run_id) ])
+  | Child_start_failed { workflow_id; workflow_type; cause } ->
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "failed");
+            ("workflow_id", `String workflow_id);
+            ("workflow_type", `String workflow_type);
+            ("cause", `String (child_workflow_start_failure_cause_string cause));
+          ])
+  | Child_start_cancelled failure ->
+      let* failure = failure_json failure in
+      Ok (`Assoc [ ("kind", `String "cancelled"); ("failure", failure) ])
+
+(** Decodes a terminal child-workflow result. *)
+let child_workflow_resolution path json =
+  let* entries =
+    match json with
+    | `Assoc entries -> Ok entries
+    | _ -> Error (invalid path "expected JSON object")
+  in
+  let* kind_json = field path "kind" entries in
+  let* kind = string (path ^ ".kind") kind_json in
+  match kind with
+  | "completed" ->
+      let* entries = exact_object path [ "kind"; "payload" ] json in
+      let* payload_json = field path "payload" entries in
+      let* payload = nullable (path ^ ".payload") payload payload_json in
+      Ok (Child_completed payload)
+  | "failed" | "cancelled" ->
+      let* entries = exact_object path [ "kind"; "failure" ] json in
+      let* failure_json = field path "failure" entries in
+      let* failure = failure (path ^ ".failure") failure_json in
+      if String.equal kind "failed" then Ok (Child_failed failure)
+      else Ok (Child_cancelled failure)
+  | _ -> Error (invalid (path ^ ".kind") "unknown child workflow resolution kind")
+
+let child_workflow_resolution_json = function
+  | Child_completed payload ->
+      let* payload =
+        match payload with None -> Ok `Null | Some value -> payload_json value
+      in
+      Ok (`Assoc [ ("kind", `String "completed"); ("payload", payload) ])
+  | Child_failed failure ->
+      let* failure = failure_json failure in
+      Ok (`Assoc [ ("kind", `String "failed"); ("failure", failure) ])
+  | Child_cancelled failure ->
+      let* failure = failure_json failure in
       Ok (`Assoc [ ("kind", `String "cancelled"); ("failure", failure) ])
 
 (** Maps a stable cache-eviction spelling. *)
@@ -891,6 +1086,22 @@ let activation_job path json =
       let* result_json = field path "result" entries in
       let* result = activity_resolution (path ^ ".result") result_json in
       Ok (Resolve_activity { seq; result })
+  | "resolve_child_workflow_start" ->
+      let* entries = exact_object path [ "kind"; "seq"; "result" ] json in
+      let* seq_json = field path "seq" entries in
+      let* seq = uint32 (path ^ ".seq") seq_json in
+      let* result_json = field path "result" entries in
+      let* result =
+        child_workflow_start_resolution (path ^ ".result") result_json
+      in
+      Ok (Resolve_child_workflow_start { seq; result })
+  | "resolve_child_workflow" ->
+      let* entries = exact_object path [ "kind"; "seq"; "result" ] json in
+      let* seq_json = field path "seq" entries in
+      let* seq = uint32 (path ^ ".seq") seq_json in
+      let* result_json = field path "result" entries in
+      let* result = child_workflow_resolution (path ^ ".result") result_json in
+      Ok (Resolve_child_workflow { seq; result })
   | "fire_timer" ->
       let* entries = exact_object path [ "kind"; "seq" ] json in
       let* seq_json = field path "seq" entries in
@@ -933,6 +1144,24 @@ let activation_job_json = function
         (`Assoc
           [
             ("kind", `String "resolve_activity");
+            ("seq", `Intlit (Int64.to_string seq));
+            ("result", result);
+          ])
+  | Resolve_child_workflow_start { seq; result } ->
+      let* result = child_workflow_start_resolution_json result in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "resolve_child_workflow_start");
+            ("seq", `Intlit (Int64.to_string seq));
+            ("result", result);
+          ])
+  | Resolve_child_workflow { seq; result } ->
+      let* result = child_workflow_resolution_json result in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "resolve_child_workflow");
             ("seq", `Intlit (Int64.to_string seq));
             ("result", result);
           ])

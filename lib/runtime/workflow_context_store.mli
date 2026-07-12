@@ -91,6 +91,15 @@ val resolve_child_workflow :
   (Temporal_base.Codec.payload, Temporal_base.Error.t) result ->
   (unit, Temporal_base.Error.t) result
 
+(** Records a child start acknowledgment. [Ok run_id] advances the pending
+    child without resolving its result future; [Error] retires the child and
+    resolves that future with the typed start failure. *)
+val resolve_child_workflow_start :
+  t ->
+  seq:int64 ->
+  (string, Temporal_base.Error.t) result ->
+  (unit, Temporal_base.Error.t) result
+
 (** Completes and removes the pending timer with this sequence number. *)
 val fire_timer : t -> seq:int64 -> (unit, Temporal_base.Error.t) result
 

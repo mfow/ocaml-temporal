@@ -14,6 +14,29 @@ implementation when a later entry documents that work as complete. The
 two-binary Temporal acceptance path remains pending unless an entry explicitly
 records a successful live run.
 
+## 2026-07-12: Native child-workflow resolution lifecycle
+
+Status: focused Rust protocol, OCaml runtime, worker-adapter, and bilateral
+fixture tests pass locally; live Compose execution remains follow-up work.
+
+The Core bridge now translates both child-resolution activation variants. A
+successful `resolve_child_workflow_start` stores the server-assigned run ID
+without completing the parent future. A failed or cancelled start resolves and
+retires that future immediately. The later `resolve_child_workflow` job carries
+the nullable payload or structured failure and is accepted only after the
+successful start acknowledgment. The OCaml context store rejects final-before-
+start, duplicate, and unknown sequences as typed bridge failures, while Rust
+preserves child execution identity, event IDs, retry state, payload bytes, and
+recursive failure causes. The temporary native-worker child-start rejection
+gate has been removed.
+
+Evidence: the shared `child-resolution` JSON fixture is accepted and
+normalized by both Rust and OCaml; Rust Core-conversion tests cover completed
+and failed child results; focused runtime tests cover ordered lifecycle,
+start-failure cleanup, final-before-start, duplicate sequences, and lease
+retirement. The live two-OCaml-binary Compose acceptance is still required to
+prove the complete Temporal Server path.
+
 ## 2026-07-12: Complete native activity command translation
 
 Status: focused runtime, worker-adapter, and native translation tests pass
@@ -43,9 +66,9 @@ retirement.
 
 ## 2026-07-12: Native child-workflow start command translation
 
-Status: focused OCaml and Rust protocol/translation tests pass locally; child
-result resolution, native worker wiring, and live Compose acceptance remain
-follow-up work.
+Historical snapshot: focused OCaml and Rust protocol/translation tests passed
+locally; child result resolution, native worker wiring, and live Compose
+acceptance were follow-up work at this commit.
 
 The private bilateral completion protocol now has a closed
 `start_child_workflow` command. The OCaml runtime maps its deterministic
@@ -58,9 +81,10 @@ submission until child-resolution activations are decoded, so no partially
 supported live path can strand a parent lease. The JSON schema and
 both-language round-trip tests cover the semantic shape.
 
-The activation side still lacks Core's child-resolution job, so this milestone
-does not claim that a workflow can await a child result or that the live
-two-binary acceptance test exercises child completion.
+At that commit the activation side still lacked Core's child-resolution job,
+so the milestone did not claim that a workflow could await a child result.
+The later native child-workflow resolution entry above supersedes that
+limitation; the live two-binary acceptance is still pending.
 
 Evidence: `dune runtest --force test/bridge`, the focused native execution
 tests, and `cargo test --manifest-path rust/Cargo.toml --locked --test
@@ -107,8 +131,8 @@ typed workflow poll/complete operations. It registers heterogeneous executable
 workflow definitions by name, keeps one existential `Execution.t` per Temporal
 run ID, serializes calls with an OCaml mutex, applies validated activations in
 deterministic order, and removes runs only after the supervisor confirms lease
-retirement. Invalid initialization, unknown runs, child result-resolution jobs
-that are not yet represented, and codec failures become typed non-retryable
+retirement. Invalid initialization, unknown runs, malformed child
+start/terminal resolution jobs, and codec failures become typed non-retryable
 failure completions;
 the adapter never fabricates missing Core fields or silently drops a lease. Its
 constructor also validates the implicit activity queue (including empty, NUL,
@@ -143,9 +167,9 @@ reports malformed or duplicate sequences as typed bridge errors.
 Commands are accepted only when the current runtime and protocol have an exact
 lossless representation. Activity scheduling now carries Core's activity ID,
 task queue, argument, timeout, cancellation, and eager-execution fields with
-explicit validation and deterministic defaults. Child-workflow scheduling
-remains explicitly unsupported because the first semantic protocol has no child
-command variant. The adapter never silently drops a command or fabricates an
+explicit validation and deterministic defaults. Child-workflow scheduling and
+the two-stage start/terminal resolution lifecycle use the same strict semantic
+protocol; the adapter never silently drops a command or fabricates an
 undocumented default. See the
 [translation reference](reference/native-execution-translation.md) for the
 mapping and ownership rules.

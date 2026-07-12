@@ -34,6 +34,7 @@ fn accepts_and_normalizes_workflow_activations() {
         "eviction",
         "realistic-initialize",
         "child-initialize",
+        "child-resolution",
     ] {
         let input = fixture(&["valid", &format!("{name}.input.json")]);
         let expected = fixture(&["valid", &format!("{name}.normalized.json")]);
@@ -397,6 +398,160 @@ fn preserves_child_workflow_identity() {
         workflow_protocol::decode_activation(&encoded).unwrap(),
         semantic
     );
+}
+
+/// Proves Core's two child-workflow activation events remain separate semantic
+/// jobs.  The start acknowledgment carries only the run ID; the later result
+/// carries the payload or typed child failure.  Keeping both events in source
+/// order is required for the OCaml future store to distinguish a start failure
+/// from a child that is still running.
+#[test]
+fn converts_child_workflow_resolution_lifecycle() {
+    use core_activation::resolve_child_workflow_execution_start::Status as StartStatus;
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::coresdk::{child_workflow, workflow_activation};
+    use temporalio_protos::temporal::api::{
+        common::v1 as api_common, enums::v1 as api_enums, failure::v1 as api_failure,
+    };
+    use workflow_activation::{
+        ResolveChildWorkflowExecution, ResolveChildWorkflowExecutionStart,
+        ResolveChildWorkflowExecutionStartSuccess,
+    };
+
+    let payload = api_common::Payload {
+        metadata: [("encoding".to_owned(), b"binary/plain".to_vec())].into(),
+        data: b"child-result".to_vec(),
+        external_payloads: Vec::new(),
+    };
+    let child_failure = api_failure::Failure {
+        message: "child failed".to_owned(),
+        source: "server".to_owned(),
+        stack_trace: String::new(),
+        encoded_attributes: None,
+        cause: None,
+        failure_info: Some(
+            api_failure::failure::FailureInfo::ChildWorkflowExecutionFailureInfo(
+                api_failure::ChildWorkflowExecutionFailureInfo {
+                    namespace: "default".to_owned(),
+                    workflow_execution: Some(api_common::WorkflowExecution {
+                        workflow_id: "child-42".to_owned(),
+                        run_id: "child-run-42".to_owned(),
+                    }),
+                    workflow_type: Some(api_common::WorkflowType {
+                        name: "child_workflow".to_owned(),
+                    }),
+                    initiated_event_id: 101,
+                    started_event_id: 102,
+                    retry_state: api_enums::RetryState::Timeout as i32,
+                },
+            ),
+        ),
+    };
+    let core = workflow_activation::WorkflowActivation {
+        run_id: "parent-run".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![
+            workflow_activation::WorkflowActivationJob {
+                variant: Some(Variant::ResolveChildWorkflowExecutionStart(
+                    ResolveChildWorkflowExecutionStart {
+                        seq: 7,
+                        status: Some(StartStatus::Succeeded(
+                            ResolveChildWorkflowExecutionStartSuccess {
+                                run_id: "child-run-42".to_owned(),
+                            },
+                        )),
+                    },
+                )),
+            },
+            workflow_activation::WorkflowActivationJob {
+                variant: Some(Variant::ResolveChildWorkflowExecution(
+                    ResolveChildWorkflowExecution {
+                        seq: 7,
+                        result: Some(child_workflow::ChildWorkflowResult {
+                            status: Some(child_workflow::child_workflow_result::Status::Completed(
+                                child_workflow::Success {
+                                    result: Some(payload.clone()),
+                                },
+                            )),
+                        }),
+                    },
+                )),
+            },
+        ],
+        ..Default::default()
+    };
+
+    let semantic = workflow_protocol::activation_from_core(&core).unwrap();
+    assert!(matches!(
+        semantic.jobs.as_slice(),
+        [
+            workflow_protocol::ActivationJob::ResolveChildWorkflowStart {
+                seq: 7,
+                result: workflow_protocol::ChildWorkflowStartResolution::Succeeded {
+                    run_id
+                }
+            },
+            workflow_protocol::ActivationJob::ResolveChildWorkflow {
+                seq: 7,
+                result: workflow_protocol::ChildWorkflowResolution::Completed {
+                    payload: Some(_)
+                }
+            }
+        ] if run_id == "child-run-42"
+    ));
+    let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
+
+    // A child failure uses the dedicated Temporal failure-info variant and
+    // keeps every identity/event field through the same activation conversion.
+    let failed = workflow_activation::WorkflowActivation {
+        run_id: "parent-run".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![workflow_activation::WorkflowActivationJob {
+            variant: Some(Variant::ResolveChildWorkflowExecution(
+                ResolveChildWorkflowExecution {
+                    seq: 8,
+                    result: Some(child_workflow::ChildWorkflowResult {
+                        status: Some(child_workflow::child_workflow_result::Status::Failed(
+                            child_workflow::Failure {
+                                failure: Some(child_failure),
+                            },
+                        )),
+                    }),
+                },
+            )),
+        }],
+        ..Default::default()
+    };
+    let failed = workflow_protocol::activation_from_core(&failed).unwrap();
+    match &failed.jobs[0] {
+        workflow_protocol::ActivationJob::ResolveChildWorkflow {
+            result: workflow_protocol::ChildWorkflowResolution::Failed { failure },
+            ..
+        } => match &failure.info {
+            workflow_protocol::FailureInfo::ChildWorkflow {
+                namespace,
+                workflow_id,
+                run_id,
+                workflow_type,
+                initiated_event_id,
+                started_event_id,
+                retry_state,
+            } => {
+                assert_eq!(namespace, "default");
+                assert_eq!(workflow_id, "child-42");
+                assert_eq!(run_id, "child-run-42");
+                assert_eq!(workflow_type, "child_workflow");
+                assert_eq!((*initiated_event_id, *started_event_id), (101, 102));
+                assert_eq!(*retry_state, workflow_protocol::RetryState::Timeout);
+            }
+            info => panic!("unexpected child failure info: {info:?}"),
+        },
+        job => panic!("unexpected failed child job: {job:?}"),
+    }
 }
 
 /// Proves absent oneofs and the eviction acknowledgement rule fail closed.

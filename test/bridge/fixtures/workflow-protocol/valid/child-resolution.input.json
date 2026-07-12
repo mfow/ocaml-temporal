@@ -1,0 +1,32 @@
+{
+  "jobs": [
+    {
+      "kind": "initialize_workflow",
+      "workflow_id": "parent-42",
+      "workflow_type": "parent_workflow",
+      "arguments": [],
+      "randomness_seed": "42",
+      "attempt": 1
+    },
+    {
+      "result": {"run_id": "child-run-42", "kind": "succeeded"},
+      "kind": "resolve_child_workflow_start",
+      "seq": 7
+    },
+    {
+      "seq": 7,
+      "kind": "resolve_child_workflow",
+      "result": {
+        "kind": "completed",
+        "payload": {
+          "metadata": {},
+          "data": {"encoding": "base64", "data": "Y2hpbGQtcmVzdWx0"}
+        }
+      }
+    }
+  ],
+  "run_id": "parent-run",
+  "timestamp": {"seconds": 1720000000, "nanoseconds": 0},
+  "is_replaying": true,
+  "history_length": 9
+}

@@ -7,6 +7,12 @@ let payload value =
   | Ok payload -> payload
   | Error error -> failwith (Temporal.Error.message error)
 
+(** Simulates Core's successful child-start acknowledgment. The run ID is an
+    internal lifecycle fact; tests use a stable value while the public future
+    remains pending until the terminal child result arrives. *)
+let child_started seq =
+  Activation.Resolve_child_workflow_start { seq; result = Ok "child-run" }
+
 (** Remote activity called by the greeting workflow fixture. *)
 let greeting =
   Temporal.Activity.remote ~name:"greeting" ~input:Temporal.Codec.string
@@ -402,6 +408,7 @@ let test_child_workflow_completion () =
     [ Activation.Complete_workflow (payload "Hello Ada") ]
     (Execution.activate execution
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Ok (payload "Hello Ada") };
        ])
@@ -451,6 +458,7 @@ let test_child_workflow_concurrency_and_decoding () =
   expect "one concurrent result leaves parent pending" []
     (Execution.activate execution
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Ok (payload "Hello Ada") };
        ]);
@@ -466,6 +474,7 @@ let test_child_workflow_concurrency_and_decoding () =
   match
     Execution.activate invalid
       [
+        child_started 1L;
         Activation.Resolve_child_workflow
           {
             seq = 1L;
@@ -589,6 +598,7 @@ let test_child_workflow_id_boundary () =
     [ Activation.Complete_workflow (payload "Hello Ada") ]
     (Execution.activate execution
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Ok (payload "Hello Ada") };
        ])
@@ -596,12 +606,40 @@ let test_child_workflow_id_boundary () =
 (** Remote child failures retain their typed error, while unknown or repeated
     sequence numbers become bridge defects and never resolve a future twice. *)
 let test_child_workflow_failures_and_sequence_ownership () =
+  let premature = Execution.start child_parent_workflow "Ada" in
+  ignore (Execution.activate premature [ Activation.Start_workflow ]);
+  (match
+     Execution.activate premature
+       [ Activation.Resolve_child_workflow
+           { seq = 1L; result = Ok (payload "too early") } ]
+   with
+  | [ Activation.Fail_workflow error ] ->
+      expect "child resolved before start" "bridge" (Temporal.Error.kind error)
+  | _ -> failwith "child result was accepted before start acknowledgment");
+  let failed_start = Execution.start child_parent_workflow "Ada" in
+  ignore (Execution.activate failed_start [ Activation.Start_workflow ]);
+  let start_error =
+    Temporal_base.Error.make ~non_retryable:true ~category:`Child_workflow
+      ~message:"child start rejected" ()
+  in
+  (match
+     Execution.activate failed_start
+       [
+         Activation.Resolve_child_workflow_start
+           { seq = 1L; result = Error start_error };
+       ]
+   with
+  | [ Activation.Fail_workflow error ] ->
+      expect "child start failure" "child start rejected"
+        (Temporal.Error.message error)
+  | _ -> failwith "child start failure did not retire the pending child");
   let remote_failure = Execution.start child_parent_workflow "Ada" in
   ignore (Execution.activate remote_failure [ Activation.Start_workflow ]);
   let child_error = Temporal.Error.defect ~message:"child failed" in
   (match
      Execution.activate remote_failure
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Error child_error };
        ]
@@ -626,6 +664,7 @@ let test_child_workflow_failures_and_sequence_ownership () =
   ignore
     (Execution.activate duplicate
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Ok (payload "Hello Ada") };
        ]);

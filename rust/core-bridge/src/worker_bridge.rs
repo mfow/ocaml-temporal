@@ -86,6 +86,26 @@ async fn force_fail_undeliverable_activity(
     let _ = worker.complete_activity_task(completion).await;
 }
 
+/// Returns whether a lease failure belongs to a cancellation update that no
+/// longer has an independent Core completion obligation.
+///
+/// Core represents cancellation as an update on the original activity token,
+/// not as a second activity execution. The poll lane can enqueue that update
+/// while the owner Domain is still completing the start task. By the time the
+/// owner drains the update, the start may still be leased (`AlreadyLeased`) or
+/// may already have completed (`UnknownActivity`). Both outcomes are normal
+/// cross-thread ordering, so completing the update again would fabricate a
+/// second completion for the same Core task. The caller must drop it and keep
+/// draining the lane. Start-shaped lease failures remain real delivery errors
+/// and continue through the force-failure path below.
+fn is_stale_activity_cancellation(task: &ActivityTask, error: CompleteError) -> bool {
+    matches!(task.variant, Some(activity_task::Variant::Cancel(_)))
+        && matches!(
+            error,
+            CompleteError::AlreadyLeased | CompleteError::UnknownActivity
+        )
+}
+
 /// Returns the exact Core task surface implemented by the first worker slice.
 pub fn bridge_task_types() -> WorkerTaskTypes {
     WorkerTaskTypes {
@@ -451,42 +471,56 @@ impl PollLanes {
 
     /// Takes one ready remote activity without blocking the supervisor Domain.
     ///
-    /// Lease-handoff failures force-fail the dequeued task through Core so the
-    /// opaque token cannot remain outstanding after the language side never
-    /// observes it. See [`Self::try_take_workflow`] for the handle requirement.
+    /// Start-task lease failures force-fail the dequeued task through Core so
+    /// the opaque token cannot remain outstanding after the language side
+    /// never observes it. Cancellation updates are advisory messages on the
+    /// start token: if their lease fails because the start is still leased or
+    /// already completed, they are dropped without a second Core completion.
+    /// See [`Self::try_take_workflow`] for the handle requirement.
     pub fn try_take_activity(
         &mut self,
         handle: &tokio::runtime::Handle,
     ) -> Option<ReadyTask<ActivityTask>> {
-        let ready = self.activity_signal.take(&mut self.activity_ready)?;
-        match ready {
-            Ok(task) => {
-                let lease = self
-                    .ledger
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .lease_activity(&task.task_token);
-                match lease {
-                    Ok(()) => Some(Ok(task)),
-                    Err(error) => {
-                        let task_token = task.task_token.clone();
-                        drop(task);
-                        handle.block_on(force_fail_undeliverable_activity(
-                            self.worker.as_ref(),
-                            &task_token,
-                            "activity task lease handoff failed",
-                        ));
-                        if !matches!(error, CompleteError::AlreadyLeased) {
-                            self.ledger
-                                .lock()
-                                .unwrap_or_else(|err| err.into_inner())
-                                .abandon_activity_admission(&task_token);
+        loop {
+            let ready = self.activity_signal.take(&mut self.activity_ready)?;
+            match ready {
+                Err(error) => return Some(Err(error)),
+                Ok(task) => {
+                    let lease = self
+                        .ledger
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lease_activity(&task.task_token);
+                    match lease {
+                        Ok(()) => return Some(Ok(task)),
+                        Err(error) if is_stale_activity_cancellation(&task, error) => {
+                            // The cancellation shares the start's exact Core
+                            // completion debt. It is safe to discard after
+                            // either lease ordering; submitting another
+                            // completion would be a duplicate-token race.
+                            drop(task);
                         }
-                        Some(Err(PollLaneError::Admission(AdmitError::InvalidIdentity)))
+                        Err(error) => {
+                            let task_token = task.task_token.clone();
+                            drop(task);
+                            handle.block_on(force_fail_undeliverable_activity(
+                                self.worker.as_ref(),
+                                &task_token,
+                                "activity task lease handoff failed",
+                            ));
+                            if !matches!(error, CompleteError::AlreadyLeased) {
+                                self.ledger
+                                    .lock()
+                                    .unwrap_or_else(|err| err.into_inner())
+                                    .abandon_activity_admission(&task_token);
+                            }
+                            return Some(Err(PollLaneError::Admission(
+                                AdmitError::InvalidIdentity,
+                            )));
+                        }
                     }
                 }
             }
-            Err(error) => Some(Err(error)),
         }
     }
 

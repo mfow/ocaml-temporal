@@ -453,7 +453,7 @@ impl Runtime {
         });
 
         self.pending_starts.insert(
-            ticket.clone(),
+            ticket,
             PendingStart {
                 request,
                 receiver,

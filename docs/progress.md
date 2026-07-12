@@ -14,6 +14,37 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Context-aware activity heartbeats
+
+Status: locally verified in the bilateral OCaml/Rust protocol tests and the
+private native activity execution adapter. This entry does not claim live
+Temporal Server heartbeat or timeout coverage.
+
+`Temporal.Activity.define_with_context` now gives an activity attempt a typed,
+opaque context. The activity can read the ordered details saved by a previous
+heartbeat, inspect the server-supplied heartbeat timeout, and send a typed
+heartbeat through `Temporal.Activity.Context.heartbeat` (or already encoded
+details through `heartbeat_payloads`). Public callbacks remain ordinary
+direct-style OCaml functions and expected bridge failures remain
+`(value, Error.t) result` values.
+
+The context owns copied payloads and a copied task token. One adapter mutex and
+the SDK supervisor mailbox serialize heartbeat, completion, polling, and
+shutdown operations. Rust validates the strict closed JSON document, checks
+the token against its outstanding activity ledger, converts payloads to the
+official Core protobuf, and deliberately leaves the lease active for terminal
+completion. The adapter invalidates the context on every activity exit path,
+so retaining it cannot retain a native pointer or heartbeat a later task.
+
+The new schema is
+[`activity-heartbeat.schema.json`](schemas/bridge/activity-heartbeat.schema.json)
+and the wire details are documented in
+[activity protocol](reference/activity-protocol.md) and
+[native activity execution](reference/native-activity-execution.md). Focused
+tests cover binary details, malformed documents, context dispatch, heartbeat
+lease retention, and post-completion invalidation. A dedicated Docker Compose
+scenario is still required before this capability can be called live verified.
+
 ## 2026-07-13: Typed child-workflow cancellation control
 
 Status: locally verified in the OCaml activation, native translation, bridge

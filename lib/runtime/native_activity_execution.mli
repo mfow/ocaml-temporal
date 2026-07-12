@@ -32,6 +32,12 @@ module type SUPERVISOR = sig
   (** Submits a semantic completion. [Ok ()] is the only proof that the native
       side accepted and retired the task-token lease. *)
 
+  val record_activity_heartbeat :
+    t -> Temporal_protocol.Activity_protocol.heartbeat -> (unit, error) result
+  (** Records progress for the currently leased task without retiring its
+      lease. The supervisor must serialize this call with completion and
+      shutdown operations. *)
+
   val error_code : error -> string
   (** Stable classification for a native failure. *)
 
@@ -99,6 +105,7 @@ end
 val register :
   ( 'input,
     'output,
+    Temporal_base.Activity_context.t ->
     'input -> ('output, Temporal_base.Error.t) result )
   Temporal_base.Definition.t ->
   registered_activity

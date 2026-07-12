@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/activity-heartbeat.schema.json",
+  "title": "Remote activity heartbeat",
+  "description": "A non-terminal progress record sent from the private OCaml activity runner to the Rust Temporal Core bridge for a currently leased activity task.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_token", "details"],
+  "properties": {
+    "task_token": {"$ref": "#/$defs/task_token"},
+    "details": {
+      "type": "array",
+      "maxItems": 201326592,
+      "items": {"$ref": "temporal-payload.schema.json"}
+    }
+  },
+  "$defs": {
+    "task_token": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 178956972,
+      "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+    }
+  }
+}

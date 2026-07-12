@@ -27,7 +27,9 @@ type workflow_entry =
 type activity_entry =
   | Activity_entry : {
       definition : ('input, 'output) Activity.t;
-      implementation : ('input, 'output) Activity.implementation;
+      implementation : ('input, 'output) Activity.implementation option;
+      contextual_implementation :
+        ('input, 'output) Activity.contextual_implementation option;
     }
       -> activity_entry
 
@@ -84,19 +86,23 @@ let add_workflow registry (Workflow definition) =
     checks used for workflows. *)
 let add_activity registry (Activity definition) =
   let name = Activity.name definition in
-  match Activity.implementation definition with
-  | None ->
+  match
+    ( Activity.implementation definition,
+      Activity.implementation_with_context definition )
+  with
+  | None, None ->
       Error
         (Error.defect
            ~message:("activity " ^ name ^ " has no local implementation"))
-  | Some implementation ->
+  | implementation, contextual_implementation ->
       if Name_map.mem name registry then
         Error
           (Error.defect ~message:("duplicate activity registration: " ^ name))
       else
         Ok
           (Name_map.add name
-             (Activity_entry { definition; implementation })
+             (Activity_entry
+                { definition; implementation; contextual_implementation })
              registry)
 
 (** Builds a workflow registry before opening any backend resource. *)
@@ -217,13 +223,34 @@ let dispatch_activity worker task =
       Error
         (Error.make ~category:`Activity
            ~message:("unregistered activity task: " ^ task.activity_name) ())
-  | Some (Activity_entry { definition; implementation }) -> (
+  | Some
+      (Activity_entry
+        { definition; implementation; contextual_implementation }) -> (
       match
         Codec.decode (Activity.input definition) task.input
       with
       | Error error -> Error error
       | Ok input -> (
-          match protect_implementation "activity" implementation input with
+          let result =
+            match contextual_implementation with
+            | Some implementation ->
+                let context =
+                  Temporal_base.Activity_context.unavailable ~details:[]
+                    ~heartbeat_timeout:None
+                in
+                protect_implementation "activity" (implementation context)
+                  input
+            | None -> (
+                match implementation with
+                | Some implementation ->
+                    protect_implementation "activity" implementation input
+                | None ->
+                    Error
+                      (Error.defect
+                         ~message:
+                           "activity registry entry has no implementation"))
+          in
+          match result with
           | Error error -> Error error
           | Ok output -> Codec.encode (Activity.output definition) output))
 

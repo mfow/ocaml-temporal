@@ -25,6 +25,7 @@ val register_workflow :
     constructor used by the runtime adapter. *)
 val register_activity :
   ('input, 'output,
+   Temporal_base.Activity_context.t ->
    'input -> ('output, Temporal_base.Error.t) result)
   Temporal_base.Definition.t ->
   activity_registration

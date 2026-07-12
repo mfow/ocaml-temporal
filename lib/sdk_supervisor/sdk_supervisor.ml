@@ -393,6 +393,13 @@ module Protocol_adapter = struct
     | Ok output -> Ok (Bytes.of_string output)
     | Error error -> activity_error "activity completion encoding" error
 
+  (** Canonically serializes one activity heartbeat before it reaches the
+      native bridge. *)
+  let encode_activity_heartbeat heartbeat =
+    match Activity.encode_heartbeat heartbeat with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> activity_error "activity heartbeat encoding" error
+
   (** Converts a client codec diagnostic to the same bounded bridge error
       vocabulary used by worker protocol adapters. The source JSON is never
       copied into the message, so malformed native output cannot leak payload
@@ -630,6 +637,8 @@ module Native_backend = struct
     | Wait_activity : unit operation
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
+    | Record_activity_heartbeat :
+        Temporal_protocol.Activity_protocol.heartbeat -> unit operation
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation
 
@@ -698,6 +707,10 @@ module Native_backend = struct
         Result.bind
           (Protocol_adapter.encode_activity_completion completion)
           (Bridge.worker_complete_activity_json runtime)
+    | Record_activity_heartbeat heartbeat ->
+        Result.bind
+          (Protocol_adapter.encode_activity_heartbeat heartbeat)
+          (Bridge.worker_record_activity_heartbeat_json runtime)
     | Shutdown_worker -> Bridge.worker_shutdown runtime
     | Disconnect_client -> Bridge.client_disconnect runtime
 
@@ -758,6 +771,8 @@ module Native = struct
     | Wait_activity : unit operation
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
+    | Record_activity_heartbeat :
+        Temporal_protocol.Activity_protocol.heartbeat -> unit operation
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation
 

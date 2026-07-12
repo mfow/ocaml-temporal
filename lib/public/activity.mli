@@ -3,6 +3,14 @@
 type ('input, 'output) implementation =
   'input -> ('output, Error.t) result
 
+(** Opaque context for one activity attempt. Calls after terminal completion
+    return typed errors rather than using a released task token. *)
+type context = Temporal_base.Activity_context.t
+
+(** Context-aware implementation form for activity progress and prior details. *)
+type ('input, 'output) contextual_implementation =
+  context -> 'input -> ('output, Error.t) result
+
 (** A description of an activity and the OCaml types it accepts and returns.
     The definition stores the activity's Temporal name and its input and output
     codecs. It may also contain a local implementation. *)
@@ -14,6 +22,14 @@ val define :
   input:'input Codec.t ->
   output:'output Codec.t ->
   ('input, 'output) implementation ->
+  ('input, 'output) t
+
+(** Creates a local activity that receives an opaque attempt context. *)
+val define_with_context :
+  name:string ->
+  input:'input Codec.t ->
+  output:'output Codec.t ->
+  ('input, 'output) contextual_implementation ->
   ('input, 'output) t
 
 (** Creates a typed reference to an activity run by another worker. The name
@@ -38,6 +54,31 @@ val output : ('input, 'output) t -> 'output Codec.t
     reference. *)
 val implementation :
   ('input, 'output) t -> ('input, 'output) implementation option
+
+(** Returns the context-aware callback, if present. *)
+val implementation_with_context :
+  ('input, 'output) t ->
+  ('input, 'output) contextual_implementation option
+
+(** Encodes and submits one typed heartbeat value for the current activity. *)
+val heartbeat : context -> 'a Codec.t -> 'a -> (unit, Error.t) result
+
+(** Operations available to a contextual activity attempt. *)
+module Context : sig
+  type t = context
+
+  (** Sends one typed heartbeat value. *)
+  val heartbeat : t -> 'a Codec.t -> 'a -> (unit, Error.t) result
+
+  (** Sends already encoded detail payloads in order. *)
+  val heartbeat_payloads : t -> Payload.t list -> (unit, Error.t) result
+
+  (** Returns details from the preceding heartbeat attempt. *)
+  val details : t -> Payload.t list
+
+  (** Returns the configured heartbeat interval, if one was supplied. *)
+  val heartbeat_timeout : t -> Duration.t option
+end
 
 (** The cancellation policy sent with an activity command. [Try_cancel] asks
     the activity worker to stop when possible, [Wait_cancellation_completed]

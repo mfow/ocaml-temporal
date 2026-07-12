@@ -154,6 +154,20 @@ pub struct ActivityCompletion {
     pub result: ActivityCompletionResult,
 }
 
+/// Progress details for one currently leased activity attempt.
+///
+/// The task token is kept as canonical base64 in the semantic protocol and is
+/// converted to Core's opaque bytes only inside the Rust bridge. Heartbeats do
+/// not retire the task ledger entry; terminal completion remains separate.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityHeartbeat {
+    /// Opaque canonical-base64 token copied from the leased activity task.
+    pub task_token: String,
+    /// Ordered details retained by Temporal for the next retry attempt.
+    pub details: Vec<Payload>,
+}
+
 /// Supported activity completion outcomes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -212,6 +226,25 @@ pub fn encode_completion(value: &ActivityCompletion) -> Result<String, ProtocolE
         .map_err(|_| ProtocolError::invalid("$", "could not encode activity completion"))?;
     let output = protocol::encode_payload_object(&from_serde(json)?)?;
     decode_completion(&output)?;
+    Ok(output)
+}
+
+/// Decodes and validates one strict activity-heartbeat document.
+pub fn decode_heartbeat(input: &str) -> Result<ActivityHeartbeat, ProtocolError> {
+    let value = protocol::decode_payload_object(input)?;
+    let heartbeat: ActivityHeartbeat = serde_json::from_value(to_serde(value))
+        .map_err(|_| ProtocolError::invalid("$", "invalid activity heartbeat semantics"))?;
+    validate_heartbeat(&heartbeat)?;
+    Ok(heartbeat)
+}
+
+/// Validates, normalizes, and reparses one outgoing activity heartbeat.
+pub fn encode_heartbeat(value: &ActivityHeartbeat) -> Result<String, ProtocolError> {
+    validate_heartbeat(value)?;
+    let json = serde_json::to_value(value)
+        .map_err(|_| ProtocolError::invalid("$", "could not encode activity heartbeat"))?;
+    let output = protocol::encode_payload_object(&from_serde(json)?)?;
+    decode_heartbeat(&output)?;
     Ok(output)
 }
 
@@ -369,6 +402,18 @@ fn validate_completion(value: &ActivityCompletion) -> Result<(), ProtocolError> 
             workflow_protocol::validate_failure(failure, "$.result.failure")?
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// Enforces token and payload invariants without changing the heartbeat's
+/// ordered details or touching the Core task ledger.
+fn validate_heartbeat(value: &ActivityHeartbeat) -> Result<(), ProtocolError> {
+    decode_token(&value.task_token)?;
+    for payload in &value.details {
+        workflow_protocol::payload_to_core(payload).map_err(|_| {
+            ProtocolError::invalid("$.details", "heartbeat payload violates protocol limits")
+        })?;
     }
     Ok(())
 }

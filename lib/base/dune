@@ -1,4 +1,4 @@
 (library
  (name temporal_base)
  (package temporal-sdk)
- (libraries logs unix yojson))
+ (libraries logs unix yojson threads))

@@ -133,6 +133,9 @@ external worker_wait_activity_raw : runtime -> response
 external worker_complete_activity_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_complete_activity_json"
 
+external worker_record_activity_heartbeat_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_worker_record_activity_heartbeat_json"
+
 external worker_reject_activity_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_reject_activity_json"
 
@@ -477,6 +480,14 @@ let worker_complete_activity_json runtime input =
   bridge_call "worker_complete_activity_json" (fun () ->
       Result.map (fun _ -> ())
         (decode (worker_complete_activity_json_raw runtime input)))
+
+(** Validates and submits one heartbeat for a currently leased activity. Rust
+    checks the opaque token against the outstanding ledger but does not retire
+    it, because terminal completion remains a separate operation. *)
+let worker_record_activity_heartbeat_json runtime input =
+  bridge_call "worker_record_activity_heartbeat_json" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (worker_record_activity_heartbeat_json_raw runtime input)))
 
 (** Returns a Rust-produced activity-task document after OCaml decode failure.
     Rust reparses and compares the complete task with retained handoff state;

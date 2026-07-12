@@ -4,11 +4,22 @@
 type ('input, 'output) implementation =
   'input -> ('output, Error.t) result
 
+(** Opaque context for one activity attempt. The private runtime guards its
+    lifetime so retaining this value cannot use a released task token. *)
+type context = Temporal_base.Activity_context.t
+
+(** Context-aware implementation form for activities that inspect prior
+    heartbeat details or report progress. *)
+type ('input, 'output) contextual_implementation =
+  context -> 'input -> ('output, Error.t) result
+
 type ('input, 'output) t = {
   name : string;
   input : 'input Codec.t;
   output : 'output Codec.t;
   implementation : ('input, 'output) implementation option;
+  contextual_implementation :
+    ('input, 'output) contextual_implementation option;
 }
 
 (* Validates a stable activity type name before it can enter registration or
@@ -23,12 +34,35 @@ let validate_name name =
 (** Constructs an activity implemented by this worker. *)
 let define ~name ~input ~output implementation =
   validate_name name;
-  { name; input; output; implementation = Some implementation }
+  {
+    name;
+    input;
+    output;
+    implementation = Some implementation;
+    contextual_implementation = None;
+  }
+
+(** Constructs a local activity that receives an opaque attempt context. *)
+let define_with_context ~name ~input ~output implementation =
+  validate_name name;
+  {
+    name;
+    input;
+    output;
+    implementation = None;
+    contextual_implementation = Some implementation;
+  }
 
 (** Constructs a command-only reference to an activity on another worker. *)
 let remote ~name ~input ~output =
   validate_name name;
-  { name; input; output; implementation = None }
+  {
+    name;
+    input;
+    output;
+    implementation = None;
+    contextual_implementation = None;
+  }
 
 (* Returns the exact Temporal activity type name used by registration and
    schedule commands. *)
@@ -43,6 +77,65 @@ let output definition = definition.output
 (* Returns executable code for a local activity, or [None] for a remote
    reference that can only be scheduled. *)
 let implementation definition = definition.implementation
+
+(** Returns the context-aware callback, if this is a local contextual
+    definition. *)
+let implementation_with_context definition = definition.contextual_implementation
+
+(** Encodes and submits one typed heartbeat value for the current activity. *)
+let heartbeat (context : context) (codec : 'a Codec.t) (value : 'a) =
+  match Codec.encode codec value with
+  | Error error -> Error error
+  | Ok ({ Payload.metadata; data } : Payload.t) ->
+      let payload : Temporal_base.Payload.t =
+        {
+          Temporal_base.Payload.metadata =
+            List.map (fun (key, value) -> (key, value)) metadata;
+          data = Bytes.copy data;
+        }
+      in
+      Temporal_base.Activity_context.heartbeat context [ payload ]
+      |> Result.map_error Error_private.of_base
+
+(** Safe operations exposed to contextual activity implementations. *)
+module Context = struct
+  type t = context
+
+  (** Sends one typed heartbeat value. *)
+  let heartbeat context codec value = heartbeat context codec value
+
+  (** Sends already encoded detail payloads in order. *)
+  let heartbeat_payloads context payloads =
+    let payloads =
+      List.map
+        (fun ({ Payload.metadata; data } : Payload.t) ->
+          {
+            Temporal_base.Payload.metadata =
+              List.map (fun (key, value) -> (key, value)) metadata;
+            data = Bytes.copy data;
+          })
+        payloads
+    in
+    Temporal_base.Activity_context.heartbeat context payloads
+    |> Result.map_error Error_private.of_base
+
+  (** Returns details retained from the preceding heartbeat attempt. *)
+  let details context =
+    Temporal_base.Activity_context.details context
+    |> List.map
+         (fun ({ Temporal_base.Payload.metadata; data } : Temporal_base.Payload.t) ->
+           {
+             Payload.metadata =
+               List.map (fun (key, value) -> (key, value)) metadata;
+             data = Bytes.copy data;
+           })
+
+  (** Returns the server-supplied heartbeat interval, if configured. *)
+  let heartbeat_timeout context =
+    Temporal_base.Activity_context.heartbeat_timeout context
+    |> Option.map (fun duration ->
+           Duration.of_ms (Temporal_base.Duration.to_ms duration))
+end
 
 type cancellation_type =
   | Try_cancel

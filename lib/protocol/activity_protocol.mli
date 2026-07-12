@@ -155,6 +155,9 @@ type completion_result =
 (** One terminal response to a leased activity task token. *)
 type completion = { task_token : bytes; result : completion_result }
 
+(** Progress details for one currently leased activity attempt. *)
+type heartbeat = { task_token : bytes; details : payload list }
+
 type error
 (** Opaque semantic or strict-JSON validation failure. *)
 
@@ -175,3 +178,9 @@ val decode_completion : string -> (completion, error) result
 
 val encode_completion : completion -> (string, error) result
 (** Validates, normalizes, and semantically reparses an outgoing completion. *)
+
+val decode_heartbeat : string -> (heartbeat, error) result
+(** Strictly decodes and validates one activity heartbeat document. *)
+
+val encode_heartbeat : heartbeat -> (string, error) result
+(** Validates, normalizes, and semantically reparses an outgoing heartbeat. *)

@@ -18,19 +18,26 @@ complete_workflow : supervisor -> completion -> (unit, error) result
 The concrete `Sdk_supervisor.Native` module instantiates this signature with
 operations on its owner Domain. The public worker loop also uses two private,
 bounded readiness operations (`Wait_workflow` and `Wait_activity`). They do not
-consume a task; they only let the Rust/Core lane sleep until work is likely to
-be available. The C boundary releases the OCaml runtime lock during that wait,
-and the 100 ms bound lets the supervisor admit shutdown even when no task
-arrives. Keeping waits outside this adapter means the registry remains usable
-with deterministic fake sources and the execution translation does not depend
-on a particular scheduling primitive.
+consume a task or return one; they wait for a wake-up from the corresponding
+Rust/Core poll lane. The loop always retries the nonblocking `try_poll_*`
+operation after a wake-up, because readiness is only a hint and another
+consumer may have taken the task first. The C boundary releases the OCaml
+runtime lock during the wait. Its 100 ms bound means a quiet lane returns
+ordinary `Not_ready` and the supervisor can still admit shutdown promptly.
+Keeping waits outside this adapter means `poll` remains nonblocking, the
+registry remains usable with deterministic fake sources, and execution
+translation does not depend on a particular scheduling primitive.
 
 The supervisor remains the sole owner of the Rust runtime, client, worker, and
-native task ledger. It must decode and semantically validate the JSON returned
-by Rust. If that decode fails, it must retire the exact leased item before
-returning a typed error. The adapter then propagates that error; it never
-pretends that a completion was submitted. This is why the functor takes typed
-activations rather than raw JSON bytes.
+native task ledger. Rust leases a Core task before handing it to a poll lane,
+and the protocol adapter on the owner Domain strictly decodes and validates
+the returned JSON before constructing a typed activation. If Rust cannot
+convert or encode a task before that hand-off, it generates a Core failure and
+retires the exact lease. If OCaml rejects the exact bytes after hand-off, the
+private rejection operation revalidates those bytes against Rust's retained
+activation and retires that same lease. The worker adapter sees only typed
+activations; it propagates those lower-layer errors and never pretends that a
+completion was submitted.
 
 The adapter owns only OCaml values:
 
@@ -38,16 +45,19 @@ The adapter owns only OCaml values:
   definition;
 - a mutable map from Temporal run ID to its matching typed `Execution.t`;
 - a mutable map of workflow completions whose native acknowledgement has not
-  yet been proven, with every payload buffer copied into adapter-owned storage;
+  yet been proven, with every mutable payload buffer copied into adapter-owned
+  storage;
 - one mutex that serializes polling, execution, and completion submission.
 
 No native pointer, Rust future, or continuation is stored in the maps. The
-pending completion map owns copied protocol bytes until acknowledgement and
-then releases them with the ordinary OCaml value lifetime. The mutex protects
-OCaml scheduler state in addition to the supervisor's own owner-Domain
-serialization, so two ordinary producer Domains cannot execute the same run
-concurrently. Workflow fibers must not call the adapter directly because
-supervisor operations may block their producer Domain.
+pending completion map owns copied semantic payload bytes until the supervisor
+confirms acknowledgement and then releases them with the ordinary OCaml value
+lifetime. The Rust ledger remains the authority for the native lease until
+Core accepts or rejects that completion. The mutex protects OCaml scheduler
+state in addition to the supervisor's own owner-Domain serialization, so two
+ordinary producer Domains cannot execute the same run concurrently. Workflow
+fibers must not call the adapter directly because supervisor operations may
+block their producer Domain.
 
 ## Worker configuration validation
 
@@ -66,9 +76,11 @@ already been accepted.
 
 1. A nonblocking empty lane returns `Ok Not_ready`.
 2. A typed activation is validated again by
-   `Native_execution.translate_activation`. This keeps fake supervisors and
-   future alternate sources subject to the same canonical protocol checks as
-   the native supervisor.
+   `Native_execution.translate_activation`. This applies the same semantic
+   checks for identifiers, sequence relationships, and payload shape to fake
+   supervisors and future alternate sources. It is not a second JSON
+   round-trip; JSON syntax and encoding metadata have already been checked by
+   the native supervisor's protocol adapter.
 3. A first job must be exactly one `Initialize_workflow`. Its workflow type is
    looked up in the immutable registration map. Duplicate run IDs, unknown
    workflow types, remote-only definitions, and invalid input argument counts
@@ -89,18 +101,25 @@ already been accepted.
    adapter stores the returned run ID and keeps the parent future pending; a
    separate terminal child resolution then completes that future.
 7. The completion is copied into an adapter-owned pending record before it is
-   submitted through the same supervisor. The run entry is removed only after
-   the supervisor confirms completion retirement. Terminal commands remove the
-   run; a cache-removal activation also removes it after its required empty
-   acknowledgement. Pending timer, activity, and child work keeps the run
-   entry. A child start failure retires its future immediately; a successful
-   start keeps it until the matching terminal resolution arrives. A terminal
-   resolution before its start acknowledgment, or a duplicate/unknown child
-   sequence, is a typed bridge failure.
+   submitted through the same supervisor. The supervisor canonical-encodes
+   and reparses the completion, checks its leased run ID against Rust's ledger,
+   and retires that lease only after Core accepts it. The run entry is removed
+   only after the supervisor confirms completion retirement. Terminal commands
+   remove the run; a cache-removal activation also removes it after its
+   required empty acknowledgement. Pending timer, activity, and child work
+   keeps the run entry. A child start failure retires its future immediately; a
+   successful start keeps it until the matching terminal resolution arrives.
+   A terminal resolution before its start acknowledgment, or a
+   duplicate/unknown child sequence, is a typed bridge failure.
 
 Activations without initialization must identify a run already in the map.
 Unknown run IDs are completed with a non-retryable bridge failure, which
 retires the native lease instead of silently ignoring it.
+
+`poll` is deliberately nonblocking: `Not_ready` records only that this lane
+was empty at that instant. `Temporal.Worker.run` owns the fairness policy and
+the bounded readiness waits described above; callers that need a blocking
+worker loop should use that public API rather than waiting in this adapter.
 
 ## Rejection and failures
 
@@ -113,11 +132,14 @@ retry or shut down without a false claim of retirement. A retry never reruns
 the workflow implementation. `drain` retries every pending completion while
 holding the adapter mutex and returns `Ok ()` only after the map is empty.
 
-Malformed JSON or a malformed semantic activation is rejected below this
-module by the supervisor's protocol adapter. That lower layer owns the raw
-lease token and is the only layer able to retire it safely when no trustworthy
-run ID can be decoded. The worker adapter exposes the typed source error with
-its bounded code/path/message and performs no unsafe best-effort parsing.
+Malformed JSON is rejected below this module by the supervisor's protocol
+adapter. A native task that cannot be converted before hand-off is rejected by
+Rust using its retained Core value. A typed activation that reaches this
+module but fails `Native_execution.translate_activation` follows the typed
+failure-completion path above. The lower layer owns the raw lease token and is
+the only layer able to retire it safely when no trustworthy run ID can be
+decoded. The worker adapter exposes the typed source error with its bounded
+code/path/message and performs no unsafe best-effort parsing.
 
 Expected operational failures use `result` values. Unexpected exceptions from
 workflow translation, codec execution, or completion are contained as typed
@@ -138,16 +160,26 @@ still owns the final executable: Rust remains a static implementation detail
 behind the private supervisor and no native handle is exposed through the
 public API.
 
-`Temporal.Worker.run` first drains both nonblocking lanes. When both are empty,
-it alternates the bounded workflow and activity waits so an activity-only load
-cannot starve behind workflow readiness (or the reverse). A task-level
-workflow/activity failure is completed through Core and then the loop
-continues; a transport, protocol, or lifecycle error returns a typed
-`Temporal.Error.t`. `shutdown` closes admission, waits for an active loop to
-leave the adapters, drains both pending completion maps, and only then
-releases worker, client, and Rust runtime state in reverse ownership order. If
-either drain fails, native teardown is not started and shutdown remains
-retryable. Repeated successful shutdown calls are idempotent.
+`Temporal.Worker.run` takes the worker mutex and, on each iteration, polls the
+workflow lane once and then the activity lane once. A task-level
+workflow/activity failure is completed through Core and the loop continues; a
+transport, protocol, or lifecycle error returns a typed `Temporal.Error.t`.
+When both nonblocking polls return `Not_ready`, the loop waits on exactly one
+bounded readiness operation and alternates the lane on the next empty
+iteration. A readiness result is only a wake-up, so the next iteration drains
+both lanes again. This keeps an activity-only load from starving behind
+workflow readiness (or the reverse) without making the adapter's `poll`
+operation block.
+
+`shutdown` first closes admission, then waits for an active loop to leave the
+adapters by taking the same worker mutex. It drains the workflow and activity
+pending-completion maps in that order. Only when both maps are empty does the
+supervisor close its readiness signals and native admission, join the Rust
+poll lanes, verify that no native leases remain, and release worker, client,
+and runtime state in reverse ownership order. If either adapter drain fails,
+native teardown is not started and the public shutdown remains retryable. A
+native teardown failure leaves the worker closed because its ownership graph
+may be partially released. Repeated successful shutdown calls are idempotent.
 
 The semantic translator accepts child-start commands with the workflow identity
 and input fields represented by the protocol. Core child options not yet
@@ -193,9 +225,11 @@ once, and the fake native lease remains present until that final acknowledgement
 This is the contract that lets public worker shutdown retry a transient
 completion transport failure safely.
 
-The fake tests do not by themselves claim live Temporal compatibility. Focused
-supervisor and bridge tests cover readiness and lifecycle ownership, while the
-Compose acceptance suite now verifies timer, remote-activity, and one
-parent/child success path against a real Temporal Server. It remains the gate
-for child failure/cancellation and the remaining activity, terminal, and
-recovery cases.
+The fake tests do not by themselves claim live Temporal compatibility. The
+focused supervisor tests cover operation admission, bounded waits, and
+idempotent shutdown; bridge tests cover the C/Rust readiness and null/error
+paths; and the Rust task-ledger tests cover exact lease identity, conversion
+rejection, and retirement ordering. The Compose acceptance suite now verifies
+timer, remote-activity, and one parent/child success path against a real
+Temporal Server. It remains the gate for child failure/cancellation and the
+remaining activity, terminal, and recovery cases.

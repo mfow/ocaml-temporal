@@ -115,7 +115,7 @@ temporal-inspect-smoke:
 	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity; do \
 		echo "--- Temporal metadata for $$workflow_id ---"; \
 		$(TEMPORAL_COMPOSE) run --rm --no-deps temporal-admin-tools \
-			tctl workflow describe --workflow_id "$$workflow_id" \
+			temporal workflow describe --workflow-id "$$workflow_id" \
 			--namespace temporal-sdk-test || true; \
 	done
 

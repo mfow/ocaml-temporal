@@ -41,6 +41,7 @@ require_text '--build-dir=/workspace/_build/smoke-worker'
 require_text '--build-dir=/workspace/_build/smoke-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "120"'
 require_text '--kill-after=10s'
+require_text 'temporal workflow describe'
 require_text 'user: 1000:1000'
 if ! grep -F 'user: "${HOST_UID:-1000}:${HOST_GID:-1000}"' "$compose_file" >/dev/null; then
   echo "smoke services must inherit the invoking host UID/GID" >&2

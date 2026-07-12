@@ -33,6 +33,15 @@ val resolved :
   ('value, Temporal_base.Error.t) result ->
   ('value, Temporal_base.Error.t) Future_store.t
 
+(** Creates a pending, scheduler-owned notification future and its resolver.
+    This is an internal coordination primitive for deterministic workflow
+    helpers such as cancellation scopes; it emits no Temporal command and is
+    closed automatically with the workflow context. *)
+val create_signal :
+  t ->
+  (unit, Temporal_base.Error.t) Future_store.t
+  * (unit, Temporal_base.Error.t) Future_store.resolver
+
 (** Creates a detached failed future for an operation attempted without an
     active workflow context. *)
 val detached_error :

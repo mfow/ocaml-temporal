@@ -107,6 +107,11 @@ let resolved context result =
   resolve result;
   future
 
+(** Allocates a scheduler-owned notification future without adding a history
+    command. The normal scheduler teardown releases it if the workflow ends
+    before the owning helper signals it. *)
+let create_signal context = Scheduler.promise context.scheduler ~outside_error
+
 (** Returns an already-failed future when an SDK operation is called without an
     active workflow, without creating fake global workflow state. *)
 let detached_error ~message =

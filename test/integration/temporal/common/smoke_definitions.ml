@@ -2,8 +2,10 @@
 
     Keeping the workflow and activity values in one private test library makes
     the driver and worker compile against exactly the same names and codecs. The
-    module deliberately contains no process, filesystem, network, or clock
-    access: those operations would make the workflow bodies non-replayable. *)
+    workflow bodies deliberately contain no process, filesystem, network, or
+    clock access: those operations would make them non-replayable. The one
+    process-local counter below belongs only to the non-deterministic activity
+    implementation and is never read by workflow code. *)
 
 (** The task queue used only by this fixture. It is intentionally distinct from
     every production queue so an accidentally reused local namespace cannot
@@ -17,6 +19,41 @@ let mock_transform =
   Temporal.Activity.define ~name:"smoke.mock_transform"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
       Ok (String.uppercase_ascii input))
+
+(** Counts attempts for the intentionally transient activity used by the live
+    retry scenario. This state belongs to the activity worker process rather
+    than workflow state: activities are allowed to perform non-deterministic
+    work, and a fresh worker process is started for every isolated Compose
+    run. The atomic counter also keeps the fixture correct if the worker later
+    dispatches activity tasks from more than one Domain. *)
+let retry_once_attempts = Atomic.make 0
+
+(** Fails exactly the first activity attempt and reports the attempt number on
+    the succeeding call. The retryable [Activity] error leaves Temporal free
+    to apply the workflow's explicit retry policy; the attempt suffix gives
+    the driver an observable proof that the final result came from attempt 2. *)
+let retry_once_activity =
+  Temporal.Activity.define ~name:"smoke.retry_once"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
+      let attempt = Atomic.fetch_and_add retry_once_attempts 1 + 1 in
+      if attempt = 1 then
+        Error
+          (Temporal.Error.make ~category:`Activity
+             ~message:"intentional transient failure for retry acceptance" ())
+      else
+        Ok
+          (Printf.sprintf "%s:ATTEMPT:%d" (String.uppercase_ascii input)
+             attempt))
+
+(** Builds the short, bounded policy used by [activity_retry]. Keeping this as
+    a result lets the workflow return a typed configuration defect if the
+    public constructor's validation ever changes, instead of hiding a
+    construction exception in a module initializer. *)
+let retry_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 100L)
+    ~backoff_coefficient:1.0
+    ~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:2 ()
 
 (** Starts two independent activity commands before awaiting either result.
     [Future.all] preserves input order, making this scenario test both fan-out
@@ -40,6 +77,20 @@ let timer_then_activity =
       match Temporal.Workflow.sleep (Temporal.Duration.of_ms 10L) with
       | Error error -> Error error
       | Ok () -> Temporal.Activity.execute mock_transform (seed ^ ":timer"))
+
+(** Schedules the transient activity with an explicit two-attempt retry policy.
+    The activity itself fails once and then succeeds, so a live terminal result
+    ending in [ATTEMPT:2] proves that Temporal Server and Core delivered a
+    second activity task rather than the worker merely returning a local
+    success. *)
+let activity_retry =
+  Temporal.Workflow.define ~name:"smoke.activity_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match retry_policy with
+      | Error error -> Error error
+      | Ok policy ->
+          Temporal.Activity.execute ~retry_policy:policy retry_once_activity
+            seed)
 
 (** A child workflow that waits on a short durable timer before deriving its
     result entirely from its input. The timer is deliberately inside the child

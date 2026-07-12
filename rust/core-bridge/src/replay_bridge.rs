@@ -264,8 +264,10 @@ impl std::error::Error for ReplayWorkerError {}
 /// workflow-only `PollLanes` keeps Core's long poll away from the OCaml owner
 /// Domain. Dropping the feeder closes the input stream. A normal `finalize`
 /// joins every lane only after the caller has observed Core's natural shutdown;
-/// the separate `dispose` path is the only operation allowed to force-fail
-/// unfinished replay work.
+/// the separate `dispose` path is the only operation allowed to abandon
+/// unfinished replay work. Replay disposal uses Core's empty completion for
+/// every abandoned activation because a replay eviction has no live workflow
+/// task to fail.
 pub(crate) struct ReplayWorker {
     /// Guarded workflow handoff and completion ledger shared with live workers.
     lanes: PollLanes,
@@ -430,7 +432,10 @@ impl ReplayWorker {
                 let _runtime_guard = handle.enter();
                 self.lanes.initiate_shutdown();
             }
-            self.lanes.force_complete_outstanding_for_dispose().await;
+            // A replay lane can fail after Core has published an eviction.
+            // Never send the live-worker failure completion here: Core accepts
+            // only an empty acknowledgement for that replay-only state.
+            self.lanes.abandon_replay_for_dispose().await;
             return Err((self, ReplayWorkerError::PollLane(error)));
         }
         self.lanes.finalize().await.map_err(|(lanes, error)| {
@@ -447,28 +452,33 @@ impl ReplayWorker {
 
     /// Abandons a replay explicitly after a precondition or caller error.
     ///
-    /// Unlike [`Self::finalize`], this path is allowed to force-fail queued or
-    /// leased work because the caller has chosen disposal over replay
-    /// correctness. It force-completes around the join barrier and waits for
-    /// every poll task. A join failure returns the retained worker and a typed
-    /// lane error without attempting finalization; all join handles have been
-    /// consumed, so a retry cannot leave a detached Tokio task behind. Only
-    /// after every join succeeds does it attempt Core's terminal finalizer
-    /// twice. If Core refuses both attempts, the worker is returned with the
-    /// typed error instead of being dropped; the caller must retry disposal or
-    /// take another explicit ownership-preserving recovery action.
+    /// Unlike [`Self::finalize`], this path abandons queued or leased replay
+    /// work because the caller has chosen disposal over replay correctness.
+    /// It first acknowledges currently owned activations with Core's
+    /// shutdown-safe empty completion, then initiates shutdown and drains any
+    /// eviction activation published while the poll lane exits. A join failure
+    /// returns the retained worker and a typed lane error without attempting
+    /// finalization; all join handles have been consumed, so a retry cannot
+    /// leave a detached Tokio task behind. Core's terminal finalizer is
+    /// attempted only after this abandonment barrier. If it refuses, the
+    /// worker is returned with the typed error instead of being dropped; the
+    /// caller must retry disposal or take another explicit ownership-preserving
+    /// recovery action.
     pub(crate) async fn dispose(
         mut self,
         handle: &Handle,
     ) -> Result<(), (Self, ReplayWorkerError)> {
         self.finish_input();
+        self.lanes.abandon_replay_for_dispose().await;
         {
             let _runtime_guard = handle.enter();
             self.lanes.initiate_shutdown();
         }
-        self.lanes.force_complete_outstanding_for_dispose().await;
-        let join_result = self.lanes.join_poll_lanes().await;
-        self.lanes.force_complete_outstanding_for_dispose().await;
+        // The lane may publish an eviction only after the first empty
+        // completion is accepted. Join it through the replay-aware drain so
+        // that activation is acknowledged instead of leaving Core's poll
+        // future waiting forever.
+        let join_result = self.lanes.join_replay_poll_lane().await;
         if let Err(error) = join_result {
             // Every join handle has been consumed, so a retry cannot leave a
             // detached producer behind. Keep the lane graph intact and make
@@ -476,21 +486,25 @@ impl ReplayWorker {
             // finalization attempt whose error would be harder to recover.
             return Err((self, ReplayWorkerError::PollLane(error)));
         }
+        // Replay activations are not live server workflow tasks. In
+        // particular, a queued activation can be a cache eviction for which
+        // Core rejects the non-empty failure completion used by live-worker
+        // disposal. After both producers have stopped, acknowledge replay
+        // obligations with Core's shutdown-safe empty completion instead.
+        self.lanes.abandon_replay_for_dispose().await;
         let lanes = self.lanes;
         let feeder = self.feeder;
         let workflow_shutdown_observed = self.workflow_shutdown_observed;
-        Self::best_effort_finalize_lanes(lanes)
-            .await
-            .map_err(|(lanes, error)| {
-                (
-                    Self {
-                        lanes,
-                        feeder,
-                        workflow_shutdown_observed,
-                    },
-                    ReplayWorkerError::Finalization(error),
-                )
-            })
+        lanes.finalize().await.map_err(|(lanes, error)| {
+            (
+                Self {
+                    lanes,
+                    feeder,
+                    workflow_shutdown_observed,
+                },
+                ReplayWorkerError::Finalization(error),
+            )
+        })
     }
 
     /// Retains a second Core worker owner for the disposal ownership test.
@@ -510,25 +524,6 @@ impl ReplayWorker {
     #[cfg(test)]
     pub(crate) fn abort_workflow_lane_for_test(&mut self) {
         self.lanes.abort_workflow_lane_for_test();
-    }
-
-    /// Attempts Core finalization twice, retaining the lane graph if both
-    /// attempts fail. The second attempt is useful when a task released its
-    /// last Arc or completion debt just after the first `finalize` check.
-    async fn best_effort_finalize_lanes(
-        mut lanes: PollLanes,
-    ) -> Result<(), (PollLanes, WorkerBridgeError)> {
-        match lanes.finalize().await {
-            Ok(()) => Ok(()),
-            Err((returned, _first_error)) => {
-                lanes = returned;
-                lanes.force_complete_outstanding_for_dispose().await;
-                match lanes.finalize().await {
-                    Ok(()) => Ok(()),
-                    Err((returned, second_error)) => Err((returned, second_error)),
-                }
-            }
-        }
     }
 }
 

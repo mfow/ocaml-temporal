@@ -14,6 +14,20 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Replay/Core disposal lifecycle hardening
+
+Status: locally verified; no live Temporal Server acceptance is claimed, and
+GitHub Actions may remain pending while the repository quota is exhausted.
+
+Replay disposal now acknowledges abandoned activations with Core's empty
+completion, drains the cache-eviction activation that Core can publish after
+that acknowledgement, and retains the native owner on join or finalization
+failure. The replay-aware path avoids the live-worker failure completion that
+triggered Core's `A non-empty completion was not processed` panic in the OCaml
+5.2 replay lifecycle CI baseline. Focused replay ABI tests, the complete
+`ocaml-temporal-core-bridge` Rust test suite, offline clippy with warnings
+denied, formatting, and `git diff --check` pass locally.
+
 ## 2026-07-13: Typed activity cancellation handles
 
 Status: locally verified in the public activity API, activation runtime, and

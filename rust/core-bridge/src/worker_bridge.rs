@@ -324,6 +324,26 @@ impl Readiness {
         }
     }
 
+    /// Awaits one queue message while preserving the same pending-count
+    /// invariant as [`Self::take`].  Replay disposal uses this owner-side
+    /// variant while a poll lane is being joined: the lane may publish an
+    /// eviction only after the preceding empty completion has been accepted,
+    /// so a synchronous drain would race the producer and leave the join
+    /// waiting forever.
+    async fn take_async<T>(
+        &self,
+        receiver: &mut mpsc::UnboundedReceiver<ReadyTask<T>>,
+    ) -> Option<ReadyTask<T>> {
+        let message = receiver.recv().await?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert!(state.pending > 0);
+        state.pending = state.pending.saturating_sub(1);
+        Some(message)
+    }
+
     /// Records a fatal poll-lane error and wakes the owner immediately.
     fn fail(&self, error: PollLaneError) {
         let mut state = self
@@ -680,6 +700,57 @@ impl PollLanes {
         first_error.map_or(Ok(()), Err)
     }
 
+    /// Joins a workflow-only replay lane while acknowledging every activation
+    /// that Core publishes during shutdown.
+    ///
+    /// Replay Core may emit a cache-eviction activation in response to an
+    /// empty completion. That activation can arrive after the shutdown token
+    /// is cancelled, so awaiting the poll task without draining its queue
+    /// would deadlock: Core keeps the poll future alive until the eviction is
+    /// acknowledged. The join loop therefore races the lane handle against
+    /// the ready queue and sends only shutdown-safe empty completions. A
+    /// replay activation never receives the live-worker failure completion.
+    pub async fn join_replay_poll_lane(&mut self) -> Result<(), PollLaneError> {
+        let Some(workflow_lane) = self.workflow_lane.take() else {
+            return Ok(());
+        };
+        tokio::pin!(workflow_lane);
+        let mut first_error = None;
+        loop {
+            tokio::select! {
+                result = &mut workflow_lane => {
+                    if let Err(error) = result {
+                        first_error = Some(PollLaneError::Core(format!(
+                            "workflow poll lane failed: {error}"
+                        )));
+                    }
+                    break;
+                }
+                ready = self.workflow_signal.take_async(&mut self.workflow_ready) => {
+                    let Some(ready) = ready else {
+                        // The sender is dropped only after the poll lane has
+                        // exited, so the join branch will become ready next.
+                        continue;
+                    };
+                    if let Ok(activation) = ready {
+                        let run_id = activation.run_id.clone();
+                        self.ledger
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .force_remove_workflow(&run_id);
+                        let completion = WorkflowActivationCompletion::empty(run_id);
+                        let _ = self.worker.complete_workflow_activation(completion).await;
+                    }
+                }
+            }
+        }
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear_dispose_retired();
+        first_error.map_or(Ok(()), Err)
+    }
+
     /// Reports whether every task admitted before shutdown has completed.
     pub fn can_finalize(&self) -> bool {
         self.ledger
@@ -786,6 +857,53 @@ impl PollLanes {
                 )
                 .await;
             }
+        }
+    }
+
+    /// Abandons replay-owned workflow activations during explicit disposal.
+    ///
+    /// Replay has no server-side workflow task to fail safely during explicit
+    /// disposal: a replay activation may be an eviction notification rather
+    /// than an active workflow task, and Core panics if a non-empty failure is
+    /// sent for that state. An empty completion is the safe Core
+    /// acknowledgement for every queued or leased replay activation, and is
+    /// explicitly tolerated when shutdown races the local workflow stream.
+    /// The bridge ledger is retired regardless of the Core acknowledgement
+    /// result so the native owner can be finalized. The caller invokes this
+    /// before joining the poll lane (to release an activation that would
+    /// otherwise keep Core's poll future alive) and again after the join (to
+    /// retire any activation published at the join boundary).
+    pub async fn abandon_replay_for_dispose(&mut self) {
+        let (mut workflow_ids, _) = self
+            .ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take_all_outstanding_for_replay();
+        let mut seen_workflows: HashSet<String> = workflow_ids.iter().cloned().collect();
+
+        // `take_all_outstanding_for_replay` includes both activations already leased to
+        // OCaml and activations still waiting in the Rust handoff queue.  The
+        // queue itself is drained below so its pending-count signal reaches
+        // the same closed state as the joined producer.
+        while let Some(ready) = self.workflow_signal.take(&mut self.workflow_ready) {
+            if let Ok(activation) = ready {
+                let run_id = activation.run_id;
+                // An activation admitted after the ledger snapshot still
+                // owns a Core completion debt. Remove it now and include it
+                // exactly once in this empty-completion pass.
+                self.ledger
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .force_remove_workflow(&run_id);
+                if seen_workflows.insert(run_id.clone()) {
+                    workflow_ids.push(run_id);
+                }
+            }
+        }
+
+        for run_id in workflow_ids {
+            let completion = WorkflowActivationCompletion::empty(run_id);
+            let _ = self.worker.complete_workflow_activation(completion).await;
         }
     }
 
@@ -1645,6 +1763,22 @@ impl TaskLedger {
             .map(|(task_token, _)| task_token)
             .collect();
         self.retired_activities.extend(activities.iter().cloned());
+        (workflows, activities)
+    }
+
+    /// Takes all outstanding identities for replay abandonment without
+    /// creating live-worker disposal tombstones. Replay may legitimately emit
+    /// a same-run eviction after an empty completion, so a retired marker
+    /// would incorrectly reject that follow-up activation before it can be
+    /// acknowledged. The replay join loop remains responsible for draining
+    /// any identity published after this snapshot.
+    pub fn take_all_outstanding_for_replay(&mut self) -> (Vec<String>, Vec<Vec<u8>>) {
+        let workflows = self.workflows.drain().map(|(run_id, _)| run_id).collect();
+        let activities = self
+            .activities
+            .drain()
+            .map(|(task_token, _)| task_token)
+            .collect();
         (workflows, activities)
     }
 

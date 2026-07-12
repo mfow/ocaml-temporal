@@ -2693,8 +2693,10 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_finalize(
     }
 }
 
-/// Explicitly abandon replay, force-completing owned Core debts and retaining
-/// the worker if terminal finalization cannot yet succeed.
+/// Explicitly abandon replay with Core's shutdown-safe empty completions and
+/// retain the worker if terminal finalization cannot yet succeed. Replay
+/// activations are not live workflow tasks, so disposal never sends the
+/// live-worker failure completion for an abandoned activation.
 ///
 /// # Safety
 ///

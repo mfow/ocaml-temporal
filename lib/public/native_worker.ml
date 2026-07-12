@@ -178,6 +178,11 @@ type t = {
   closed : bool Atomic.t;
   shutdown_retryable : bool Atomic.t;
   run_mutex : Mutex.t;
+  (** [Some domain] while [run] holds [run_mutex] on that Domain. Used to
+      reject re-entrant [run]/[shutdown] from the same Domain (for example an
+      activity implementation calling back into the worker) which would
+      otherwise deadlock on the non-recursive mutex. *)
+  run_domain : Domain.id option Atomic.t;
 }
 
 (** Reports worker lifecycle events without allowing a logging backend defect to
@@ -245,10 +250,21 @@ let wait_for_lane worker ~workflow_lane =
     queues are empty so an activity-only workload cannot be starved by workflow
     waits (and vice versa). *)
 let run worker =
-  Mutex.lock worker.run_mutex;
-  Fun.protect
-    ~finally:(fun () -> Mutex.unlock worker.run_mutex)
-    (fun () ->
+  let self = Domain.self () in
+  (match Atomic.get worker.run_domain with
+  | Some domain_id when domain_id = self ->
+      Error
+        (Base_error.defect
+           ~message:
+             "worker run is re-entrant on the same Domain; activity or host code must not call Worker.run while a run loop is active")
+  | _ ->
+      Mutex.lock worker.run_mutex;
+      Atomic.set worker.run_domain (Some self);
+      Fun.protect
+        ~finally:(fun () ->
+          Atomic.set worker.run_domain None;
+          Mutex.unlock worker.run_mutex)
+        (fun () ->
       let rec loop wait_workflow_lane =
         if Atomic.get worker.closed then Ok ()
         else
@@ -270,7 +286,7 @@ let run worker =
       report Logs.Info ~operation:"worker_run_started" ();
       let result = loop true in
       report Logs.Info ~operation:"worker_run_finished" ();
-      result)
+      result))
 
 (** Stops polling first, then waits for the loop mutex so no adapter-held lease
     remains when native worker shutdown begins. Adapter completion maps are
@@ -278,6 +294,19 @@ let run worker =
     both maps prove empty. If a drain fails, the graph remains usable and the
     caller can retry without losing the exact pending completion. *)
 let shutdown worker =
+  let self = Domain.self () in
+  (match Atomic.get worker.run_domain with
+  | Some domain_id when domain_id = self ->
+      (* Public Worker.shutdown may already have flipped its closed bit and
+         only reopens it when shutdown_retryable is true. Mark retryable so
+         the public wrapper can recover instead of permanently stranding a
+         still-running native worker. *)
+      Atomic.set worker.shutdown_retryable true;
+      Error
+        (Base_error.defect
+           ~message:
+             "cannot shut down a worker from inside its run loop on the same Domain; that would deadlock the run mutex")
+  | _ ->
   if Atomic.compare_and_set worker.closed false true then begin
     Mutex.lock worker.run_mutex;
     let drained =
@@ -309,7 +338,7 @@ let shutdown worker =
             result
         | Error error -> Error (public_native_error "worker shutdown" error)
   end
-  else Ok ()
+  else Ok ())
 
 (** Schedules forgotten-worker cleanup off the GC finalizer thread. A finalizer
     must not block on [run_mutex] or the supervisor mailbox; the detached
@@ -390,6 +419,7 @@ let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities (
         closed = Atomic.make false;
         shutdown_retryable = Atomic.make false;
         run_mutex = Mutex.create ();
+        run_domain = Atomic.make None;
       }
   in
   match setup with

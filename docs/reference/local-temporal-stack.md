@@ -15,6 +15,15 @@ below: they select the fixture with explicit Compose file, project-directory,
 and project-name arguments while preserving the repository root as the
 development-container build context and source mount.
 
+The live acceptance fixture has two different OCaml application roles. The
+long-lived `smoke-worker` registers the fixture's workflows and mock activity,
+polls Temporal, executes the registered OCaml code, and reports completions.
+The short-lived `smoke-driver` is the acceptance test runner: it registers no
+worker, starts known workflows through `Temporal.Client`, waits for each exact
+workflow/run result, checks the expected values, and exits nonzero when an
+assertion fails. The driver is therefore not a second worker and does not
+execute workflow or activity code itself.
+
 ## Requirements and ports
 
 Install Docker with Compose v2 and Make. PostgreSQL is reachable only by other
@@ -47,8 +56,10 @@ calls Temporal's gRPC cluster-health operation, and describes the
 `temporal-sdk-test` namespace. Namespace creation is idempotent.
 
 `temporal-stop` removes the containers and network but retains the named
-PostgreSQL volume. A later `temporal-start` reuses that data and safely reruns
-the schema updater. To delete local histories and all schema data explicitly:
+PostgreSQL volume for interactive inspection. A later `temporal-start` can
+reuse that data and safely rerun the schema updater. This convenience is not
+used by the acceptance target. To delete local histories and all schema data
+explicitly:
 
 ```sh
 make temporal-clean
@@ -62,17 +73,18 @@ Run the infrastructure acceptance test with:
 make test-temporal-integration
 ```
 
-The test intentionally removes this Compose project's Temporal volume before
-and after the run. After database/frontend readiness, its OCaml lifecycle
+The test intentionally removes this Compose project's PostgreSQL data volume
+before and after the run. No PostgreSQL volume or workflow history is
+preserved between acceptance runs. After database/frontend readiness, its
+OCaml lifecycle
 executable uses the private supervisor and C/Rust bridge to connect the
 official Core client, construct and namespace-validate a workflow/remote-
 activity worker, exercise invalid and repeated lifecycle transitions, and shut
-the graph down deterministically. It then waits for `smoke-worker`, a separate
-public OCaml worker, to publish readiness and runs `smoke-driver`, a second
-public OCaml binary. The driver starts three smoke workflows before waiting for
-any result and checks the fan-out activity result, the timer-then-activity
-result, and the exact result from a parent awaiting a timer-owning child
-through `Temporal.Client`.
+the graph down deterministically. It then waits for `smoke-worker` to publish
+readiness and runs `smoke-driver` as a one-shot test process. The driver starts
+three smoke workflows before waiting for any result and checks the fan-out
+activity result, the timer-then-activity result, and the exact result from a
+parent awaiting a timer-owning child through `Temporal.Client`.
 
 This is a real success-path workflow-result acceptance test, not only a
 lifecycle test. It includes one live parent/child success path, but does not

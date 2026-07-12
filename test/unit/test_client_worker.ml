@@ -26,6 +26,8 @@ let expect_error category = function
 let contains_substring source needle =
   let source_length = String.length source in
   let needle_length = String.length needle in
+  (* The bounded scan avoids depending on a newer String helper while making
+     the assertion stable across the supported OCaml versions. *)
   let rec search index =
     if index + needle_length > source_length then false
     else if String.sub source index needle_length = needle then true
@@ -78,6 +80,8 @@ let failing_workflow =
     ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
       Error (Temporal.Error.defect ~message:"synthetic workflow failure"))
 
+(** Activity counterpart to [failing_workflow], used to check that an activity
+    failure is acknowledged and does not stop later task dispatch. *)
 let failing_activity =
   Temporal.Activity.define ~name:"unit.failing-activity"
     ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
@@ -301,6 +305,7 @@ let test_native_worker_configuration_boundary () =
        ~namespace:"unit-test" ~task_queue:"unit-test" ~workflows:[]
        ~activities:[] ())
 
+(** Runs all public worker and client regression assertions. *)
 let () =
   test_duplicate_workflows ();
   test_duplicate_activities ();

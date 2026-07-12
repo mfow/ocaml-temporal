@@ -9,13 +9,16 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/../../../.." && pwd)
 fixture="$root/test/integration/temporal/fixtures/restart-replay"
 validator="$root/test/integration/temporal/scripts/validate-restart-replay.sh"
+controller_validator="$root/test/integration/temporal/scripts/validate-restart-replay-controller.sh"
 workflow_id=two-binary-worker-restart-replay
 run_id=11111111-1111-4111-8111-111111111111
 
 [ -x "$validator" ]
+[ -x "$controller_validator" ]
 [ -r "$fixture/history.initial.json" ]
 [ -r "$fixture/history.terminal.json" ]
 [ -r "$fixture/diagnostics.json" ]
+[ -r "$fixture/controller.json" ]
 
 # Runs one deliberately invalid invocation and fails the test if it is
 # accepted. Keeping the negative assertion as a helper makes each rejection
@@ -74,6 +77,15 @@ JQ_BIN="$space_jq" "$validator" \
   --run-id "$run_id" \
   --stage terminal \
   --require-replay >/dev/null
+
+# The controller record is accepted only when its run identity and exact
+# lifecycle order agree with the same worker-restart scenario. Reusing the
+# configurable jq path here keeps both validators covered by the quoted-path
+# regression instead of proving that only the history checker handles it.
+JQ_BIN="$space_jq" "$controller_validator" \
+  --controller "$fixture/controller.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id" >/dev/null
 
 # A terminal event before the timer is observed must not satisfy the initial
 # stop boundary. jq is used only to create an ephemeral negative fixture; it is
@@ -156,5 +168,45 @@ expect_failure "$validator" \
   --workflow-id "$workflow_id" \
   --run-id "$run_id" \
   --stage terminal
+
+# A controller cannot claim replacement when the old worker container is still
+# present. The history and replay documents remain valid; this mutation must
+# be rejected by the lifecycle validator itself.
+jq '.events[5].remaining_worker_containers = 1' \
+  "$fixture/controller.json" >"$tmp/controller-worker-retained.json"
+expect_failure "$controller_validator" \
+  --controller "$tmp/controller-worker-retained.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id"
+
+# A readiness marker from the stopped generation must not be accepted as
+# generation-2 readiness. The IDs are compared across lifecycle records so a
+# reused Compose container cannot satisfy the contract.
+jq '.events[6].container_id = .events[4].container_id' \
+  "$fixture/controller.json" >"$tmp/controller-reused-container.json"
+expect_failure "$controller_validator" \
+  --controller "$tmp/controller-reused-container.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id"
+
+# Cleanup is part of the acceptance result, not an optional post-test action.
+# Leaving the project volume behind must fail even when every workflow marker
+# and terminal result looks successful.
+jq '.events[10].remaining_project_volumes = 1' \
+  "$fixture/controller.json" >"$tmp/controller-retained-volume.json"
+expect_failure "$controller_validator" \
+  --controller "$tmp/controller-retained-volume.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id"
+
+# Unknown fields are rejected at the controller boundary. A future adapter must
+# update the schema and validator deliberately rather than silently widening
+# the acceptance protocol when a Docker command changes its output shape.
+jq '.events[3].unexpected = true' "$fixture/controller.json" \
+  >"$tmp/controller-unknown-field.json"
+expect_failure "$controller_validator" \
+  --controller "$tmp/controller-unknown-field.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id"
 
 echo 'restart/replay contract: ok'

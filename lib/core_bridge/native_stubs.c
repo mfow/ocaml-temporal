@@ -7,6 +7,12 @@
 #include <caml/mlvalues.h>
 #include <caml/threads.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
+
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -23,9 +29,20 @@ typedef struct owned_response {
 } owned_response;
 
 /* OCaml custom block owning the sole native runtime pointer for one SDK
- * instance. Future client and worker state remains subordinate to this owner. */
+ * instance. Future client and worker state remains subordinate to this owner.
+ *
+ * [active_calls] is a counted borrow of the pointer. A caller increments it
+ * before loading the pointer and decrements it only after Rust has returned.
+ * [closing] prevents a new caller from borrowing the pointer once close has
+ * begun. The close path sets [closing], detaches the pointer, and waits for
+ * the count to reach zero before handing the pointer to Rust for destruction.
+ * This gate is needed even though the supervisor normally serializes calls:
+ * finalizer and shutdown paths are defensive boundaries and must not turn an
+ * accidental cross-Domain call into a use-after-free. */
 typedef struct owned_runtime {
   _Atomic(ocaml_temporal_core_runtime *) runtime;
+  atomic_uint active_calls;
+  atomic_int closing;
 } owned_runtime;
 
 /* Signature shared by lifecycle operations which borrow one strict JSON
@@ -49,6 +66,65 @@ static owned_runtime *Runtime_val(value runtime) {
   return (owned_runtime *)Data_custom_val(runtime);
 }
 
+/* Yield the OS thread while a close waits for an admitted Rust operation. Both
+ * branches use facilities supplied by the platform C runtime: the Windows
+ * native job links the system kernel library by default, while Unix-like
+ * targets provide [sched_yield] through libc. No third-party synchronization
+ * library or additional OPAM dependency is introduced. */
+static void runtime_thread_yield(void) {
+#if defined(_WIN32)
+  (void)SwitchToThread();
+#else
+  (void)sched_yield();
+#endif
+}
+
+/* Wait for every operation that was admitted before close to finish. This is
+ * called only after [caml_enter_blocking_section], so a long-running Rust
+ * operation cannot strand another OCaml Domain behind the runtime lock. */
+static void wait_for_runtime_calls(owned_runtime *owned) {
+  while (atomic_load_explicit(&owned->active_calls, memory_order_seq_cst) != 0) {
+    runtime_thread_yield();
+  }
+}
+
+/* Mark the owner closed and remove its pointer from future operations. The
+ * caller still owns the returned pointer until [wait_for_runtime_calls] has
+ * observed that all earlier borrowers released it. */
+static ocaml_temporal_core_runtime *detach_runtime(owned_runtime *owned) {
+  atomic_store_explicit(&owned->closing, 1, memory_order_seq_cst);
+  return atomic_exchange_explicit(&owned->runtime, NULL, memory_order_seq_cst);
+}
+
+/* Try to admit one Rust operation. The increment happens before either the
+ * closing check or pointer load, which makes the close wait a complete
+ * happens-before barrier for every pointer use. A closed/uninitialized owner
+ * still returns a NULL pointer so Rust can produce its normal typed status. */
+static int acquire_runtime(owned_runtime *owned,
+                           ocaml_temporal_core_runtime **native_runtime) {
+  atomic_fetch_add_explicit(&owned->active_calls, 1, memory_order_seq_cst);
+  if (atomic_load_explicit(&owned->closing, memory_order_seq_cst) != 0) {
+    atomic_fetch_sub_explicit(&owned->active_calls, 1, memory_order_seq_cst);
+    *native_runtime = NULL;
+    return 0;
+  }
+
+  *native_runtime =
+      atomic_load_explicit(&owned->runtime, memory_order_seq_cst);
+  if (*native_runtime == NULL) {
+    atomic_fetch_sub_explicit(&owned->active_calls, 1, memory_order_seq_cst);
+    return 0;
+  }
+  return 1;
+}
+
+/* Release an admitted borrow after the native call has completely stopped
+ * touching the runtime pointer. The caller must not use [native_runtime]
+ * after this decrement. */
+static void release_runtime(owned_runtime *owned) {
+  atomic_fetch_sub_explicit(&owned->active_calls, 1, memory_order_seq_cst);
+}
+
 /* Release Rust allocations exactly once and poison further field access. */
 static void release_response(owned_response *response) {
   int expected = 1;
@@ -68,8 +144,11 @@ static void finalize_response(value response) {
  * shutdown. Normal operation closes the owner deterministically first. */
 static void finalize_runtime(value runtime) {
   owned_runtime *owned = Runtime_val(runtime);
-  ocaml_temporal_core_runtime *native_runtime =
-      atomic_exchange_explicit(&owned->runtime, NULL, memory_order_acq_rel);
+  ocaml_temporal_core_runtime *native_runtime = detach_runtime(owned);
+  /* The custom block is still rooted by this finalizer invocation. Waiting is
+   * therefore safe here; normal OCaml calls release their borrow before the
+   * value can become unreachable. */
+  wait_for_runtime_calls(owned);
   if (native_runtime != NULL) {
     (void)ocaml_temporal_core_v1_runtime_dispose(&native_runtime);
   }
@@ -125,23 +204,25 @@ static value alloc_runtime(void) {
   runtime = caml_alloc_custom(&runtime_operations, sizeof(owned_runtime), 0, 1);
   owned = Runtime_val(runtime);
   atomic_init(&owned->runtime, NULL);
+  atomic_init(&owned->active_calls, 0);
+  atomic_init(&owned->closing, 0);
   CAMLreturn(runtime);
 }
 
 /* Invoke a blocking graph operation after copying mutable OCaml bytes. The
- * dedicated supervisor Domain is the sole caller, so the loaded runtime
- * pointer cannot race explicit close; the rooted custom block also cannot be
- * finalized until this call returns. */
+ * counted borrow keeps the native pointer alive until Rust returns, while the
+ * owner gate makes a concurrent close produce a typed null-runtime error
+ * instead of allowing a use-after-free. */
 static value invoke_runtime_json(value runtime, value input,
                                  runtime_json_operation operation) {
   CAMLparam2(runtime, input);
   CAMLlocal1(response);
   owned_runtime *owned = Runtime_val(runtime);
-  ocaml_temporal_core_runtime *native_runtime =
-      atomic_load_explicit(&owned->runtime, memory_order_acquire);
+  ocaml_temporal_core_runtime *native_runtime = NULL;
   size_t input_length = caml_string_length(input);
   uint8_t *input_copy = NULL;
   ocaml_temporal_core_result native_result = {0};
+  int admitted;
 
   response = alloc_response();
   if (input_length > 0) {
@@ -152,9 +233,13 @@ static value invoke_runtime_json(value runtime, value input,
     memcpy(input_copy, Bytes_val(input), input_length);
   }
 
+  admitted = acquire_runtime(owned, &native_runtime);
   caml_enter_blocking_section();
   (void)operation(native_runtime, input_copy, input_length, &native_result);
   caml_leave_blocking_section();
+  if (admitted) {
+    release_runtime(owned);
+  }
   free(input_copy);
   Response_val(response)->result = native_result;
   CAMLreturn(response);
@@ -165,14 +250,18 @@ static value invoke_runtime(value runtime, runtime_operation operation) {
   CAMLparam1(runtime);
   CAMLlocal1(response);
   owned_runtime *owned = Runtime_val(runtime);
-  ocaml_temporal_core_runtime *native_runtime =
-      atomic_load_explicit(&owned->runtime, memory_order_acquire);
+  ocaml_temporal_core_runtime *native_runtime = NULL;
   ocaml_temporal_core_result native_result = {0};
+  int admitted;
 
   response = alloc_response();
+  admitted = acquire_runtime(owned, &native_runtime);
   caml_enter_blocking_section();
   (void)operation(native_runtime, &native_result);
   caml_leave_blocking_section();
+  if (admitted) {
+    release_runtime(owned);
+  }
   Response_val(response)->result = native_result;
   CAMLreturn(response);
 }
@@ -530,16 +619,18 @@ CAMLprim value ocaml_temporal_client_disconnect(value runtime) {
   return invoke_runtime(runtime, ocaml_temporal_core_v1_client_disconnect);
 }
 
-/* Atomically detach the pointer while holding the OCaml lock, then destroy
- * Core/Tokio without blocking another Domain. A second close observes null. */
+/* Close the owner in three ordered phases: reject new borrows, detach the
+ * pointer, then wait outside the OCaml runtime lock for admitted operations to
+ * finish before Rust frees Core/Tokio. A second close observes a null pointer
+ * and remains idempotent. */
 CAMLprim value ocaml_temporal_runtime_close(value runtime) {
   CAMLparam1(runtime);
   owned_runtime *owned = Runtime_val(runtime);
-  ocaml_temporal_core_runtime *native_runtime =
-      atomic_exchange_explicit(&owned->runtime, NULL, memory_order_acq_rel);
+  ocaml_temporal_core_runtime *native_runtime = detach_runtime(owned);
   ocaml_temporal_core_status status;
 
   caml_enter_blocking_section();
+  wait_for_runtime_calls(owned);
   status = ocaml_temporal_core_v1_runtime_free(&native_runtime);
   caml_leave_blocking_section();
   CAMLreturn(Val_int(status));

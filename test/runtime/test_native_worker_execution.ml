@@ -291,6 +291,20 @@ let test_eviction_after_terminal_completion () =
              message = "terminal run eviction";
              reason = Protocol.Cache_full;
            } ]);
+  (* A raised native completion must preserve the empty acknowledgement rather
+     than entering the ordinary failure-completion fallback. The next poll
+     therefore retries the same leased eviction and has no workflow command. *)
+  supervisor.raise_next_completion := true;
+  begin
+    match Worker.poll worker with
+    | Error error when String.equal error.code "completion_failed" -> ()
+    | Error error ->
+        failwith
+          (Printf.sprintf "terminal eviction raised the wrong error: %s" error.code)
+    | Ok _ -> failwith "terminal eviction exception was unexpectedly acknowledged"
+  end;
+  if Hashtbl.length supervisor.leased <> 1 then
+    failwith "raised terminal eviction did not retain its native lease";
   begin
     match Worker.poll worker with
     | Ok

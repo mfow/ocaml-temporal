@@ -577,6 +577,26 @@ module Make (Supervisor : SUPERVISOR) = struct
           raise exception_
     end
 
+  (** A cache-eviction activation is acknowledged with a successful empty
+      completion even when its workflow run has already been removed after a
+      terminal completion. This uses the retained-completion path rather than
+      the ordinary submission path: if the native completion call raises, the
+      exact empty acknowledgement remains pending for a later retry and is
+      never replaced by an invalid failure command. *)
+  let submit_eviction_acknowledgement adapter (activation : Protocol.activation) =
+    let completion =
+      Protocol.{ run_id = activation.run_id; commands = [] }
+    in
+    let pending =
+      {
+        run_id = activation.run_id;
+        completion = copy_completion completion;
+        result =
+          Pending_completed { command_count = 0; terminal = false; evicted = true };
+      }
+    in
+    enqueue_pending adapter pending
+
   (** Applies one activation while the adapter mutex is held. No source call or
       map mutation is performed after an error that has not been acknowledged
       by a successful completion. *)
@@ -595,9 +615,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                  removed it for a terminal completion. The eviction still owns
                  a native lease and must receive the exact successful empty
                  completion; a failure command is invalid for this activation. *)
-              submit_completion adapter activation
-                Protocol.{ run_id = activation.run_id; commands = [] }
-                ~run_id:activation.run_id
+              submit_eviction_acknowledgement adapter activation
           | _ ->
               begin
                 match initialization activation with

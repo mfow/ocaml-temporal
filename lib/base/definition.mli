@@ -3,8 +3,10 @@
     OCaml implementation stored for a local definition. *)
 type ('input, 'output, 'implementation) t
 
-(** Creates a definition after validating its Temporal type name. Pass
-    [implementation = None] for code that runs in another worker. *)
+(** Creates a definition after validating its Temporal type name. The name must
+    be non-empty, valid UTF-8, NUL-free, and no more than 65,536 bytes so it can
+    cross the closed native protocol. Pass [implementation = None] for code
+    that runs in another worker. *)
 val make :
   name:string ->
   input:'input Codec.t ->

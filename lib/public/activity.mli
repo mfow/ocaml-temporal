@@ -18,8 +18,10 @@ type ('input, 'output) contextual_implementation =
 type ('input, 'output) t
 
 (** Creates a definition for an activity that this OCaml worker will run. The
-    name is validated immediately; an empty or NUL-containing name raises
-    [Invalid_argument] because it cannot safely enter Temporal history. *)
+    name is validated immediately; it must be non-empty, valid UTF-8, NUL-free,
+    and no more than 65,536 bytes because it crosses the native protocol into
+    Temporal history. Violations raise [Invalid_argument] as construction
+    defects. *)
 val define :
   name:string ->
   input:'input Codec.t ->
@@ -36,8 +38,10 @@ val define_with_context :
   ('input, 'output) t
 
 (** Creates a typed reference to an activity run by another worker. The name
-    and codecs must agree with that worker's activity definition; the returned
-    value has no executable callback and must not be registered as local code. *)
+    has the same non-empty, valid UTF-8, NUL-free, 65,536-byte contract as
+    [define]. The name and codecs must agree with that worker's activity
+    definition; the returned value has no executable callback and must not be
+    registered as local code. *)
 val remote :
   name:string ->
   input:'input Codec.t ->

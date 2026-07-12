@@ -8,12 +8,21 @@ type ('input, 'output, 'implementation) t = {
   implementation : 'implementation option;
 }
 
-(** Rejects an empty name or a name containing a NUL byte before any worker is
-    started or command is sent. *)
+(** Maximum byte length accepted by the closed JSON/native identifier contract. *)
+let max_name_bytes = 65_536
+
+(** Rejects a name that cannot cross the protocol before any worker is started
+    or command is sent. Base definitions are also constructed by private
+    adapters, so they repeat the public validation instead of trusting only
+    the public constructors. *)
 let validate_name name =
   if String.length name = 0 then invalid_arg "Temporal definition name is empty";
   if String.contains name '\000' then
     invalid_arg "Temporal definition name contains a NUL byte"
+  else if String.length name > max_name_bytes then
+    invalid_arg "Temporal definition name exceeds 65536 bytes"
+  else if not (Codec.valid_utf_8 name) then
+    invalid_arg "Temporal definition name must be valid UTF-8"
 
 (** Validates the name and then stores the definition fields. *)
 let make ~name ~input ~output ~implementation =

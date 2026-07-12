@@ -32,14 +32,21 @@ type ('input, 'output) t = {
     ('input, 'output) contextual_implementation option;
 }
 
+(* Maximum byte length accepted by the closed JSON/native identifier contract. *)
+let max_name_bytes = 65_536
+
 (* Validates a stable activity type name before it can enter registration or
-   command history. Empty and NUL-containing names cannot be represented
-   safely by the bridge protocol, so they are programmer-facing construction
-   errors rather than typed activity failures. *)
+   command history. Empty, oversized, NUL-containing, or malformed UTF-8 names
+   cannot be represented safely by the bridge protocol, so they are
+   programmer-facing construction errors rather than typed activity failures. *)
 let validate_name name =
   if String.length name = 0 then invalid_arg "Temporal definition name is empty";
   if String.contains name '\000' then
     invalid_arg "Temporal definition name contains a NUL byte"
+  else if String.length name > max_name_bytes then
+    invalid_arg "Temporal definition name exceeds 65536 bytes"
+  else if not (Temporal_base.Codec.valid_utf_8 name) then
+    invalid_arg "Temporal definition name must be valid UTF-8"
 
 (** Constructs an activity implemented by this worker. *)
 let define ~name ~input ~output implementation =

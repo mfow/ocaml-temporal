@@ -281,14 +281,12 @@ let test_client_validation_errors () =
 
 (** Identifier limits are enforced before transport selection. This keeps the
     deterministic mock honest about the native JSON bridge's 65,536-byte
-    bound, so an oversized start or cancellation request cannot pass tests
-    locally and fail only after switching to HTTP(S). *)
+    bound, so an oversized workflow ID or cancellation request cannot pass
+    tests locally and fail only after switching to HTTP(S). Definition names
+    use the same bound at construction time and are covered by
+    [test_definition]. *)
 let test_client_identifier_size_validation () =
   let oversized = String.make 65_537 'x' in
-  let oversized_workflow =
-    Temporal.Workflow.define ~name:oversized ~input:Temporal.Codec.string
-      ~output:Temporal.Codec.string (fun input -> Ok input)
-  in
   let client =
     unwrap
       (Temporal.Client.create ~target_url:"mock://client"
@@ -297,9 +295,6 @@ let test_client_identifier_size_validation () =
   expect_error "defect"
     (Temporal.Client.start client ~workflow:echo_workflow
        ~task_queue:"unit-test" ~id:oversized ~input:"ignored" ());
-  expect_error "defect"
-    (Temporal.Client.start client ~workflow:oversized_workflow
-       ~task_queue:"unit-test" ~id:"valid-id" ~input:"ignored" ());
   let handle =
     unwrap
       (Temporal.Client.start client ~workflow:echo_workflow

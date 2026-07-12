@@ -108,7 +108,10 @@ and builds the OCaml-to-Rust link natively on Windows x64 and macOS ARM64 with
 OCaml 5.5. The standalone license audit is run once per CI change, not once
 per matrix cell. These entries describe configured jobs, not evidence that a
 particular Actions run has completed; runs may remain queued while the
-repository quota is exhausted. `make quality` is the exception to the Docker-only toolchain
+repository quota is exhausted. The workflow cancels superseded runs for the
+same pull request (or the master push ref), while each job timeout starts only
+after GitHub allocates a runner; GitHub does not provide a native timeout for a
+job that is still waiting in the quota queue. `make quality` is the exception to the Docker-only toolchain
 path: it expects the pinned `cargo-deny`, `cargo-machete`, and `typos` binaries
 on the host (CI installs their checksum-verified versions). The license audit
 uses the development container and an isolated official Python container.

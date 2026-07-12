@@ -25,6 +25,8 @@ let max_id_utf_8_bytes = 65_536
 let validate_id id =
   if String.equal id "" then
     Error (Error.defect ~message:"child workflow id must not be empty")
+  else if String.contains id '\000' then
+    Error (Error.defect ~message:"child workflow id must not contain NUL")
   else if String.length id > max_id_utf_8_bytes then
     Error
       (Error.defect

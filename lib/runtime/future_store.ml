@@ -11,7 +11,7 @@ type owner = {
   callbacks_live : unit -> bool;
   on_create : unit -> unit;
   on_settled : unit -> unit;
-  register_teardown : (unit -> unit) -> unit;
+  register_teardown : (unit -> unit) -> (unit -> unit);
 }
 
 (** Collects the scheduler callbacks stored in each future. *)
@@ -109,13 +109,20 @@ let create ~owner ~outside_error =
     { owner; outside_error; state = Pending { waiters = []; observers = [] } }
   in
   owner.on_create ();
-  owner.register_teardown (teardown promise);
+  (* Settled futures no longer need a shutdown callback. Removing the
+     registration here is important: a long-lived scheduler must not retain
+     every completed result through its teardown ledger. *)
+  let unregister_teardown = owner.register_teardown (teardown promise) in
+  let settle () =
+    unregister_teardown ();
+    owner.on_settled ()
+  in
   let resolve result =
     match promise.state with
     | Ready _ | Closed -> invalid_arg "Temporal future resolved more than once"
     | Pending pending ->
         promise.state <- Ready result;
-        owner.on_settled ();
+        settle ();
         (* Resume only while the owning scheduler is still live. After
            shutdown, the same queued thunk must discontinue the one-shot
            continuation so Fun.protect cleanups still run and the fiber is
@@ -145,7 +152,8 @@ let inert_owner =
   make_owner ~id:(-1) ~enqueue:(fun thunk -> thunk ())
     ~is_running:(fun () -> false) ~callbacks_live:(fun () -> true)
     ~on_create:(fun () -> ())
-    ~on_settled:(fun () -> ()) ~register_teardown:(fun _ -> ())
+    ~on_settled:(fun () -> ())
+    ~register_teardown:(fun _ -> fun () -> ())
 
 (** Creates an outside-workflow future and immediately gives it a result using
     the same resolver logic as ordinary futures. *)

@@ -159,5 +159,30 @@ let test_drain_retry_preserves_completion () =
   if List.length !(supervisor.completions) <> 1 then
     failwith "workflow completion was submitted more than once"
 
+(** Proves terminal disposal drops the copied completion and execution state
+    without making another supervisor completion attempt. The fake native lease
+    remains outstanding here because only the real Rust runtime can force-retire
+    it; [discard] is intentionally tested as the OCaml-side half of that
+    ordered terminal path. *)
+let test_discard_releases_pending_state () =
+  let supervisor = fake_supervisor () in
+  let calls = ref 0 in
+  enqueue supervisor (activation ~run_id:"run-discard");
+  supervisor.completion_rejections := 1;
+  let worker = worker supervisor calls in
+  expect_completion_error (Worker.poll worker);
+  if Hashtbl.length supervisor.leased <> 1 then
+    failwith "discard fixture did not retain a native lease";
+  Worker.discard worker;
+  begin match Worker.drain worker with
+  | Ok () -> ()
+  | Error error -> failwith ("discard left a pending completion: " ^ error.message)
+  end;
+  if !calls <> 1 then failwith "discard reran the workflow";
+  if List.length !(supervisor.completions) <> 0 then
+    failwith "discard attempted a completion"
+
 (** Runs the focused workflow lifecycle regression. *)
-let () = test_drain_retry_preserves_completion ()
+let () =
+  test_drain_retry_preserves_completion ();
+  test_discard_releases_pending_state ()

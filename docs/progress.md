@@ -1660,3 +1660,55 @@ Evidence: `dune runtest test/bridge/`, the focused OCaml unit/runtime retry
 policy executables, and `cargo test -p ocaml-temporal-core-bridge --test
 workflow_retry_policy` pass on the representative host. Existing workflow
 protocol Rust tests also pass after the required nullable field was added.
+
+## 2026-07-13: Fail-closed activity completion retry boundary
+
+Status: focused OCaml and Rust bridge/policy tests are verified locally;
+GitHub Actions results are not used as a blocker while the hosted queue is
+quota-limited.
+
+The worker loop now has a distinct retry-pending callback and a bounded native
+backoff operation. A retained activity completion cannot spin merely because
+an unrelated activity is ready: the supervisor owner Domain applies a fixed
+10 ms delay while the C stub releases the OCaml runtime lock. The scheduler
+tests distinguish that callback from ordinary readiness and keep permanent
+protocol failures fatal.
+
+The production adapter no longer treats generic `Connection` or `Not_ready`
+statuses as safe completion retries. The pinned Temporal Core completion API
+consumes/removes the activity task before internally logging and suppressing
+network errors, so the bridge cannot prove that a second submission would be
+safe. A reserved bilateral `Retryable` status is mapped through Rust, C, and
+OCaml for a future Core-aware completion path that can prove the lease remains
+pending; until then the OCaml policy fails closed. Shutdown reopens the worker
+only for an explicitly retryable activity drain. Workflow drains and permanent
+activity errors invoke `Native.shutdown`/`runtime_close` before becoming
+terminal, so any outstanding native leases are force-retired while the
+original adapter error remains the caller's result. A returned native `Error`
+is still release-complete by contract and permits the OCaml adapter maps to be
+discarded. If native shutdown raises before returning, the maps remain
+retained, a terminal-cleanup-pending flag schedules a detached retry, and the
+worker finalizer remains a last-resort path. A same-Domain shutdown admission
+defect is kept retryable because it has not started teardown; the public wrapper
+reopens admission so another Domain can retry after the active run loop exits.
+
+The ownership and retry rationale is recorded in
+[the native-worker reference](reference/native-worker-execution.md) and the
+[runtime invariants](reference/runtime-invariants.md). Local evidence includes
+the focused OCaml worker-loop/policy suites, Rust ABI status mapping and null
+runtime tests, and these representative checks (with build directories outside
+the repository so concurrent worktrees do not share generated files):
+
+```text
+DUNE_BUILD_DIR=/private/tmp/ocaml-temporal-dune-completion-resilience \
+CARGO_TARGET_DIR=/private/tmp/ocaml-temporal-cargo-completion-resilience \
+opam exec -- dune runtest --root .
+CARGO_TARGET_DIR=/private/tmp/ocaml-temporal-cargo-completion-resilience \
+cargo test --manifest-path rust/Cargo.toml -p ocaml-temporal-core-bridge
+CARGO_TARGET_DIR=/private/tmp/ocaml-temporal-cargo-completion-resilience \
+cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+The live Temporal Compose scenario remains deferred because it requires a
+running Temporal service and is intentionally not substituted by unit tests.

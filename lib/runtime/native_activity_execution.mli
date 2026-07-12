@@ -119,9 +119,17 @@ module Make (Supervisor : SUPERVISOR) : sig
       loop; a non-retryable [Error] is fatal for this worker instance. *)
 
   (** Retries every retained completion while the adapter mutex is held. [Ok ()]
-      proves that no opaque activity lease remains in this adapter; [Error _]
-      leaves the exact completion retained so shutdown must remain retryable. *)
+      proves that no opaque activity lease remains in this adapter. [Error _]
+      leaves the exact completion retained. The caller must either retry it
+      after an explicitly safe transient classification or force-retire the
+      native graph and then call [discard] on a terminal path; it must never
+      silently drop the token while Rust still owns it. *)
   val drain : t -> (unit, error_view) result
+
+  (** Discards copied completion leases after terminal native cleanup. This is
+      irreversible and must be called only after the supervisor has
+      force-retired its native task-token leases; it never attempts a retry. *)
+  val discard : t -> unit
 end
 
 val register :

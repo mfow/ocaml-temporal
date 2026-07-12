@@ -26,6 +26,14 @@ use tokio::task::JoinHandle;
 const MAX_RUN_ID_BYTES: usize = 64 * 1024;
 /// Maximum opaque task-token length admitted into the private bridge.
 const MAX_TASK_TOKEN_BYTES: usize = 128 * 1024 * 1024;
+/// Minimum delay between attempts to submit a completion whose transport
+/// outcome is explicitly marked retryable.
+///
+/// This timer is deliberately owned by the Rust supervisor Domain rather than
+/// by an OCaml workflow scheduler. It is short enough to bound shutdown
+/// admission latency while still preventing a ready activity lane from
+/// turning a transient completion failure into a tight loop.
+pub const ACTIVITY_COMPLETION_RETRY_BACKOFF: Duration = Duration::from_millis(10);
 
 /// Builds the bounded failure text sent to Core when a workflow activation
 /// cannot cross the private semantic boundary.
@@ -134,6 +142,14 @@ pub enum WorkerBridgeError {
     CoreWorkflow(String),
     /// Core rejected an activity completion.
     CoreActivity(String),
+    /// A future Core/client completion API explicitly reported a transient
+    /// transport failure before consuming the activity lease.
+    ///
+    /// The pinned Core revision currently hides those network outcomes and
+    /// therefore does not construct this variant. Keeping the category
+    /// explicit prevents the OCaml side from guessing retryability from a
+    /// generic worker or connection status.
+    RetryableActivityCompletion,
     /// Finalization was attempted while tasks remain outstanding.
     OutstandingTasks(usize),
     /// A poll task still retained the worker after both joins completed.
@@ -166,6 +182,9 @@ pub fn public_worker_error_message(error: &WorkerBridgeError) -> &'static str {
         }
         WorkerBridgeError::CoreWorkflow(_) => "Temporal workflow completion was rejected by Core",
         WorkerBridgeError::CoreActivity(_) => "Temporal activity completion was rejected by Core",
+        WorkerBridgeError::RetryableActivityCompletion => {
+            "Temporal activity completion transport is temporarily unavailable"
+        }
         WorkerBridgeError::OutstandingTasks(_) => "Temporal worker has outstanding tasks",
         WorkerBridgeError::WorkerStillShared => "Temporal worker remains shared after shutdown",
     }
@@ -557,6 +576,18 @@ impl PollLanes {
     /// Waits for the next activity-lane message without holding the OCaml lock.
     pub fn wait_activity(&self) -> ReadinessWait {
         self.activity_signal.wait()
+    }
+
+    /// Sleeps for one bounded completion retry interval on the supervisor
+    /// owner Domain.
+    ///
+    /// This is intentionally a timer rather than a readiness wait: unrelated
+    /// activity work may already be queued, and that readiness must not permit
+    /// a retained completion to spin. The C binding releases the OCaml runtime
+    /// lock while the caller is inside this method, so workflow fibers and
+    /// other Domains remain schedulable.
+    pub fn wait_activity_completion_retry_backoff(&self) {
+        std::thread::sleep(ACTIVITY_COMPLETION_RETRY_BACKOFF);
     }
 
     /// Waits until both guarded poll futures have observed Core shutdown.
@@ -1425,11 +1456,22 @@ impl Default for TaskLedger {
 
 #[cfg(test)]
 mod readiness_tests {
-    use super::{PollLaneError, Readiness, ReadinessWait, ReadyTask};
+    use super::{
+        ACTIVITY_COMPLETION_RETRY_BACKOFF, PollLaneError, Readiness, ReadinessWait, ReadyTask,
+    };
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
     use tokio::sync::mpsc;
+
+    /// Keeps the completion retry delay positive and bounded so a future
+    /// change cannot accidentally reintroduce a tight loop or make shutdown
+    /// wait for an unbounded interval.
+    #[test]
+    fn completion_retry_backoff_is_positive_and_bounded() {
+        assert!(ACTIVITY_COMPLETION_RETRY_BACKOFF > Duration::ZERO);
+        assert!(ACTIVITY_COMPLETION_RETRY_BACKOFF <= Duration::from_secs(1));
+    }
 
     /// Confirms a notification committed before waiting is observed immediately.
     #[test]

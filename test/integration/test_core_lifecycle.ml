@@ -18,6 +18,7 @@ let bridge_status = function
   | Not_ready -> "not_ready"
   | Protocol -> "protocol"
   | Already_started -> "already_started"
+  | Retryable -> "retryable"
   | Unknown code -> Printf.sprintf "unknown(%d)" code
 
 (** Raises a test failure while preserving structured bridge diagnostics. *)

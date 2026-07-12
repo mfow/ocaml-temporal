@@ -779,6 +779,16 @@ module Make (Supervisor : SUPERVISOR) = struct
         in
         loop ())
 
+  (** Drops copied activity completions after terminal native cleanup. The Rust
+      runtime has already force-retired its leases, so retaining or retrying
+      these tokens could duplicate a completion. The mutex keeps discard
+      ordered with any final adapter operation. *)
+  let discard adapter =
+    Mutex.lock adapter.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock adapter.mutex)
+      (fun () -> adapter.leases <- Token_map.empty)
+
   (** Serializes pending-completion retry, native polling, implementation
       execution, and completion submission. The mutex covers the complete
       transaction, including the user implementation, so the map cannot race

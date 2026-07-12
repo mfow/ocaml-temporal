@@ -59,6 +59,13 @@ pub const STATUS_PROTOCOL: Status = 11;
 /// Temporal rejected a workflow start because the workflow ID is already in
 /// use; the error buffer contains a closed client-error JSON document.
 pub const STATUS_ALREADY_STARTED: Status = 12;
+/// An explicitly transient activity-completion transport failure.
+///
+/// This status is reserved for a Core/client implementation that can prove
+/// the completion was not consumed. The pinned Core revision currently
+/// suppresses those network outcomes, so the production bridge fails closed
+/// rather than emitting this status speculatively.
+pub const STATUS_RETRYABLE: Status = 13;
 
 /// Maximum accepted lifecycle configuration document size.
 const MAX_LIFECYCLE_CONFIG_BYTES: usize = 64 * 1024;
@@ -987,6 +994,24 @@ impl Runtime {
         }
     }
 
+    /// Applies the fixed native backoff used only after an explicitly
+    /// retryable activity-completion outcome.
+    ///
+    /// The delay executes on the supervisor owner Domain and is called through
+    /// a C stub that releases the OCaml runtime lock. It therefore cannot block
+    /// a workflow effect scheduler, and its fixed duration keeps shutdown
+    /// admission bounded.
+    fn wait_activity_completion_retry_backoff(&self) -> Operation {
+        let Some(worker) = self.worker.as_ref() else {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal worker is not running".to_owned(),
+            });
+        };
+        worker.wait_activity_completion_retry_backoff();
+        Ok(Vec::new())
+    }
+
     /// Fails and retires a workflow activation that was never exposed to OCaml.
     fn reject_workflow_delivery(&self, run_id: &str) -> std::result::Result<(), Failure> {
         self.reject_workflow_delivery_with_reason(
@@ -1273,6 +1298,7 @@ fn drop_runtime_graph(
 fn worker_bridge_failure(error: WorkerBridgeError) -> Failure {
     let status = match &error {
         WorkerBridgeError::OutstandingTasks(_) => STATUS_OUTSTANDING_TASKS,
+        WorkerBridgeError::RetryableActivityCompletion => STATUS_RETRYABLE,
         _ => STATUS_WORKER,
     };
     Failure {
@@ -2301,6 +2327,36 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_wait_activity(
     }
 }
 
+/// Apply the bounded native delay used before retrying an explicitly
+/// retryable activity completion.
+///
+/// The OCaml C stub invokes this operation with the runtime lock released. It
+/// is a timer on the dedicated supervisor owner Domain, not a workflow timer
+/// and not a readiness wait, so unrelated queued activity work cannot make a
+/// retry spin.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output` must
+/// satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_wait_activity_completion_retry_backoff(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_ref()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .wait_activity_completion_retry_backoff()
+        })
+    }
+}
+
 /// Validate and submit one remote activity completion JSON document.
 ///
 /// # Safety
@@ -2575,6 +2631,15 @@ pub fn test_runtime_cleanup_counts() -> (u64, u64) {
         RUNTIMES_CREATED.load(Ordering::Acquire),
         RUNTIMES_CLEANED.load(Ordering::Acquire),
     )
+}
+
+/// Returns the ABI category used for a worker error without exposing the
+/// mapping function itself as part of the C ABI. Integration tests use this
+/// helper to lock the bilateral retry classification to the explicit Rust
+/// variant rather than to diagnostic text.
+#[doc(hidden)]
+pub fn test_worker_bridge_status(error: WorkerBridgeError) -> Status {
+    worker_bridge_failure(error).status
 }
 
 #[cfg(test)]

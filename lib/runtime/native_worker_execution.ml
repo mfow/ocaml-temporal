@@ -774,6 +774,24 @@ module Make (Supervisor : SUPERVISOR) = struct
         in
         loop ())
 
+  (** Discards OCaml-owned executions and retained completion bytes after the
+      native graph has been force-released by terminal worker shutdown. This
+      path never calls the supervisor: the Rust runtime has already retired its
+      leases, and retrying a copied completion would risk a duplicate. Each
+      execution is explicitly shut down so paused workflow continuations and
+      scheduler state do not wait for a later garbage collection cycle. *)
+  let discard adapter =
+    Mutex.lock adapter.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock adapter.mutex)
+      (fun () ->
+        Run_map.iter
+          (fun _ (Run { execution; _ }) ->
+            (try Execution.shutdown execution with _ -> ()))
+          adapter.runs;
+        adapter.runs <- Run_map.empty;
+        adapter.pending <- Run_map.empty)
+
   (** Serializes one poll/execute/complete transaction. A mutex is required in
       addition to supervisor serialization because the run map and scheduler
       state are OCaml values owned by this adapter, not by Rust. *)

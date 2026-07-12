@@ -26,7 +26,8 @@ enum {
   OCAML_TEMPORAL_CORE_STATUS_OUTSTANDING_TASKS = 9,
   OCAML_TEMPORAL_CORE_STATUS_NOT_READY = 10,
   OCAML_TEMPORAL_CORE_STATUS_PROTOCOL = 11,
-  OCAML_TEMPORAL_CORE_STATUS_ALREADY_STARTED = 12
+  OCAML_TEMPORAL_CORE_STATUS_ALREADY_STARTED = 12,
+  OCAML_TEMPORAL_CORE_STATUS_RETRYABLE = 13
 };
 
 /* Rust-owned byte allocation. `{ NULL, 0 }` is the sole empty representation. */
@@ -178,6 +179,14 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_worker_try_poll_activity(
 /* Bounded readiness wait for the remote-activity lane. It has the same lock,
  * timeout, and non-consuming semantics as the workflow readiness operation. */
 ocaml_temporal_core_status ocaml_temporal_core_v1_worker_wait_activity(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/* Apply the fixed native delay used only after Rust has explicitly proven
+ * that an activity completion was not consumed. The C binding must release
+ * the OCaml runtime lock while this bounded timer runs. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_worker_wait_activity_completion_retry_backoff(
     ocaml_temporal_core_runtime *runtime,
     ocaml_temporal_core_result *output);
 

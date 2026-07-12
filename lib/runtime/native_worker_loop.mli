@@ -22,12 +22,15 @@ type progress =
 
     [wait_for_lane] receives [true] for the workflow readiness lane and [false]
     for the activity lane. The callback must perform a bounded wait and must
-    not hold an OCaml adapter mutex while it blocks. Retry-pending work always
-    selects its own lane, so a transient completion rejection cannot become a
-    tight loop and cannot be mistaken for ordinary idle state. *)
+    not hold an OCaml adapter mutex while it blocks. [retry_pending] receives
+    the same lane flag but must apply a real bounded backoff (normally through
+    the dedicated native supervisor Domain) before the next poll. Retry-pending
+    work always selects its own lane, so a transient completion rejection
+    cannot become a tight loop or be mistaken for ordinary idle state. *)
 val run :
   closed:(unit -> bool) ->
   poll_workflow:(unit -> (progress, 'error) result) ->
   poll_activity:(unit -> (progress, 'error) result) ->
   wait_for_lane:(workflow_lane:bool -> (unit, 'error) result) ->
+  retry_pending:(workflow_lane:bool -> (unit, 'error) result) ->
   (unit, 'error) result

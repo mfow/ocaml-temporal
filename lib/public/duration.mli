@@ -1,7 +1,7 @@
 (** A non-negative length of time represented in whole milliseconds. Workflow
     timers use this type so their requested duration is recorded exactly and
     can be reproduced during replay. *)
-type t = Temporal_base.Duration.t
+type t
 
 (** Creates a duration from milliseconds. A negative value raises
     [Invalid_argument] because it is a programming error. *)

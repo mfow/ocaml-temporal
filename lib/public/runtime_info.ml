@@ -7,5 +7,5 @@ let native_bridge_abi_version () =
   | Ok () -> Ok Bridge.abi_version
   | Error error ->
       Error
-        (Temporal_base.Error.make ~non_retryable:true ~category:`Bridge
+        (Error.make ~non_retryable:true ~category:`Bridge
            ~message:error.message ())

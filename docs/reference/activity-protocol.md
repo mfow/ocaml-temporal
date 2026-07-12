@@ -36,8 +36,8 @@ Activity JSON deliberately reuses the workflow protocol's canonical codecs for
 Temporal payloads, recursive failures, timestamps, durations, workflow
 executions, and task priority. This prevents the two OCaml paths from acquiring
 different base64, nanosecond, failure-depth, identifier, or floating-point-bit
-rules. The shared functions remain inside `temporal-sdk.internal_protocol` and
-are not re-exported from the public `Temporal` library.
+rules. The shared functions remain inside the `temporal-sdk` package's private
+dependency tree and are not re-exported from the public `Temporal` library.
 
 The typed activity token is `bytes`, although the JSON field is canonical
 padded RFC 4648 base64. This avoids treating correlation data as text while

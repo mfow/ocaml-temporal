@@ -1,0 +1,5 @@
+(library
+ (name temporal_future_kernel)
+ (package temporal-sdk)
+ (wrapped false)
+ (libraries threads))

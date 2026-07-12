@@ -4,6 +4,6 @@
  (wrapped false)
  (libraries
   temporal_mailbox_processor
-  temporal-sdk.internal_core_bridge
-  temporal-sdk.internal_protocol
+  temporal_core_bridge
+  temporal_protocol
   threads))

@@ -1,40 +1,65 @@
-(** Workflow definitions share the private typed representation with activity
-    definitions while retaining a distinct public type constructor. *)
+(** Defines the public workflow description. Its record is deliberately kept
+    private so callers can only create a validated definition through [define]
+    or a command-only reference through [remote]. *)
 type ('input, 'output) implementation =
   'input -> ('output, Error.t) result
 
-type ('input, 'output) t =
-  ( 'input,
-    'output,
-    ('input, 'output) implementation )
-  Temporal_base.Definition.t
+type ('input, 'output) t = {
+  name : string;
+  input : 'input Codec.t;
+  output : 'output Codec.t;
+  implementation : ('input, 'output) implementation option;
+}
 
-(** Registers executable workflow code for the local worker. *)
+(** Rejects names that could not be represented safely in Temporal history. *)
+let validate_name name =
+  if String.length name = 0 then invalid_arg "Temporal definition name is empty";
+  if String.contains name '\000' then
+    invalid_arg "Temporal definition name contains a NUL byte"
+
+(** Registers executable workflow code after validating its stable type name. *)
 let define ~name ~input ~output implementation =
-  Temporal_base.Definition.make ~name ~input ~output
-    ~implementation:(Some implementation)
+  validate_name name;
+  { name; input; output; implementation = Some implementation }
 
-(** Declares a typed workflow target without local implementation code. *)
+(** Creates a typed reference to a workflow implemented by another worker. *)
 let remote ~name ~input ~output =
-  Temporal_base.Definition.make ~name ~input ~output ~implementation:None
+  validate_name name;
+  { name; input; output; implementation = None }
 
-let name = Temporal_base.Definition.name
+(* Returns the exact Temporal workflow type name used by registration and
+   child-workflow commands. *)
+let name definition = definition.name
 
-(** Starts a durable timer without waiting for it. The active workflow context
-    owns both the future and its history command; zero duration is represented
-    by a context-owned ready future without adding a meaningless command. *)
+(* Returns the input codec retained by an opaque workflow definition. *)
+let input definition = definition.input
+
+(* Returns the output codec retained by an opaque workflow definition. *)
+let output definition = definition.output
+
+(* Returns executable code for a local workflow, or [None] for a remote
+   reference that can only be invoked as a child. *)
+let implementation definition = definition.implementation
+
+(** Starts a durable timer without waiting for it. The runtime future is
+    wrapped before it crosses into the public API, converting native errors to
+    public errors and preserving the workflow scheduler owner. *)
 let start_sleep duration =
   match Temporal_runtime.Workflow_context_store.current () with
   | None ->
-      Temporal_runtime.Workflow_context_store.detached_error
-        ~message:"workflow sleep used outside a workflow execution"
+      Future_private.resolved
+        ~outside_error:(fun () ->
+          Error.defect ~message:"workflow sleep used outside a workflow execution")
+        (Error
+           (Error.defect ~message:"workflow sleep used outside a workflow execution"))
   | Some context ->
       let milliseconds = Duration.to_ms duration in
       if milliseconds = 0L then
-        Temporal_runtime.Workflow_context_store.resolved context (Ok ())
+        Future_private.of_internal
+          (Temporal_runtime.Workflow_context_store.resolved context (Ok ()))
       else
-        Temporal_runtime.Workflow_context_store.start_timer context milliseconds
+        Future_private.of_internal
+          (Temporal_runtime.Workflow_context_store.start_timer context milliseconds)
 
-(** Implements direct-style durable sleep as timer creation followed by a
-    future wait, so helpers may choose either blocking or start-now behavior. *)
+(** Implements direct-style sleep as timer creation followed by a future wait. *)
 let sleep duration = Future.await (start_sleep duration)

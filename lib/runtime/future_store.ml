@@ -119,6 +119,11 @@ let resolved ~outside_error result =
 
 let owner_id promise = promise.owner.id
 
+(** Queues one callback on the scheduler that owns [promise]. This is the
+    low-level escape hatch used by public wrappers to preserve the same FIFO
+    execution ordering as native future completions. *)
+let enqueue promise thunk = promise.owner.enqueue thunk
+
 (** Returns a ready result, or pauses only when called from the active scheduler
     that owns this future. *)
 let await promise =
@@ -148,6 +153,23 @@ let observe promise observer =
   | Ready result -> promise.owner.enqueue (fun () -> observer result)
   | Closed ->
       promise.owner.enqueue (fun () -> observer (Error (promise.outside_error ())))
+
+(** Waits for an arbitrary notification associated with [promise] without
+    exposing an OCaml effect to higher layers. [register] receives a
+    single-use signal callback; the callback must be invoked by the observer
+    that makes the notification ready. The temporary gate is owned by the
+    same scheduler, so the calling workflow fiber is suspended rather than a
+    scheduler thread being blocked. *)
+let await_gate promise register =
+  let gate, resolve = create ~owner:promise.owner ~outside_error:(fun () -> ()) in
+  let signaled = ref false in
+  let signal () =
+    if not !signaled then (
+      signaled := true;
+      resolve (Ok ()))
+  in
+  register signal;
+  ignore (await gate)
 
 (** Maps a successful result into a new future owned by the same scheduler. *)
 let map mapper source =

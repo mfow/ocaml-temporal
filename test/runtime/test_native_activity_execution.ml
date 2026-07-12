@@ -8,7 +8,64 @@
     Server. *)
 
 module Protocol = Temporal_protocol.Activity_protocol
-module Adapter = Temporal_runtime.Native_activity_execution
+module Raw_adapter = Temporal_runtime.Native_activity_execution
+
+(** Copies a public payload into the base payload representation expected by the
+    private activity adapter. This test-only conversion keeps the installed
+    public package's opaque payload type separate from runtime fixtures. *)
+let base_payload (payload : Temporal.Payload.t) : Temporal_base.Payload.t =
+  {
+    Temporal_base.Payload.metadata = List.map (fun (key, value) -> (key, value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
+(** Converts a public structured error for a private adapter implementation. *)
+let base_error (error : Temporal.Error.t) : Temporal_base.Error.t =
+  let view = Temporal.Error.view error in
+  Temporal_base.Error.make ~non_retryable:view.non_retryable
+    ~details:(List.map base_payload view.details) ~category:view.category
+    ~message:view.message ()
+
+(** Installs public codec callbacks in the base codec representation without
+    changing value-dependent encoding metadata. *)
+let base_codec (codec : 'a Temporal.Codec.t) : 'a Temporal_base.Codec.t =
+  Temporal_base.Codec.of_payload
+    ~encode:(fun value ->
+      match Temporal.Codec.encode codec value with
+      | Ok payload -> Ok (base_payload payload)
+      | Error error -> Error (base_error error))
+    ~decode:(fun payload ->
+      let public_payload : Temporal.Payload.t =
+        {
+          Temporal.Payload.metadata =
+            List.map (fun (key, value) -> (key, value)) payload.metadata;
+          data = Bytes.copy payload.data;
+        }
+      in
+      match Temporal.Codec.decode codec public_payload with
+      | Ok value -> Ok value
+      | Error error -> Error (base_error error))
+
+(** Rebuilds a public activity as the private base definition consumed by the
+    native adapter. This is deliberately confined to this low-level test. *)
+let base_activity (definition : ('input, 'output) Temporal.Activity.t) =
+  let implementation =
+    Option.map
+      (fun implementation input ->
+        Result.map_error base_error (implementation input))
+      (Temporal.Activity.implementation definition)
+  in
+  Temporal_base.Definition.make ~name:(Temporal.Activity.name definition)
+    ~input:(base_codec (Temporal.Activity.input definition))
+    ~output:(base_codec (Temporal.Activity.output definition)) ~implementation
+
+(** Keeps the test-facing registration call ergonomic while making the
+    public-to-base conversion explicit at the private runtime boundary. *)
+module Adapter = struct
+  include Raw_adapter
+
+  let register definition = Raw_adapter.register (base_activity definition)
+end
 
 type source_error = { code : string; message : string }
 (** A deterministic source error used by the fake supervisor. *)
@@ -279,7 +336,7 @@ let test_typed_failure () =
     Temporal.Activity.define ~name:"native_activity_failure"
       ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
         Error
-          (Temporal_base.Error.make ~category:`Activity
+          (Temporal.Error.make ~category:`Activity
              ~message:"deliberate activity failure" ~details:[ detail ] ()))
   in
   let token = Bytes.of_string "failure-token" in

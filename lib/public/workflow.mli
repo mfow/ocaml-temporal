@@ -7,11 +7,7 @@ type ('input, 'output) implementation =
 (** A description of a workflow and the OCaml types it accepts and returns. A
     definition stores the Temporal workflow type name, its codecs, and
     optionally the OCaml function that implements it. *)
-type ('input, 'output) t =
-  ( 'input,
-    'output,
-    ('input, 'output) implementation )
-  Temporal_base.Definition.t
+type ('input, 'output) t
 
 (** Creates a workflow definition implemented by this OCaml worker. *)
 val define :
@@ -32,6 +28,20 @@ val remote :
 
 (** Returns the workflow type name used for registration and commands. *)
 val name : ('input, 'output) t -> string
+
+(** Returns the codec used to decode workflow inputs. This accessor is useful
+    to worker adapters and generic workflow tooling; the definition itself
+    remains opaque and cannot be constructed by record syntax. *)
+val input : ('input, 'output) t -> 'input Codec.t
+
+(** Returns the codec used to encode successful workflow outputs. *)
+val output : ('input, 'output) t -> 'output Codec.t
+
+(** Returns executable code for a local definition, or [None] for a remote
+    reference. The callback still returns typed [Error.t] values rather than
+    raising expected workflow failures. *)
+val implementation :
+  ('input, 'output) t -> ('input, 'output) implementation option
 
 (** Starts a durable Temporal timer and returns immediately. Starting several
     timers before awaiting one emits them in call order. A zero duration returns

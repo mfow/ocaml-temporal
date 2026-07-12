@@ -7,7 +7,66 @@
     Temporal Server process is needed to exercise the OCaml registry. *)
 
 module Protocol = Temporal_protocol.Workflow_protocol
-module Adapter = Temporal_runtime.Native_worker_execution
+module Raw_adapter = Temporal_runtime.Native_worker_execution
+
+(** Copies a public payload into the base representation consumed by the
+    private worker execution adapter. Keeping this conversion in the fixture
+    makes the public package boundary visible in a low-level runtime test. *)
+let base_payload (payload : Temporal.Payload.t) : Temporal_base.Payload.t =
+  {
+    Temporal_base.Payload.metadata = List.map (fun (key, value) -> (key, value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
+(** Converts a public structured error to the base error representation used by
+    the native execution registry. *)
+let base_error (error : Temporal.Error.t) : Temporal_base.Error.t =
+  let view = Temporal.Error.view error in
+  Temporal_base.Error.make ~non_retryable:view.non_retryable
+    ~details:(List.map base_payload view.details) ~category:view.category
+    ~message:view.message ()
+
+(** Installs public codec callbacks in a base codec without rewriting their
+    encoding metadata. The adapter therefore preserves codecs such as option. *)
+let base_codec (codec : 'a Temporal.Codec.t) : 'a Temporal_base.Codec.t =
+  Temporal_base.Codec.of_payload
+    ~encode:(fun value ->
+      match Temporal.Codec.encode codec value with
+      | Ok payload -> Ok (base_payload payload)
+      | Error error -> Error (base_error error))
+    ~decode:(fun payload ->
+      let public_payload : Temporal.Payload.t =
+        {
+          Temporal.Payload.metadata =
+            List.map (fun (key, value) -> (key, value)) payload.metadata;
+          data = Bytes.copy payload.data;
+        }
+      in
+      match Temporal.Codec.decode codec public_payload with
+      | Ok value -> Ok value
+      | Error error -> Error (base_error error))
+
+(** Rebuilds a public workflow as the private base definition accepted by the
+    native worker registry. Public implementation errors are converted only at
+    this test boundary, matching the production adapter's ownership rule. *)
+let base_workflow (definition : ('input, 'output) Temporal.Workflow.t) =
+  let implementation =
+    Option.map
+      (fun implementation input ->
+        Result.map_error base_error (implementation input))
+      (Temporal.Workflow.implementation definition)
+  in
+  Temporal_base.Definition.make ~name:(Temporal.Workflow.name definition)
+    ~input:(base_codec (Temporal.Workflow.input definition))
+    ~output:(base_codec (Temporal.Workflow.output definition)) ~implementation
+
+(** Keeps workflow fixture registration readable while making the public-to-base
+    conversion explicit at the private adapter boundary. *)
+module Adapter = struct
+  include Raw_adapter
+
+  let register definition = Raw_adapter.register (base_workflow definition)
+end
 
 (** Keeps workflow fixture sequencing on the same typed-result path as the
     production adapter. *)

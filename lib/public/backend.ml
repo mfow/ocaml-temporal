@@ -106,12 +106,17 @@ type activity_completion =
       error : Error.t;
     }
 
-(** A completed mock execution is retained so a later exact wait has stable
-    semantics even when callers await the same handle more than once. *)
+(** Terminal state for one mock execution. The state is monotone: once a wait
+    observes completion, a later cancellation cannot rewrite that terminal
+    result, which mirrors Temporal's immutable execution history. *)
+type mock_terminal = Mock_pending | Mock_completed | Mock_cancelled
+
+(** A mock execution is retained so repeated exact waits return the same
+    terminal result and cancellation can only affect work still pending. *)
 type mock_execution = {
   run_id : string;
   input : Payload.t;
-  mutable cancelled : bool;
+  mutable terminal : mock_terminal;
 }
 
 (** A client graph has one mutable lifecycle bit and an exact-run ledger.
@@ -597,7 +602,7 @@ let mock_client_start (client : mock_client) (request : start_request) =
           Printf.sprintf "mock-run-%d" client.next_run
         in
         Hashtbl.add client.executions request.workflow_id
-          { run_id; input = copy_payload request.input; cancelled = false };
+          { run_id; input = copy_payload request.input; terminal = Mock_pending };
         let response : start_response =
           { workflow_id = request.workflow_id; run_id }
         in
@@ -648,12 +653,20 @@ let mock_client_wait (client : mock_client) (request : wait_request) =
         | Some execution
           when not (String.equal execution.run_id request.run_id) ->
             Error (bridge_error "workflow run id does not match the started run")
-        | Some execution when execution.cancelled ->
-            Ok
-              (Cancelled
-                 (Error.make ~category:`Cancelled
-                    ~message:"workflow execution was cancelled" ()))
-        | Some execution -> Ok (Completed (copy_payload execution.input)))
+        | Some execution -> (
+            match execution.terminal with
+            | Mock_pending ->
+                (* The first wait linearizes the synthetic execution into its
+                   completed terminal state before returning the copied
+                   payload. *)
+                execution.terminal <- Mock_completed;
+                Ok (Completed (copy_payload execution.input))
+            | Mock_completed -> Ok (Completed (copy_payload execution.input))
+            | Mock_cancelled ->
+                Ok
+                  (Cancelled
+                     (Error.make ~category:`Cancelled
+                        ~message:"workflow execution was cancelled" ()))))
 
 (** Waits for a terminal result on the selected private transport. *)
 let client_wait client (request : wait_request) =
@@ -694,7 +707,9 @@ let native_client_cancel (client : native_client) (request : cancel_request) :
 
 (** Marks one exact mock execution cancelled. Repeated cancellation requests
     are idempotent, while a mismatched workflow/run pair is rejected so the
-    deterministic seam exercises the same identity contract as native Core. *)
+    deterministic seam exercises the same identity contract as native Core.
+    A completed execution is deliberately left unchanged: terminal history is
+    immutable even when a caller sends a late cancellation request. *)
 let mock_client_cancel (client : mock_client) (request : cancel_request) =
   Mutex.lock client.mutex;
   Fun.protect
@@ -708,7 +723,9 @@ let mock_client_cancel (client : mock_client) (request : cancel_request) =
           when not (String.equal execution.run_id request.run_id) ->
             Error (bridge_error "workflow run id does not match the started run")
         | Some execution ->
-            execution.cancelled <- true;
+            (match execution.terminal with
+            | Mock_pending -> execution.terminal <- Mock_cancelled
+            | Mock_completed | Mock_cancelled -> ());
             Ok ())
 
 (** Requests cancellation on the selected private transport. *)

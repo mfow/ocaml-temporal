@@ -212,6 +212,34 @@ let test_exact_run_cancellation () =
   | Error error -> failwith (Temporal.Error.message error));
   unwrap (Temporal.Client.shutdown client)
 
+(** A late cancellation request cannot rewrite a terminal result that the mock
+    has already exposed. This protects the deterministic seam from modelling
+    mutable terminal history unlike a real Temporal execution. *)
+let test_completed_mock_run_is_immutable () =
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let handle =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"unit-completed-cancel" ~input:"done"
+         ())
+  in
+  (match Temporal.Client.wait handle with
+  | Ok (Temporal.Client.Completed "done") -> ()
+  | Ok _ -> failwith "mock completed run returned an unexpected first result"
+  | Error error -> failwith (Temporal.Error.message error));
+  unwrap
+    (Temporal.Client.cancel ~request_id:"late-cancel" ~reason:"too late"
+       handle);
+  (match Temporal.Client.wait handle with
+  | Ok (Temporal.Client.Completed "done") -> ()
+  | Ok _ -> failwith "late cancellation rewrote a completed mock run"
+  | Error error -> failwith (Temporal.Error.message error));
+  unwrap (Temporal.Client.shutdown client)
+
 (** Invalid client settings are values rather than exceptions, and a malformed
     durable workflow id is rejected before the backend receives it. *)
 let test_client_validation_errors () =
@@ -277,6 +305,7 @@ let () =
   test_worker_continues_after_task_failure ();
   test_typed_start_and_wait_handle ();
   test_exact_run_cancellation ();
+  test_completed_mock_run_is_immutable ();
   test_client_validation_errors ();
   test_native_client_configuration_boundary ();
   test_worker_validation_errors ();

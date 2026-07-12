@@ -218,18 +218,18 @@ CAMLprim value ocaml_temporal_check_abi_version(value requested_version) {
 }
 
 /* Copy mutable OCaml bytes before releasing the runtime lock. Rust never holds
- * an OCaml heap pointer while another Domain or the GC can run. */
+ * an OCaml heap pointer while another Domain or the GC can run. The response
+ * custom block is young and movable: re-fetch [Response_val] only after the
+ * blocking section, never store that interior pointer across it. */
 CAMLprim value ocaml_temporal_echo(value input) {
   CAMLparam1(input);
   CAMLlocal1(response);
   size_t input_length = caml_string_length(input);
   uint8_t *input_copy = NULL;
   ocaml_temporal_core_result native_result = {0};
-  owned_response *owned;
 
   /* Allocate the finalizable owner before acquiring any unmanaged resource. */
   response = alloc_response();
-  owned = Response_val(response);
 
   if (input_length > 0) {
     input_copy = malloc(input_length);
@@ -243,33 +243,34 @@ CAMLprim value ocaml_temporal_echo(value input) {
   (void)ocaml_temporal_core_v1_echo(input_copy, input_length, &native_result);
   caml_leave_blocking_section();
   free(input_copy);
-  owned->result = native_result;
+  /* Re-resolve after reacquiring the runtime lock: a concurrent minor GC may
+   * have moved the custom block while the lock was released. */
+  Response_val(response)->result = native_result;
 
   CAMLreturn(response);
 }
 
 /* Exercise a blocking Rust call with the OCaml runtime lock released. The
  * sentinel UINT32_MAX preserves invalid negative/overflow input for Rust-side
- * validation instead of truncating it into a valid duration. */
+ * validation instead of truncating it into a valid duration. Same young-block
+ * rule as [ocaml_temporal_echo]: no interior pointer across the lock release. */
 CAMLprim value ocaml_temporal_conformance_wait_ms(value milliseconds) {
   CAMLparam1(milliseconds);
   CAMLlocal1(response);
   intnat requested = Long_val(milliseconds);
   uint32_t bounded_request;
   ocaml_temporal_core_result native_result = {0};
-  owned_response *owned;
 
   bounded_request =
       requested < 0 || (uintnat)requested > UINT32_MAX ? UINT32_MAX
                                                        : (uint32_t)requested;
 
   response = alloc_response();
-  owned = Response_val(response);
   caml_enter_blocking_section();
   (void)ocaml_temporal_core_v1_conformance_wait_ms(bounded_request,
                                                    &native_result);
   caml_leave_blocking_section();
-  owned->result = native_result;
+  Response_val(response)->result = native_result;
   CAMLreturn(response);
 }
 

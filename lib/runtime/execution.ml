@@ -180,6 +180,17 @@ let run_scheduler execution =
         (Temporal_base.Error.defect ~message:(Printexc.to_string exception_))
   | Scheduler.Complete | Scheduler.Blocked -> ()
 
+(** Releases every paused fiber and pending operation table for this execution.
+    Safe to call more than once: the context and scheduler ignore a second
+    shutdown after they have already become inactive. Adapters must call this
+    whenever a run is removed from the registry for a path that did not already
+    emit a terminal or eviction command, so one-shot effect continuations cannot
+    leak after a rejected activation. *)
+let shutdown execution =
+  (* Teardown must not raise into lease-ack bookkeeping. Continuations that
+     mishandle the private shutdown exception are contained here. *)
+  try Workflow_context_store.shutdown execution.context with _ -> ()
+
 (** Processes jobs in order, runs fibers, and returns new commands. Cache
     removal stops processing immediately and returns no commands for the old
     in-memory execution. *)

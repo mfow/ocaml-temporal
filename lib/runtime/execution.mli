@@ -19,3 +19,8 @@ val start :
     progress, and returns newly produced commands in their creation order. An
     execution removed from the cache ignores later calls. *)
 val activate : ('input, 'output) t -> Activation.job list -> Activation.command list
+
+(** Releases paused fibers and pending operation tables for this execution.
+    Idempotent. Call when removing a run from a worker registry if a terminal
+    or eviction path has not already shut the execution down. *)
+val shutdown : ('input, 'output) t -> unit

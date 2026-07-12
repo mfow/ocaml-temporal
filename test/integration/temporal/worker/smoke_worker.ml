@@ -26,13 +26,18 @@ let required_env name =
 
 (** Writes a marker through a temporary file and atomic rename. The Compose
     health and teardown checks therefore observe either the complete marker or
-    no marker, never a partially written file. The temporary name includes the
-    process ID so two accidental local workers do not write the same staging
-    file. *)
+    no marker, never a partially written file. [Filename.temp_file] creates the
+    staging file exclusively, so separate containers with independent PID
+    namespaces cannot accidentally share a staging pathname. *)
 let publish_marker path contents =
-  let temporary = Printf.sprintf "%s.tmp.%d" path (Unix.getpid ()) in
+  let temporary = ref None in
   try
-    let channel = open_out_bin temporary in
+    let generated =
+      Filename.temp_file ~temp_dir:(Filename.dirname path)
+        (Filename.basename path ^ ".tmp.") ""
+    in
+    temporary := Some generated;
+    let channel = open_out_bin generated in
     Fun.protect
       ~finally:(fun () -> close_out_noerr channel)
       (fun () ->
@@ -40,10 +45,13 @@ let publish_marker path contents =
         (* Flush before the rename so a successful marker always represents
            bytes that reached the operating-system file boundary. *)
         flush channel);
-    Sys.rename temporary path;
+    Sys.rename generated path;
+    temporary := None;
     Ok ()
   with exception_ ->
-    (try Sys.remove temporary with _ -> ());
+    Option.iter
+      (fun generated -> try Sys.remove generated with _ -> ())
+      !temporary;
     Error
       (Error.defect
          ~message:

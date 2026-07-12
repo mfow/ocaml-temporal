@@ -617,8 +617,10 @@ module Make (Supervisor : SUPERVISOR) = struct
         end
 
   (** Creates, records, and submits one completion. Recording precedes the
-      native call so every failed transport has an exact retryable completion.
-  *)
+      native call so the worker's explicit retry policy can inspect an exact
+      retained completion; only a [Retryable] source classification may
+      authorize resubmission, while generic transport failures remain
+      fail-closed. *)
   let enqueue_and_finish adapter ~token ~activity_type ~completion
       ~accepted_result =
     let (completion : Protocol.completion) = completion in

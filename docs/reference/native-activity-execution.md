@@ -158,10 +158,13 @@ responsible for releasing that runtime lock in its C boundary.
 
 The private worker shutdown path calls the adapter's `drain` operation before
 closing native Core. It retries every retained completion while holding the
-same mutex and starts teardown only after the token map is empty. A failed
-drain leaves the exact completion and the native graph usable, so callers can
-retry rather than converting a transient transport error into an
-`outstanding_tasks` shutdown failure.
+same mutex and starts teardown only after the token map is empty. The public
+worker reopens admission only when the drain failure is explicitly classified
+as `Retryable`. Generic `Connection`, `Not_ready`, and other failures are
+fail-closed because this Core revision may already have consumed the lease;
+the native graph is cleaned up rather than blindly resubmitting the same
+completion. An explicitly retryable failure preserves the exact completion and
+the native graph for a later attempt.
 
 ### Worker-loop retry policy
 
@@ -183,9 +186,11 @@ mutex. Once the same copied completion is accepted, the next loop iteration is
 free to poll a new activity. Thus a lost completion acknowledgement cannot
 rerun user code, terminate an otherwise healthy worker, or create a busy spin.
 
-The production source currently marks only explicit native connection and
-bounded-not-ready statuses as retryable. This intentionally conservative list
-keeps permanent and protocol errors visible. The fake-source regressions in
+The production source currently marks only the explicit bilateral `Retryable`
+status as safe for a completion retry. Generic `Connection` and `Not_ready`
+statuses are fail-closed because they do not prove that the lease remains
+pending. This intentionally conservative policy keeps permanent and protocol
+errors visible. The fake-source regressions in
 [`test/runtime/test_native_worker_loop.ml`](../../test/runtime/test_native_worker_loop.ml)
 cover one transient rejection followed by a successful retry and a permanent
 protocol error that stops immediately; the activity execution regression also

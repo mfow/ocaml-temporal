@@ -237,7 +237,8 @@ The current milestone wires these messages through private OCaml/C/Rust
 bindings and the single-owner supervisor. Public `Temporal.Client` uses this
 native path for `http://` and `https://` targets, including asynchronous start
 and exact-run wait. The deterministic `mock://` transport remains available
-only as a private unit-test seam. Native worker polling/dispatch and the
-complete two-binary acceptance path are still pending; their boundary is
+only as a private unit-test seam. A live two-binary Compose gate now exercises
+native client starts and exact-run waits while a public worker polls and
+dispatches the first success scenarios. Its boundary and remaining cases are
 tracked in the
 [`two-OCaml-binary acceptance design`](two-ocaml-binary-e2e-acceptance.md).

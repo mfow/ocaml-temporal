@@ -1,13 +1,12 @@
 # Local Temporal and PostgreSQL Stack
 
-This reference describes the live infrastructure and Core lifecycle acceptance
-available now. The private typed poll/completion operations and bounded native
-readiness waits are now composed into the public worker loop. The current
-Compose target still exercises the lower-level supervisor lifecycle binary;
-the two-public-OCaml-binary workflow result test remains a later acceptance
-milestone. The workflow adapter deliberately rejects child-workflow commands,
-and rejects activity commands that do not contain their complete Core fields,
-instead of inventing defaults at the OCaml/Rust boundary.
+This reference describes the live infrastructure and first end-to-end worker
+acceptance available now. The private typed poll/completion operations and
+bounded native readiness waits are composed into the public worker loop. The
+Compose target runs a lower-level supervisor lifecycle check and then a
+separate public OCaml worker and driver that assert real workflow results. The
+workflow adapter still treats unsupported or incomplete commands as typed
+errors rather than inventing defaults at the OCaml/Rust boundary.
 
 The complete Compose fixture lives under `test/integration/temporal/`, including
 its PostgreSQL/Temporal configuration and fixture-only helper scripts. The
@@ -55,7 +54,7 @@ the schema updater. To delete local histories and all schema data explicitly:
 make temporal-clean
 ```
 
-## Clean integration smoke
+## Clean integration acceptance
 
 Run the infrastructure acceptance test with:
 
@@ -68,13 +67,16 @@ and after the run. After database/frontend readiness, its OCaml lifecycle
 executable uses the private supervisor and C/Rust bridge to connect the
 official Core client, construct and namespace-validate a workflow/remote-
 activity worker, exercise invalid and repeated lifecycle transitions, and shut
-the graph down deterministically. The public worker loop is covered by the
-native library build and focused tests, but this target does not yet launch the
-two public OCaml driver/worker binaries.
-This remains a lifecycle acceptance test rather than a complete workflow
-result test: a later milestone must add the two-binary services, remaining
-child-workflow semantic fields, and assertions for start, poll, execute,
-completion, and exact result waiting against this cluster.
+the graph down deterministically. It then waits for `smoke-worker`, a separate
+public OCaml worker, to publish readiness and runs `smoke-driver`, a second
+public OCaml binary. The driver starts both smoke workflows before waiting for
+either result and checks the fan-out activity result and the timer-then-
+activity result through `Temporal.Client`.
+
+This is a real success-path workflow-result acceptance test, not only a
+lifecycle test. It does not yet establish live child workflows, failure or
+retry behavior, cancellation with outstanding work, worker restart, replay,
+or cache eviction.
 On every pull request and push to `master`, GitHub Actions runs this target once
 in a standalone Ubuntu job labelled for OCaml 5.5. It is intentionally absent
 from the multi-version build matrix because starting a real database and

@@ -19,14 +19,14 @@ boundary honestly:
 | --- | --- |
 | `mock://...` | Fast deterministic unit tests for client/worker registration and dispatch. The pure runtime tests also exercise timers, activities, child scheduling, replay, cancellation, and future combinators without a server. |
 | `http://...` or `https://...` | The OCaml-owned native client/worker path backed by Rust Temporal Core. The current native command slice handles activity, timer, terminal, cancellation, cache, and two-stage child-resolution paths. It is covered by focused bridge and adapter tests. |
-| Live Compose acceptance | Real PostgreSQL and Temporal Server lifecycle validation. It does not yet run the two-OCaml-binary workflow-result scaffold. |
+| Live Compose acceptance | Real PostgreSQL and Temporal Server validation with two separate OCaml binaries: a public worker and a public client driver. It asserts a fan-out activity result and a timer-then-activity result. |
 
 The first two rows are different test boundaries, not different workflow
 languages. The same typed definitions and direct-style functions are used in
 both; `mock://` keeps tests local, while an HTTP(S) target uses the native
-OCaml/Rust bridge. The live Compose target currently proves server and Core
-lifecycle only, so it is not yet evidence that a workflow result has crossed a
-real Temporal Server.
+OCaml/Rust bridge. The live Compose target proves the initial success path
+through a real Temporal Server; it does not yet cover every failure, recovery,
+or child-workflow scenario.
 
 ## The direct-style model
 
@@ -72,8 +72,9 @@ translator. The native adapter also represents the complete two-stage
 resolution lifecycle: a successful start acknowledgment records the child run
 ID, and a later terminal resolution resumes the parent future. Focused tests
 cover success, start failure, final-before-start, duplicate sequences, and
-lease retirement. The live Compose acceptance is still pending, so this is not
-yet a claim of end-to-end Temporal Server compatibility.
+lease retirement. Child workflows have not yet crossed the live Compose path,
+so this is not yet a claim of end-to-end Temporal Server compatibility for a
+parent awaiting a child.
 
 ## 1. Write a deterministic OCaml function
 
@@ -462,11 +463,13 @@ make verify
 make test-temporal-integration
 ```
 
-The first two use the deterministic test seams and do not require a running
+The first two use deterministic test seams and do not require a running
 server. The integration target starts real PostgreSQL and Temporal Server,
 checks the schemas and frontend, runs the OCaml-owned Core lifecycle
-executable, and cleans its Compose volume. It is not yet the two-process
-workflow-result test described in the [acceptance design](../reference/two-ocaml-binary-e2e-acceptance.md).
+executable, then runs a public worker and a separate public driver. The driver
+starts two workflows and asserts their exact results before the isolated
+Compose volume is cleaned. Its current live scope is described in the
+[acceptance design](../reference/two-ocaml-binary-e2e-acceptance.md).
 
 For the complete ownership and protocol rules, read the [runtime
 invariants](../reference/runtime-invariants.md), [Core bridge reference](../reference/core-bridge.md),

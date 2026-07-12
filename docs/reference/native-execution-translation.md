@@ -158,6 +158,7 @@ initialization retention, activity success/failure/cancellation, child
 start/terminal ordering and failure propagation, timers, eviction, terminal
 completion, duplicate/unknown sequences, payload validation, and explicit
 unsupported commands. These tests run entirely in OCaml. The public native
-worker now invokes this adapter through the owner-Domain supervisor; the live
-Compose acceptance remains the gate for proving the mapping against Temporal
-Server and for the two-public-binary child result test.
+worker now invokes this adapter through the owner-Domain supervisor. The live
+Compose gate has exercised the timer and activity success paths against
+Temporal Server; it remains the needed evidence for a two-public-binary child
+result path and the other deferred scenario classes.

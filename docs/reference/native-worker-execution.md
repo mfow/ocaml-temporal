@@ -154,8 +154,9 @@ and input fields represented by the protocol. Core child options not yet
 exposed by the OCaml runtime remain explicit defaults, but the two child
 resolution activations are decoded and validated losslessly. Start and
 terminal events share one Core sequence; only that exact pair is accepted. The
-live Compose acceptance remains the gate for proving complete
-workflow/activity/child behavior end to end. Activity commands are accepted
+live Compose gate now proves the initial workflow/activity success path, while
+child behavior and the remaining terminal/recovery scenarios still require
+real-server evidence. Activity commands are accepted
 only when their required identifiers, payloads, timeout policies, and
 cancellation options are present; a missing field is rejected in the same
 typed way.
@@ -190,7 +191,8 @@ once, and the fake native lease remains present until that final acknowledgement
 This is the contract that lets public worker shutdown retry a transient
 completion transport failure safely.
 
-The fake tests do not claim live Temporal compatibility. Focused supervisor and
-bridge tests cover readiness and lifecycle ownership; the Compose acceptance
-suite remains the gate for real Temporal Server behavior and for the remaining
-activity/child-workflow command and resolution support.
+The fake tests do not by themselves claim live Temporal compatibility. Focused
+supervisor and bridge tests cover readiness and lifecycle ownership, while the
+Compose acceptance suite now verifies timer and remote-activity success paths
+against a real Temporal Server. It remains the gate for child workflows and
+the remaining activity, terminal, and recovery cases.

@@ -43,7 +43,7 @@ The OCaml side sends one closed object:
       },
       "data": {
         "encoding": "base64",
-          "data": "eyJ0ZXh0IjoiSGkifQ=="
+        "data": "eyJ0ZXh0IjoiSGkifQ=="
       }
     }
   ]
@@ -224,7 +224,10 @@ normative documentation for the object shapes, while runtime checks remain
 authoritative for duplicate keys, byte limits, and cross-field invariants.
 
 The current milestone wires these messages through private OCaml/C/Rust
-bindings and the single-owner supervisor. The public `Client` module still
-uses its deterministic mock transport until the complete live worker/client
-acceptance path is connected; that distinction is intentional and is recorded
-in [`docs/progress.md`](../progress.md).
+bindings and the single-owner supervisor. Public `Temporal.Client` uses this
+native path for `http://` and `https://` targets, including asynchronous start
+and exact-run wait. The deterministic `mock://` transport remains available
+only as a private unit-test seam. Native worker polling/dispatch and the
+complete two-binary acceptance path are still pending; their boundary is
+tracked in the
+[`two-OCaml-binary acceptance design`](two-ocaml-binary-e2e-acceptance.md).

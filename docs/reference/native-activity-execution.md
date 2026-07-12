@@ -17,6 +17,14 @@ record_activity_heartbeat :
   supervisor -> Activity_protocol.heartbeat -> (unit, native_error) result
 ```
 
+For a `Start` task, the native bridge has already leased the opaque task token
+and decoded the JSON envelope into the semantic `Activity_protocol.task` value.
+This adapter then performs the language-side work: it looks up the activity
+type, decodes its one input value, calls the registered OCaml function, and
+submits exactly one terminal completion for that token. A `Cancel` task skips
+the user function and submits a cancelled completion. Polling and dispatch are
+synchronous in this layer; Rust worker threads do not call OCaml callbacks.
+
 The adapter is deliberately independent of the concrete Rust supervisor.  A
 deterministic fake supervisor can therefore test every lease and completion
 path without a Temporal Server, while the production supervisor remains the
@@ -51,11 +59,21 @@ adapter mutex:
 4. Build an attempt context from the server's heartbeat details and timeout,
    then invoke the implementation and convert its typed `result` into either an
    encoded payload or a structured application failure. Application failure
-   retryability and every binary-safe detail payload supplied in `Error.t` are
-   copied into the Temporal failure rather than reduced to a message only.
+   retryability and each detail body supplied in `Error.t` are copied into the
+   Temporal failure without text conversion; metadata still follows the
+   runtime's strict UTF-8 key/value rules rather than becoming an unvalidated
+   side channel.
 5. Validate the completion through the strict activity-protocol encoder.
 6. Submit the completion to the supervisor and remove the token only after the
    supervisor returns `Ok ()`.
+
+The adapter mutex covers this whole transaction, including the user
+implementation and the native completion call. The production worker's run
+loop therefore executes one OCaml activity attempt at a time and cannot poll a
+second activity until the first attempt has produced an acknowledged terminal
+completion. This deliberate serialization keeps the token ledger and the
+supervisor mailbox race-free; it is separate from Rust/Core's own network
+concurrency.
 
 The context-aware form is authored with `Temporal.Activity.define_with_context`:
 
@@ -79,6 +97,11 @@ same strict activity JSON codec as completions, and send them through the
 supervisor mailbox. The mailbox serializes heartbeats with polling,
 completion, and shutdown; an arbitrary Rust thread never calls an OCaml
 callback.
+
+Before constructing the context, the adapter validates the server timeout: it
+rejects negative, sub-millisecond, or out-of-range values instead of rounding
+or overflowing them. An accepted timeout is therefore exposed as an exact
+whole-millisecond `Duration.t`.
 
 The context is valid only while its activity attempt is executing. The adapter
 invalidates it before returning from dispatch, including exceptional and
@@ -143,12 +166,21 @@ and the completion is submitted once; retrying never repeats user work.
 
 This slice implements typed local activity dispatch, failure/cancellation
 completions, strict completion and heartbeat validation, transport retry, and
-public worker wiring. The native heartbeat path is covered by focused Rust and
-OCaml tests, including binary detail preservation, prior-attempt detail
-delivery, lease retention, copied context payloads, callback-exception
-classification, and context invalidation. A live Temporal heartbeat scenario,
-asynchronous activity completion, and timeout/retry behavior still require
-dedicated acceptance scenarios.
+public worker wiring. The native heartbeat path is covered by focused tests in
+[`test/runtime/test_native_activity_execution.ml`](../../test/runtime/test_native_activity_execution.ml),
+[`test/runtime/test_native_activity_lifecycle.ml`](../../test/runtime/test_native_activity_lifecycle.ml),
+and [`rust/core-bridge/tests/activity_protocol.rs`](../../rust/core-bridge/tests/activity_protocol.rs),
+including binary detail preservation, prior-attempt detail delivery, lease
+retention, copied context payloads, callback-exception classification, and
+context invalidation. A live Temporal heartbeat scenario, asynchronous
+activity completion, and timeout/retry behavior still require dedicated
+acceptance scenarios.
+
+Although the semantic protocol reserves `Will_complete_async`, this adapter
+does not emit that completion variant and does not retain a public handle for a
+later completion. Activities must return a terminal `result` synchronously;
+asynchronous completion is an explicit future capability rather than an
+implicit behavior of the current worker.
 
 The semantic wire shape already carries the full decoded Temporal activity
 context (headers, heartbeat details, timeouts, retry policy, priority, and

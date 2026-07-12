@@ -856,12 +856,10 @@ impl Runtime {
     /// semantic decode failed after Rust handed off its lease.
     fn reject_polled_workflow(&mut self, input: &[u8]) -> Operation {
         let run_id = workflow_rejection_run_id(&self.workflow_activations, input)?;
-        let rejection = self.reject_workflow_delivery(&run_id);
-        // WorkerBridge retires the ledger debt even when Core rejects the
-        // generated failure. Remove the matching semantic value on the same
-        // path so an error cannot leave a stale second ownership record.
+        // Keep the semantic handoff document until Core/ledger reject finishes
+        // so a failed reject can be retried with the exact original document.
+        self.reject_workflow_delivery(&run_id)?;
         self.workflow_activations.remove(&run_id);
-        rejection?;
         Ok(Vec::new())
     }
 
@@ -999,12 +997,10 @@ impl Runtime {
     /// when OCaml cannot represent the task after lease handoff.
     fn reject_polled_activity(&mut self, input: &[u8]) -> Operation {
         let task_token = activity_rejection_token(&self.activity_tasks, input)?;
-        let rejection = self.reject_activity_delivery(&task_token);
-        // The native ledger retires the completion debt even if Core rejects
-        // its generated failure, so the semantic correlation state must follow
-        // the same one-shot ownership transition.
+        // Keep semantic correlation until Core/ledger reject succeeds so a
+        // failed reject can retry with the exact original task document.
+        self.reject_activity_delivery(&task_token)?;
         retire_activity_semantics(&mut self.activity_tasks, &task_token);
-        rejection?;
         Ok(Vec::new())
     }
 

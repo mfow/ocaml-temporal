@@ -216,8 +216,8 @@ ongoing maintenance. No unreviewed model output is released.
 
 AI models used to help build this project:
 
-- GPT-5
 - GPT-5.6 Sol
 - GPT-5.6 Terra
 - GPT-5.6 Luna
 - Grok 4.5
+- Fable 5

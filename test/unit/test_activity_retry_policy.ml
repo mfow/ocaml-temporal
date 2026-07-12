@@ -14,6 +14,21 @@ let valid_policy () =
       failwith
         ("valid retry policy was rejected: " ^ Temporal.Error.message error)
 
+(** Builds the smallest policy that exercises the zero-attempts and
+    sub-second-duration boundaries.  Temporal interprets zero attempts as
+    unlimited retries, while the one-millisecond values ensure the bridge does
+    not silently round an interval to whole seconds. *)
+let boundary_policy () =
+  match
+    Retry_policy.make ~initial_interval:(Temporal.Duration.of_ms 1L)
+      ~backoff_coefficient:1.0
+      ~maximum_interval:(Temporal.Duration.of_ms 1_001L) ~maximum_attempts:0 ()
+  with
+  | Ok policy -> policy
+  | Error error ->
+      failwith
+        ("boundary retry policy was rejected: " ^ Temporal.Error.message error)
+
 (** Requires a constructor failure to be a typed defect rather than an
     exception, preserving the public API's result-based error convention. *)
 let expect_invalid label result =
@@ -31,6 +46,29 @@ let () =
     Temporal.Duration.to_ms (Retry_policy.maximum_interval policy) = 60_000L);
   assert (Retry_policy.maximum_attempts policy = 3);
   assert (Retry_policy.non_retryable_error_types policy = [ "InvalidInput" ]);
+  let boundary = boundary_policy () in
+  assert (
+    Temporal.Duration.to_ms (Retry_policy.initial_interval boundary) = 1L);
+  assert (
+    Temporal.Duration.to_ms (Retry_policy.maximum_interval boundary) = 1_001L);
+  assert (Retry_policy.backoff_coefficient boundary = 1.0);
+  (* Zero is a meaningful policy value, not a failed constructor default: it
+     delegates the attempt limit to Temporal. *)
+  assert (Retry_policy.maximum_attempts boundary = 0);
+  let maximum_attempts = Int32.to_int Int32.max_int in
+  let maximum_policy =
+    match
+      Retry_policy.make ~initial_interval:(Temporal.Duration.of_ms 1L)
+        ~backoff_coefficient:1.0
+        ~maximum_interval:(Temporal.Duration.of_ms 1L) ~maximum_attempts ()
+    with
+    | Ok policy -> policy
+    | Error error ->
+        failwith
+          ("maximum-attempt retry policy was rejected: "
+          ^ Temporal.Error.message error)
+  in
+  assert (Retry_policy.maximum_attempts maximum_policy = maximum_attempts);
   expect_invalid "zero initial interval"
     (Retry_policy.create
        ~initial_interval:(Temporal.Duration.of_ms 0L)

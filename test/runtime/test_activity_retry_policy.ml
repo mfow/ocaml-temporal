@@ -1,6 +1,7 @@
 module Activation = Temporal_runtime.Activation
 module Execution = Temporal_runtime.Execution
 module Context = Temporal_runtime.Workflow_context_store
+module Protocol = Temporal_protocol.Workflow_protocol
 
 (** Runtime-level retry policy record used to verify the activation command
     after the public constructor tests have checked the user-facing API. *)
@@ -11,6 +12,18 @@ let retry_policy : Activation.retry_policy =
     maximum_interval = 60_000L;
     maximum_attempts = 4;
     non_retryable_error_types = [ "InvalidInput" ];
+  }
+
+(** A policy with millisecond-only intervals verifies that the translator
+    preserves nanoseconds instead of rounding retry values to whole seconds.
+    The zero attempt count is Temporal's explicit unlimited-retry sentinel. *)
+let boundary_retry_policy : Activation.retry_policy =
+  {
+    initial_interval = 1L;
+    backoff_coefficient_bits = "4607182418800017408";
+    maximum_interval = 1_001L;
+    maximum_attempts = 0;
+    non_retryable_error_types = [];
   }
 
 (** Encodes one string argument using the same base codec the public activity
@@ -104,7 +117,44 @@ let test_direct_translation_validation () =
       non_retryable_error_types = [ String.make 1 (Char.chr 0xff) ];
     }
 
+(** Verifies the exact millisecond-to-protobuf conversion for both timeout
+    fields and retry intervals.  This catches a boundary regression where
+    sub-second values could be truncated while still producing valid JSON. *)
+let test_subsecond_boundary_translation () =
+  let command =
+    Activation.Schedule_activity
+      {
+        seq = 1L;
+        activity_id = "activity-1";
+        activity_type = "retryable_activity";
+        task_queue = "default";
+        arguments = [ encode_input "input" ];
+        schedule_to_close_timeout = Some 1_001L;
+        schedule_to_start_timeout = Some 1L;
+        start_to_close_timeout = Some 2L;
+        heartbeat_timeout = Some 3L;
+        retry_policy = Some boundary_retry_policy;
+        cancellation_type = Activation.Try_cancel;
+        do_not_eagerly_execute = false;
+      }
+  in
+  match Temporal_runtime.Native_execution.command_to_protocol command with
+  | Ok
+      (Protocol.Schedule_activity
+        {
+          schedule_to_close_timeout =
+            Some { seconds = 1L; nanoseconds = 1_000_000 };
+          schedule_to_start_timeout = Some { seconds = 0L; nanoseconds = 1_000_000 };
+          start_to_close_timeout = Some { seconds = 0L; nanoseconds = 2_000_000 };
+          heartbeat_timeout = Some { seconds = 0L; nanoseconds = 3_000_000 };
+          retry_policy = Some policy;
+          _;
+        })
+    when policy = boundary_retry_policy -> ()
+  | _ -> failwith "sub-second timeout or retry policy precision was lost"
+
 let () =
   test_explicit_policy ();
   test_omitted_policy ();
-  test_direct_translation_validation ()
+  test_direct_translation_validation ();
+  test_subsecond_boundary_translation ()

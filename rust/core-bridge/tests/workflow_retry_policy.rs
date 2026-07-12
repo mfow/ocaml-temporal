@@ -87,6 +87,58 @@ fn explicit_policy_round_trips_losslessly() {
     );
 }
 
+/// Sub-second intervals and the zero-attempt unlimited sentinel remain exact
+/// through JSON and Core.  This covers the millisecond boundary used by the
+/// OCaml API rather than only testing whole-second policy examples.
+#[test]
+fn policy_preserves_subsecond_intervals_and_unlimited_attempts() {
+    let policy = RetryPolicy {
+        initial_interval: Duration {
+            seconds: 0,
+            nanoseconds: 1,
+        },
+        backoff_coefficient_bits: 1.0f64.to_bits().to_string(),
+        maximum_interval: Duration {
+            seconds: 1,
+            nanoseconds: 1,
+        },
+        maximum_attempts: 0,
+        non_retryable_error_types: Vec::new(),
+    };
+    let value = completion(Some(policy.clone()));
+    let encoded = workflow_protocol::encode_completion(&value).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        value
+    );
+
+    let core = workflow_protocol::completion_to_core(&value).unwrap();
+    let Some(workflow_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("completion should be successful");
+    };
+    let Some(
+        temporalio_protos::coresdk::workflow_commands::workflow_command::Variant::ScheduleActivity(
+            activity,
+        ),
+    ) = success.commands[0].variant.as_ref()
+    else {
+        panic!("completion should contain an activity command");
+    };
+    let core_policy = activity.retry_policy.as_ref().expect("policy is explicit");
+    assert_eq!(core_policy.initial_interval.as_ref().unwrap().seconds, 0);
+    assert_eq!(core_policy.initial_interval.as_ref().unwrap().nanos, 1);
+    assert_eq!(core_policy.maximum_interval.as_ref().unwrap().seconds, 1);
+    assert_eq!(core_policy.maximum_interval.as_ref().unwrap().nanos, 1);
+    assert_eq!(core_policy.backoff_coefficient.to_bits(), 1.0f64.to_bits());
+    assert_eq!(core_policy.maximum_attempts, 0);
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        value
+    );
+}
+
 /// Invalid policies are rejected before either semantic encoding or Core
 /// conversion can observe them.
 #[test]
@@ -126,6 +178,14 @@ fn policy_validation_is_strict_and_bilateral() {
             "malformed policy was accepted: {to}"
         );
     }
+
+    // Compare the nanosecond component as well as whole seconds when checking
+    // the ordering of retry intervals.
+    let invalid = valid.replace(
+        "\"maximum_interval\":{\"nanoseconds\":0,\"seconds\":2}",
+        "\"maximum_interval\":{\"nanoseconds\":0,\"seconds\":0}",
+    );
+    assert!(workflow_protocol::decode_completion(&invalid).is_err());
 }
 
 /// A missing retry field is different from an explicit null field.  This

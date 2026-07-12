@@ -121,7 +121,7 @@ services:
       - --
       - dune
       - exec
-      - --build-dir=_build/smoke-worker
+      - --build-dir=/workspace/_build/smoke-worker
       - test/integration/temporal/worker/smoke_worker.exe
     healthcheck:
       test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-two-binary-worker.ready"]
@@ -159,7 +159,7 @@ services:
       - --
       - dune
       - exec
-      - --build-dir=_build/smoke-driver
+      - --build-dir=/workspace/_build/smoke-driver
       - test/integration/temporal/driver/smoke_driver.exe
     init: true
 

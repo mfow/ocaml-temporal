@@ -169,6 +169,17 @@ module Make (Request : Request) = struct
         | Open -> invalid_arg "open mailbox woke without a job"
     )
 
+  (** Settles [reply] only when it is still unresolved. Used when an
+      asynchronous exception may have interrupted the owner after dequeue but
+      before the normal settlement path ran, so double-settle is not fatal. *)
+  let settle_if_unresolved (type result) (reply : result reply) outcome =
+    with_mutex reply.mutex (fun () ->
+        match reply.outcome with
+        | None ->
+            reply.outcome <- Some outcome;
+            Condition.broadcast reply.ready
+        | Some _ -> ())
+
   (** Invokes one typed request. An unexpected exception settles the active
       call before failing and draining the processor, so no caller can be
       stranded between those two state changes. *)
@@ -183,18 +194,33 @@ module Make (Request : Request) = struct
         fail_processor processor exn;
         false
 
-  (** Runs the sole consumer loop on the dedicated owner Domain. *)
-  let rec run_owner processor =
+  (** Runs the sole consumer loop on the dedicated owner Domain. Tracks the
+      dequeued job so an async exception between [take] and settlement cannot
+      leave [await_reply] blocked forever. *)
+  let rec run_owner processor inflight =
     match take processor with
-    | None -> ()
-    | Some job -> if handle_job processor job then run_owner processor
+    | None -> inflight := None
+    | Some job ->
+        inflight := Some job;
+        if handle_job processor job then (
+          inflight := None;
+          run_owner processor inflight)
+        else inflight := None
 
   (** Contains any unexpected processor-internal exception that escapes the
-      owner loop and applies the same terminal cleanup as a handler defect. *)
+      owner loop and applies the same terminal cleanup as a handler defect.
+      The dequeued in-flight call is settled first when still unresolved. *)
   let run_owner_guarded processor =
-    match run_owner processor with
+    let inflight = ref None in
+    match run_owner processor inflight with
     | () -> ()
-    | exception exn -> fail_processor processor exn
+    | exception exn ->
+        (match !inflight with
+        | Some (Job (_, Some reply)) ->
+            settle_if_unresolved reply (Error (Handler_raised exn))
+        | Some (Job (_, None)) | None -> ());
+        inflight := None;
+        fail_processor processor exn
 
   (** Creates shared state before spawning the owner, then publishes the Domain
       handle before returning the processor to producers. *)

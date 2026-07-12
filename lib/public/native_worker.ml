@@ -318,9 +318,24 @@ let shutdown worker =
     the supervisor so native runtime dispose can still reclaim the graph. *)
 let cleanup_abandoned worker =
   if not (Atomic.get worker.closed) then
-    match Thread.create (fun instance -> ignore (shutdown instance)) worker with
+    (* Keep [worker] (and therefore [supervisor]) reachable for the lifetime of
+       the cleanup thread so the supervisor's own finalizer cannot tear the
+       native graph down before drain completes. The thread owns this root. *)
+    match
+      Thread.create
+        (fun instance ->
+          try ignore (shutdown instance)
+          with _ ->
+            Atomic.set instance.closed true;
+            ignore (Native.shutdown instance.supervisor))
+        worker
+    with
     | _thread -> ()
     | exception _ ->
+        (* Cannot spawn a helper. Do not block the finalizer Domain on the
+           mailbox owner. Mark closed and request supervisor teardown without
+           awaiting drain; residual native reclaim still goes through the
+           runtime custom-block finalizer. *)
         Atomic.set worker.closed true;
         ignore (Native.shutdown worker.supervisor)
 

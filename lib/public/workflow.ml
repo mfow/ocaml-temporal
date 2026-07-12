@@ -16,11 +16,22 @@ type ('input, 'output) t = {
   implementation : ('input, 'output) implementation option;
 }
 
-(** Rejects names that could not be represented safely in Temporal history. *)
+(** Maximum byte length accepted by the closed JSON/native identifier contract. *)
+let max_name_bytes = 65_536
+
+(** Rejects names that could not be represented safely in Temporal history.
+    Definition construction is the earliest point at which a workflow type
+    name is available, so enforcing the bridge's complete identifier contract
+    here prevents a malformed name from surviving until worker registration or
+    a child/continue-as-new command is emitted. *)
 let validate_name name =
   if String.length name = 0 then invalid_arg "Temporal definition name is empty";
   if String.contains name '\000' then
     invalid_arg "Temporal definition name contains a NUL byte"
+  else if String.length name > max_name_bytes then
+    invalid_arg "Temporal definition name exceeds 65536 bytes"
+  else if not (Temporal_base.Codec.valid_utf_8 name) then
+    invalid_arg "Temporal definition name must be valid UTF-8"
 
 (** Registers executable workflow code after validating its stable type name. *)
 let define ~name ~input ~output implementation =

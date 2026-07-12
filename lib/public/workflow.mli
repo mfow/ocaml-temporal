@@ -10,9 +10,10 @@ type ('input, 'output) implementation =
 type ('input, 'output) t
 
 (** Creates a workflow definition implemented by this OCaml worker. [name] is
-    validated immediately; an empty or NUL-containing name raises
-    [Invalid_argument] because it cannot be represented safely in Temporal
-    history. The implementation must remain deterministic and return expected
+    validated immediately; it must be non-empty, valid UTF-8, NUL-free, and no
+    more than 65,536 bytes because it crosses the native protocol into
+    Temporal history. Violations raise [Invalid_argument] as construction
+    defects. The implementation must remain deterministic and return expected
     failures as [Error.t] values. *)
 val define :
   name:string ->
@@ -21,10 +22,11 @@ val define :
   ('input, 'output) implementation ->
   ('input, 'output) t
 
-(** Creates a typed reference to a workflow implemented by another worker. Use
-    it with [Child_workflow.start] or [Child_workflow.execute] when invoking the
-    workflow as a child. The reference has no local implementation and cannot
-    be registered as executable worker code. *)
+(** Creates a typed reference to a workflow implemented by another worker. [name]
+    has the same non-empty, valid UTF-8, NUL-free, 65,536-byte contract as
+    [define]. Use the reference with [Child_workflow.start] or
+    [Child_workflow.execute] when invoking the workflow as a child. It has no
+    local implementation and cannot be registered as executable worker code. *)
 val remote :
   name:string ->
   input:'input Codec.t ->

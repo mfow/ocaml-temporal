@@ -224,6 +224,60 @@ let test_terminal_call_closes_a_full_mailbox_atomically () =
   expect "terminal FIFO result" (Ok [ 1; 2 ]) (Mailbox.await terminal);
   expect "terminal call joined cleanly" (Ok ()) (Mailbox.join mailbox)
 
+(** Concurrent terminal submissions have one admission winner. Every losing
+    producer must observe the same closing state, while the admitted terminal
+    request retains its reserved FIFO position and still drains after work
+    already admitted. This exercises the lifecycle mutex at the exact point
+    where [submit_and_close] both enqueues and transitions to [Closing]. *)
+let test_concurrent_terminal_submissions_have_one_winner () =
+  let entered = create_gate () in
+  let release = create_gate () in
+  let mailbox = Mailbox.create ~capacity:1 ~handler:(create_handler ()) in
+  expect "active hold admitted" (Ok ())
+    (Mailbox.post mailbox (Hold (1, entered, release)));
+  await_gate entered;
+  expect "ordinary tail filled" (Ok ()) (Mailbox.post mailbox (Add 2));
+  let caller_count = 16 in
+  let started = Array.init caller_count (fun _ -> Atomic.make false) in
+  (* Do not let a fast producer close the mailbox while another producer is
+     still starting. The readiness flags establish that every Domain has
+     reached the submission point; this separate gate then releases all of
+     them together so the test exercises concurrent admission. *)
+  let release_submitters = create_gate () in
+  let callers =
+    Array.mapi
+      (fun _ started ->
+        Domain.spawn (fun () ->
+            Atomic.set started true;
+            await_gate release_submitters;
+            Mailbox.submit_and_close mailbox Read))
+      started
+  in
+  Array.iter await_atomic started;
+  open_gate release_submitters;
+  let winner = ref None in
+  let closed = ref 0 in
+  Array.iter
+    (fun caller ->
+      match Domain.join caller with
+      | Ok pending ->
+          if Option.is_some !winner then
+            failwith "more than one terminal request was admitted"
+          else winner := Some pending
+      | Error Mailbox.Closed -> incr closed
+      | Error (Mailbox.Handler_raised _) ->
+          failwith "terminal submission unexpectedly ran a failing handler")
+    callers;
+  expect "one terminal submission winner" 1
+    (if Option.is_some !winner then 1 else 0);
+  expect "losing terminal submissions" (caller_count - 1) !closed;
+  expect "late post after concurrent terminal submissions" (Error Mailbox.Closed)
+    (Mailbox.post mailbox (Add 3));
+  open_gate release;
+  expect "concurrent terminal FIFO result" (Ok [ 1; 2 ])
+    (Mailbox.await (Option.get !winner));
+  expect "concurrent terminal join" (Ok ()) (Mailbox.join mailbox)
+
 (** An admitted terminal reply remains owned by the queue even when its caller
     abandons the pending capability. The owner must still execute that request,
     settle its private reply cell, and reach [Stopped] so [join] cannot wait on
@@ -328,6 +382,7 @@ let () =
   test_close_drains_and_rejects ();
   test_close_releases_blocked_producer ();
   test_terminal_call_closes_a_full_mailbox_atomically ();
+  test_concurrent_terminal_submissions_have_one_winner ();
   test_abandoned_terminal_reply_does_not_strand_join ();
   test_handler_failure ();
   test_handler_failure_releases_waiters ();

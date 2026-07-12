@@ -41,7 +41,9 @@ The native bridge follows the same rule. The installed artifact contains the
 static archive needed to link an OCaml-owned executable, but does not install
 the C header or Rust source. No public type exposes a Rust handle, protobuf,
 JSON bridge record, mailbox, supervisor state, or an implementation-library
-record. `Payload.t`, `Duration.t`, `Error.t`, `Codec.t`, `Workflow.t`, and
+record. `Payload.t` is intentionally a public record containing codec metadata
+and data bytes, so application codecs can construct and inspect payloads
+without a private CMI. `Duration.t`, `Error.t`, `Codec.t`, `Workflow.t`, and
 `Activity.t` are abstract in the installed `Temporal` signature. Worker
 adapters use the documented `name`, `input`, `output`, and `implementation`
 accessors; they do not rely on record layout.

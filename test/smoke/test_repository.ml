@@ -157,8 +157,8 @@ let test_internal_libraries_are_package_private () =
   let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
   let private_libraries =
     [ "lib/base/dune"; "lib/protocol/dune"; "lib/core_bridge/dune";
-      "lib/runtime/dune"; "lib/mailbox_processor/dune";
-      "lib/sdk_supervisor/dune" ]
+      "lib/future_kernel/dune"; "lib/runtime/dune";
+      "lib/mailbox_processor/dune"; "lib/sdk_supervisor/dune" ]
   in
   List.iter
     (fun relative_path ->

@@ -8,6 +8,7 @@
   ../../dune-project
   ../../lib/base/dune
   ../../lib/core_bridge/dune
+  ../../lib/future_kernel/dune
   ../../lib/mailbox_processor/dune
   ../../lib/mailbox_processor/mailbox_processor.mli
   ../../lib/protocol/dune

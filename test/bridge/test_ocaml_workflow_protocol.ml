@@ -380,6 +380,27 @@ let test_metadata_key_canonicalization () =
   if a >= z then failwith "metadata keys were not normalized lexicographically";
   ignore (unwrap (Protocol.decode_completion encoded))
 
+(** Proves the typed protocol encoder rejects duplicate metadata names before
+    constructing a JSON object. The public codec performs the same validation
+    earlier, while this test protects the bridge-facing representation used by
+    client and worker command encoders. *)
+let test_duplicate_metadata_rejected () =
+  let payload : Protocol.payload =
+    {
+      metadata =
+        [ ("encoding", Bytes.of_string "json/plain");
+          ("encoding", Bytes.of_string "json/plain") ];
+      data = Bytes.of_string "value";
+    }
+  in
+  let completion : Protocol.completion =
+    {
+      run_id = "run-duplicate-metadata";
+      commands = [ Complete_workflow { result = Some payload } ];
+    }
+  in
+  require_error (Protocol.encode_completion completion)
+
 (** Proves configurable Temporal identifiers are not constrained by an
     invented server-default limit while the protocol safety ceiling remains
     enforced. *)
@@ -693,6 +714,7 @@ let () =
   run "malformed workflow documents" test_invalid_documents;
   run "large nested payload" test_large_nested_payload;
   run "metadata key canonicalization" test_metadata_key_canonicalization;
+  run "duplicate metadata rejected" test_duplicate_metadata_rejected;
   run "identifier safety limit" test_identifier_safety_limit;
   run "activation cross-field invariants" test_activation_cross_field_invariants;
   run "large activation job batch" test_large_activation_job_batch;

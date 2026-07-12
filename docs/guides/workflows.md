@@ -174,6 +174,12 @@ built-in codecs are:
 - `Temporal.Codec.option codec`, which uses the nested codec for `Some` and
   `binary/null` for `None`.
 
+Payload metadata is object-like on the Temporal wire, so each metadata name
+must occur at most once. The public and private codecs reject duplicate names
+with a typed codec error before invoking application conversion code; this
+keeps manually constructed payloads subject to the same invariant as payloads
+received through the strict bridge protocol.
+
 JSON here is a payload choice, not the private OCaml/Rust bridge protocol and
 not the format sent to Temporal Server. The bridge's Rust side converts its
 strict semantic JSON records to Temporal Core protobuf; see the [protocol

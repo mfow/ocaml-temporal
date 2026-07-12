@@ -86,24 +86,20 @@ async fn force_fail_undeliverable_activity(
     let _ = worker.complete_activity_task(completion).await;
 }
 
-/// Returns whether a lease failure belongs to a cancellation update that no
-/// longer has an independent Core completion obligation.
+/// Returns whether a failed cancellation handoff is a stale update.
 ///
 /// Core represents cancellation as an update on the original activity token,
-/// not as a second activity execution. The poll lane can enqueue that update
-/// while the owner Domain is still completing the start task. By the time the
-/// owner drains the update, the start may still be leased (`AlreadyLeased`) or
-/// may already have completed (`UnknownActivity`). Both outcomes are normal
-/// cross-thread ordering, so completing the update again would fabricate a
-/// second completion for the same Core task. The caller must drop it and keep
-/// draining the lane. Start-shaped lease failures remain real delivery errors
-/// and continue through the force-failure path below.
+/// not as a second activity execution. A cancellation is deliverable while its
+/// start token remains in the ledger, even when the start has already been
+/// leased to OCaml. Only a token that has already completed is stale; trying to
+/// complete that update would fabricate a second completion for the same Core
+/// task. Start-shaped lease failures remain real delivery errors and continue
+/// through the force-failure path below.
 fn is_stale_activity_cancellation(task: &ActivityTask, error: CompleteError) -> bool {
-    matches!(task.variant, Some(activity_task::Variant::Cancel(_)))
-        && matches!(
-            error,
-            CompleteError::AlreadyLeased | CompleteError::UnknownActivity
-        )
+    matches!(
+        task.variant.as_ref(),
+        Some(activity_task::Variant::Cancel(_))
+    ) && matches!(error, CompleteError::UnknownActivity)
 }
 
 /// Returns the exact Core task surface implemented by the first worker slice.
@@ -473,9 +469,10 @@ impl PollLanes {
     ///
     /// Start-task lease failures force-fail the dequeued task through Core so
     /// the opaque token cannot remain outstanding after the language side
-    /// never observes it. Cancellation updates are advisory messages on the
-    /// start token: if their lease fails because the start is still leased or
-    /// already completed, they are dropped without a second Core completion.
+    /// never observes it. Cancellation updates share the start token's one
+    /// completion debt, but are handed to OCaml while that token remains in the
+    /// ledger; the cancellation handoff never acquires a second lease. Only a
+    /// cancellation that races with a completed start is dropped as stale.
     /// See [`Self::try_take_workflow`] for the handle requirement.
     pub fn try_take_activity(
         &mut self,
@@ -486,18 +483,25 @@ impl PollLanes {
             match ready {
                 Err(error) => return Some(Err(error)),
                 Ok(task) => {
+                    let kind = if matches!(
+                        task.variant.as_ref(),
+                        Some(activity_task::Variant::Cancel(_))
+                    ) {
+                        ActivityAdmission::Cancel
+                    } else {
+                        ActivityAdmission::Start
+                    };
                     let lease = self
                         .ledger
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
-                        .lease_activity(&task.task_token);
+                        .handoff_activity(&task.task_token, kind);
                     match lease {
                         Ok(()) => return Some(Ok(task)),
                         Err(error) if is_stale_activity_cancellation(&task, error) => {
-                            // The cancellation shares the start's exact Core
-                            // completion debt. It is safe to discard after
-                            // either lease ordering; submitting another
-                            // completion would be a duplicate-token race.
+                            // The start completed before this queued update was
+                            // drained. There is no remaining Core debt for a
+                            // cancellation-only notification to retire.
                             drop(task);
                         }
                         Err(error) => {
@@ -1252,6 +1256,39 @@ impl TaskLedger {
             }
             Some(_) => Err(CompleteError::AlreadyLeased),
             None => Err(CompleteError::UnknownActivity),
+        }
+    }
+
+    /// Hands one activity poll result to the OCaml supervisor.
+    ///
+    /// A `Start` transfers the single completion lease and therefore uses
+    /// [`Self::lease_activity`]. A `Cancel` is an update to that same start,
+    /// not another Core completion obligation; it is deliverable as long as
+    /// the token remains tracked, regardless of whether the start was already
+    /// leased. Keeping this distinction in the ledger prevents the poll lane
+    /// from dropping a real cancellation or inventing a second completion debt.
+    #[doc(hidden)]
+    pub fn handoff_activity(
+        &mut self,
+        task_token: &[u8],
+        kind: ActivityAdmission,
+    ) -> Result<(), CompleteError> {
+        match kind {
+            ActivityAdmission::Start => self.lease_activity(task_token),
+            ActivityAdmission::Cancel => self.ensure_activity_cancellation(task_token),
+        }
+    }
+
+    /// Confirms that a cancellation update still refers to a tracked start.
+    ///
+    /// This check does not change the start's lease bit or completion debt. A
+    /// missing token means the start completed before the queued cancellation
+    /// reached the owner Domain, so the update is stale and can be discarded.
+    fn ensure_activity_cancellation(&self, task_token: &[u8]) -> Result<(), CompleteError> {
+        if self.activities.contains_key(task_token) {
+            Ok(())
+        } else {
+            Err(CompleteError::UnknownActivity)
         }
     }
 

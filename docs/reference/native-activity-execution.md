@@ -131,6 +131,13 @@ with stable labels (`not_found`, `cancelled`, `timed_out`, `worker_shutdown`,
 native protocol; they are not re-encoded into an unrelated application
 payload.
 
+The Rust task ledger treats cancellation as an update to the original `Start`,
+not as another completion lease.  The update is still delivered to this
+adapter while its token remains tracked, including after the start has been
+handed to OCaml.  If the start completed before the owner drained the queued
+update, the token is gone and the update is stale, so it is discarded without
+submitting a duplicate completion.
+
 ## Completion retry and ownership
 
 The adapter keeps a small token-keyed map of pending completions.  The map is

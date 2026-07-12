@@ -1,8 +1,10 @@
 use super::*;
 use crate::activity_protocol::{
-    ActivityCancel, ActivityCancelReason, ActivityTask, ActivityTaskVariant,
+    ActivityCancel, ActivityCancelReason, ActivityStart, ActivityTask, ActivityTaskVariant,
 };
-use crate::workflow_protocol::{Activation, Timestamp};
+use crate::workflow_protocol::{Activation, Timestamp, WorkflowExecution};
+use temporalio_common::protos::coresdk::activity_task as core_activity_task;
+use temporalio_common::protos::coresdk::activity_task::ActivityTask as CoreActivityTask;
 
 /// Builds the smallest ordinary activation needed to test retained identity
 /// without involving Temporal Core or a network worker.
@@ -17,6 +19,37 @@ fn activation(run_id: &str, history_length: u32) -> Activation {
         history_length,
         jobs: Vec::new(),
         metadata: None,
+    }
+}
+
+/// Builds a valid start task that shares its opaque token with cancellation
+/// updates in the rejection-ledger regression below.
+fn start_activity_task() -> ActivityTask {
+    ActivityTask {
+        task_token: "AAEC".to_owned(),
+        variant: ActivityTaskVariant::Start(Box::new(ActivityStart {
+            workflow_namespace: "default".to_owned(),
+            workflow_type: "example.workflow".to_owned(),
+            workflow_execution: WorkflowExecution {
+                workflow_id: "workflow-1".to_owned(),
+                run_id: "run-1".to_owned(),
+            },
+            activity_id: "activity-1".to_owned(),
+            activity_type: "example.activity".to_owned(),
+            header_fields: std::collections::BTreeMap::new(),
+            input: Vec::new(),
+            heartbeat_details: Vec::new(),
+            scheduled_time: None,
+            current_attempt_scheduled_time: None,
+            started_time: None,
+            attempt: 1,
+            schedule_to_close_timeout: None,
+            start_to_close_timeout: None,
+            heartbeat_timeout: None,
+            retry_policy: None,
+            priority: None,
+            standalone_run_id: String::new(),
+        })),
     }
 }
 
@@ -141,4 +174,79 @@ fn activity_rejection_requires_the_complete_retained_document() {
     // task, so retirement must clear every semantic document for that token.
     retire_activity_semantics(&mut pending, &[0, 1, 2]);
     assert!(pending.is_empty());
+}
+
+/// Rejecting a cancellation update removes only that document and leaves the
+/// shared Start document available for its eventual completion.
+#[test]
+fn cancellation_rejection_preserves_shared_start_document() {
+    let start = start_activity_task();
+    let cancellation = ActivityTask {
+        task_token: "AAEC".to_owned(),
+        variant: ActivityTaskVariant::Cancel(ActivityCancel {
+            reason: ActivityCancelReason::WorkerShutdown,
+            details: None,
+        }),
+    };
+    let mut pending = HashMap::new();
+    retain_activity_task(&mut pending, vec![0, 1, 2], start.clone());
+    retain_activity_task(&mut pending, vec![0, 1, 2], cancellation.clone());
+
+    let encoded =
+        activity_protocol::encode_task(&cancellation).expect("cancellation update encodes");
+    let rejection = activity_rejection_task(&pending, encoded.as_bytes())
+        .expect("retained cancellation update correlates");
+    assert!(matches!(
+        &rejection.task.variant,
+        ActivityTaskVariant::Cancel(_)
+    ));
+    retire_activity_semantic(&mut pending, &rejection.task_token, &rejection.task);
+
+    let retained = pending
+        .get(&vec![0, 1, 2])
+        .expect("the shared start remains leased");
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0], start);
+}
+
+/// Conversion failures from the native poll path classify Cancel as a
+/// non-owning update, while an unrepresentable Start still owns the lease that
+/// must be failed before the worker can shut down.
+#[test]
+fn conversion_failure_classifies_cancel_without_start_completion_debt() {
+    let malformed_cancel = CoreActivityTask {
+        task_token: vec![0, 1, 2],
+        variant: Some(core_activity_task::activity_task::Variant::Cancel(
+            core_activity_task::Cancel {
+                reason: i32::MAX,
+                details: None,
+            },
+        )),
+    };
+    assert!(
+        activity_protocol::task_from_core(&malformed_cancel).is_err(),
+        "unknown cancellation reasons must fail semantic conversion"
+    );
+    assert!(!activity_task_owns_completion_debt(&malformed_cancel));
+
+    let unrepresentable_start = CoreActivityTask {
+        task_token: vec![0, 1, 2],
+        variant: Some(core_activity_task::activity_task::Variant::Start(
+            core_activity_task::Start {
+                is_local: true,
+                ..Default::default()
+            },
+        )),
+    };
+    assert!(
+        activity_protocol::task_from_core(&unrepresentable_start).is_err(),
+        "local activity tasks must fail semantic conversion"
+    );
+    assert!(activity_task_owns_completion_debt(&unrepresentable_start));
+
+    let missing_variant = CoreActivityTask {
+        task_token: vec![0, 1, 2],
+        variant: None,
+    };
+    assert!(activity_task_owns_completion_debt(&missing_variant));
 }

@@ -196,12 +196,13 @@ module Make (Backend : Backend) = struct
       with
       | _thread -> ()
       | exception _ ->
-          (try ignore (shutdown supervisor)
-           with _ ->
-             (* Even inline shutdown failed. Close the mailbox so the owner
-                Domain can exit; the runtime custom-block finalizer remains the
-                ultimate native reclaim path. *)
-             Mailbox.close supervisor.mailbox)
+          (* Never block the finalizer Domain waiting on the mailbox owner
+             (which may be this Domain). Admit terminal shutdown without
+             awaiting, then close so an idle owner can drain and exit. The
+             runtime custom-block finalizer remains the last-resort native
+             reclaim path if the owner never joins. *)
+          (try initiate_shutdown supervisor with _ -> ());
+          Mailbox.close supervisor.mailbox
 
   (** Starts the mailbox first so backend construction itself occurs on the
       owner Domain. Failed initialization stops and joins that Domain before

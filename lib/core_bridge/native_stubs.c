@@ -371,6 +371,68 @@ CAMLprim value ocaml_temporal_worker_start(value runtime, value input) {
                              ocaml_temporal_core_v1_worker_start_json);
 }
 
+/* Construct the workflow-only replay worker from strict settings. Replay
+ * history input is copied by the common helper before the OCaml runtime lock
+ * is released; Rust owns the Core graph after this call returns. */
+CAMLprim value ocaml_temporal_replay_worker_start(value runtime, value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_replay_worker_start_json);
+}
+
+/* Feed one replay-history document while Rust drives the bounded feeder on its
+ * Core runtime. The helper releases the OCaml runtime lock for backpressure. */
+CAMLprim value ocaml_temporal_replay_worker_feed_history(value runtime,
+                                                         value input) {
+  return invoke_runtime_json(
+      runtime, input,
+      ocaml_temporal_core_v1_replay_worker_feed_history_json);
+}
+
+/* Close replay input; Core will publish terminal shutdown after all admitted
+ * histories and their workflow completions have been consumed. */
+CAMLprim value ocaml_temporal_replay_worker_finish_input(value runtime) {
+  return invoke_runtime(
+      runtime, ocaml_temporal_core_v1_replay_worker_finish_input);
+}
+
+/* Drain one replay activation without waiting on Core. */
+CAMLprim value ocaml_temporal_replay_worker_try_poll_workflow(value runtime) {
+  return invoke_runtime(
+      runtime, ocaml_temporal_core_v1_replay_worker_try_poll_workflow);
+}
+
+/* Wait for replay readiness with the OCaml runtime lock released. */
+CAMLprim value ocaml_temporal_replay_worker_wait_workflow(value runtime) {
+  return invoke_runtime(
+      runtime, ocaml_temporal_core_v1_replay_worker_wait_workflow);
+}
+
+/* Submit one replay workflow completion after copying the JSON input. */
+CAMLprim value ocaml_temporal_replay_worker_complete_workflow(value runtime,
+                                                              value input) {
+  return invoke_runtime_json(
+      runtime, input,
+      ocaml_temporal_core_v1_replay_worker_complete_workflow_json);
+}
+
+/* Retire one replay activation after OCaml semantic decode failure. */
+CAMLprim value ocaml_temporal_replay_worker_reject_workflow(value runtime,
+                                                            value input) {
+  return invoke_runtime_json(
+      runtime, input,
+      ocaml_temporal_core_v1_replay_worker_reject_workflow_json);
+}
+
+/* Finalize a naturally drained replay while Rust retains ownership on error. */
+CAMLprim value ocaml_temporal_replay_worker_finalize(value runtime) {
+  return invoke_runtime(runtime, ocaml_temporal_core_v1_replay_worker_finalize);
+}
+
+/* Explicitly dispose replay and force-complete native debts. */
+CAMLprim value ocaml_temporal_replay_worker_dispose(value runtime) {
+  return invoke_runtime(runtime, ocaml_temporal_core_v1_replay_worker_dispose);
+}
+
 /* Drain one ready workflow activation without waiting on Core. The Rust
  * operation only touches the owner Domain's ready queue; it never invokes
  * OCaml from a Tokio thread. `NOT_READY` is carried in the normal response so

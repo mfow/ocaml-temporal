@@ -111,6 +111,12 @@ and bridge, read the [documentation guide](../README.md) first.
 - Rust alone handles Temporal/Core protobuf. Strict JSON activation and
   completion documents cross the language boundary as owned buffers with one
   explicit free path; OCaml copies them into typed values before execution.
+- Replay history uses the closed JSON document in
+  `docs/schemas/bridge/replay-history.schema.json`. OCaml validates the
+  envelope, canonical base64, and size limits before the supervisor sends it;
+  Rust repeats those checks and then applies Core's protobuf/history
+  invariants. A replay feeder has one bounded slot, and a completion or
+  rejection is accepted only for the exact activation lease that was polled.
 - The private supervisor validates native poll bytes before returning typed
   workflow or activity values to another Domain. It canonically encodes and
   reparses typed completions before entering C.

@@ -92,6 +92,21 @@ let () =
   | Error { status = Protocol; message } ->
       assert (String.length message > 0)
   | _ -> failwith "malformed activity rejection was accepted");
+  (* Replay histories are checked in OCaml before the C call, then checked
+     again by Rust. Starting the worker here proves this private path does not
+     require a client connection; malformed input proves the sender-side
+     validator rejects it without creating a feeder entry. *)
+  unwrap (Bridge.replay_worker_start runtime worker_config);
+  (match
+     Bridge.replay_worker_feed_history runtime
+       (Bytes.of_string
+          {|{"workflow_id":"run","history":{"encoding":"base64","data":"not canonical"}}|})
+   with
+  | Error { status = Protocol; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "malformed replay history was accepted");
+  unwrap (Bridge.replay_worker_dispose runtime);
+  unwrap (Bridge.replay_worker_dispose runtime);
   unwrap (Bridge.worker_shutdown runtime);
   unwrap (Bridge.worker_shutdown runtime);
   unwrap (Bridge.client_disconnect runtime);

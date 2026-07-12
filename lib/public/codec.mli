@@ -21,7 +21,9 @@ val make :
 val encode : 'a t -> 'a -> (payload, Error.t) result
 
 (** Converts a Temporal payload back into a typed OCaml value after checking
-    that its encoding metadata matches the codec. *)
+    that its encoding metadata matches the codec. Duplicate metadata names are
+    malformed because the bridge represents metadata as a JSON object; they
+    produce a typed codec error before the decoder runs. *)
 val decode : 'a t -> payload -> ('a, Error.t) result
 
 (** Encodes strings as JSON using the standard Temporal [json/plain] encoding
@@ -37,5 +39,6 @@ val bytes : bytes t
 val unit : unit t
 
 (** Encodes [None] as [binary/null]. A [Some value] uses the supplied codec and
-    therefore keeps that codec's encoding name. *)
+    therefore keeps that codec's encoding name. Duplicate metadata names are
+    rejected when decoding either representation. *)
 val option : 'a t -> 'a option t

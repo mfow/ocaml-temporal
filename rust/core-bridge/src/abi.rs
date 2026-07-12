@@ -452,6 +452,9 @@ impl Runtime {
             let _ = sender.send(result);
         });
 
+        // The ticket is moved rather than cloned at this boundary.  After the
+        // task starts, no avoidable allocation may unwind before its handle is
+        // registered for shutdown cleanup.
         self.pending_starts.insert(
             ticket,
             PendingStart {

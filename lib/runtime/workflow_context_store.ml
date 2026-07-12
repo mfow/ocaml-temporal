@@ -209,14 +209,21 @@ let start_child_workflow context ~id ~name ~input
     ?(cancellation_type = Activation.Child_try_cancel) ~decode () =
   let seq = allocate_sequence context in
   (* Keep this bit in the handle closure rather than in the pending table so a
-     repeated cancel remains idempotent even after Core has removed the child
-     state while delivering its terminal result. *)
+    repeated cancel remains idempotent even after Core has removed the child
+    state while delivering its terminal result. *)
   let cancellation_requested = ref false in
+  (* Core removes the table entry before the resolver runs. Retain this
+     terminal marker in the handle closure so a valid cancellation arriving
+     after natural completion or a start failure is the documented no-op,
+     while a cancellation after an unrelated shutdown still reports a bridge
+     defect. *)
+  let terminal = ref false in
   let future, resolve = Scheduler.promise context.scheduler ~outside_error in
   Hashtbl.add context.child_workflows seq
     {
       resolve =
         (fun result ->
+          terminal := true;
           match result with
           | Error error -> resolve (Error error)
           | Ok payload -> (
@@ -255,7 +262,7 @@ let start_child_workflow context ~id ~name ~input
                ~message:"child cancellation reason must be valid UTF-8")
         else (
           match Hashtbl.find_opt context.child_workflows seq with
-          | None when not !cancellation_requested ->
+          | None when not !terminal && not !cancellation_requested ->
               Error
                 (bridge_error
                    (Printf.sprintf

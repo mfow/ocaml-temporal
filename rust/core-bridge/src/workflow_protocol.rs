@@ -584,12 +584,26 @@ fn from_serde(value: serde_json::Value) -> Result<JsonValue, ProtocolError> {
     }
 }
 
-/// Requires a bounded nonempty Temporal identifier.
+/// Requires a bounded nonempty Temporal identifier that is safe for both
+/// semantic JSON and the official Core string fields. Rust's `&str` invariant
+/// already guarantees UTF-8, but the explicit check mirrors OCaml's byte-level
+/// validator and documents the bilateral boundary for future refactors that
+/// may construct values from raw bytes.
 pub(crate) fn identifier(value: &str, path: &str) -> Result<(), ProtocolError> {
     if value.is_empty() || value.len() > MAX_STRING_BYTES {
         Err(ProtocolError::invalid(
             path,
             "identifier is empty or exceeds the protocol string safety limit",
+        ))
+    } else if value.as_bytes().contains(&0) {
+        Err(ProtocolError::invalid(
+            path,
+            "identifier must not contain NUL",
+        ))
+    } else if std::str::from_utf8(value.as_bytes()).is_err() {
+        Err(ProtocolError::invalid(
+            path,
+            "identifier must be valid UTF-8",
         ))
     } else {
         Ok(())

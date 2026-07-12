@@ -356,14 +356,15 @@ let run_with_deadline input =
 ```
 
 `Scope.create` and `Scope.with_scope` return ordinary typed `result` values.
-`Scope.cancel` is idempotent, `Scope.check` is a non-blocking cancellation
-check, and `Scope.await` returns an `Error.t` with category `Cancelled` when
-the scope has been cancelled before the observed future completes. A scope is
-owned by one workflow execution and an active scope must be cancelled from
-its owning scheduler; calls between scheduler runs, from another OCaml
-Domain, or after shutdown return a typed defect. This keeps signal delivery
-deterministic and prevents a cancellation request from being recorded without
-an owner queue turn that can resume waiters.
+`Scope.cancel` is idempotent when repeated by the owning scheduler,
+`Scope.check` is a non-blocking cancellation check, and `Scope.await` returns
+an `Error.t` with category `Cancelled` when the scope has been cancelled before
+the observed future completes. `Scope.is_cancelled` is also typed because
+status reads must be serialized with the owning workflow Domain. Every scope
+operation called between scheduler runs, from another OCaml Domain, or after
+shutdown returns a typed ownership defect. This keeps signal delivery
+deterministic and prevents a cancellation request or status read from racing
+the queue that owns the scope.
 
 This first scope slice is intentionally cooperative. It cancels observation of
 the wrapped future and lets workflow teardown release still-pending operations;
@@ -410,8 +411,9 @@ let stop_child () =
 let result = Temporal.Future.await (Temporal.Child_workflow.future child)
 ```
 
-`cancel` returns a typed result and is idempotent for one handle; it does not
-raise for an expected Temporal failure. The `Try_cancel` policy asks Core to
+`cancel` returns a typed result and is idempotent for one handle, including a
+valid call made after the child naturally completes or its start fails; it does
+not raise for an expected Temporal failure. The `Try_cancel` policy asks Core to
 request cancellation and report the child result promptly. Use
 `Wait_cancellation_completed` or `Wait_cancellation_requested` when the parent
 must remain pending until Core observes that stage, or `Abandon` when no child

@@ -44,10 +44,11 @@ and bridge, read the [documentation guide](../README.md) first.
   pending inputs use deterministic callback order.
 - A `Temporal.Scope` signal belongs to the same scheduler as the workflow
   futures it observes. Cancellation resolves only that private signal, never
-  the underlying activity, child-workflow, or timer future; a scope operation
-  from another scheduler (including while that scheduler is paused between
-  runs) returns a typed defect, and normal workflow teardown closes any
-  still-pending signal and its callbacks.
+  the underlying activity, child-workflow, or timer future. Every scope
+  operation, including `is_cancelled` and `check`, is owner-checked (including
+  while the scheduler is paused between runs), so a foreign or stale handle
+  returns a typed defect rather than racing mutable state. Normal workflow
+  teardown closes any still-pending signal and its callbacks.
 - Combining futures from different executions returns a ready typed defect
   owned by the leading input rather than raising an operational exception.
 - User callback exceptions are contained and reported as scheduler defects.

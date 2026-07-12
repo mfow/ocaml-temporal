@@ -57,35 +57,48 @@ let create () =
           state = Active;
         }
 
-(** Checks whether the current scheduler is the one that owns [scope]. This
-    prevents a caller on another Domain from enqueueing a cancellation signal
-    into a queue it does not own. *)
+(** Checks whether the current scheduler is the one that owns [scope] and is
+    still processing workflow callbacks. The liveness check makes a handle
+    stale as soon as its scheduler has been shut down, including when teardown
+    is requested from inside the scheduler's final drain. The short-circuit
+    keeps the liveness callback from reading scheduler state on a foreign
+    Domain. *)
 let owns_scheduler scope =
   Temporal_runtime.Future_store.current_owner_matches scope.owner_id
+  && scope.callbacks_live ()
 
 (** Records cancellation and signals waiters through the owning scheduler.
     An active scope cannot be cancelled between scheduler runs or from another
     Domain: doing so would mutate state without a queue turn that can resume
-    its waiters. Once a scope is already cancelled, repeated calls are pure
-    idempotent reads and therefore remain safe. *)
+    its waiters. The ownership check happens before reading [state], so even a
+    repeated call cannot race an owner-domain cancellation. *)
 let cancel scope =
-  match scope.state with
-  | Cancelled -> Ok ()
-  | Active ->
-      if not (owns_scheduler scope) then
-        Error (ownership_error "cancel")
-      else (
+  if not (owns_scheduler scope) then Error (ownership_error "cancel")
+  else
+    match scope.state with
+    | Cancelled -> Ok ()
+    | Active ->
         scope.state <- Cancelled;
         if scope.callbacks_live () then scope.resolve (Ok ());
-        Ok ())
+        Ok ()
 
-(** Reports the scope state without scheduling work or touching the resolver. *)
+(** Reports the scope state without scheduling work or touching the resolver.
+    Status is an owner-domain operation just like [cancel]: returning a typed
+    defect for a foreign or stale handle prevents a cross-Domain read of the
+    mutable state and makes post-shutdown use explicit. *)
 let is_cancelled scope =
-  match scope.state with Cancelled -> true | Active -> false
+  if not (owns_scheduler scope) then Error (ownership_error "is_cancelled")
+  else Ok (match scope.state with Cancelled -> true | Active -> false)
 
-(** Returns the scope's current cancellation result. *)
+(** Returns the scope's current cancellation result. The owner check is kept
+    here rather than delegated to [is_cancelled] so the operation has one
+    clear typed failure for a foreign or already-shutdown execution. *)
 let check scope =
-  if is_cancelled scope then Error (cancellation_error ()) else Ok ()
+  if not (owns_scheduler scope) then Error (ownership_error "check")
+  else
+    match scope.state with
+    | Cancelled -> Error (cancellation_error ())
+    | Active -> Ok ()
 
 (** Verifies that [scope] is being used by its owner scheduler before it can
     suspend a workflow fiber. Ready futures still obey this check: accepting a

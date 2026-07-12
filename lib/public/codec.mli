@@ -4,7 +4,7 @@
 type payload = Payload.t = { metadata : (string * string) list; data : bytes }
 
 (** A codec converts values of type ['a] to and from Temporal payloads. *)
-type 'a t = 'a Temporal_base.Codec.t
+type 'a t
 
 (** [make ~encoding ~encode ~decode] creates a codec from two functions. The
     [encode] function converts a value to bytes, and [decode] converts those

@@ -31,6 +31,7 @@ test ! -e "$private_root/temporal_core_bridge/abi.rs"
 for private_library in \
   temporal_base \
   temporal_core_bridge \
+  temporal_future_kernel \
   temporal_mailbox_processor \
   temporal_protocol \
   temporal_runtime \
@@ -77,7 +78,16 @@ OCAMLPATH="$consumer_ocamlpath" opam exec -- \
 # source tree keeps them in a non-Dune template so the repository's normal
 # `dune build` does not intentionally fail while compiling these fixtures.
 cp "$output_dir/dune-negative" "$output_dir/dune"
-for forbidden_target in forbidden_mailbox forbidden_supervisor forbidden_bridge; do
+for forbidden_target in \
+  forbidden_mailbox \
+  forbidden_supervisor \
+  forbidden_bridge \
+  forbidden_base \
+  forbidden_runtime \
+  forbidden_protocol \
+  forbidden_native_worker \
+  forbidden_backend \
+  forbidden_future_kernel; do
   if OCAMLPATH="$consumer_ocamlpath" opam exec -- \
     dune build --root "$dune_output_dir" \
       "./$forbidden_target.exe" >"$output_dir/$forbidden_target.log" 2>&1; then

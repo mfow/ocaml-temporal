@@ -7,15 +7,17 @@ module Native_execution = Temporal_runtime.Native_execution
 let protocol_payload text : Protocol.payload =
   { Protocol.metadata = []; data = Bytes.of_string text }
 
-(** Returns the same bytes in the runtime payload representation. *)
-let runtime_payload text : Temporal.Payload.t =
-  { metadata = []; data = Bytes.of_string text }
+(** Returns the same bytes in the base payload representation consumed by the
+    private execution state machine. This test intentionally bypasses the
+    public opaque adapter because it exercises the low-level translator. *)
+let runtime_payload text : Temporal_base.Codec.payload =
+  { Temporal_base.Payload.metadata = []; data = Bytes.of_string text }
 
-(** Returns a unit payload in the representation used by the public codec. *)
+(** Returns a unit payload in the base representation used by the translator. *)
 let runtime_unit_payload () =
-  match Temporal.Codec.encode Temporal.Codec.unit () with
+  match Temporal_base.Codec.encode Temporal_base.Codec.unit () with
   | Ok payload -> payload
-  | Error error -> failwith (Temporal.Error.message error)
+  | Error error -> failwith (Temporal_base.Error.message error)
 
 (** Fails with the stable translation diagnostic when a result was expected. *)
 let unwrap label = function
@@ -205,7 +207,7 @@ let test_activity_failure_details_are_preserved () =
   in
   match translated.jobs with
   | [ Activation.Resolve_activity { result = Error error; _ } ] ->
-      let view = Temporal.Error.view error in
+      let view = Temporal_base.Error.view error in
       begin match view.details with
       | [ payload ] when Bytes.to_string payload.data = "failure-details" -> ()
       | _ -> failwith "wrapped activity failure details were discarded"
@@ -304,8 +306,9 @@ let test_cancellation_and_eviction () =
     result for the canonical unit payload. *)
 let test_activate_terminal_completion () =
   let workflow =
-    Temporal.Workflow.define ~name:"native_terminal" ~input:Temporal.Codec.unit
-      ~output:Temporal.Codec.unit (fun () -> Ok ())
+    Temporal_base.Definition.make ~name:"native_terminal"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:(Some (fun () -> Ok ()))
   in
   let execution = Execution.start workflow () in
   let completion =
@@ -332,8 +335,9 @@ let test_activate_terminal_completion () =
     commands, while retaining the exact run identity. *)
 let test_activate_eviction_completion () =
   let workflow =
-    Temporal.Workflow.define ~name:"native_eviction" ~input:Temporal.Codec.unit
-      ~output:Temporal.Codec.unit (fun () -> Ok ())
+    Temporal_base.Definition.make ~name:"native_eviction"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:(Some (fun () -> Ok ()))
   in
   let execution = Execution.start workflow () in
   let completion =
@@ -529,8 +533,11 @@ let test_activity_command_translation_and_validation () =
       ()
   | _ -> failwith "child command fields were not preserved"
   end;
-  let invalid_metadata : Temporal.Payload.t =
-    { metadata = [ ("encoding", "\255") ]; data = Bytes.empty }
+  let invalid_metadata : Temporal_base.Codec.payload =
+    {
+      Temporal_base.Payload.metadata = [ ("encoding", "\255") ];
+      data = Bytes.empty;
+    }
   in
   expect_error_code "binary metadata" "invalid_message"
     (Native_execution.command_to_protocol
@@ -552,8 +559,9 @@ let test_duplicate_sequence_rejected () =
     typed terminal bridge failure, preserving Core's completion semantics. *)
 let test_unknown_sequence_becomes_failure () =
   let workflow =
-    Temporal.Workflow.define ~name:"native_unknown" ~input:Temporal.Codec.unit
-      ~output:Temporal.Codec.unit (fun () -> Ok ())
+    Temporal_base.Definition.make ~name:"native_unknown"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:(Some (fun () -> Ok ()))
   in
   let execution = Execution.start workflow () in
   let completion =

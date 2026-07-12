@@ -156,7 +156,7 @@ let copy_payload (payload : Payload.t) : Payload.t =
   { payload with data = Bytes.copy payload.data }
 
 (** Creates a structured bridge error without exposing a backend exception. *)
-let bridge_error message = Temporal_base.Error.make ~category:`Bridge ~message ()
+let bridge_error message = Error.make ~category:`Bridge ~message ()
 
 (** Creates a structured defect for malformed configuration or impossible local
     state transitions. *)
@@ -208,7 +208,7 @@ let native_client_error = function
         | None -> ""
         | Some run_id -> "; existing_run_id=" ^ run_id
       in
-      Temporal_base.Error.make ~non_retryable:true ~category:`Workflow
+      Error.make ~non_retryable:true ~category:`Workflow
         ~message:
           (Printf.sprintf "workflow %S is already started%s" workflow_id
              existing_run_id)
@@ -368,14 +368,14 @@ let workflow_failure_error ?(category = `Workflow)
     ]
     |> List.filter (fun value -> not (String.equal value ""))
   in
-  Temporal_base.Error.make ~non_retryable ~category
+  Error.make ~non_retryable ~category
     ~details:(failure_details failure)
     ~message:(String.concat " " context) ()
 
 (** Builds a typed cancellation/termination error from terminal detail
     payloads. Details remain binary-safe and are not interpolated into logs. *)
 let terminal_details_error ~category ~message details =
-  Temporal_base.Error.make ~category
+  Error.make ~category
     ~details:(List.map public_payload details) ~message ()
 
 (** Converts one native wait response into the existing public terminal-result
@@ -389,11 +389,11 @@ let native_terminal_result (response : Client_protocol.wait_response) =
       | [ payload ] -> Ok (Completed (public_payload payload))
       | [] ->
           Error
-            (Temporal_base.Error.make ~category:`Codec
+            (Error.make ~category:`Codec
                ~message:"Temporal completed without an output payload" ())
       | _ ->
           Error
-            (Temporal_base.Error.make ~category:`Codec
+            (Error.make ~category:`Codec
                ~message:
                  "Temporal completed with multiple output payloads; the public client expects one"
                ()))
@@ -407,7 +407,7 @@ let native_terminal_result (response : Client_protocol.wait_response) =
   | Client_protocol.Terminated { details } ->
       Ok
         (Terminated
-           (Temporal_base.Error.make ~non_retryable:true ~category:`Terminated
+           (Error.make ~non_retryable:true ~category:`Terminated
               ~details:(List.map public_payload details)
               ~message:"workflow execution was terminated" ()))
   | Client_protocol.Timed_out { successor } ->
@@ -418,7 +418,7 @@ let native_terminal_result (response : Client_protocol.wait_response) =
       in
       Ok
         (Timed_out
-           (Temporal_base.Error.make ~category:`Timeout
+           (Error.make ~category:`Timeout
               ~message:("workflow execution timed out" ^ successor) ()))
   | Client_protocol.Continued_as_new { successor } ->
       Ok
@@ -562,7 +562,7 @@ let native_client_start (client : native_client) (request : start_request) :
               (Some
                  (Client_protocol.Unknown { request_id; workflow_id })) ->
               Error
-                (Temporal_base.Error.make ~non_retryable:true ~category:`Bridge
+                (Error.make ~non_retryable:true ~category:`Bridge
                    ~message:
                      (Printf.sprintf
                         "Temporal did not prove whether workflow start %S was accepted (request_id=%S)"
@@ -580,7 +580,7 @@ let mock_client_start (client : mock_client) (request : start_request) =
       if client.closed then Error (bridge_error "client is shut down")
       else if Hashtbl.mem client.executions request.workflow_id then
         Error
-          (Temporal_base.Error.make ~non_retryable:true ~category:`Workflow
+          (Error.make ~non_retryable:true ~category:`Workflow
              ~message:"workflow id already exists" ())
       else
         let run_id =

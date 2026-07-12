@@ -9,6 +9,30 @@ let expect label expected actual =
     matches the public workflow API rather than relying on exceptions. *)
 let outside_error () = Temporal.Error.defect ~message:"outside scheduler"
 
+(** Adapts the scheduler's internal future through the package-private kernel.
+    Runtime tests intentionally create low-level futures so they can resolve
+    them directly; production code reaches the same kernel only through the
+    public facade's internal adapters, and installed consumers cannot import
+    this package-private module. *)
+let public_future ~outside_error future =
+  Temporal_future_kernel.make
+    ~await:(fun () -> Temporal_runtime.Future_store.await future)
+    ~await_gate:(fun register ->
+      Temporal_runtime.Future_store.await_gate future register)
+    ~observe:(Temporal_runtime.Future_store.observe future)
+    ~is_ready:(fun () -> Temporal_runtime.Future_store.is_ready future)
+    ~peek:(fun () -> Temporal_runtime.Future_store.peek future)
+    ~owner_id:(Temporal_runtime.Future_store.owner_id future)
+    ~outside_error
+    ~enqueue:(Temporal_runtime.Future_store.enqueue future)
+
+(** Creates a test-controlled scheduler promise and exposes it through the
+    public future interface. Resolvers stay internal because tests need to
+    model native completion events explicitly. *)
+let promise scheduler ~outside_error =
+  let future, resolve = Scheduler.promise scheduler ~outside_error in
+  (public_future ~outside_error future, resolve)
+
 (** Compares an SDK error by its stable public message rather than by its
     private representation. *)
 let expect_error_message label expected = function
@@ -19,10 +43,10 @@ let expect_error_message label expected = function
 let test_fifo_resume () =
   let scheduler = Scheduler.create () in
   let first, resolve_first =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside scheduler")
+    promise scheduler ~outside_error:(fun () -> "outside scheduler")
   in
   let second, resolve_second =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside scheduler")
+    promise scheduler ~outside_error:(fun () -> "outside scheduler")
   in
   let seen = ref [] in
   Scheduler.spawn scheduler (fun () ->
@@ -44,7 +68,7 @@ let test_fifo_resume () =
 let test_double_resolution () =
   let scheduler = Scheduler.create () in
   let _, resolve =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside scheduler")
+    promise scheduler ~outside_error:(fun () -> "outside scheduler")
   in
   resolve (Ok 1);
   match resolve (Ok 2) with
@@ -55,10 +79,10 @@ let test_double_resolution () =
 let test_combinators () =
   let scheduler = Scheduler.create () in
   let left, resolve_left =
-    Scheduler.promise scheduler ~outside_error
+    promise scheduler ~outside_error
   in
   let right, resolve_right =
-    Scheduler.promise scheduler ~outside_error
+    promise scheduler ~outside_error
   in
   let both = Temporal.Future.both (Temporal.Future.map String.length left) right in
   let result = ref None in
@@ -74,7 +98,7 @@ let test_combinators () =
 let test_outside_scheduler () =
   let scheduler = Scheduler.create () in
   let future, _ =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside scheduler")
+    promise scheduler ~outside_error:(fun () -> "outside scheduler")
   in
   expect "outside await" (Error "outside scheduler") (Temporal.Future.await future)
 
@@ -82,7 +106,7 @@ let test_outside_scheduler () =
 let test_immediate_and_multiple_waiters () =
   let scheduler = Scheduler.create () in
   let future, resolve =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside scheduler")
+    promise scheduler ~outside_error:(fun () -> "outside scheduler")
   in
   resolve (Ok 7);
   let seen = ref [] in
@@ -98,7 +122,7 @@ let test_immediate_and_multiple_waiters () =
 let test_map_error_and_owner_check () =
   let first_scheduler = Scheduler.create () in
   let first, resolve_first =
-    Scheduler.promise first_scheduler ~outside_error:(fun () -> "outside")
+    promise first_scheduler ~outside_error:(fun () -> "outside")
   in
   let mapped = Temporal.Future.map_error String.uppercase_ascii first in
   resolve_first (Error "failure");
@@ -110,8 +134,8 @@ let test_map_error_and_owner_check () =
 let test_aggregate_owner_errors_are_typed () =
   let first_scheduler = Scheduler.create () in
   let second_scheduler = Scheduler.create () in
-  let first, _ = Scheduler.promise first_scheduler ~outside_error in
-  let second, _ = Scheduler.promise second_scheduler ~outside_error in
+  let first, _ = promise first_scheduler ~outside_error in
+  let second, _ = promise second_scheduler ~outside_error in
   let expected =
     "Temporal future combinator received futures from different workflow executions"
   in
@@ -129,9 +153,9 @@ let test_aggregate_owner_errors_are_typed () =
     the first error by input order rather than completion order. *)
 let test_all_order_and_errors () =
   let scheduler = Scheduler.create () in
-  let first, resolve_first = Scheduler.promise scheduler ~outside_error in
-  let second, resolve_second = Scheduler.promise scheduler ~outside_error in
-  let third, resolve_third = Scheduler.promise scheduler ~outside_error in
+  let first, resolve_first = promise scheduler ~outside_error in
+  let second, resolve_second = promise scheduler ~outside_error in
+  let third, resolve_third = promise scheduler ~outside_error in
   let all = Temporal.Future.all [ first; second; third ] in
   resolve_third (Ok 3);
   resolve_first (Ok 1);
@@ -139,8 +163,8 @@ let test_all_order_and_errors () =
   resolve_second (Ok 2);
   expect "all completes" "complete" (Scheduler.run_label scheduler);
   expect "all input order" (Some (Ok [ 1; 2; 3 ])) (Temporal.Future.peek all);
-  let first, resolve_first = Scheduler.promise scheduler ~outside_error in
-  let second, resolve_second = Scheduler.promise scheduler ~outside_error in
+  let first, resolve_first = promise scheduler ~outside_error in
+  let second, resolve_second = promise scheduler ~outside_error in
   let failed = Temporal.Future.all [ first; second ] in
   resolve_second (Error (Temporal.Error.defect ~message:"second"));
   resolve_first (Error (Temporal.Error.defect ~message:"first"));
@@ -159,8 +183,8 @@ let test_all_empty () =
     deterministic scheduler callback order. Losing inputs remain observable. *)
 let test_race_order_and_loser () =
   let scheduler = Scheduler.create () in
-  let left, resolve_left = Scheduler.promise scheduler ~outside_error in
-  let right, resolve_right = Scheduler.promise scheduler ~outside_error in
+  let left, resolve_left = promise scheduler ~outside_error in
+  let right, resolve_right = promise scheduler ~outside_error in
   resolve_right (Ok "right");
   resolve_left (Ok "left");
   let ready_race = Temporal.Future.race left right in
@@ -168,8 +192,8 @@ let test_race_order_and_loser () =
   expect "ready race argument order"
     (Some (Ok (Temporal.Future.Left "left")))
     (Temporal.Future.peek ready_race);
-  let left, resolve_left = Scheduler.promise scheduler ~outside_error in
-  let right, resolve_right = Scheduler.promise scheduler ~outside_error in
+  let left, resolve_left = promise scheduler ~outside_error in
+  let right, resolve_right = promise scheduler ~outside_error in
   let pending_race = Temporal.Future.race left right in
   resolve_right (Ok "right");
   expect "pending race first callback" "blocked" (Scheduler.run_label scheduler);
@@ -186,8 +210,8 @@ let test_race_order_and_loser () =
     wait for or cancel later candidates. *)
 let test_first_completion_error () =
   let scheduler = Scheduler.create () in
-  let first, resolve_first = Scheduler.promise scheduler ~outside_error in
-  let second, resolve_second = Scheduler.promise scheduler ~outside_error in
+  let first, resolve_first = promise scheduler ~outside_error in
+  let second, resolve_second = promise scheduler ~outside_error in
   let earliest = Temporal.Future.first first [ second ] in
   resolve_second (Error (Temporal.Error.defect ~message:"won with error"));
   expect "first error processing" "blocked" (Scheduler.run_label scheduler);
@@ -202,7 +226,7 @@ let test_first_completion_error () =
 let test_mapper_defect_is_contained () =
   let scheduler = Scheduler.create () in
   let source, resolve =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside")
+    promise scheduler ~outside_error:(fun () -> "outside")
   in
   let _mapped = Temporal.Future.map (fun _ -> failwith "mapper defect") source in
   resolve (Ok 1);
@@ -214,10 +238,10 @@ let test_mapper_defect_is_contained () =
 let test_both_observes_sibling_after_error () =
   let scheduler = Scheduler.create () in
   let left, resolve_left =
-    Scheduler.promise scheduler ~outside_error
+    promise scheduler ~outside_error
   in
   let right, resolve_right =
-    Scheduler.promise scheduler ~outside_error
+    promise scheduler ~outside_error
   in
   let combined = Temporal.Future.both left right in
   resolve_left (Error (Temporal.Error.defect ~message:"left failed"));
@@ -233,7 +257,7 @@ let test_both_observes_sibling_after_error () =
 let test_shutdown_closes_pending_continuations () =
   let scheduler = Scheduler.create () in
   let future, resolve =
-    Scheduler.promise scheduler ~outside_error:(fun () -> "outside")
+    promise scheduler ~outside_error:(fun () -> "outside")
   in
   Scheduler.spawn scheduler (fun () -> ignore (Temporal.Future.await future));
   expect "shutdown setup" "blocked" (Scheduler.run_label scheduler);

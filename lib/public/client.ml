@@ -87,12 +87,12 @@ let validate_start_fields ~request_id ~id ~task_queue =
 let start client ?request_id ~workflow ~task_queue ~id ~input () =
   if Atomic.get client.closed then
     Error
-      (Temporal_base.Error.make ~category:`Bridge ~message:"client is shut down" ())
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
   else
     match validate_start_fields ~request_id ~id ~task_queue with
     | Error error -> Error error
     | Ok () -> (
-        match Codec.encode (Temporal_base.Definition.input workflow) input with
+        match Codec.encode (Workflow.input workflow) input with
         | Error error -> Error error
         | Ok encoded_input ->
             let request : Backend.start_request =
@@ -107,11 +107,11 @@ let start client ?request_id ~workflow ~task_queue ~id ~input () =
             Result.bind (Backend.client_start client.backend request) (fun response ->
                 if not (String.equal response.workflow_id id) then
                   Error
-                    (Temporal_base.Error.make ~category:`Bridge
+                    (Error.make ~category:`Bridge
                        ~message:"backend returned a different workflow id" ())
                 else if String.equal response.run_id "" then
                   Error
-                    (Temporal_base.Error.make ~category:`Bridge
+                    (Error.make ~category:`Bridge
                        ~message:"backend returned an empty run id" ())
                 else
                   Ok
@@ -127,7 +127,7 @@ let start client ?request_id ~workflow ~task_queue ~id ~input () =
 let wait handle =
   if Atomic.get handle.client.closed then
     Error
-      (Temporal_base.Error.make ~category:`Bridge ~message:"client is shut down" ())
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
   else
     let request : Backend.wait_request =
       { workflow_id = handle.workflow_id; run_id = handle.run_id }
@@ -136,7 +136,7 @@ let wait handle =
       | Backend.Completed payload ->
           Result.map
             (fun output -> Completed output)
-            (Codec.decode (Temporal_base.Definition.output handle.workflow) payload)
+            (Codec.decode (Workflow.output handle.workflow) payload)
       | Backend.Failed error -> Ok (Failed error)
       | Backend.Cancelled error -> Ok (Cancelled error)
       | Backend.Terminated error -> Ok (Terminated error)

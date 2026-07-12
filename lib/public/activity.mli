@@ -6,11 +6,7 @@ type ('input, 'output) implementation =
 (** A description of an activity and the OCaml types it accepts and returns.
     The definition stores the activity's Temporal name and its input and output
     codecs. It may also contain a local implementation. *)
-type ('input, 'output) t =
-  ( 'input,
-    'output,
-    ('input, 'output) implementation )
-  Temporal_base.Definition.t
+type ('input, 'output) t
 
 (** Creates a definition for an activity that this OCaml worker will run. *)
 val define :
@@ -30,6 +26,18 @@ val remote :
 
 (** Returns the activity type name sent to Temporal when it is scheduled. *)
 val name : ('input, 'output) t -> string
+
+(** Returns the codec used to decode activity inputs while keeping the activity
+    definition itself opaque. *)
+val input : ('input, 'output) t -> 'input Codec.t
+
+(** Returns the codec used to encode successful activity outputs. *)
+val output : ('input, 'output) t -> 'output Codec.t
+
+(** Returns executable code for a local definition, or [None] for a remote
+    reference. *)
+val implementation :
+  ('input, 'output) t -> ('input, 'output) implementation option
 
 (** The cancellation policy sent with an activity command. [Try_cancel] asks
     the activity worker to stop when possible, [Wait_cancellation_completed]

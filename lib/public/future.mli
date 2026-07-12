@@ -1,7 +1,13 @@
 (** A result that may become available in a later Temporal activation. A future
     belongs to one workflow execution. It is not a general-purpose promise for
-    coordinating operating-system threads. *)
-type ('value, 'error) t = ('value, 'error) Temporal_runtime.Future_store.t
+    coordinating operating-system threads. Its internal type identity is
+    shared with the package-private kernel only so adapters can pass a
+    scheduler-owned value through this facade without an unsafe cast. The
+    public signature exposes no kernel constructor, record field, callback, or
+    lifecycle operation. The kernel is a Dune package-private implementation
+    detail, unavailable through the supported [temporal-sdk] dependency and
+    not part of the public API. *)
+type ('value, 'error) t = ('value, 'error) Temporal_future_kernel.t
 
 (** Identifies the input that completed a heterogeneous race. *)
 type ('left, 'right) race = Left of 'left | Right of 'right

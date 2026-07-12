@@ -1,6 +1,8 @@
-(** Re-exports the internal payload record directly. This avoids copying the
-    metadata and bytes merely to cross between public and internal modules. *)
-type t = Temporal_base.Payload.t = {
+(** Owns the public payload record. Keeping this record independent from the
+    private protocol representation means an installed consumer never needs a
+    private CMI merely to construct or inspect a payload. Boundary adapters
+    make an explicit copy when converting it to native values. *)
+type t = {
   metadata : (string * string) list;
   data : bytes;
 }

@@ -65,7 +65,7 @@ let validate_name field value =
     references that do not contain executable OCaml code. *)
 let add_workflow registry (Workflow definition) =
   let name = Workflow.name definition in
-  match Temporal_base.Definition.implementation definition with
+  match Workflow.implementation definition with
   | None ->
       Error
         (Error.defect
@@ -84,7 +84,7 @@ let add_workflow registry (Workflow definition) =
     checks used for workflows. *)
 let add_activity registry (Activity definition) =
   let name = Activity.name definition in
-  match Temporal_base.Definition.implementation definition with
+  match Activity.implementation definition with
   | None ->
       Error
         (Error.defect
@@ -156,12 +156,20 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                         let native_workflows =
                           Name_map.bindings workflows
                           |> List.map (fun (_, Workflow_entry { definition; _ }) ->
-                                 Native_worker.register_workflow definition)
+                                 Native_worker.register_workflow
+                                   (Workflow_private.to_base definition))
                         in
                         let native_activities =
                           Name_map.bindings activities
                           |> List.map (fun (_, Activity_entry { definition; _ }) ->
-                                 Native_worker.register_activity definition)
+                                 Native_worker.register_activity
+                                   (Activity_private.to_base definition))
+                        in
+                        let native_result =
+                          Native_worker.create ~target_url ~namespace ~identity
+                            ~task_queue ~workflows:native_workflows
+                            ~activities:native_activities ()
+                          |> Result.map_error Error_private.of_base
                         in
                         Result.map
                           (fun backend ->
@@ -171,9 +179,7 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                               activities;
                               closed = Atomic.make false;
                             })
-                          (Native_worker.create ~target_url ~namespace ~identity
-                             ~task_queue ~workflows:native_workflows
-                             ~activities:native_activities ())))))
+                          native_result))))
 
 (** Converts an implementation exception into a structured defect rather than
     letting a user callback tear down the worker poll loop. *)
@@ -192,34 +198,34 @@ let dispatch_workflow worker task =
   match Name_map.find_opt task.Backend.workflow_name worker.workflows with
   | None ->
       Error
-        (Temporal_base.Error.make ~category:`Workflow
+        (Error.make ~category:`Workflow
            ~message:("unregistered workflow task: " ^ task.workflow_name) ())
   | Some (Workflow_entry { definition; implementation }) -> (
       match
-        Codec.decode (Temporal_base.Definition.input definition) task.input
+        Codec.decode (Workflow.input definition) task.input
       with
       | Error error -> Error error
       | Ok input -> (
           match protect_implementation "workflow" implementation input with
           | Error error -> Error error
-          | Ok output -> Codec.encode (Temporal_base.Definition.output definition) output))
+          | Ok output -> Codec.encode (Workflow.output definition) output))
 
 (** Dispatches one activity task through its typed codec and implementation. *)
 let dispatch_activity worker task =
   match Name_map.find_opt task.Backend.activity_name worker.activities with
   | None ->
       Error
-        (Temporal_base.Error.make ~category:`Activity
+        (Error.make ~category:`Activity
            ~message:("unregistered activity task: " ^ task.activity_name) ())
   | Some (Activity_entry { definition; implementation }) -> (
       match
-        Codec.decode (Temporal_base.Definition.input definition) task.input
+        Codec.decode (Activity.input definition) task.input
       with
       | Error error -> Error error
       | Ok input -> (
           match protect_implementation "activity" implementation input with
           | Error error -> Error error
-          | Ok output -> Codec.encode (Temporal_base.Definition.output definition) output))
+          | Ok output -> Codec.encode (Activity.output definition) output))
 
 (** Completes a workflow task even when dispatch produced a typed failure. The
     backend receives the failure so Core cannot be left waiting for a response;
@@ -262,7 +268,7 @@ let complete_activity worker backend task =
 let run_mock worker backend =
   if Atomic.get worker.closed then
     Error
-      (Temporal_base.Error.make ~category:`Bridge ~message:"worker is shut down" ())
+      (Error.make ~category:`Bridge ~message:"worker is shut down" ())
   else
     let rec loop workflow_shutdown activity_shutdown =
       if workflow_shutdown && activity_shutdown then Ok ()
@@ -305,28 +311,31 @@ let run_mock worker backend =
 let run worker =
   match worker.backend with
   | Mock_backend backend -> run_mock worker backend
-  | Native_backend backend -> Native_worker.run backend
+  | Native_backend backend ->
+      Native_worker.run backend |> Result.map_error Error_private.of_base
 
 (** Shuts down the backend once and remembers that no new poll may be admitted. *)
 let shutdown worker =
   if Atomic.compare_and_set worker.closed false true then
-    let result =
-      match worker.backend with
-      | Mock_backend backend -> Backend.worker_shutdown backend
-      | Native_backend backend -> Native_worker.shutdown backend
-    in
-    match result with
-    | Ok () as result ->
-        result
-    | Error _ as error ->
-        (* The mock backend can retry a failed shutdown admission. The native
-           supervisor normally retains a terminal failure, but an adapter-drain
-           failure is different: Native_worker has not started teardown and
-           deliberately retains the exact completion for a safe retry. *)
-        (match worker.backend with
-        | Mock_backend _ -> Atomic.set worker.closed false
-        | Native_backend backend ->
+    match worker.backend with
+    | Mock_backend backend -> (
+        match Backend.worker_shutdown backend with
+        | Ok () as result -> result
+        | Error _ as error ->
+            (* The mock backend can retry a failed shutdown admission. *)
+            Atomic.set worker.closed false;
+            error)
+    | Native_backend backend -> (
+        let result =
+          Native_worker.shutdown backend
+          |> Result.map_error Error_private.of_base
+        in
+        match result with
+        | Ok () as result -> result
+        | Error _ as error ->
+            (* Native adapter-drain failures are retryable only when the
+               private supervisor explicitly says teardown did not begin. *)
             if Native_worker.shutdown_retryable backend then
-              Atomic.set worker.closed false);
-        error
+              Atomic.set worker.closed false;
+            error)
   else Ok ()

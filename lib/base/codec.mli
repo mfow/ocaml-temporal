@@ -22,6 +22,16 @@ val encode : 'a t -> 'a -> (payload, Error.t) result
 (** Validates encoding metadata and deserializes a payload. *)
 val decode : 'a t -> payload -> ('a, Error.t) result
 
+(** Builds an internal codec from complete payload-level operations. This is
+    used only by the public adapter boundary when a public opaque codec must
+    be registered with the native worker. Unlike [make], this constructor does
+    not rewrite metadata, so codecs such as [option] can preserve their
+    value-dependent encoding names exactly. *)
+val of_payload :
+  encode:('a -> (payload, Error.t) result) ->
+  decode:(payload -> ('a, Error.t) result) ->
+  'a t
+
 (** Reports whether every byte forms one complete, canonical UTF-8 sequence.
     Internal protocol-facing APIs use this before placing an OCaml string into
     JSON or Protobuf; public payload callers normally rely on [string]. *)

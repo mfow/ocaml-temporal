@@ -13,3 +13,27 @@
 (executable
  (name forbidden_bridge)
  (libraries temporal-sdk))
+
+(executable
+ (name forbidden_base)
+ (libraries temporal-sdk))
+
+(executable
+ (name forbidden_runtime)
+ (libraries temporal-sdk))
+
+(executable
+ (name forbidden_protocol)
+ (libraries temporal-sdk))
+
+(executable
+ (name forbidden_native_worker)
+ (libraries temporal-sdk))
+
+(executable
+ (name forbidden_backend)
+ (libraries temporal-sdk))
+
+(executable
+ (name forbidden_future_kernel)
+ (libraries temporal-sdk))

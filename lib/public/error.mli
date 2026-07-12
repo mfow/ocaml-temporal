@@ -27,7 +27,19 @@ type view = {
 (** A failure returned by SDK operations through [result]. Expected failures,
     such as an activity error, cancellation, timeout, or invalid payload, are
     represented by this type rather than exceptions. *)
-type t = Temporal_base.Error.t
+type t
+
+(** Constructs a structured error at an application-facing boundary. Most
+    callers should prefer the more specific [codec] or [defect] helpers, but
+    this constructor is useful to adapters and custom activity implementations
+    that need to preserve a Temporal category. *)
+val make :
+  ?non_retryable:bool ->
+  ?details:Payload.t list ->
+  category:category ->
+  message:string ->
+  unit ->
+  t
 
 (** Returns all publicly inspectable fields of an error. *)
 val view : t -> view

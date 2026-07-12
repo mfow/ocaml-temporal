@@ -104,10 +104,12 @@ let enqueue supervisor activation = Queue.add activation supervisor.queue
 (** Builds and registers the unit workflow used by the retry assertion. *)
 let worker supervisor calls =
   let workflow =
-    Temporal.Workflow.define ~name:"native_worker_lifecycle"
-      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
-        incr calls;
-        Ok ())
+    Temporal_base.Definition.make ~name:"native_worker_lifecycle"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:
+        (Some (fun () ->
+          incr calls;
+          Ok ()))
   in
   match Worker.create ~supervisor ~workflows:[ Adapter.register workflow ] () with
   | Ok worker -> worker

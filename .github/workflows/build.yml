@@ -142,10 +142,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          protoc_unix_path=/c/ProgramData/chocolatey/bin/protoc.exe
-          test -x "$protoc_unix_path"
-          echo "$(dirname "$protoc_unix_path")" >> "$GITHUB_PATH"
-          echo "PROTOC=$(cygpath -w "$protoc_unix_path")" >> "$GITHUB_ENV"
+          # Chocolatey creates a Windows shim; Cygwin can execute it, but its
+          # POSIX mode bits are not guaranteed to include an executable bit.
+          protoc_unix_path="$(cygpath -u 'C:\ProgramData\chocolatey\bin\protoc.exe')"
+          protoc_windows_path="$(cygpath -w "$protoc_unix_path")"
+          test -f "$protoc_unix_path"
+          echo "$(cygpath -w "$(dirname "$protoc_unix_path")")" >> "$GITHUB_PATH"
+          echo "PROTOC=$protoc_windows_path" >> "$GITHUB_ENV"
           "$protoc_unix_path" --version
       - name: Install OCaml dependencies
         run: opam install . --deps-only --with-test --yes

@@ -172,18 +172,20 @@ let run () =
   | Error error -> Error error
   | Ok () ->
       let open Temporal.Result_syntax in
+      let* ready_file = required_env "SMOKE_WORKER_READY_FILE" in
+      (* Remove readiness before constructing the worker. A reused Compose
+         container can retain the old marker after an interrupted process. Do
+         this as soon as the readiness path itself is validated, before any
+         later configuration lookup can return an error; failing closed if it
+         cannot be removed prevents the health check from accepting stale
+         readiness while this run's [Worker.create] is pending or has already
+         failed. The finalizer below repeats best-effort cleanup for normal
+         shutdown and error paths after creation. *)
+      let* () = clear_ready_before_start ready_file in
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
-      let* ready_file = required_env "SMOKE_WORKER_READY_FILE" in
       let* stopped_file = required_env "SMOKE_WORKER_STOPPED_FILE" in
       let* cancellation_ready_file = Definitions.cancellation_ready_file () in
-      (* Remove readiness before constructing the worker. A reused Compose
-         container can retain the old marker after an interrupted process;
-         failing closed if it cannot be removed prevents the health check from
-         accepting stale readiness while this run's [Worker.create] is pending
-         or has already failed. The finalizer below repeats best-effort cleanup
-         for normal shutdown and error paths after creation. *)
-      let* () = clear_ready_before_start ready_file in
       (* Clear any marker left by a manually interrupted local run before the
          worker can advertise readiness. The driver performs the same cleanup
          immediately before starting workflows, closing the stale-marker race

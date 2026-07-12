@@ -23,10 +23,13 @@ one typed non-retryable failure, and one exact-run cancellation. Only the five
 baseline executions are currently backed by live CI evidence; the heartbeat and
 cancellation assertions remain local-only until a green live run verifies them.
 
-`smoke-worker` removes any prior readiness marker after validating its marker
-environment and before public `Temporal.Worker.create` begins. Once creation
-succeeds it publishes a new atomic readiness marker. Compose waits for that
-health check before `smoke-driver` is run. Each acceptance run starts after
+`temporal-start-worker` force-recreates the worker container before waiting, so
+the readiness marker in the container's `/tmp` cannot be inherited from a
+stopped container. `smoke-worker` then removes any prior readiness marker after
+validating its readiness path and before later marker validation or public
+`Temporal.Worker.create` begins. Once creation succeeds it publishes a new
+atomic readiness marker. Compose waits for that health check before
+`smoke-driver` is run. Each acceptance run starts after
 `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a

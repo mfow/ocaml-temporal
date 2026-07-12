@@ -81,9 +81,13 @@ executable uses the private supervisor and C/Rust bridge to connect the
 official Core client, construct and namespace-validate a workflow/remote-
 activity worker, exercise invalid and repeated lifecycle transitions, and shut
 the graph down deterministically. It then waits for `smoke-worker` to publish
-readiness and runs `smoke-driver` as a one-shot test process. Before
+readiness and runs `smoke-driver` as a one-shot test process. The
+`temporal-start-worker` target force-recreates the worker container before
+waiting, because readiness lives in that container's `/tmp` and must not be
+inherited from a stopped container. Before
 `Temporal.Worker.create`, the worker removes any prior readiness marker after
-validating its marker environment; its finalizer removes the marker again.
+validating the readiness path and before validating later marker settings; its
+finalizer removes the marker again.
 This ordering prevents a reused container from reporting a previous run's
 readiness while the current worker is still being constructed or has failed.
 The driver implementation starts seven smoke workflows before waiting for any

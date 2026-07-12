@@ -28,8 +28,40 @@ fi
 startup=$(sed -n \
   '/let\* ready_file = required_env "SMOKE_WORKER_READY_FILE"/,/let worker_result =/p' \
   "$worker")
-if ! printf '%s\n' "$startup" | grep -F -- 'clear_ready_before_start ready_file' >/dev/null; then
+# Returns the first source line containing a contract fragment. The explicit
+# line numbers below make the negative cancellation-environment case verify
+# ordering instead of merely checking that both operations exist somewhere.
+line_number() {
+  fragment=$1
+  printf '%s\n' "$startup" | grep -n -F -- "$fragment" | head -n 1 | cut -d: -f1
+}
+
+cleanup_line=$(line_number 'clear_ready_before_start ready_file')
+address_validation_line=$(line_number 'let* target_url = required_env "TEMPORAL_ADDRESS"')
+namespace_validation_line=$(line_number 'let* namespace = required_env "TEMPORAL_NAMESPACE"')
+stopped_validation_line=$(line_number 'let* stopped_file = required_env')
+cancellation_validation_line=$(line_number 'let* cancellation_ready_file = Definitions.cancellation_ready_file')
+if [ -z "$cleanup_line" ] || [ -z "$address_validation_line" ] \
+  || [ -z "$namespace_validation_line" ] || [ -z "$stopped_validation_line" ] \
+  || [ -z "$cancellation_validation_line" ]; then
   echo "worker must clear stale readiness before Worker.create" >&2
+  exit 1
+fi
+if [ "$cleanup_line" -ge "$address_validation_line" ] \
+  || [ "$cleanup_line" -ge "$namespace_validation_line" ] \
+  || [ "$cleanup_line" -ge "$stopped_validation_line" ] \
+  || [ "$cleanup_line" -ge "$cancellation_validation_line" ]; then
+  echo "worker must clear readiness before later marker validation" >&2
+  exit 1
+fi
+
+# Model the configuration failure that motivated this regression. The actual
+# worker returns an error when SMOKE_CANCELLATION_READY_FILE is missing; this
+# contract intentionally leaves that variable unset while the seeded stale
+# marker proves that cleanup must already have happened before that validation.
+unset SMOKE_CANCELLATION_READY_FILE
+if [ "${SMOKE_CANCELLATION_READY_FILE+x}" = x ]; then
+  echo "the missing cancellation-marker environment setup was not applied" >&2
   exit 1
 fi
 

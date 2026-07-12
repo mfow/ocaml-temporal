@@ -4,7 +4,7 @@ set -eu
 # This test deliberately inspects Compose's normalized model instead of the
 # source YAML. That catches invalid interpolation and dependency/profile
 # combinations before the much slower live integration smoke pulls images.
-root=${1:-$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)}
+root=${1:-$(CDPATH="" cd -- "$(dirname "$0")/../.." && pwd)}
 fixture="$root/test/integration/temporal"
 compose_file="$fixture/compose.yaml"
 rendered=$(mktemp)
@@ -117,6 +117,10 @@ require_source_text "$worker" 'Worker.activity Definitions.heartbeat_retry_activ
 makefile="$root/Makefile"
 if ! grep -F 'temporal workflow describe' "$makefile" >/dev/null; then
   echo "failure diagnostics must use the official Temporal CLI workflow describe command" >&2
+  exit 1
+fi
+if ! grep -F 'up --force-recreate --detach --build --wait smoke-worker' "$makefile" >/dev/null; then
+  echo "worker startup must recreate the container before relying on its /tmp readiness marker" >&2
   exit 1
 fi
 for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration; do

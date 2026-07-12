@@ -41,6 +41,18 @@ configuration contract requires the Makefile target. GitHub Actions may remain
 queued because of repository quota; this milestone records local verification
 only and makes no CI-success claim.
 
+## 2026-07-13: Readiness lifecycle ordering and container recreation
+
+The worker now clears its readiness marker immediately after validating the
+readiness path, before later marker-environment validation can fail. The
+Docker-free contract models a missing cancellation-marker setting and checks
+that ordering. `temporal-start-worker` also force-recreates the Compose worker
+container: readiness is stored in that container's `/tmp`, so reusing a stopped
+container could otherwise satisfy `--wait` before the new process starts.
+Local shell, Compose-model, formatting, native-build, and stale-marker runtime
+checks provide the evidence for this milestone; queued Actions are not treated
+as a result.
+
 ## 2026-07-13: Acceptance validator and client-boundary hardening (#164–#165)
 
 The merged tip is `1fa679c`: [#164](https://github.com/mfow/ocaml-temporal/pull/164)

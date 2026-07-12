@@ -43,7 +43,8 @@ let unavailable ~details ~heartbeat_timeout =
 
 (** Runs one callback only while the context is active. The callback and
     invalidation are serialized so a terminal completion cannot race a token
-    submission. Unexpected callback exceptions become typed defects. *)
+    submission. Unexpected callback exceptions become non-retryable typed
+    defects. *)
 let heartbeat context details =
   Mutex.lock context.mutex;
   Fun.protect
@@ -59,7 +60,7 @@ let heartbeat context details =
           try context.heartbeat_fn details with
           | exception_ ->
               Error
-                (Error.make ~category:`Defect
+                (Error.make ~non_retryable:true ~category:`Defect
                    ~message:
                      (Printf.sprintf "activity heartbeat callback raised: %s"
                         (Printexc.to_string exception_))

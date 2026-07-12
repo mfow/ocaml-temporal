@@ -567,6 +567,145 @@ let test_contextual_heartbeat_lifecycle () =
         | Ok () -> failwith "heartbeat succeeded after activity completion")
   end
 
+(** The public context view must never expose mutable payload storage owned by
+    the adapter. This test mutates the source details, a getter result, the
+    heartbeat argument, and the callback's retained view in turn; every later
+    observation must still contain the original bytes and ordering. The
+    timeout is checked through the public conversion as well, because a
+    context's timing contract is part of the activity API rather than an
+    implementation-only field. *)
+let test_context_payloads_are_copied () =
+  let source_data = Bytes.of_string "\000prior\255" in
+  let source_payload : Temporal_base.Payload.t =
+    {
+      Temporal_base.Payload.metadata = [ ("encoding", "binary/plain") ];
+      data = source_data;
+    }
+  in
+  let callback_payloads = ref [] in
+  let context =
+    Temporal_base.Activity_context.create
+      ~heartbeat:(fun payloads ->
+        callback_payloads := payloads;
+        Ok ())
+      ~details:[ source_payload ]
+      ~heartbeat_timeout:(Some (Temporal_base.Duration.of_ms 1_234L))
+  in
+  (* Creation copies the previous-attempt details before the source task can
+     be reused or mutated by the caller. *)
+  Bytes.set source_data 0 'X';
+  let expected_source = Bytes.of_string "\000prior\255" in
+  let expect_source (details : Temporal.Payload.t list) message =
+    match details with
+    | [ payload ]
+      when payload.metadata = [ ("encoding", "binary/plain") ]
+           && Bytes.equal payload.data expected_source ->
+        ()
+    | _ -> failwith message
+  in
+  let first_details = Temporal.Activity.Context.details context in
+  expect_source first_details
+    "activity context changed copied previous heartbeat details";
+  (* A getter returns another copy, so mutating it cannot corrupt the context's
+     retained state. *)
+  begin match first_details with
+  | [ payload ] -> Bytes.set payload.data 0 'Y'
+  | _ -> failwith "activity context returned an unexpected detail shape"
+  end;
+  expect_source (Temporal.Activity.Context.details context)
+    "activity context leaked mutable detail bytes through its getter";
+  begin match Temporal.Activity.Context.heartbeat_timeout context with
+  | Some timeout when Temporal.Duration.to_ms timeout = 1_234L -> ()
+  | _ -> failwith "activity context changed its heartbeat timeout"
+  end;
+  let heartbeat_data = Bytes.of_string "\000progress\255" in
+  let heartbeat_payload : Temporal.Payload.t =
+    {
+      Temporal.Payload.metadata = [ ("encoding", "binary/plain") ];
+      data = heartbeat_data;
+    }
+  in
+  begin match
+    Temporal.Activity.Context.heartbeat_payloads context [ heartbeat_payload ]
+  with
+  | Ok () -> ()
+  | Error error ->
+      failwith ("copied heartbeat payload was rejected: " ^ Temporal.Error.message error)
+  end;
+  let expected_heartbeat = Bytes.of_string "\000progress\255" in
+  (* The callback receives an owned copy, not the public payload's bytes. *)
+  Bytes.set heartbeat_data 0 'Z';
+  begin match !callback_payloads with
+  | [ payload ] when Bytes.equal payload.data expected_heartbeat -> ()
+  | _ -> failwith "heartbeat callback retained caller-owned payload bytes"
+  end;
+  (* The context stores a separate copy after a successful callback, so even
+     the callback's retained view cannot mutate the next-attempt details. *)
+  begin match !callback_payloads with
+  | [ payload ] -> Bytes.set payload.data 0 'Q'
+  | _ -> failwith "heartbeat callback received an unexpected detail shape"
+  end;
+  begin match Temporal.Activity.Context.details context with
+  | [ payload ] when Bytes.equal payload.data expected_heartbeat -> ()
+  | _ -> failwith "activity context retained mutable callback payload bytes"
+  end
+
+(** Heartbeat callback failures and stale contexts are ordinary typed results.
+    In particular, an invalidated context must reject before entering its
+    callback, so a retained activity context cannot submit progress after the
+    terminal completion has released its native lease. *)
+let test_context_callback_exception_and_invalidation () =
+  let callback_calls = ref 0 in
+  let raising_context =
+    Temporal_base.Activity_context.create
+      ~heartbeat:(fun _payloads ->
+        incr callback_calls;
+        raise (Failure "heartbeat callback defect"))
+      ~details:[] ~heartbeat_timeout:None
+  in
+  begin match
+    Temporal.Activity.Context.heartbeat raising_context Temporal.Codec.string
+      "progress"
+  with
+  | Error error ->
+      let view = Temporal.Error.view error in
+      if view.category <> `Defect || not view.non_retryable then
+        failwith "heartbeat callback exception was not a non-retryable defect";
+      if
+        not
+          (String.starts_with ~prefix:"activity heartbeat callback raised:"
+             view.message)
+      then failwith "heartbeat callback exception lost its typed diagnostic"
+  | Ok () -> failwith "heartbeat callback exception escaped as success"
+  end;
+  if !callback_calls <> 1 then
+    failwith "heartbeat callback exception did not invoke the callback once";
+  let invalidated_calls = ref 0 in
+  let invalidated_context =
+    Temporal_base.Activity_context.create
+      ~heartbeat:(fun _payloads ->
+        incr invalidated_calls;
+        Ok ())
+      ~details:[] ~heartbeat_timeout:None
+  in
+  Temporal_base.Activity_context.invalidate invalidated_context;
+  begin match
+    Temporal.Activity.Context.heartbeat invalidated_context Temporal.Codec.string
+      "late-progress"
+  with
+  | Error error ->
+      let view = Temporal.Error.view error in
+      if view.category <> `Bridge then
+        failwith "invalidated activity context returned the wrong error category";
+      if
+        not
+          (String.equal view.message "activity context is no longer active")
+      then failwith "invalidated activity context returned the wrong message"
+  | Ok () -> failwith "invalidated activity context accepted a heartbeat"
+  end;
+  if !invalidated_calls <> 0 then
+    failwith "invalidated activity context entered its heartbeat callback"
+
 (** More than one input payload is rejected explicitly rather than silently
     dropping later values. *)
 let test_extra_input_is_rejected () =
@@ -666,6 +805,8 @@ let () =
   test_cancellation ();
   test_completion_retry_does_not_redo_activity ();
   test_contextual_heartbeat_lifecycle ();
+  test_context_payloads_are_copied ();
+  test_context_callback_exception_and_invalidation ();
   test_extra_input_is_rejected ();
   test_registration_validation ();
   test_implementation_exception_is_retired ();

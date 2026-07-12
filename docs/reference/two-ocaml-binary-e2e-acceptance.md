@@ -1,7 +1,7 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The fan-out, timer/activity, parent/child, and activity-retry
-success scenarios were verified in Linux CI run
+**Status:** The fan-out, timer/activity, parent/child, activity-retry, and
+typed non-retryable workflow-failure scenarios were verified in Linux CI run
 [`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
 for merge commit `a4eaccc8`. The retry workflow uses an explicit activity retry
 policy: its worker activity fails once, Temporal delivers a second attempt,
@@ -9,7 +9,9 @@ and the driver asserts the exact attempt-2 result. The retry-policy constructor
 and bilateral JSON/Core conversion remain synthetic evidence; the CI run is
 the live evidence for this one server-managed retry delivery. The fifth
 top-level workflow also returns a typed non-retryable `Workflow` failure. The
-worker and driver remain guarded by
+six-run exact-run cancellation path is implemented and covered by local
+acceptance checks, but it is not live-verified yet: the PR #85 [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
+was cancelled before producing a green result. The worker and driver remain guarded by
 `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
 
 `smoke-worker` publishes an atomic readiness marker after public
@@ -52,9 +54,11 @@ payload. The driver also starts `smoke.non_retryable_failure` and requires its
 stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
 for its `smoke.cancellation_ready` marker activity (with eager execution
 disabled), sends an exact-run cancellation request, and requires the same
-handle to return a typed `Cancelled` error. The cancellation path is pending
-its own CI evidence; child start failures, activity retry timeouts, replay, and
-worker recovery remain separate scenarios. The
+handle to return a typed `Cancelled` error. The cancellation implementation and
+local assertions are ready, but the path remains without green live CI evidence
+because the PR #85 [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
+was cancelled. Child start failures, activity retry timeouts, replay, and worker
+recovery remain separate scenarios. The
 intentionally broader follow-up requirements are listed in [Required
 assertions and failure evidence](#required-assertions-and-failure-evidence).
 

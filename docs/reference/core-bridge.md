@@ -95,11 +95,15 @@ natural `Shutdown`; this avoids cancelling a queued history while reporting
 success. If that precondition is not met, the typed error retains the worker
 for another drain attempt. The explicit `dispose` path is destructive: it
 initiates shutdown, force-completes unfinished work, joins the lane, and
-attempts Core finalization twice. If both terminal attempts fail, it returns
-the still-owned worker with a typed `Finalization` error so the caller can
-retry after releasing a competing owner; it never silently drops an
-unfinalized native graph. The replay path owns no OCaml pointer or callback
-and starts no activity poller. Its focused Rust tests are kept in
+attempts Core finalization twice. Each force-completed workflow run ID and
+activity token is retained as a bounded retired tombstone until both poll lanes
+have joined. A poll that was already in flight can therefore be discarded as a
+duplicate instead of being admitted as a new completion obligation; the
+tombstones are then cleared. If both terminal attempts fail, it returns the
+still-owned worker with a typed `Finalization` error so the caller can retry
+after releasing a competing owner; it never silently drops an unfinalized
+native graph. The replay path owns no OCaml pointer or callback and starts no
+activity poller. Its focused Rust tests are kept in
 `rust/core-bridge/tests/support/replay_bridge.rs` so production and test code
 remain separate.
 

@@ -89,6 +89,7 @@ fn poll_lane_categories_never_include_core_diagnostics() {
         PollLaneError::Admission(AdmitError::Draining),
         PollLaneError::Admission(AdmitError::InvalidIdentity),
         PollLaneError::Admission(AdmitError::UnknownActivityCancellation),
+        PollLaneError::Admission(AdmitError::Retired),
         PollLaneError::DuplicateIdentity,
         PollLaneError::InvalidActivityVariant,
     ];

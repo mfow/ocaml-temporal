@@ -57,6 +57,18 @@
         },
         {
           "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "workflow_id", "workflow_type", "input"],
+          "description": "Starts a child workflow. Namespace, task queue, timeouts, policies, retry settings, headers, memo, search attributes, versioning, and priority remain Core defaults until the OCaml API exposes them explicitly.",
+          "properties": {
+            "kind": {"const": "start_child_workflow"},
+            "seq": {"$ref": "#/$defs/u32"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "workflow_type": {"$ref": "#/$defs/identifier"},
+            "input": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
           "required": ["kind", "seq", "start_to_fire_timeout"],
           "properties": {"kind": {"const": "start_timer"}, "seq": {"$ref": "#/$defs/u32"}, "start_to_fire_timeout": {"$ref": "#/$defs/duration"}}
         },

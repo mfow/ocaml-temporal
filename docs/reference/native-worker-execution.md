@@ -82,16 +82,19 @@ already been accepted.
    run. The existing deterministic scheduler applies jobs in order and emits
    commands in creation order.
 6. `Native_execution` converts the command batch to a checked semantic
-   completion. Activity commands retain their complete Core fields and are
-   validated before submission. Child-workflow commands remain explicit
-   `unsupported` errors because the first semantic protocol has no child
-   command variant; no replacement command is fabricated for that unsupported
-   path.
+   completion. Activity commands retain their complete Core fields and child
+   starts retain their workflow identity and input payload before submission.
+   Core child options that the current OCaml runtime does not expose stay at
+   explicit defaults; child result resolution is not yet represented by the
+   activation protocol.
 7. The completion is copied into an adapter-owned pending record before it is
    submitted through the same supervisor. The run entry is removed only after
    the supervisor confirms completion retirement. Terminal commands remove the
    run; a cache-removal activation also removes it after its required empty
-   acknowledgement. Pending timer/activity work keeps the run entry.
+   acknowledgement. Pending timer and activity work keeps the run entry. A
+   completion containing a child-start command is rejected before submission
+   and removes its run because child-resolution activations are not yet safe to
+   consume.
 
 Activations without initialization must identify a run already in the map.
 Unknown run IDs are completed with a non-retryable bridge failure, which
@@ -100,8 +103,7 @@ retires the native lease instead of silently ignoring it.
 ## Rejection and failures
 
 An activation that is valid JSON but cannot be represented by the current
-runtime (for example, a child-workflow command before its semantic protocol
-record exists) receives a typed `Fail_workflow` completion. `poll` returns
+runtime receives a typed `Fail_workflow` completion. `poll` returns
 `Ok (Rejected ...)` only after that completion has been accepted, and marks
 `lease_retired = true`. If the native completion operation fails, `poll` returns
 an error and leaves the exact completion in the pending map so the caller can
@@ -145,13 +147,19 @@ releases worker, client, and Rust runtime state in reverse ownership order. If
 either drain fails, native teardown is not started and shutdown remains
 retryable. Repeated successful shutdown calls are idempotent.
 
-The native workflow adapter intentionally rejects child-workflow commands until
-their complete Core fields are represented by the semantic protocol. Activity
-commands are accepted only when their required identifiers, payloads, timeout
-policies, and cancellation options are present; a missing field is rejected in
-the same typed way. These are lease-retiring failures rather than fabricated
-defaults. The live Compose acceptance remains the gate for proving the full
-workflow/activity path end to end.
+The semantic translator accepts child-start commands with the workflow identity
+and input fields represented by the protocol. The native worker deliberately
+gates those completions before submission: Core child options not yet exposed
+by the OCaml runtime remain explicit defaults, but child result-resolution jobs
+are not yet represented by the activation schema. Sending a start without that
+resolution path would strand the parent lease, so the worker returns a typed,
+non-retryable failure and removes the local run. A later slice may lift this
+gate only after matching child-resolution decoding and lease tests exist. The
+live Compose acceptance remains the gate for proving complete
+workflow/activity/child behavior end to end. Activity commands are accepted
+only when their required identifiers, payloads, timeout policies, and
+cancellation options are present; a missing field is rejected in the same
+typed way.
 
 ## Verification
 
@@ -162,6 +170,8 @@ verify:
 - durable timer suspension and resumption through a matching sequence;
 - cancellation and cache-eviction removal of suspended runs;
 - complete activity-command scheduling and lease retirement;
+- child-start translation and the native worker's safe rejection gate while
+  child result resolution remains explicitly pending;
 - retention and retry of a rejected workflow completion without rerunning the
   workflow, including an explicit adapter drain;
 - unknown run rejection and lease retirement;

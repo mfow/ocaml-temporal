@@ -133,6 +133,12 @@ type completion_command =
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
+  | Start_child_workflow of {
+      seq : int64;
+      workflow_id : string;
+      workflow_type : string;
+      input : payload list;
+    }
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; start_to_fire_timeout : duration }
   | Cancel_timer of { seq : int64 }
@@ -1145,6 +1151,20 @@ let completion_command path json =
                cancellation_type;
                do_not_eagerly_execute;
              })
+  | "start_child_workflow" ->
+      let* entries =
+        exact_object path [ "kind"; "seq"; "workflow_id"; "workflow_type"; "input" ]
+          json
+      in
+      let* seq_json = field path "seq" entries in
+      let* seq = uint32 (path ^ ".seq") seq_json in
+      let* workflow_id_json = field path "workflow_id" entries in
+      let* workflow_id = identifier (path ^ ".workflow_id") workflow_id_json in
+      let* workflow_type_json = field path "workflow_type" entries in
+      let* workflow_type = identifier (path ^ ".workflow_type") workflow_type_json in
+      let* input_json = field path "input" entries in
+      let* input = list (path ^ ".input") payload input_json in
+      Ok (Start_child_workflow { seq; workflow_id; workflow_type; input })
   | "request_cancel_activity" ->
       let* entries = exact_object path [ "kind"; "seq" ] json in
       let* seq_json = field path "seq" entries in
@@ -1203,6 +1223,17 @@ let completion_command_json = function
           [
             ("kind", `String "request_cancel_activity");
             ("seq", `Intlit (Int64.to_string seq));
+          ])
+  | Start_child_workflow { seq; workflow_id; workflow_type; input } ->
+      let* input = payloads_json input in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "start_child_workflow");
+            ("seq", `Intlit (Int64.to_string seq));
+            ("workflow_id", `String workflow_id);
+            ("workflow_type", `String workflow_type);
+            ("input", input);
           ])
   | Start_timer { seq; start_to_fire_timeout } ->
       Ok

@@ -441,6 +441,56 @@ let test_activity_command_retires_lease () =
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "activity command left a native lease outstanding"
 
+(** Child starts are represented by the bilateral protocol, but this worker
+    adapter must reject them until Core child-resolution activations are
+    decoded and their leases can be retired safely. The workflow is removed
+    after the typed failure; no partially supported child command is submitted.
+*)
+let test_child_command_is_gated_until_resolution () =
+  let supervisor = fake_supervisor () in
+  let child =
+    Temporal.Workflow.remote ~name:"native_worker_child"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_child_gate"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let _pending = Temporal.Child_workflow.start ~id:"child-1" child () in
+        Ok ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-child-gate"
+       [ initialize ~run_id:"run-child-gate"
+           ~workflow_type:"native_worker_child_gate" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  begin match Worker.poll worker with
+  | Ok
+      (Adapter.Rejected
+        {
+          run_id = Some "run-child-gate";
+          error = { code = "unsupported"; path = "$.completion.commands"; _ };
+          lease_retired = true;
+        }) ->
+      ()
+  | Ok _ -> failwith "partially supported child command was not rejected"
+  | Error error ->
+      failwith ("child command gate returned an adapter error: " ^ error.message)
+  end;
+  begin match (latest_completion supervisor).commands with
+  | [ Protocol.Fail_workflow _ ] -> ()
+  | _ -> failwith "child command gate did not send a failure completion"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "child command gate left a native lease outstanding";
+  enqueue supervisor
+    (activation ~run_id:"run-child-gate"
+       [ Protocol.Cancel_workflow { reason = "stale child gate run" } ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Rejected { error = { code = "unknown_run_id"; _ }; lease_retired = true; _ }) ->
+      ()
+  | _ -> failwith "child command gate retained the rejected execution"
+  end
+
 (** An activation for a run not present in the existential registry is rejected
     and completed as a non-retryable bridge failure. *)
 let test_unknown_run_retires_lease () =
@@ -533,6 +583,7 @@ let () =
   test_failure_completion_exception_is_typed ();
   test_resumed_failure_removes_run ();
   test_activity_command_retires_lease ();
+  test_child_command_is_gated_until_resolution ();
   test_unknown_run_retires_lease ();
   test_malformed_activation_error_is_typed ();
   test_registration_validation ();

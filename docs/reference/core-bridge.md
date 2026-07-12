@@ -283,6 +283,11 @@ assemble these strings themselves. The client document contains exactly
 `graceful_shutdown_timeout_ms`. Closed Draft 2020-12 schemas live under
 `docs/schemas/bridge/`.
 
+Temporal Core requires at least two workflow-task pollers when
+`max_cached_workflows` is non-zero. The OCaml validator, the Rust validator,
+and the JSON Schema all enforce that relationship before worker construction;
+the public native worker default is two pollers.
+
 Both sides reject missing, unknown, wrongly typed, empty required, and
 out-of-range values. The whole document and each individual string have a
 65,536-byte private transport-safety ceiling. That ceiling is not a Temporal

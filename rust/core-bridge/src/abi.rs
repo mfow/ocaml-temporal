@@ -68,6 +68,9 @@ const MAX_WORKER_COUNT: u32 = 1_000_000;
 const DEFAULT_MAX_OUTSTANDING_ACTIVITIES: usize = 100;
 /// Initial Core server-poll concurrency for remote activity tasks.
 const DEFAULT_MAX_CONCURRENT_ACTIVITY_POLLS: usize = 5;
+/// Temporal Core requires two workflow-task pollers whenever workflow caching
+/// is enabled. This mirrors the OCaml sender-side validation.
+const MIN_CACHED_WORKFLOW_POLLS: u32 = 2;
 /// Prevents an unbounded graceful-shutdown duration from entering Core.
 const MAX_GRACEFUL_SHUTDOWN_MS: u64 = 24 * 60 * 60 * 1_000;
 /// Maximum time one exact-run client wait may occupy the supervisor owner.
@@ -1263,6 +1266,14 @@ impl WorkerConfigInput {
             self.max_concurrent_workflow_task_polls,
             false,
         )?;
+        if self.max_cached_workflows > 0
+            && self.max_concurrent_workflow_task_polls < MIN_CACHED_WORKFLOW_POLLS
+        {
+            return Err(Failure {
+                status: STATUS_CONFIGURATION,
+                message: "max_concurrent_workflow_task_polls must be at least 2 when max_cached_workflows is greater than zero".to_owned(),
+            });
+        }
         if self.graceful_shutdown_timeout_ms > MAX_GRACEFUL_SHUTDOWN_MS {
             return Err(Failure {
                 status: STATUS_CONFIGURATION,
@@ -2350,6 +2361,50 @@ mod pending_start_reservation_tests {
             .expect_err("an impossible reservation must fail before spawning");
         assert_eq!(failure.status, STATUS_INTERNAL);
         assert!(pending.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod worker_config_tests {
+    use super::{MIN_CACHED_WORKFLOW_POLLS, STATUS_CONFIGURATION, WorkerConfigInput};
+
+    /// Builds a complete worker document while varying only workflow poller
+    /// concurrency, so the Core cache invariant is isolated from other fields.
+    fn config(pollers: u32) -> WorkerConfigInput {
+        WorkerConfigInput {
+            namespace: "temporal-sdk-test".to_owned(),
+            task_queue: "worker-config-test".to_owned(),
+            build_id: "worker-config-test".to_owned(),
+            max_cached_workflows: 100,
+            max_outstanding_workflow_tasks: 100,
+            max_concurrent_workflow_task_polls: pollers,
+            graceful_shutdown_timeout_ms: 1_000,
+        }
+    }
+
+    /// Rejects the configuration that Core would otherwise report only after
+    /// a live worker startup, keeping the public boundary deterministic.
+    #[test]
+    fn cached_workflows_require_two_workflow_pollers() {
+        let failure = match config(MIN_CACHED_WORKFLOW_POLLS - 1).into_core() {
+            Err(failure) => failure,
+            Ok(_) => panic!("cached workflows must require two workflow pollers"),
+        };
+        assert_eq!(failure.status, STATUS_CONFIGURATION);
+        assert!(
+            failure
+                .message
+                .contains("max_concurrent_workflow_task_polls must be at least 2")
+        );
+    }
+
+    /// Accepts the public default poller count before any runtime or network
+    /// resource is allocated.
+    #[test]
+    fn cached_workflows_accept_two_workflow_pollers() {
+        config(MIN_CACHED_WORKFLOW_POLLS)
+            .into_core()
+            .expect("two workflow pollers should satisfy Core's cache invariant");
     }
 }
 

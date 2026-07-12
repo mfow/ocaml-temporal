@@ -114,6 +114,12 @@ and bridge, read the [documentation guide](../README.md) first.
 - The private supervisor validates native poll bytes before returning typed
   workflow or activity values to another Domain. It canonically encodes and
   reparses typed completions before entering C.
+- A remote activity `Start` creates one Core completion debt. A `Cancel` poll
+  is an update to that same token: it is handed to the OCaml activity adapter
+  while the token remains tracked, but it never acquires a second completion
+  lease. Only a cancellation that arrives after the start has completed is
+  stale and may be discarded. This keeps cancellation delivery observable
+  without allowing duplicate-token completion races.
 - If OCaml cannot decode a successful poll, it returns the exact untouched
   Rust document to the private rejection ABI. Rust requires full semantic
   equality with retained handoff state before retiring the lease; changed IDs,

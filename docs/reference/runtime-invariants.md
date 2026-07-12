@@ -119,6 +119,11 @@ and bridge, read the [documentation guide](../README.md) first.
   any execution state is touched. Sequence numbers, identifiers, payloads,
   timestamps, ordering, and closed-object invariants therefore have one
   validation path for JSON input and programmatic OCaml values.
+- A rejected activation job is side-effect free: malformed child-resolution
+  JSON cannot allocate a sequence, consume a resolver, or resolve a future.
+  Lifecycle checks then reject terminal-before-start, duplicate start, duplicate
+  terminal, and unknown-sequence messages as bridge defects without replacing
+  the state established by a valid message.
 - Activation jobs and emitted commands retain source ordering. Every payload
   is copied; binary protocol metadata that cannot be represented by the
   runtime's string metadata map is rejected rather than lossy-decoded.

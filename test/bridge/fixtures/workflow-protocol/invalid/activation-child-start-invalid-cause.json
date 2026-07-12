@@ -1,0 +1,18 @@
+{
+  "run_id": "parent-run",
+  "timestamp": {"seconds": 0, "nanoseconds": 0},
+  "is_replaying": false,
+  "history_length": 1,
+  "jobs": [
+    {
+      "kind": "resolve_child_workflow_start",
+      "seq": 1,
+      "result": {
+        "kind": "failed",
+        "workflow_id": "child-id",
+        "workflow_type": "child-workflow",
+        "cause": "not-a-temporal-cause"
+      }
+    }
+  ]
+}

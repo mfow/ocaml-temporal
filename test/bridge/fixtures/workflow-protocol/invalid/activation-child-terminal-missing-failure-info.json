@@ -1,0 +1,22 @@
+{
+  "run_id": "parent-run",
+  "timestamp": {"seconds": 0, "nanoseconds": 0},
+  "is_replaying": false,
+  "history_length": 1,
+  "jobs": [
+    {
+      "kind": "resolve_child_workflow",
+      "seq": 1,
+      "result": {
+        "kind": "cancelled",
+        "failure": {
+          "message": "child cancelled",
+          "source": "temporal",
+          "stack_trace": "",
+          "encoded_attributes": null,
+          "cause": null
+        }
+      }
+    }
+  ]
+}

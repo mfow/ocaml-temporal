@@ -1,0 +1,32 @@
+{
+  "run_id": "parent-run",
+  "timestamp": {"seconds": 0, "nanoseconds": 0},
+  "is_replaying": false,
+  "history_length": 1,
+  "jobs": [
+    {
+      "kind": "resolve_child_workflow",
+      "seq": 1,
+      "result": {
+        "kind": "failed",
+        "failure": {
+          "message": "child failed",
+          "source": "temporal",
+          "stack_trace": "",
+          "encoded_attributes": null,
+          "cause": null,
+          "info": {
+            "kind": "child_workflow",
+            "namespace": "default",
+            "workflow_id": "",
+            "run_id": "child-run",
+            "workflow_type": "child-workflow",
+            "initiated_event_id": 1,
+            "started_event_id": 2,
+            "retry_state": "unspecified"
+          }
+        }
+      }
+    }
+  ]
+}

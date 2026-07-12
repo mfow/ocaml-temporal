@@ -26,6 +26,24 @@ fn fixture(parts: &[&str]) -> String {
     fs::read_to_string(fixture_path(parts)).expect("workflow fixture must be readable")
 }
 
+/// Requires a malformed activation to fail as the stable protocol error type.
+/// The path and message assertions ensure callers receive bounded diagnostics
+/// instead of a serde panic or an untyped transport failure.
+fn require_invalid_activation(name: &str) {
+    let error =
+        workflow_protocol::decode_activation(&fixture(&["invalid", &format!("{name}.json")]))
+            .expect_err("malformed activation was accepted");
+    assert_eq!(
+        error.code, "invalid_message",
+        "{name} returned another error"
+    );
+    assert!(!error.path.is_empty(), "{name} omitted its validation path");
+    assert!(
+        !error.message.is_empty(),
+        "{name} omitted its safe diagnostic"
+    );
+}
+
 /// Proves all first-slice activation jobs normalize identically to OCaml.
 #[test]
 fn accepts_and_normalizes_workflow_activations() {
@@ -136,12 +154,16 @@ fn rejects_malformed_workflow_documents() {
         "activation-invalid-base64",
         "activation-missing-field",
         "activation-eviction-mixed",
+        "activation-child-start-missing-run-id",
+        "activation-child-start-empty-run-id",
+        "activation-child-start-invalid-cause",
+        "activation-child-terminal-missing-payload",
+        "activation-child-terminal-missing-failure-info",
+        "activation-child-failure-empty-workflow-id",
+        "activation-child-failure-negative-event-id",
+        "activation-child-unknown-terminal-kind",
     ] {
-        assert!(
-            workflow_protocol::decode_activation(&fixture(&["invalid", &format!("{name}.json")]))
-                .is_err(),
-            "{name} was accepted"
-        );
+        require_invalid_activation(name);
     }
     for name in [
         "completion-unknown-command",

@@ -85,6 +85,21 @@ let contains ~haystack ~needle =
   in
   needle_length = 0 || search 0
 
+(** Renders tags only for privacy assertions. Production reporters receive the
+    typed set directly; this rendering lets the test catch a secret that might
+    be hidden in a structural tag even when the message prose is constant. *)
+let rendered_tags event = Format.asprintf "%a" Logs.Tag.pp_set event.tags
+
+(** Proves that a user-controlled value is absent from both portions of an
+    emitted diagnostic record. The check intentionally covers every captured
+    event, including lifecycle records emitted while a fixture is cleaned up. *)
+let assert_not_in_events secret =
+  List.iter
+    (fun event ->
+      assert (not (contains ~haystack:event.message ~needle:secret));
+      assert (not (contains ~haystack:(rendered_tags event) ~needle:secret)))
+    !events
+
 (** Builds a string payload for the synthetic workflow fixture. *)
 let payload value =
   match Temporal.Codec.encode Temporal.Codec.string value with
@@ -165,7 +180,7 @@ let test_bridge_events () =
       in
       assert
         (match Logs.Tag.find Observability.Tag.duration_ms latency.tags with
-        | Some duration -> duration >= 0.
+        | Some duration -> duration >= 0. && Float.is_finite duration
         | None -> false);
       let runtime =
         match Bridge.runtime_create () with
@@ -179,6 +194,41 @@ let test_bridge_events () =
       ignore
         (require_event ~source:"temporal.sdk.lifecycle" ~level:Logs.Info
            ~operation:"runtime_close"))
+
+(** A bridge JSON request and raw byte payload are both treated as opaque input:
+    returned diagnostics and every emitted record contain only stable metadata,
+    never request identifiers or payload contents. *)
+let test_bridge_payload_privacy () =
+  with_capture (fun () ->
+      let secret = "bridge-json-and-payload-secret-7f2c" in
+      let echoed = Bridge.echo (Bytes.of_string secret) in
+      assert (echoed = Ok (Bytes.of_string secret));
+      let runtime =
+        match Bridge.runtime_create () with
+        | Ok runtime -> runtime
+        | Error error -> failwith error.message
+      in
+      let request =
+        `Assoc
+          [
+            ("request_id", `String ("request-" ^ secret));
+            ("namespace", `String "default");
+            ("workflow_id", `String ("workflow-" ^ secret));
+            ("workflow_type", `String "logging_fixture");
+            ("task_queue", `String "default");
+            ("input", `List []);
+          ]
+        |> Yojson.Safe.to_string |> Bytes.of_string
+      in
+      let error =
+        match Bridge.client_start_workflow_json runtime request with
+        | Error error -> error
+        | Ok _ -> failwith "unconnected bridge unexpectedly started workflow"
+      in
+      assert (error.status = Bridge.Invalid_state);
+      assert (not (contains ~haystack:error.message ~needle:secret));
+      assert (Bridge.runtime_close runtime = Ok ());
+      assert_not_in_events secret)
 
 (** Workflow processing reports bounded structural metadata and never renders
     raw workflow input. *)
@@ -218,13 +268,12 @@ let test_workflow_events_and_privacy () =
         (Logs.Tag.find Observability.Tag.command_count activation.tags = Some 1);
       assert
         (match Logs.Tag.find Observability.Tag.duration_ms activation.tags with
-        | Some duration -> duration >= 0.
+        | Some duration -> duration >= 0. && Float.is_finite duration
         | None -> false);
-      assert
-        (not
-           (List.exists
-              (fun event -> contains ~haystack:event.message ~needle:secret)
-              !events));
+      ignore
+        (require_event ~source:"temporal.sdk.workflow" ~level:Logs.Info
+           ~operation:"workflow_started");
+      assert_not_in_events secret;
       ignore (Execution.activate execution [ Activation.Start_workflow ]);
       let failure =
         require_event ~source:"temporal.sdk.workflow" ~level:Logs.Error
@@ -275,6 +324,7 @@ let test_reporters_cannot_reenter_workflow_context () =
 let () =
   test_source_and_tag_names ();
   test_bridge_events ();
+  test_bridge_payload_privacy ();
   test_workflow_events_and_privacy ();
   test_reporter_exceptions_are_contained ();
   test_reporters_cannot_reenter_workflow_context ()

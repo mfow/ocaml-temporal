@@ -624,6 +624,266 @@ let test_child_command_and_resolution_lifecycle () =
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "child lifecycle left a native lease outstanding"
 
+(** Checks the error observed by a parent when Core rejects a child start. The
+    workflow deliberately inspects the same future after [await]: a successful
+    rejection path must make the future ready, preserve the typed error, and
+    resume the workflow exactly once before the parent completion is submitted.
+    Keeping these checks inside the workflow also exercises the real native
+    execution translation rather than only testing a standalone resolver. *)
+let child_start_rejection_workflow ~child ~expected_message ~continuations () =
+  let pending =
+    Temporal.Child_workflow.start ~id:"child-start-rejection" child ()
+  in
+  match Temporal.Future.await pending with
+  | Ok () ->
+      Error
+        (Temporal.Error.defect
+           ~message:"rejected child start unexpectedly succeeded")
+  | Error error ->
+      incr continuations;
+      let view = Temporal.Error.view error in
+      let error_matches =
+        view.category = `Child_workflow
+        && view.non_retryable
+        && String.equal view.message expected_message
+      in
+      let future_matches =
+        match Temporal.Future.peek pending with
+        | Some (Error peek_error) ->
+            String.equal (Temporal.Error.message peek_error) expected_message
+        | Some (Ok ()) -> false
+        | None -> false
+      in
+      if error_matches && future_matches then Ok ()
+      else
+        Error
+          (Temporal.Error.defect
+             ~message:
+               "child start rejection did not resolve its future consistently")
+
+(** Runs one synthetic Core child-start rejection through the complete worker
+    adapter. Both rejection causes use the same resolver cleanup contract: the
+    child table entry is removed, the parent resumes once, and the leased
+    activation is retired by one terminal completion. *)
+let test_child_start_rejection_case ~label ~cause ~expected_cause () =
+  let child_name = "native_worker_child_start_target_" ^ label in
+  let workflow_name = "native_worker_child_start_rejection_" ^ label in
+  let continuations = ref 0 in
+  let child =
+    Temporal.Workflow.remote ~name:child_name ~input:Temporal.Codec.unit
+      ~output:Temporal.Codec.unit
+  in
+  let expected_message =
+    Printf.sprintf
+      "child workflow start failed: id=child-start-rejection type=%s cause=%s"
+      child_name expected_cause
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:workflow_name ~input:Temporal.Codec.unit
+      ~output:Temporal.Codec.unit (fun () ->
+        child_start_rejection_workflow ~child ~expected_message ~continuations
+          ())
+  in
+  let run_id = "run-child-start-rejection-" ^ label in
+  let supervisor = fake_supervisor () in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:workflow_name ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  begin match Worker.poll worker with
+  | Ok (Adapter.Completed { terminal = false; command_count = 1; _ }) -> ()
+  | Ok _ -> failwith (label ^ " child start rejection did not suspend")
+  | Error error ->
+      failwith
+        (label ^ " child start rejection setup failed: " ^ error.message)
+  end;
+  begin match (latest_completion supervisor).commands with
+  | [ Protocol.Start_child_workflow { workflow_id; workflow_type; _ } ]
+    when String.equal workflow_id "child-start-rejection"
+         && String.equal workflow_type child_name -> ()
+  | _ -> failwith (label ^ " child start command was malformed")
+  end;
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow_start
+           {
+             seq = 1L;
+             result =
+               Protocol.Child_start_failed
+                 { workflow_id = "child-start-rejection"; workflow_type = child_name; cause };
+           };
+       ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Completed { terminal = true; command_count = 1; _ }) -> ()
+  | Ok _ -> failwith (label ^ " child start rejection remained pending")
+  | Error error ->
+      failwith
+        (label ^ " child start rejection failed to complete: " ^ error.message)
+  end;
+  if !continuations <> 1 then
+    failwith (label ^ " child start rejection resumed more than once");
+  begin match (latest_completion supervisor).commands with
+  | [ Protocol.Complete_workflow { result = None } ] -> ()
+  | _ -> failwith (label ^ " child start rejection did not complete the parent")
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith (label ^ " child start rejection left a native lease outstanding");
+  match Worker.poll worker with
+  | Ok Adapter.Not_ready -> ()
+  | Ok _ -> failwith (label ^ " child start rejection retained stale work")
+  | Error error ->
+      failwith
+        (label ^ " child start rejection cleanup poll failed: " ^ error.message)
+
+(** A nested application cause gives the terminal child failure a detail
+    payload. The outer child-workflow record carries durable identity and retry
+    state, while the nested application record exercises recursive decoding and
+    the public error detail projection. *)
+let child_terminal_failure : Protocol.failure =
+  {
+    message = "child workflow failed";
+    source = "temporal-core";
+    stack_trace = "";
+    encoded_attributes = None;
+    cause =
+      Some
+        {
+          message = "child application failure";
+          source = "child-worker";
+          stack_trace = "";
+          encoded_attributes = None;
+          cause = None;
+          info =
+            Protocol.Application
+              {
+                type_name = "child_failure";
+                non_retryable = true;
+                details =
+                  [
+                    {
+                      Protocol.metadata = [];
+                      data = Bytes.of_string "child-details";
+                    };
+                  ];
+              };
+        };
+    info =
+      Protocol.Child_workflow
+        {
+          namespace = "temporal-sdk-test";
+          workflow_id = "child-terminal-failure";
+          run_id = "child-run";
+          workflow_type = "native_worker_child_terminal_failure_target";
+          initiated_event_id = 1L;
+          started_event_id = 2L;
+          retry_state = Protocol.Non_retryable_failure;
+        };
+  }
+
+(** Propagates one terminal child failure through the worker adapter and checks
+    the public error view before allowing the parent to complete. The nested
+    detail bytes, readiness observation, one continuation, terminal completion,
+    and final lease ledger together cover both resolver ownership and native
+    activation retirement. *)
+let test_child_terminal_failure () =
+  let continuations = ref 0 in
+  let child =
+    Temporal.Workflow.remote ~name:"native_worker_child_terminal_failure_target"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_child_terminal_failure"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let pending =
+          Temporal.Child_workflow.start ~id:"child-terminal-failure" child ()
+        in
+        match Temporal.Future.await pending with
+        | Ok () ->
+            Error
+              (Temporal.Error.defect
+                 ~message:"terminal child failure unexpectedly succeeded")
+        | Error error ->
+            incr continuations;
+            let view = Temporal.Error.view error in
+            let details_match =
+              match view.details with
+              | [ payload ] ->
+                  List.is_empty payload.metadata
+                  && String.equal (Bytes.to_string payload.data) "child-details"
+              | _ -> false
+            in
+            let error_matches =
+              view.category = `Child_workflow
+              && view.non_retryable
+              && String.equal view.message
+                   "child workflow failed source=temporal-core child_workflow namespace=temporal-sdk-test id=child-terminal-failure run_id=child-run type=native_worker_child_terminal_failure_target initiated_event_id=1 started_event_id=2 retry_state=non_retryable_failure | child application failure source=child-worker application type=child_failure non_retryable=true details=1"
+            in
+            let future_matches =
+              match Temporal.Future.peek pending with
+              | Some (Error peek_error) ->
+                  String.equal (Temporal.Error.message peek_error) view.message
+              | Some (Ok ()) -> false
+              | None -> false
+            in
+            if error_matches && details_match && future_matches then Ok ()
+            else
+              Error
+                (Temporal.Error.defect
+                   ~message:
+                     "terminal child failure did not resolve its future consistently"))
+  in
+  let run_id = "run-child-terminal-failure" in
+  let supervisor = fake_supervisor () in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_child_terminal_failure" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  begin match Worker.poll worker with
+  | Ok (Adapter.Completed { terminal = false; command_count = 1; _ }) -> ()
+  | Ok _ -> failwith "terminal child failure setup did not suspend"
+  | Error error ->
+      failwith ("terminal child failure setup failed: " ^ error.message)
+  end;
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow_start
+           { seq = 1L; result = Protocol.Child_start_succeeded "child-run" };
+       ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Completed { terminal = false; command_count = 0; _ }) -> ()
+  | Ok _ -> failwith "terminal child failure start acknowledgment completed parent"
+  | Error error ->
+      failwith
+        ("terminal child failure start acknowledgment failed: " ^ error.message)
+  end;
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow
+           { seq = 1L; result = Protocol.Child_failed child_terminal_failure };
+       ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Completed { terminal = true; command_count = 1; _ }) -> ()
+  | Ok _ -> failwith "terminal child failure did not complete parent"
+  | Error error ->
+      failwith ("terminal child failure propagation failed: " ^ error.message)
+  end;
+  if !continuations <> 1 then
+    failwith "terminal child failure resumed more than once";
+  begin match (latest_completion supervisor).commands with
+  | [ Protocol.Complete_workflow { result = None } ] -> ()
+  | _ -> failwith "terminal child failure did not submit parent completion"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "terminal child failure left a native lease outstanding";
+  match Worker.poll worker with
+  | Ok Adapter.Not_ready -> ()
+  | Ok _ -> failwith "terminal child failure retained stale work"
+  | Error error ->
+      failwith ("terminal child failure cleanup poll failed: " ^ error.message)
+
 (** An activation for a run not present in the existential registry is rejected
     and completed as a non-retryable bridge failure. *)
 let test_unknown_run_retires_lease () =
@@ -718,6 +978,12 @@ let () =
   test_resumed_failure_removes_run ();
   test_activity_command_retires_lease ();
   test_child_command_and_resolution_lifecycle ();
+  test_child_start_rejection_case ~label:"exists"
+    ~cause:Protocol.Child_start_workflow_already_exists
+    ~expected_cause:"workflow_already_exists" ();
+  test_child_start_rejection_case ~label:"unspecified"
+    ~cause:Protocol.Child_start_unspecified ~expected_cause:"unspecified" ();
+  test_child_terminal_failure ();
   test_unknown_run_retires_lease ();
   test_malformed_activation_error_is_typed ();
   test_registration_validation ();

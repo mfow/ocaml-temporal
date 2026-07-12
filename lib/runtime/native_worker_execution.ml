@@ -287,6 +287,17 @@ let build_definitions workflows =
       add_definition definitions workflow)
     (Ok Run_map.empty) workflows
 
+(** Validates the worker's implicit activity queue before [create] publishes a
+    definition registry. The same predicate is used by
+    [Workflow_context_store.create], so an invalid queue cannot survive worker
+    construction and later become an activation-time [Invalid_argument]. *)
+let validate_task_queue task_queue =
+  match Workflow_context_store.validate_task_queue task_queue with
+  | Ok () -> Ok ()
+  | Error message ->
+      Error
+        (make_error ~path:"$.task_queue" "invalid_configuration" message)
+
 (** Finds one registered workflow by its Temporal type name. *)
 let find_definition definitions workflow_type =
   match Run_map.find_opt workflow_type definitions with
@@ -311,19 +322,22 @@ module Make (Supervisor : SUPERVISOR) = struct
 
   type t = adapter_state
 
-  (** Creates the immutable definition registry and an empty run registry. *)
+  (** Creates the immutable definition registry and an empty run registry.
+      Queue validation happens before definitions are published, so malformed
+      empty, NUL-containing, oversized, or non-UTF-8 defaults fail as a typed
+      configuration result rather than breaking the first workflow activation.
+      No supervisor operation or workflow implementation runs on this path. *)
   let create ?(task_queue = "default") ~supervisor ~workflows () =
-    match build_definitions workflows with
-    | Error error -> Error error
-    | Ok definitions ->
-        Ok
-          {
-            supervisor;
-            task_queue;
-            definitions;
-            runs = Run_map.empty;
-            mutex = Mutex.create ();
-          }
+    let* () = validate_task_queue task_queue in
+    let* definitions = build_definitions workflows in
+    Ok
+      {
+        supervisor;
+        task_queue;
+        definitions;
+        runs = Run_map.empty;
+        mutex = Mutex.create ();
+      }
 
   (** Distinguishes an ordinary source rejection from an exception raised while
       completing. The latter is allowed to reach [process_one]'s cleanup guard:

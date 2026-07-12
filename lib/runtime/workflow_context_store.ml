@@ -28,31 +28,41 @@ type t = {
     Queue names cross the strict JSON boundary even when workflow code omits
     [~task_queue], so rejecting an empty, NUL-containing, oversized, or
     non-UTF-8 default at execution construction keeps configuration failures
-    out of the later workflow command path. [Invalid_argument] is appropriate
-    here because the worker supplied an invalid programmer configuration. *)
+    out of the later workflow command path. The result carries the stable
+    diagnostic so worker construction can reject the same value without
+    catching an exception. *)
 let validate_task_queue task_queue =
   if String.equal task_queue "" then
-    invalid_arg "task_queue must not be empty"
+    Error "task_queue must not be empty"
   else if String.contains task_queue '\000' then
-    invalid_arg "task_queue must not contain NUL"
+    Error "task_queue must not contain NUL"
   else if String.length task_queue > 65_536 then
-    invalid_arg "task_queue exceeds 65536 bytes"
+    Error "task_queue exceeds 65536 bytes"
   else if not (Temporal_base.Codec.valid_utf_8 task_queue) then
-    invalid_arg "task_queue must be valid UTF-8"
+    Error "task_queue must be valid UTF-8"
+  else Ok ()
 
 (** Creates empty activity and timer tables. The tables grow normally if a
     workflow has more than the small initial capacity. *)
 let create ?(task_queue = "default") scheduler =
-  validate_task_queue task_queue;
-  {
-    scheduler;
-    task_queue;
-    next_sequence = 0L;
-    activities = Hashtbl.create 16;
-    child_workflows = Hashtbl.create 16;
-    timers = Hashtbl.create 16;
-    commands_rev = [];
-  }
+  match validate_task_queue task_queue with
+  | Error message ->
+      (* Preserve the existing execution-construction contract for callers
+         that create a runtime directly: invalid worker configuration is a
+         programmer defect at this lower-level API. The worker adapter uses
+         [validate_task_queue] directly and returns a typed configuration
+         error before it publishes any execution state. *)
+      invalid_arg message
+  | Ok () ->
+      {
+        scheduler;
+        task_queue;
+        next_sequence = 0L;
+        activities = Hashtbl.create 16;
+        child_workflows = Hashtbl.create 16;
+        timers = Hashtbl.create 16;
+        commands_rev = [];
+      }
 
 (** Stores the currently running workflow separately on each OCaml Domain, so
     workflow code running on different Domains cannot see the wrong context. *)

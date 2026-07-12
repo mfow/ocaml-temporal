@@ -521,50 +521,24 @@ impl PollLanes {
     /// blocked by outstanding completion debt. Errors from Core are ignored:
     /// dispose must still release the process graph.
     pub async fn force_complete_outstanding_for_dispose(&mut self) {
-        while let Some(ready) = self.workflow_signal.take(&mut self.workflow_ready) {
-            if let Ok(activation) = ready {
-                let run_id = activation.run_id.clone();
-                force_fail_undeliverable_workflow(
-                    self.worker.as_ref(),
-                    &run_id,
-                    "runtime dispose drained undelivered workflow activation",
-                )
-                .await;
-                self.ledger
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .force_remove_workflow(&run_id);
-            }
-        }
-        while let Some(ready) = self.activity_signal.take(&mut self.activity_ready) {
-            if let Ok(task) = ready {
-                let task_token = task.task_token.clone();
-                force_fail_undeliverable_activity(
-                    self.worker.as_ref(),
-                    &task_token,
-                    "runtime dispose drained undelivered activity task",
-                )
-                .await;
-                self.ledger
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .force_remove_activity(&task_token);
-            }
-        }
+        use std::collections::HashSet;
 
+        // Complete ledger debt first so Core can finish poll loops that are
+        // blocked waiting for outstanding-task permits during shutdown.
         let (workflow_ids, activity_tokens) = self
             .ledger
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take_all_outstanding();
-        for run_id in workflow_ids {
+        for run_id in &workflow_ids {
             force_fail_undeliverable_workflow(
                 self.worker.as_ref(),
-                &run_id,
+                run_id,
                 "runtime dispose retired outstanding workflow lease",
             )
             .await;
         }
+        let mut completed_activity_tokens: HashSet<Vec<u8>> = HashSet::new();
         for task_token in activity_tokens {
             force_fail_undeliverable_activity(
                 self.worker.as_ref(),
@@ -572,6 +546,39 @@ impl PollLanes {
                 "runtime dispose retired outstanding activity lease",
             )
             .await;
+            completed_activity_tokens.insert(task_token);
+        }
+
+        while let Some(ready) = self.workflow_signal.take(&mut self.workflow_ready) {
+            if let Ok(activation) = ready {
+                // Already force-failed above if the run was still in the
+                // ledger; a second completion for the same run_id is unsafe.
+                if !workflow_ids.iter().any(|id| id == &activation.run_id) {
+                    force_fail_undeliverable_workflow(
+                        self.worker.as_ref(),
+                        &activation.run_id,
+                        "runtime dispose drained undelivered workflow activation",
+                    )
+                    .await;
+                }
+            }
+        }
+        while let Some(ready) = self.activity_signal.take(&mut self.activity_ready) {
+            if let Ok(task) = ready {
+                // Skip pure cancel updates and any token already completed
+                // from the ledger so dispose cannot double-complete Core.
+                let is_cancel = matches!(task.variant, Some(activity_task::Variant::Cancel(_)));
+                if is_cancel || completed_activity_tokens.contains(&task.task_token) {
+                    continue;
+                }
+                force_fail_undeliverable_activity(
+                    self.worker.as_ref(),
+                    &task.task_token,
+                    "runtime dispose drained undelivered activity task",
+                )
+                .await;
+                completed_activity_tokens.insert(task.task_token.clone());
+            }
         }
     }
 
@@ -791,7 +798,8 @@ async fn run_workflow_lane(
             Ok(Admission::Duplicate) | Ok(Admission::ExistingCancellation) => {
                 // Core workflow completions are keyed only by run_id. Force-
                 // failing a duplicate would complete the already-outstanding
-                // activation that is still queued or leased to OCaml.
+                // activation that is still queued or leased to OCaml. Drop the
+                // duplicate delivery and surface a lane error instead.
                 drop(activation);
                 if !signal.enqueue(&sender, Err(PollLaneError::DuplicateIdentity)) {
                     return;
@@ -806,6 +814,9 @@ async fn run_workflow_lane(
                         "unexpected activity cancellation during workflow admission"
                     }
                 };
+                // InvalidIdentity / Draining still leave a Core poll debt that
+                // only a completion can retire. Force-fail that undeliverable
+                // activation before publishing the admission error.
                 force_fail_undeliverable_workflow(worker.as_ref(), &run_id, reason).await;
                 if !signal.enqueue(&sender, Err(PollLaneError::Admission(error))) {
                     return;
@@ -888,8 +899,10 @@ async fn run_activity_lane(
                 }
             }
             Err(error) => {
-                // Only Start-shaped debts need a Core completion. Unknown
-                // cancel notifications do not create a second obligation.
+                // Only Start-shaped debts need a Core completion. Unknown or
+                // duplicate cancel notifications do not create a second
+                // obligation; force-failing them can spuriously complete an
+                // unrelated or already-finished activity for the same token.
                 if kind == ActivityAdmission::Start
                     && matches!(error, AdmitError::InvalidIdentity | AdmitError::Draining)
                 {

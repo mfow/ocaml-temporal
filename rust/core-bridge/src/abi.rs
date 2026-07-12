@@ -355,6 +355,29 @@ impl Runtime {
     fn start_workflow_json(&mut self, input: &[u8]) -> Operation {
         let text = decode_semantic_input(input)?;
         let request = client_protocol::decode_start_request(text).map_err(protocol_failure)?;
+        // The async begin path owns one Tokio task per request_id in
+        // `pending_starts`. A concurrent sync start with the same logical ID
+        // must not issue a second StartWorkflowExecution while that ticket is
+        // live; callers must poll/wait the existing ticket instead.
+        if let Some((_, pending)) = self
+            .pending_starts
+            .iter()
+            .find(|(_, pending)| pending.request.request_id == request.request_id)
+        {
+            if !client_protocol::same_start_request(pending.request.as_ref(), &request) {
+                return Err(Failure {
+                    status: STATUS_PROTOCOL,
+                    message: "start request_id is already pending for a different request"
+                        .to_owned(),
+                });
+            }
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message:
+                    "Temporal workflow start is already pending for this request_id; poll or wait the async ticket"
+                        .to_owned(),
+            });
+        }
         let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
             status: STATUS_INVALID_STATE,
             message: "Temporal client is not connected".to_owned(),
@@ -861,10 +884,12 @@ impl Runtime {
     /// semantic decode failed after Rust handed off its lease.
     fn reject_polled_workflow(&mut self, input: &[u8]) -> Operation {
         let run_id = workflow_rejection_run_id(&self.workflow_activations, input)?;
-        // Keep the semantic handoff document until Core/ledger reject finishes
-        // so a failed reject can be retried with the exact original document.
-        self.reject_workflow_delivery(&run_id)?;
+        // reject_workflow_delivery retires the ledger even when Core rejects
+        // the generated failure. Remove the semantic handoff on the same path
+        // so a Core error cannot leave a stale run_id that blocks later work.
+        let rejection = self.reject_workflow_delivery(&run_id);
         self.workflow_activations.remove(&run_id);
+        rejection?;
         Ok(Vec::new())
     }
 
@@ -1002,10 +1027,11 @@ impl Runtime {
     /// when OCaml cannot represent the task after lease handoff.
     fn reject_polled_activity(&mut self, input: &[u8]) -> Operation {
         let task_token = activity_rejection_token(&self.activity_tasks, input)?;
-        // Keep semantic correlation until Core/ledger reject succeeds so a
-        // failed reject can retry with the exact original task document.
-        self.reject_activity_delivery(&task_token)?;
+        // reject_activity_delivery retires the ledger even when Core rejects
+        // the generated failure. Clear semantic correlation on the same path.
+        let rejection = self.reject_activity_delivery(&task_token);
         retire_activity_semantics(&mut self.activity_tasks, &task_token);
+        rejection?;
         Ok(Vec::new())
     }
 
@@ -1127,11 +1153,11 @@ fn drop_runtime_graph(
             let _runtime_guard = handle.enter();
             worker.initiate_shutdown();
         }
-        let _ = handle.block_on(worker.join_poll_lanes());
-        // GC dispose and defensive free cannot rely on OCaml finishing leased
-        // work. Force-fail every still-owned Core task before finalization so
-        // outstanding debt cannot strand the worker graph in the process.
+        // Core poll loops do not observe ShutDown while tasks remain
+        // outstanding. Force-fail every still-owned debt before joining the
+        // lanes so dispose cannot block forever waiting for OCaml.
         handle.block_on(worker.force_complete_outstanding_for_dispose());
+        let _ = handle.block_on(worker.join_poll_lanes());
         match handle.block_on(worker.finalize()) {
             Ok(()) => {}
             Err((worker, _)) => {

@@ -109,14 +109,20 @@ fn double_lease_is_rejected() {
     let mut ledger = TaskLedger::new();
     assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
     assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
-    assert_eq!(ledger.lease_workflow("run-1"), Err(CompleteError::AlreadyLeased));
+    assert_eq!(
+        ledger.lease_workflow("run-1"),
+        Err(CompleteError::AlreadyLeased)
+    );
     let token = b"activity-token";
     assert_eq!(
         ledger.admit_activity(token, ActivityAdmission::Start),
         Ok(Admission::New)
     );
     assert_eq!(ledger.lease_activity(token), Ok(()));
-    assert_eq!(ledger.lease_activity(token), Err(CompleteError::AlreadyLeased));
+    assert_eq!(
+        ledger.lease_activity(token),
+        Err(CompleteError::AlreadyLeased)
+    );
 }
 
 /// A dequeued activation that fails lease handoff must be removable from the

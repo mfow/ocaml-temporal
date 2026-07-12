@@ -89,24 +89,24 @@ requires the second attempt to receive that detail and timeout from Temporal.
 For the long-running workflow, it waits for the test-only marker activity to
 publish the current run token after the durable timer and marker commands are
 accepted together, then sends `Temporal.Client.cancel` for that exact handle.
-The local assertion checks five exact success payloads, one typed
-non-retryable workflow failure, one heartbeat-detail retry, and one typed
-`Cancelled` result for the same
-workflow/run pair. The parent/child and retry scenarios are part of the same
-driver and are also started before the first wait. The historical live evidence
-covers the five baseline assertions; the seven-run heartbeat/cancellation
-assertions are
+The local assertion checks five exact success payloads (the heartbeat-detail
+retry is one of those five), one typed non-retryable workflow failure, and one
+typed `Cancelled` result for the same workflow/run pair. The parent/child and
+ordinary retry scenarios are part of the same driver and are also started before
+the first wait. Historical live evidence covers the four baseline success
+payloads and the typed failure; the heartbeat and cancellation assertions are
 implemented and locally covered, but they are not live-verified because the
 attempted Actions run was cancelled. After the driver exits, the Makefile stops the
 worker and requires its graceful-shutdown marker; the driver's successful
 `client_shutdown` phase provides the corresponding client teardown evidence.
 
 This is a real workflow-result acceptance fixture, not only a lifecycle test.
-It has live evidence for one parent/child success path, one server-managed
-activity retry, one heartbeat-detail retry, and one non-retryable
-workflow-failure classification. The heartbeat and cancellation
-implementations and local assertions are present, but do not yet establish
-live evidence in this environment. The fixture does not yet establish child
+It has live evidence for the baseline fan-out, timer/activity, and parent/child
+success paths, one server-managed ordinary activity retry, and one
+non-retryable workflow-failure classification.
+The heartbeat-detail retry and cancellation implementations and local
+assertions are present, but do not yet establish live evidence in this
+environment. The fixture does not yet establish child
 start-failure/cancellation, heartbeat-timeout-triggered retry, asynchronous
 activity completion, worker restart, replay, or cache eviction.
 The workflow configuration runs this target on pull requests and pushes to

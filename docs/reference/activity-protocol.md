@@ -100,7 +100,10 @@ ledger.
 The schema is [`activity-heartbeat.schema.json`](../schemas/bridge/activity-heartbeat.schema.json).
 The focused bilateral tests are
 `test/bridge/test_ocaml_activity_protocol.ml` and
-`rust/core-bridge/tests/activity_protocol.rs`.
+`rust/core-bridge/tests/activity_protocol.rs`. The Rust ownership regression
+also drops the source JSON buffer after decoding, demonstrating that task
+tokens, heartbeat details, and metadata survive without borrowing caller-owned
+input memory.
 
 Encoding performs the reverse conversion, normalizes object keys, then decodes
 the produced JSON again. Invalid typed outgoing records therefore fail before

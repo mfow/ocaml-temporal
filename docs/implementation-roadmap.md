@@ -83,10 +83,10 @@ essential-feature tests:
 - A separate OCaml test-client container links the same library, starts each
   test workflow, waits for its result, and checks the expected outcome.
 
-The smoke suite now contains six top-level scenarios: fan-out, timer/activity,
-activity retry, parent/child, typed non-retryable workflow failure, and
-marker-guarded exact-run cancellation. Every subsequent essential capability
-adds scenarios to that same suite. The suite is
+The smoke suite now contains seven top-level scenarios: fan-out, timer/activity,
+ordinary activity retry, heartbeat-detail activity retry, parent/child, typed
+non-retryable workflow failure, and marker-guarded exact-run cancellation.
+Every subsequent essential capability adds scenarios to that same suite. The suite is
 table-driven and records both the supported case
 and its important error, cancellation, replay, or shutdown behavior. It is not
 considered complete while an essential SDK capability is exercised only by the

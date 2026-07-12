@@ -14,6 +14,39 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Activity-context lifetime regression coverage
+
+Status: locally verified in the native activity execution tests; no live
+Temporal Server claim is made by this test-only milestone. The change was
+merged in [PR #120](https://github.com/mfow/ocaml-temporal/pull/120) as commit
+`04a6bab`.
+
+The activity-context tests now prove that previous-attempt details, heartbeat
+arguments, callback-owned views, and heartbeat timeouts are copied at every
+public boundary. They also verify that a heartbeat callback exception becomes a
+non-retryable typed defect, that the callback is invoked only once, and that a
+retained context rejects heartbeat calls after invalidation without entering
+the callback. These checks complement the existing lease-retention and
+post-completion invalidation tests; they do not add asynchronous completion or
+live heartbeat-timeout behavior.
+
+## 2026-07-13: Lifecycle and bridge ownership regression coverage
+
+Status: locally verified in the focused OCaml and Rust tests; no live Temporal
+Server or GitHub Actions success claim is made by these test-only milestones.
+The lifecycle tests were merged in [PR #118](https://github.com/mfow/ocaml-temporal/pull/118)
+as commit `8b62593`, and the bridge ownership tests were merged in [PR #119](https://github.com/mfow/ocaml-temporal/pull/119)
+as commit `25eb755`.
+
+The lifecycle corpus now checks that continue-as-new remains terminal when
+later timer or cancellation jobs arrive, that child cancellation after a
+failed start is an idempotent no-op, and that repeated scope cancellation does
+not emit a Temporal command. Rust protocol tests reject a continue-as-new
+completion with a follow-up command in both JSON and Core conversion. The ABI
+and activity-protocol tests additionally verify malformed-heartbeat result
+cleanup can be reused and that decoded activity bytes remain valid after the
+source JSON buffer is dropped.
+
 ## 2026-07-13: Context-aware activity heartbeats
 
 Status: locally verified in the bilateral OCaml/Rust protocol tests and the

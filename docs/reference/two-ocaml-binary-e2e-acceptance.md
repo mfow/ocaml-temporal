@@ -1,10 +1,10 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The Compose topology and Makefile lifecycle are now wired for a
-live run, but this change is not considered a passing acceptance test until
-`make test-temporal-integration` has completed successfully against the real
-Temporal/PostgreSQL services. The worker and driver remain guarded by
-`TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
+**Status:** Verified in the Linux CI Temporal/PostgreSQL integration job for
+commit `d4456b7`. `make test-temporal-integration` completed the real Compose
+run: the driver asserted both terminal results and the worker/client shut down
+cleanly. The worker and driver remain guarded by `TEMPORAL_TWO_BINARY_LIVE=1`;
+only the dedicated Compose services set it.
 
 `smoke-worker` publishes an atomic readiness marker after public
 `Temporal.Worker.create` succeeds. Compose waits for that health check before
@@ -17,7 +17,7 @@ The public `Temporal.Client` and `Temporal.Worker` now route HTTP(S) calls
 through the private Rust/Core supervisor. The deterministic `mock://` backend
 remains available for unit tests. The worker's native poll, bounded readiness,
 completion, and typed registration loop is covered by focused tests; the
-Compose acceptance is the next verification layer against a real server.
+Compose acceptance supplies the first real-server verification layer.
 
 During teardown, the worker's small test-process control Domain translates
 Compose's SIGTERM into `Temporal.Worker.shutdown`; the signal handler itself
@@ -25,15 +25,11 @@ only sets an atomic flag. The 30-second worker stop grace period gives the
 bounded native waits time to leave their poll loop before the container is
 removed. This is test-process lifecycle code, not a second worker supervisor.
 
-The remaining live verification requirements are concrete:
-
-1. start the two public binaries as separate Compose services after
-   Temporal/PostgreSQL readiness is proven; and
-2. assert both terminal workflow results while the worker executes the
-   registered workflow and mock activity against the live server.
-
-Until a real `make test-temporal-integration` run passes, this document does
-not describe the acceptance as complete.
+The initial live requirements are now met: the fixture starts the two public
+binaries after Temporal/PostgreSQL readiness and asserts both terminal
+workflow results while the worker executes registered workflows and a mock
+activity against the live server. The intentionally broader follow-up
+requirements are listed in [Required assertions and failure evidence](#required-assertions-and-failure-evidence).
 
 ## Purpose
 
@@ -123,13 +119,14 @@ directories are therefore required while the worker is running, otherwise the
 driver's build can wait forever on the worker's lock before its OCaml code
 starts.
 
-The worker health check may become healthy only after it has connected,
-validated its worker, registered its OCaml definitions, and started both
-worker poll loops. It is not sufficient for the worker process merely to
-exist. The driver may start after that health check, but the final pass/fail
-signal is the driver's exit status after its result assertions. It must not be
-replaced by a schema migration, namespace registration, TCP check, or a
-`temporal operator cluster health` check.
+The worker health check becomes healthy only after `Temporal.Worker.create`
+has connected, validated the native worker, and registered its OCaml
+definitions. It deliberately publishes readiness before `Worker.run` enters
+the long-lived poll loop, so Compose can launch the driver without treating a
+bare process or TCP listener as readiness. The final pass/fail signal remains
+the driver's exit status after its result assertions; it must not be replaced
+by a schema migration, namespace registration, TCP check, or a `temporal
+operator cluster health` check.
 
 `make test-temporal-integration` owns the fixture lifecycle: create its
 isolated Compose project, run the low-level lifecycle check, wait for the
@@ -159,8 +156,9 @@ registers these local definitions with the public SDK:
   workflows. It has no network or wall-clock dependency and returns a value
   wholly determined by its decoded input.
 
-The exact public registration names may evolve, but the intended shape is
-ordinary OCaml definitions followed by a long-running worker call:
+The fixture implements this shape with the concrete `smoke.fan_out`,
+`smoke.timer_then_activity`, and `smoke.mock_transform` definitions followed
+by a long-running public worker call:
 
 ```ocaml
 let () =
@@ -175,10 +173,8 @@ let () =
   | Ok worker -> Temporal.Worker.run worker |> report_and_exit
 ```
 
-This is illustrative API design, not a promise that these exact identifiers
-already exist. The important property is that `fan_out`,
-`timer_then_activity`, and `mock_transform` are OCaml functions registered by
-the worker executable, rather than synthetic protocol fixtures or Rust test
+The important property is that these are OCaml functions registered by the
+worker executable, rather than synthetic protocol fixtures or Rust test
 handlers.
 
 The workflow bodies obey normal replay rules: no process environment reads,
@@ -238,18 +234,18 @@ validators before an operation changes native or workflow state.
 | `worker.complete_activity` | OCaml to Rust | acknowledgement | Validates an OCaml activity result/failure/cancellation and completes exactly the supplied task token. |
 | `worker.initiate_shutdown` | OCaml to Rust | acknowledgement | Stops admission and asks Core to begin graceful worker shutdown. |
 
-The current activation/completion schema already defines the workflow-side
-semantic conversion for initialization, activity resolution, timer firing,
-cancellation, eviction, activity scheduling, timers, and terminal commands.
-The closed `activity-task` and `activity-completion` schemas already exist and
-are validated by both language adapters. The remaining live-slice work is to
-connect those codecs to the native poll/completion loop. They represent only
-the information an OCaml activity runner needs; raw `ActivityTask` protobuf
-bytes, raw pointers, and Core errors are forbidden outside Rust. The first
-acceptance test uses their existing task token, activity type, workflow/run
-identifiers, attempt, input payloads, and completion variants. Future
-heartbeat, local-activity, and asynchronous-completion fields can be added as
-separate closed changes.
+The current activation/completion schema defines the workflow-side semantic
+conversion for initialization, activity resolution, timer firing, cancellation,
+eviction, activity scheduling, timers, and terminal commands. The closed
+`activity-task` and `activity-completion` schemas are validated by both
+language adapters, and the initial live slice connects them to the native
+poll/completion loop. They represent only the information an OCaml activity
+runner needs; raw `ActivityTask` protobuf bytes, raw pointers, and Core errors
+are forbidden outside Rust. The first acceptance test uses the task token,
+activity type, workflow/run identifiers, attempt, input payloads, and
+completion variants needed for its mock activity. Future heartbeat,
+local-activity, and asynchronous-completion fields can be added as separate
+closed changes.
 
 `client.start_workflow` accepts workflow type, workflow ID, task queue, and
 typed input payloads. It returns the server-issued run ID. `client.wait_workflow_result`
@@ -375,9 +371,11 @@ thread.
 
 ## Required assertions and failure evidence
 
-The driver's successful exit must establish all of the following:
+The driver's successful exit establishes all of the following:
 
-1. both workflow starts returned distinct, nonempty run IDs;
+1. each workflow start returned a nonempty run ID that the driver retained for
+   its corresponding exact-run wait; the recorded CI run showed distinct run
+   IDs for the two starts;
 2. both terminal waits matched the exact workflow ID and run ID returned by
    their own starts;
 3. `smoke.fan_out` returned the ordered result requiring both mock activity
@@ -387,11 +385,12 @@ The driver's successful exit must establish all of the following:
 5. neither terminal response was a workflow failure, cancellation, timeout,
    termination, continued-as-new outcome, codec failure, nor bridge failure.
 
-The worker must additionally log (without payloads) one lifecycle-ready event,
-each accepted workflow activation and activity task with stable identifiers,
-each completion outcome and latency, and shutdown/drain status. The test
-harness captures these logs only for failure diagnosis. Result assertions, not
-log text, are the success oracle.
+The driver logs no-payload phase records for starts, exact-run waits, terminal
+classes, and operation latency. The worker logs readiness and shutdown phases.
+The harness captures these records only for failure diagnosis; result
+assertions, not log text, are the success oracle. Per-activation/task
+identifiers and completion latency are a future observability enhancement and
+must remain payload-free if added.
 
 The first live test is intentionally small. Once it passes, extend the same
 two-binary topology rather than adding a separate pseudo-worker test:
@@ -410,8 +409,8 @@ exercise them against Temporal Server before child workflows join this suite.
 
 ## Completion criteria for this design
 
-This design is implemented only when all of the following are true in Linux
-CI:
+The initial vertical slice is verified in Linux CI because all of the following
+are true:
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;
@@ -422,6 +421,8 @@ CI:
 * the fixture exits nonzero for a failed driver assertion, a workflow failure,
   a worker crash, or a cleanup timeout; and
 * the focused test plus the normal Makefile verification and dependency
-  quality gates pass.
+  quality gates passed for the change that introduced the gate.
 
-Passing infrastructure readiness alone is explicitly insufficient evidence.
+Passing infrastructure readiness alone remains insufficient evidence. The
+success criteria above do not claim live coverage for the follow-up scenarios
+listed earlier in this document.

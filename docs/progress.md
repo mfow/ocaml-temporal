@@ -11,8 +11,39 @@ details. For a concise statement of what users can run today, see the project
 Entries marked "Historical snapshot" preserve the status at an earlier
 milestone. Their follow-up wording is not a claim about the current
 implementation when a later entry documents that work as complete. The
-two-binary Temporal acceptance path remains pending unless an entry explicitly
-records a successful live run.
+latest entry that records a successful live run is the authoritative status
+for the two-binary Temporal acceptance path.
+
+## 2026-07-12: Live two-OCaml-binary Compose acceptance
+
+Status: verified in Linux CI for commit `d4456b7` by the
+`Temporal/PostgreSQL integration smoke (OCaml 5.5)` job. The supported local
+command is `make test-temporal-integration`.
+
+The isolated Compose fixture now starts real PostgreSQL and Temporal Server,
+runs the focused supervisor lifecycle check, then starts `smoke-worker` and
+`smoke-driver` as separate OCaml processes. Both link the public
+`temporal-sdk` library and each owns its own private Rust/Core graph. The
+worker registers `smoke.fan_out`, `smoke.timer_then_activity`, and
+`smoke.mock_transform`; the driver starts both workflows through
+`Temporal.Client` before it waits for either exact workflow/run handle.
+
+The driver asserted `SMOKE:LEFT|SMOKE:RIGHT` for the fan-out workflow and
+`SMOKE:TIMER` for the timer-then-activity workflow. This provides live
+success-path evidence for client start and exact-run wait, native workflow and
+activity dispatch, a durable timer, and two activity commands scheduled before
+the first workflow wait. The test also cleanly shuts down the client and worker
+before Compose removes the isolated volume.
+
+This is deliberately not a claim of full live parity. Child workflows,
+non-success terminal outcomes, retry and cancellation behavior, worker restart
+and replay, cache eviction, and shutdown with outstanding work still need
+dedicated real-server scenarios. This entry supersedes earlier entries that
+describe the two-binary live gate as pending.
+
+Evidence: `make test-temporal-integration`; the passing CI log records both
+driver starts, their exact-run waits, the two asserted results, and clean
+worker/client teardown.
 
 ## 2026-07-12: Native child-workflow resolution lifecycle
 
@@ -105,8 +136,9 @@ both-language round-trip tests cover the semantic shape.
 
 At that commit the activation side still lacked Core's child-resolution job,
 so the milestone did not claim that a workflow could await a child result.
-The later native child-workflow resolution entry above supersedes that
-limitation; the live two-binary acceptance is still pending.
+The later native child-workflow resolution entry and the live two-binary
+acceptance entry above supersede that limitation; a live parent/child result
+remains follow-up work.
 
 Evidence: `dune runtest --force test/bridge`, the focused native execution
 tests, and `cargo test --manifest-path rust/Cargo.toml --locked --test
@@ -329,9 +361,10 @@ Evidence:
   idempotence, malformed HTTP endpoint validation at the native boundary, and
   that public HTTP routing no longer returns the old "native adapter is not
   connected" path.
-- The live two-binary Compose acceptance remains disabled until native worker
-  polling, activity conversion, readiness signalling, and public dispatch are
-  complete.
+- At that time, the live two-binary Compose acceptance remained disabled until
+  native worker polling, activity conversion, readiness signalling, and public
+  dispatch were complete. The later live acceptance entry above records that
+  initial success path as verified.
 
 ## 2026-07-12: Private OCaml/C poll and completion bindings
 

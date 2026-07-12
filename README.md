@@ -50,16 +50,17 @@ opaque bytes and applications may choose another deterministic codec.
 | Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
 | Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current live command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, and drains retryable completions safely. |
-| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts and exact workflow/run waits. Protocol and lifecycle tests cover it; the Compose acceptance target has not yet asserted a real workflow result. |
+| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts and exact workflow/run waits. The live Compose gate starts two executions and waits for their exact terminal results through the public client API. |
 | Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
 | Safety boundary | Rust/Core protobuf handling stays in Rust. OCaml/Rust JSON validation, copied payloads, one-owner lifecycle serialization, and idempotent cleanup are covered by focused tests. |
 
 ## What is deliberately still pending
 
-- The two-public-OCaml-binary acceptance test is scaffolded but is not enabled
-  in Compose. The current real-server smoke proves infrastructure, Core client
-  and worker construction, and lifecycle cleanup; it does not yet start a
-  workflow through one OCaml binary and assert its result in another worker.
+- The live two-public-OCaml-binary gate currently covers success paths only:
+  it starts a fan-out workflow and a timer-then-activity workflow through one
+  OCaml binary, and a separate OCaml worker returns their exact results. It
+  does not yet cover live failure, retry, cancellation, restart, replay, or
+  cache-eviction scenarios.
 - Child-workflow commands can be authored and are translated by the semantic
   layer. The native worker now accepts a parent completion containing a child
   start, retains the parent future through the start acknowledgment, and
@@ -87,7 +88,7 @@ make test-runtime             # deterministic runtime and native adapter tests
 make verify                   # version check, lint, all Dune/Rust/bridge tests
 make quality                  # pinned Rust quality and spelling tools
 make license-check            # permissive dependency audit
-make test-temporal-integration # real PostgreSQL + Temporal lifecycle smoke
+make test-temporal-integration # real PostgreSQL + Temporal + two OCaml binaries
 ```
 
 The default development image uses OCaml 5.2. To try another supported image,
@@ -108,10 +109,11 @@ parallelism used by CI.
 `make test-temporal-integration` starts the pinned Temporal Server and
 PostgreSQL containers under `test/integration/temporal/`, waits for both SQL
 schemas and the Temporal frontend to be healthy, runs the OCaml supervisor
-lifecycle acceptance executable, and removes the test volume afterward. It is
-intentionally a lifecycle smoke at this stage. It does **not** enable the
-two-binary workflow-result scaffold and therefore does not claim end-to-end
-workflow execution yet.
+lifecycle acceptance executable, starts a public OCaml worker, and runs a
+separate public OCaml driver. The driver starts both smoke workflows before
+waiting, checks their exact terminal results, and removes the isolated test
+volume afterward. This is a real success-path worker acceptance test; broader
+failure, child-workflow, and recovery coverage remains follow-up work.
 
 For manual inspection, use `make temporal-start`, `make temporal-health`,
 `make temporal-status`, `make temporal-logs`, and `make temporal-clean`.

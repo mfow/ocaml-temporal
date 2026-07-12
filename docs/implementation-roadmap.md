@@ -18,8 +18,8 @@ cleaner and more maintainable OCaml design.
 | Phase | Deliverable | Runtime evidence | Status |
 |---|---|---|---|
 | 1 | Repository foundation, typed public definitions, codecs, deterministic futures, effect scheduler, and synthetic activations | `make verify` runs from Docker Compose and deterministic command tests pass | Complete |
-| 2 | Rust static library, OCaml C stubs, private owner-Domain mailbox, live worker poll/completion loop, minimum OCaml client, and the real Compose smoke-test topology | An OCaml test-client container starts a workflow executed by a separate OCaml worker against Temporal Server and PostgreSQL | In progress |
-| 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | Planned |
+| 2 | Rust static library, OCaml C stubs, private owner-Domain mailbox, live worker poll/completion loop, minimum OCaml client, and the real Compose smoke-test topology | An OCaml test-client container starts workflows executed by a separate OCaml worker against Temporal Server and PostgreSQL | Complete: the initial two-binary fan-out and timer/activity success paths pass in Linux CI |
+| 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | In progress: the first timer, mock-activity, and fan-out success paths are live; broader scenario coverage remains |
 | 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes), added to the live smoke suite | Parent workflows fan out to mock activities and children, await one/all, and cancel safely through the real cluster | In progress: child command and two-stage start/terminal resolution translation are complete; live wiring and structured-concurrency scopes pending |
 | 5 | Signals, queries, updates, validators, conditions, and handler policies | CLI-driven interactive workflow tests pass, including mode violations | Planned |
 | 6 | Continue-as-new, patches, side effects, external workflow operations, memo, search attributes, priority, and fairness | Recorded histories replay and advanced command integration tests pass | Planned |
@@ -42,8 +42,8 @@ cleaner and more maintainable OCaml design.
    guarded workflow poll lane, one guarded remote-activity lane, their shared
    task ledger, and bounded owner-domain readiness waits. The pure-OCaml
    activation translation, execution command conversion, and private
-   existential run registry are now covered by focused tests; the OCaml
-   supervisor scheduling loop and first executed workflow remain pending.
+   existential run registry are now covered by focused tests and exercised by
+   the first public worker/driver live success path.
    Readiness waits intentionally return to that mailbox after 100 ms when Core
    is quiet. The current
    translation now preserves and validates every field needed by Core activity
@@ -51,8 +51,9 @@ cleaner and more maintainable OCaml design.
    options. Child commands now have closed semantic records and Core
    conversion; start acknowledgments and terminal child results are translated
    through the same JSON protocol and are covered by focused lifecycle tests.
-   Live worker wiring, structured-concurrency scopes, and the Compose
-   acceptance path are still pending.
+   The basic live worker wiring and Compose acceptance path are complete.
+   Child-workflow live wiring, structured-concurrency scopes, and broader
+   scenario coverage remain pending.
    Poll decode failures use an exact-document rejection ABI: Rust retains
    semantic handoff state and will not retire a lease for a changed workflow
    activation or activity task.
@@ -78,9 +79,9 @@ essential-feature tests:
 - A separate OCaml test-client container links the same library, starts each
   test workflow, waits for its result, and checks the expected outcome.
 
-The smoke suite starts with one live workflow as soon as the minimum worker and
-client paths exist. Every subsequent essential capability adds scenarios to
-that same suite. The suite is table-driven and records both the supported case
+The smoke suite now contains the first two live workflows. Every subsequent
+essential capability adds scenarios to that same suite. The suite is
+table-driven and records both the supported case
 and its important error, cancellation, replay, or shutdown behavior. It is not
 considered complete while an essential SDK capability is exercised only by the
 synthetic interpreter.

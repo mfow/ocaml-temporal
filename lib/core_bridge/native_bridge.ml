@@ -13,6 +13,7 @@ type status =
   | Not_ready
   | Protocol
   | Already_started
+  | Retryable
   | Unknown of int
 
 (** Error data copied into OCaml. It never owns Rust memory. *)
@@ -130,6 +131,9 @@ external worker_try_poll_activity_raw : runtime -> response
 external worker_wait_activity_raw : runtime -> response
   = "ocaml_temporal_worker_wait_activity"
 
+external worker_wait_activity_completion_retry_backoff_raw : runtime -> response
+  = "ocaml_temporal_worker_wait_activity_completion_retry_backoff"
+
 external worker_complete_activity_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_complete_activity_json"
 
@@ -159,6 +163,7 @@ let status = function
   | 10 -> Not_ready
   | 11 -> Protocol
   | 12 -> Already_started
+  | 13 -> Retryable
   | code -> Unknown code
 
 (** Converts a bridge status to a bounded stable tag value without exposing the
@@ -176,6 +181,7 @@ let status_name = function
   | Not_ready -> "not_ready"
   | Protocol -> "protocol"
   | Already_started -> "already_started"
+  | Retryable -> "retryable"
   | Unknown _ -> "unknown"
 
 (** Constructs a local configuration failure without entering native code. *)
@@ -472,6 +478,14 @@ let worker_try_poll_activity runtime =
 let worker_wait_activity runtime =
   bridge_call "worker_wait_activity" (fun () ->
       Result.map (fun _ -> ()) (decode (worker_wait_activity_raw runtime)))
+
+(** Applies the fixed native delay used only after Rust explicitly reports a
+    retryable activity-completion transport outcome. The C stub releases the
+    OCaml runtime lock while Rust sleeps on the supervisor owner Domain. *)
+let worker_wait_activity_completion_retry_backoff runtime =
+  bridge_call "worker_wait_activity_completion_retry_backoff" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (worker_wait_activity_completion_retry_backoff_raw runtime)))
 
 (** Validates and submits one remote activity completion. Rust checks the
     opaque task token against the outstanding ledger before completing Core, so

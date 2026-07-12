@@ -22,8 +22,8 @@ let next_wait_lane workflow_lane = not workflow_lane
 (** Runs both serialized lanes until shutdown or a fatal error. The activity
     lane is polled after the workflow lane, preserving the existing ordering;
     retry-pending results are handled before ordinary progress so a retained
-    completion always receives its bounded backoff. *)
-let run ~closed ~poll_workflow ~poll_activity ~wait_for_lane =
+    completion always receives its dedicated bounded backoff. *)
+let run ~closed ~poll_workflow ~poll_activity ~wait_for_lane ~retry_pending =
   let rec loop wait_workflow_lane =
     if closed () then Ok ()
     else
@@ -39,10 +39,10 @@ let run ~closed ~poll_workflow ~poll_activity ~wait_for_lane =
       | Error error, _ -> Error error
       | _, Error error -> Error error
       | Ok Retry_pending, _ ->
-          let* () = wait_for_lane ~workflow_lane:true in
+          let* () = retry_pending ~workflow_lane:true in
           loop (next_wait_lane wait_workflow_lane)
       | _, Ok Retry_pending ->
-          let* () = wait_for_lane ~workflow_lane:false in
+          let* () = retry_pending ~workflow_lane:false in
           loop (next_wait_lane wait_workflow_lane)
       | Ok Progress, _ | _, Ok Progress ->
           loop (next_wait_lane wait_workflow_lane)

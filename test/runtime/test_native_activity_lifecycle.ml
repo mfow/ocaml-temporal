@@ -192,5 +192,30 @@ let test_drain_retry_preserves_completion () =
   if List.length !(supervisor.completions) <> 1 then
     failwith "activity completion was submitted more than once"
 
+(** Proves terminal disposal drops the copied activity token without attempting
+    another completion. The fake native lease is deliberately left outstanding
+    because force-retirement belongs to Rust; this test covers the adapter's
+    ordered half of the terminal cleanup contract. *)
+let test_discard_releases_pending_state () =
+  let supervisor = fake_supervisor () in
+  let calls = ref 0 in
+  let token = Bytes.of_string "discard-token" in
+  enqueue supervisor (start_task token);
+  supervisor.completion_rejections := 1;
+  let worker = worker supervisor calls in
+  expect_completion_error (Worker.poll worker);
+  if List.length !(supervisor.leased) <> 1 then
+    failwith "discard fixture did not retain an activity lease";
+  Worker.discard worker;
+  begin match Worker.drain worker with
+  | Ok () -> ()
+  | Error error -> failwith ("discard left a pending lease: " ^ error.message)
+  end;
+  if !calls <> 1 then failwith "discard reran the activity";
+  if !(supervisor.completions) <> [] then
+    failwith "discard attempted an activity completion"
+
 (** Runs the focused activity lifecycle regression. *)
-let () = test_drain_retry_preserves_completion ()
+let () =
+  test_drain_retry_preserves_completion ();
+  test_discard_releases_pending_state ()

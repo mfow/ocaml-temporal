@@ -6,7 +6,7 @@ use ocaml_temporal_core_bridge::worker_bridge::{
 };
 use ocaml_temporal_core_bridge::{
     ABI_VERSION, Buffer, Result as AbiResult, STATUS_ABI_MISMATCH, STATUS_INVALID_ARGUMENT,
-    STATUS_INVALID_STATE, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
+    STATUS_INVALID_STATE, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, STATUS_RETRYABLE,
     ocaml_temporal_core_v1_check_abi_version, ocaml_temporal_core_v1_conformance_wait_ms,
     ocaml_temporal_core_v1_echo, ocaml_temporal_core_v1_result_free,
     ocaml_temporal_core_v1_runtime_dispose, ocaml_temporal_core_v1_runtime_free,
@@ -17,7 +17,8 @@ use ocaml_temporal_core_bridge::{
     ocaml_temporal_core_v1_worker_reject_workflow_json,
     ocaml_temporal_core_v1_worker_try_poll_activity,
     ocaml_temporal_core_v1_worker_try_poll_workflow, ocaml_temporal_core_v1_worker_wait_activity,
-    ocaml_temporal_core_v1_worker_wait_workflow, test_invoke_panic,
+    ocaml_temporal_core_v1_worker_wait_activity_completion_retry_backoff,
+    ocaml_temporal_core_v1_worker_wait_workflow, test_invoke_panic, test_worker_bridge_status,
 };
 
 /// Produces writable initialized storage matching the C caller contract.
@@ -51,6 +52,7 @@ fn worker_error_categories_never_include_core_diagnostics() {
         WorkerBridgeError::Completion(CompleteError::AlreadyLeased),
         WorkerBridgeError::OutstandingTasks(7),
         WorkerBridgeError::WorkerStillShared,
+        WorkerBridgeError::RetryableActivityCompletion,
     ];
 
     for error in errors {
@@ -59,6 +61,22 @@ fn worker_error_categories_never_include_core_diagnostics() {
         assert!(!message.contains("tonic"), "{message}");
         assert!(!message.contains("secret-core-diagnostic"), "{message}");
     }
+}
+
+#[test]
+/// Confirms the reserved completion retry category has an explicit ABI status
+/// while ordinary Core failures remain the non-retryable worker category.
+fn retryable_completion_uses_dedicated_status() {
+    assert_eq!(
+        test_worker_bridge_status(WorkerBridgeError::RetryableActivityCompletion),
+        STATUS_RETRYABLE
+    );
+    assert_eq!(
+        test_worker_bridge_status(WorkerBridgeError::CoreActivity(
+            "transport outcome unavailable".to_owned()
+        )),
+        ocaml_temporal_core_bridge::STATUS_WORKER
+    );
 }
 
 #[test]
@@ -228,6 +246,18 @@ fn task_bridge_exports_reject_null_runtime_handles() {
                 STATUS_OK
             );
             unsafe { ocaml_temporal_core_v1_worker_wait_activity(ptr::null_mut(), &mut result) }
+        },
+        {
+            assert_eq!(
+                unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+                STATUS_OK
+            );
+            unsafe {
+                ocaml_temporal_core_v1_worker_wait_activity_completion_retry_backoff(
+                    ptr::null_mut(),
+                    &mut result,
+                )
+            }
         },
         {
             assert_eq!(

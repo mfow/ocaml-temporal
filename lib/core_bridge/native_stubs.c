@@ -421,6 +421,16 @@ CAMLprim value ocaml_temporal_worker_wait_activity(value runtime) {
                         ocaml_temporal_core_v1_worker_wait_activity);
 }
 
+/* Apply the fixed activity-completion retry delay on the Rust supervisor
+ * Domain. The shared invoke helper releases the OCaml runtime lock while the
+ * bounded timer runs, so this cannot block an OCaml workflow scheduler. */
+CAMLprim value
+ocaml_temporal_worker_wait_activity_completion_retry_backoff(value runtime) {
+  return invoke_runtime(
+      runtime,
+      ocaml_temporal_core_v1_worker_wait_activity_completion_retry_backoff);
+}
+
 /* Copy a semantic activity completion before entering the blocking section.
  * The opaque task token remains Rust-owned state in the ledger; this input is
  * only a borrowed JSON document for one synchronous submission. */

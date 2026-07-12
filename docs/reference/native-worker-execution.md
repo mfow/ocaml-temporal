@@ -28,6 +28,15 @@ Keeping waits outside this adapter means `poll` remains nonblocking, the
 registry remains usable with deterministic fake sources, and execution
 translation does not depend on a particular scheduling primitive.
 
+When an activity adapter retains a completion after a native call explicitly
+reports a retryable transport outcome, the loop uses a separate
+`Wait_activity_completion_retry_backoff` operation. That operation is a fixed
+10 ms timer on the supervisor's owner Domain, and its C stub releases the
+OCaml runtime lock while the timer runs. It is intentionally not an activity
+readiness wait: unrelated queued work must not make the retained completion
+spin. The workflow adapter does not currently produce a retry-pending result;
+its branch remains on ordinary readiness as a safe extension point.
+
 The supervisor remains the sole owner of the Rust runtime, client, worker, and
 native task ledger. Rust leases a Core task before handing it to a poll lane,
 and the protocol adapter on the owner Domain strictly decodes and validates
@@ -128,10 +137,27 @@ An activation that is valid JSON but cannot be represented by the current
 runtime receives a typed `Fail_workflow` completion. `poll` returns
 `Ok (Rejected ...)` only after that completion has been accepted, and marks
 `lease_retired = true`. If the native completion operation fails, `poll` returns
-an error and leaves the exact completion in the pending map so the caller can
-retry or shut down without a false claim of retirement. A retry never reruns
-the workflow implementation. `drain` retries every pending completion while
-holding the adapter mutex and returns `Ok ()` only after the map is empty.
+an error and leaves the exact completion in the pending map without claiming
+retirement. The production source marks it retryable only when the bridge
+returns the explicit `Retryable` status, which is reserved for a future
+Core/client path that proves the lease was not consumed. Generic `Connection`,
+`Not_ready`, and `Worker` statuses are not retryable: the pinned Core
+completion API removes the task before internally logging/suppressing network
+failures, so blindly submitting the same completion could duplicate it. A
+retry never reruns the workflow implementation. `drain` retries a retained
+completion only while that explicit classification remains true; otherwise it
+returns a terminal error and leaves the worker closed. Before returning that
+terminal error, the worker invokes the supervisor's `Native.shutdown` path.
+That path always reaches `runtime_close`, even if Core reports outstanding
+tasks while its graceful worker step runs; runtime disposal force-retires those
+native leases and releases Tokio/Core. The original adapter error remains the
+public result, while any native cleanup diagnostic is logged. The pending map
+still owns copied bytes until the caller's result records either
+acknowledgement or this terminal failure. If `Native.shutdown` returns
+`Error`, that result is still release-complete by contract and the adapter maps
+are then discarded. If it raises before returning, the worker keeps the maps,
+marks terminal cleanup pending, and schedules a detached retry; no copied
+completion is discarded merely because the public worker has closed admission.
 
 Malformed JSON is rejected below this module by the supervisor's protocol
 adapter. A native task that cannot be converted before hand-off is rejected by
@@ -177,10 +203,21 @@ adapters by taking the same worker mutex. It drains the workflow and activity
 pending-completion maps in that order. Only when both maps are empty does the
 supervisor close its readiness signals and native admission, join the Rust
 poll lanes, verify that no native leases remain, and release worker, client,
-and runtime state in reverse ownership order. If either adapter drain fails,
-native teardown is not started and the public shutdown remains retryable. A
-native teardown failure leaves the worker closed because its ownership graph
-may be partially released. Repeated successful shutdown calls are idempotent.
+and runtime state in reverse ownership order. If an activity drain reports the
+explicit retryable status, native teardown is not started and both layers
+reopen admission so the exact retained completion can be retried. A workflow
+drain or permanent activity error first invokes `Native.shutdown`/`runtime_close`
+to reclaim the graph, then leaves both private and public worker state
+terminal; reopening after either error could duplicate a completion or conceal
+an ownership defect. A returned native teardown `Error` is terminal because
+the supervisor has consumed the graph and its defensive runtime close is
+release-complete; the adapter maps are discarded only after that result. If
+native teardown raises before returning, the worker remains terminal for new
+work but retains its maps and schedules a detached retry, with the finalizer
+as a further last-resort path. A same-Domain shutdown call is different: no
+teardown has started, so it returns a retryable defect without closing the
+private graph; a later call from another Domain can wait for the run mutex and
+complete shutdown. Repeated successful shutdown calls are idempotent.
 
 The semantic translator accepts child-start commands with the workflow identity,
 input, and optional retry policy represented by the protocol. Core child options

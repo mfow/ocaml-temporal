@@ -103,9 +103,17 @@ module Make (Supervisor : SUPERVISOR) : sig
   (** Retries all completions whose native acknowledgement previously failed.
       The adapter mutex remains held while this operation runs, so no new
       activation can overtake an older lease. [Ok ()] proves that the pending
-      map is empty; [Error _] leaves the exact completion in place for a later
-      retry and must prevent native worker teardown. *)
+      map is empty. [Error _] leaves the exact completion in place. The caller
+      must either retry it after an explicitly safe transient classification or
+      force-retire the native graph and then call [discard] on a terminal path;
+      it must never silently drop this completion while Rust still owns it. *)
   val drain : t -> (unit, error_view) result
+
+  (** Discards all retained completion bytes and shuts down every OCaml-owned
+      execution after terminal native cleanup. This is irreversible and must
+      be called only after the supervisor has force-retired its native leases;
+      it never attempts another completion. *)
+  val discard : t -> unit
 
 end
 

@@ -266,6 +266,11 @@ module Native : sig
     | Wait_activity : unit operation
         (** Waits for activity readiness with the same runtime-lock-free bridge
             contract as [Wait_workflow]. *)
+    | Wait_activity_completion_retry_backoff : unit operation
+        (** Applies the fixed native delay used only after an explicit
+            retryable activity-completion transport outcome. The supervisor
+            owner Domain performs it while the C stub releases the OCaml
+            runtime lock. *)
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
         (** Validates and submits one typed remote activity completion. *)

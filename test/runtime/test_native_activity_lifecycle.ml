@@ -15,9 +15,13 @@ type source_error = { code : string; message : string }
 (** Fake supervisor state. Tokens are kept as bytes so the test exercises the
     same binary-safe lease key used by the native worker. *)
 type fake_supervisor = {
+  (* Tasks waiting to be leased by the adapter. *)
   queue : Protocol.task Queue.t;
+  (* Binary tokens whose completions are still unacknowledged. *)
   leased : bytes list ref;
+  (* Completions accepted by the fake source. *)
   completions : Protocol.completion list ref;
+  (* Number of deliberate completion rejections remaining. *)
   completion_rejections : int ref;
 }
 
@@ -32,6 +36,7 @@ let fake_supervisor () =
 
 (** Removes one exact binary token from a lease list. *)
 let remove_token token tokens =
+  (* Remove one exact binary token while retaining the order of other leases. *)
   let rec loop reversed = function
     | [] -> (false, List.rev reversed)
     | current :: rest when Bytes.equal current token ->

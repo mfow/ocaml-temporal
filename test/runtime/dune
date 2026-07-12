@@ -3,6 +3,8 @@
   test_activation
   test_native_execution
   test_native_activity_execution
+  test_native_activity_lifecycle
+  test_native_worker_lifecycle
   test_native_worker_execution
   test_scheduler)
  (libraries temporal-sdk temporal-sdk.runtime))

@@ -92,6 +92,12 @@ drain leaves the exact completion and the native graph usable, so callers can
 retry rather than converting a transient transport error into an
 `outstanding_tasks` shutdown failure.
 
+`test/runtime/test_native_activity_lifecycle.ml` keeps this shutdown contract
+in a separate focused test. It forces one completion rejection during polling
+and another during the first drain, then verifies that the second drain retires
+the original binary-token lease. The activity implementation is called once
+and the completion is submitted once; retrying never repeats user work.
+
 ## Current boundary and deliberate limits
 
 This slice implements typed local activity dispatch, failure/cancellation

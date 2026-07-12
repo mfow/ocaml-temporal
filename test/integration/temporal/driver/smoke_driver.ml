@@ -80,13 +80,21 @@ let cancellation_token () =
     current handshake, even before the Makefile's best-effort cleanup runs. *)
 let cancellation_marker_matches path token =
   try
+    let expected = token ^ "\n" in
     let channel = open_in_bin path in
     Fun.protect
       ~finally:(fun () -> close_in_noerr channel)
       (fun () ->
         let length = in_channel_length channel in
-        let contents = really_input_string channel length in
-        String.equal contents (token ^ "\n"))
+        (* Reject an unexpectedly large marker before allocating a string from
+           it. The activity publishes exactly [token] plus one newline; any
+           other size is stale or malformed and cannot satisfy this handshake.
+           This keeps the driver bounded even when a previous failed run left
+           an unrelated file at the shared marker path. *)
+        if length <> String.length expected then false
+        else
+          let contents = really_input_string channel length in
+          String.equal contents expected)
   with _ -> false
 
 (** Waits for the marker activity to complete before sending cancellation. The

@@ -87,28 +87,36 @@ let cancellation_ready_file () =
 let clear_cancellation_ready_file path =
   try if Sys.file_exists path then Sys.remove path with _ -> ()
 
-(** Publishes the per-run token with a temporary file followed by [Sys.rename].
-    The rename is atomic on the shared Linux bind mount, so the driver observes
+(** Publishes the per-run token with a unique temporary file followed by
+    [Sys.rename]. The temporary file is created in the marker's directory, so
+    the rename is atomic on the shared Linux bind mount and the driver observes
     either the complete marker or no marker, never a partially written file.
-    Any temporary file is removed on failure before a typed activity error is
-    returned. *)
+    A unique name matters because one worker can execute more than one test
+    activity at a time; a PID-only name would let concurrent invocations
+    overwrite one another's staging file. Any temporary file is removed on
+    failure before a typed activity error is returned. *)
 let publish_cancellation_ready path token =
-  let temporary = Printf.sprintf "%s.tmp.%d" path (Unix.getpid ()) in
-  let cleanup () =
-    try if Sys.file_exists temporary then Sys.remove temporary with _ -> ()
-  in
+  let temporary = ref None in
   try
-    let channel = open_out_bin temporary in
+    let generated =
+      Filename.temp_file ~temp_dir:(Filename.dirname path)
+        (Filename.basename path ^ ".tmp.") ""
+    in
+    temporary := Some generated;
+    let channel = open_out_bin generated in
     Fun.protect
       ~finally:(fun () -> close_out_noerr channel)
       (fun () ->
         output_string channel token;
         output_char channel '\n';
         flush channel);
-    Sys.rename temporary path;
+    Sys.rename generated path;
+    temporary := None;
     Ok ()
   with exception_ ->
-    cleanup ();
+    Option.iter
+      (fun generated -> try Sys.remove generated with _ -> ())
+      !temporary;
     Error
       (Temporal.Error.make ~category:`Activity
          ~message:

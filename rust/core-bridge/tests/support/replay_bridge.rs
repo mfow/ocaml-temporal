@@ -211,9 +211,23 @@ fn finalize_or_panic(worker: ReplayWorker, handle: &tokio::runtime::Handle) {
     match handle.block_on(worker.finalize(handle)) {
         Ok(()) => {}
         Err((returned, error)) => {
-            handle.block_on(returned.dispose(handle));
+            dispose_or_panic(returned, handle);
             panic!("replay worker should finalize cleanly: {error:?}");
         }
+    }
+}
+
+/// Disposes a test worker and turns an unexpected retained-owner error into a
+/// test failure without requiring native handles to implement `Debug`.
+fn dispose_or_panic(worker: ReplayWorker, handle: &tokio::runtime::Handle) {
+    match handle.block_on(worker.dispose(handle)) {
+        Ok(()) => {}
+        Err((returned, error)) => match handle.block_on(returned.dispose(handle)) {
+            Ok(()) => panic!("replay worker disposal required a retry: {error:?}"),
+            Err((_retained, retry_error)) => {
+                panic!("replay worker disposal failed twice: {error:?}; {retry_error:?}")
+            }
+        },
     }
 }
 
@@ -298,5 +312,52 @@ fn replay_worker_rejects_finalize_before_history_is_drained() {
     // The retained worker remains usable for the explicit abandonment path;
     // this path may force-fail the queued activation but still joins and
     // finalizes all native resources.
-    handle.block_on(worker.dispose(&handle));
+    dispose_or_panic(worker, &handle);
+}
+
+/// Disposal reports a terminal Core finalization failure while retaining the
+/// lane graph, allowing the caller to release the competing owner and retry.
+#[test]
+fn replay_dispose_retains_worker_when_core_is_still_shared() {
+    let core = core_runtime();
+    let handle = core.tokio_handle().clone();
+    let worker = ReplayWorker::start(&core, replay_config())
+        .expect("replay worker should construct without a client");
+    // Holding a second Arc is a deterministic stand-in for an in-flight Core
+    // operation that still owns the worker when terminal finalization runs.
+    let keepalive = worker.retain_worker_for_test();
+    let (worker, error) = match handle.block_on(worker.dispose(&handle)) {
+        Ok(()) => panic!("disposal must report a still-shared Core worker"),
+        Err(result) => result,
+    };
+    assert!(matches!(
+        error,
+        ReplayWorkerError::Finalization(WorkerBridgeError::WorkerStillShared)
+    ));
+    // The failed result still owns all lane state. Once the competing owner is
+    // released, retrying the same public disposal operation can finalize it.
+    drop(keepalive);
+    dispose_or_panic(worker, &handle);
+}
+
+/// Disposal reports a poll-task join failure while retaining the worker for a
+/// retry after every producer handle has been consumed.
+#[test]
+fn replay_dispose_retains_worker_when_poll_lane_join_fails() {
+    let core = core_runtime();
+    let handle = core.tokio_handle().clone();
+    let mut worker = ReplayWorker::start(&core, replay_config())
+        .expect("replay worker should construct without a client");
+    worker.abort_workflow_lane_for_test();
+    let (worker, error) = match handle.block_on(worker.dispose(&handle)) {
+        Ok(()) => panic!("disposal must report the aborted poll lane"),
+        Err(result) => result,
+    };
+    assert!(matches!(
+        error,
+        ReplayWorkerError::PollLane(PollLaneError::Core(_))
+    ));
+    // `join_poll_lanes` consumed the aborted handle. A retry therefore has no
+    // detached producer left to race with finalization and can release Core.
+    dispose_or_panic(worker, &handle);
 }

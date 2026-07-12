@@ -17,6 +17,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use prost::Message;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::sync::Arc;
 use std::{fmt, panic::AssertUnwindSafe, panic::catch_unwind};
 use temporalio_common::protos::{
     coresdk::{
@@ -426,24 +428,71 @@ impl ReplayWorker {
     /// leased work because the caller has chosen disposal over replay
     /// correctness. It still joins every poll task and attempts Core's terminal
     /// finalizer before returning, so an abandoned worker cannot leave a Tokio
-    /// lane or native worker graph detached in the background.
-    pub(crate) async fn dispose(mut self, handle: &Handle) {
+    /// lane or native worker graph detached in the background. If Core refuses
+    /// both bounded finalization attempts, the worker is returned with the
+    /// typed error instead of being dropped; the caller must retry disposal or
+    /// take another explicit ownership-preserving recovery action.
+    pub(crate) async fn dispose(
+        mut self,
+        handle: &Handle,
+    ) -> Result<(), (Self, ReplayWorkerError)> {
         self.finish_input();
         {
             let _runtime_guard = handle.enter();
             self.lanes.initiate_shutdown();
         }
         self.lanes.force_complete_outstanding_for_dispose().await;
-        let _ = self.lanes.join_poll_lanes().await;
+        let join_result = self.lanes.join_poll_lanes().await;
         self.lanes.force_complete_outstanding_for_dispose().await;
+        if let Err(error) = join_result {
+            // Every join handle has been consumed, so a retry cannot leave a
+            // detached producer behind. Keep the lane graph intact and make
+            // the lane failure explicit instead of consuming it in a
+            // finalization attempt whose error would be harder to recover.
+            return Err((self, ReplayWorkerError::PollLane(error)));
+        }
         let lanes = self.lanes;
-        let _ = Self::best_effort_finalize_lanes(lanes).await;
+        let feeder = self.feeder;
+        let workflow_shutdown_observed = self.workflow_shutdown_observed;
+        Self::best_effort_finalize_lanes(lanes)
+            .await
+            .map_err(|(lanes, error)| {
+                (
+                    Self {
+                        lanes,
+                        feeder,
+                        workflow_shutdown_observed,
+                    },
+                    ReplayWorkerError::Finalization(error),
+                )
+            })
+    }
+
+    /// Retains a second Core worker owner for the disposal ownership test.
+    ///
+    /// This is compiled only into the Rust test crate. The production bridge
+    /// keeps the Core worker private and exposes no raw ownership handle.
+    #[cfg(test)]
+    pub(crate) fn retain_worker_for_test(&self) -> Arc<Worker> {
+        self.lanes.retain_worker_for_test()
+    }
+
+    /// Aborts the workflow poll task so the disposal test can verify that a
+    /// joined lane failure is reported with the replay worker still owned.
+    ///
+    /// This is a deterministic test hook only; production shutdown always
+    /// asks Core to stop and then awaits the lane naturally.
+    #[cfg(test)]
+    pub(crate) fn abort_workflow_lane_for_test(&mut self) {
+        self.lanes.abort_workflow_lane_for_test();
     }
 
     /// Attempts Core finalization twice, retaining the lane graph if both
     /// attempts fail. The second attempt is useful when a task released its
     /// last Arc or completion debt just after the first `finalize` check.
-    async fn best_effort_finalize_lanes(mut lanes: PollLanes) -> Result<(), PollLanes> {
+    async fn best_effort_finalize_lanes(
+        mut lanes: PollLanes,
+    ) -> Result<(), (PollLanes, WorkerBridgeError)> {
         match lanes.finalize().await {
             Ok(()) => Ok(()),
             Err((returned, _first_error)) => {
@@ -451,7 +500,7 @@ impl ReplayWorker {
                 lanes.force_complete_outstanding_for_dispose().await;
                 match lanes.finalize().await {
                     Ok(()) => Ok(()),
-                    Err((returned, _second_error)) => Err(returned),
+                    Err((returned, second_error)) => Err((returned, second_error)),
                 }
             }
         }

@@ -208,7 +208,9 @@ let activate execution jobs =
           [])
         else (
           List.iter
-            (fun job -> if not execution.evicted then process_job execution job)
+            (fun job ->
+              if (not execution.evicted) && not execution.terminal then
+                process_job execution job)
             jobs;
           if execution.evicted then []
           else (

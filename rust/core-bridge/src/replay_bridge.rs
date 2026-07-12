@@ -426,10 +426,12 @@ impl ReplayWorker {
     ///
     /// Unlike [`Self::finalize`], this path is allowed to force-fail queued or
     /// leased work because the caller has chosen disposal over replay
-    /// correctness. It still joins every poll task and attempts Core's terminal
-    /// finalizer before returning, so an abandoned worker cannot leave a Tokio
-    /// lane or native worker graph detached in the background. If Core refuses
-    /// both bounded finalization attempts, the worker is returned with the
+    /// correctness. It force-completes around the join barrier and waits for
+    /// every poll task. A join failure returns the retained worker and a typed
+    /// lane error without attempting finalization; all join handles have been
+    /// consumed, so a retry cannot leave a detached Tokio task behind. Only
+    /// after every join succeeds does it attempt Core's terminal finalizer
+    /// twice. If Core refuses both attempts, the worker is returned with the
     /// typed error instead of being dropped; the caller must retry disposal or
     /// take another explicit ownership-preserving recovery action.
     pub(crate) async fn dispose(

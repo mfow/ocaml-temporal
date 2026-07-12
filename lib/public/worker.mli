@@ -37,9 +37,11 @@ val create :
 
 (** Runs the workflow and activity poll loops until [shutdown] is requested.
     Each accepted task is decoded, dispatched to its registered OCaml function,
-    encoded, and completed before the next task is admitted. Native waits
+    encoded, and completed before the next task is admitted. This is a blocking
+    call: invoke it from an ordinary dedicated Domain or system thread, not
+    directly on a cooperative Eio/Lwt scheduler fiber. Native readiness waits
     release the OCaml runtime lock and return periodically so shutdown cannot
-    be stranded. *)
+    be stranded, but releasing that lock does not make [run] non-blocking. *)
 val run : t -> (unit, Error.t) result
 
 (** Initiates graceful worker shutdown. Repeated calls are safe and idempotent;

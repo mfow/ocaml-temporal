@@ -305,7 +305,9 @@ always reach the owner Domain. The `mock://` endpoint remains a private,
 deterministic seam for unit tests. Activity scheduling is currently translated
 end to end; child-workflow commands are still rejected by the first semantic
 native protocol until their complete Core fields and replay behavior are
-implemented.
+implemented. `Temporal.Worker.run` itself is a blocking lifecycle loop; an
+application should run it on an ordinary dedicated Domain or system thread
+rather than directly on a cooperative Eio/Lwt scheduler fiber.
 
 ## Current integration boundary
 

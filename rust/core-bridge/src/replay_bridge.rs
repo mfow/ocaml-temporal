@@ -1,16 +1,15 @@
 //! Private replay-worker plumbing for deterministic history verification.
 //!
-//! The public OCaml API does not expose this module yet. It establishes the
-//! ownership boundary needed by the later restart/replay acceptance tests:
-//! Temporal Core owns replay state, Rust owns the bounded history feeder, and
-//! no protobuf value crosses into OCaml. Histories arrive as strict JSON with
-//! a canonical base64 protobuf body so the future C/OCaml adapter can reuse
-//! the same protocol without importing Temporal's generated types.
+//! The public OCaml API keeps this module private while the supervisor uses it
+//! as the replay ownership boundary. Temporal Core owns replay state, Rust
+//! owns the bounded history feeder, and no protobuf value crosses into OCaml.
+//! Histories arrive as strict JSON with a canonical base64 protobuf body, so
+//! the C/OCaml adapter can exchange a small auditable document without
+//! importing Temporal's generated types.
 
-// The replay entry points are intentionally private until the public OCaml
-// supervisor operation and its ABI ownership tests are ready. Keep this
-// complete, tested slice available without forcing a temporary C symbol or
-// weakening the production module's visibility boundary.
+// The Rust replay entry points remain private to the bridge crate. The OCaml
+// supervisor reaches them only through the checked C ABI, which keeps Core
+// handles, futures, and completion leases out of the public library surface.
 #![allow(dead_code)]
 #![allow(clippy::enum_variant_names)]
 
@@ -33,7 +32,9 @@ use temporalio_sdk_core::{CoreRuntime, Worker, WorkerConfig};
 use tokio::runtime::Handle;
 
 use crate::protocol::{self, MAX_PAYLOAD_BYTES, MAX_STRING_BYTES};
-use crate::worker_bridge::{PollLaneError, PollLanes, ReadinessWait, ReadyTask, WorkerBridgeError};
+use crate::worker_bridge::{
+    AdmitError, PollLaneError, PollLanes, ReadinessWait, ReadyTask, WorkerBridgeError,
+};
 
 /// Closed validation categories used internally before a history can reach
 /// Core. Details from malformed protobuf input are intentionally discarded so
@@ -228,6 +229,9 @@ impl fmt::Display for ReplayWorkerError {
             Self::PollLane(error) => {
                 let category = match error {
                     PollLaneError::Core(_) => "Core polling failed",
+                    PollLaneError::Admission(AdmitError::Retired) => {
+                        "poll identity was already retired during disposal"
+                    }
                     PollLaneError::Admission(_) => "poll task admission failed",
                     PollLaneError::DuplicateIdentity => "poll task identity was duplicated",
                     PollLaneError::InvalidActivityVariant => "poll activity variant was invalid",
@@ -357,6 +361,25 @@ impl ReplayWorker {
     ) -> Result<(), ReplayWorkerError> {
         self.lanes
             .complete_workflow(completion)
+            .await
+            .map_err(ReplayWorkerError::Finalization)
+    }
+
+    /// Fails one activation that was leased by the replay poll lane but could
+    /// not be represented by the semantic OCaml document.
+    ///
+    /// Replay uses the same one-shot completion debt as a live worker. Keeping
+    /// this recovery operation on the Rust-owned worker means a malformed
+    /// activation cannot strand Core while the owner still has a typed error
+    /// to report. The static reason is deliberately bounded and does not
+    /// include workflow-controlled identifiers or payloads.
+    pub(crate) async fn reject_workflow_delivery(
+        &self,
+        run_id: &str,
+        reason: &'static str,
+    ) -> Result<(), ReplayWorkerError> {
+        self.lanes
+            .reject_workflow_delivery_with_reason(run_id, reason)
             .await
             .map_err(ReplayWorkerError::Finalization)
     }

@@ -114,6 +114,39 @@ val client_wait_workflow_json : runtime -> bytes -> (bytes, error) result
     before publishing it into the owned graph. *)
 val worker_start : runtime -> worker_config -> (unit, error) result
 
+(** Constructs the private workflow-only replay worker. It does not require a
+    client connection because histories arrive through the bounded feeder. *)
+val replay_worker_start : runtime -> worker_config -> (unit, error) result
+
+(** Validates and feeds one strict replay-history JSON document. The native
+    OCaml side checks the closed envelope and canonical payload first; the
+    native feeder repeats those checks, accepts one queued history, and applies
+    backpressure to later calls. *)
+val replay_worker_feed_history : runtime -> bytes -> (unit, error) result
+
+(** Closes replay input. Already queued histories remain available to drain. *)
+val replay_worker_finish_input : runtime -> (unit, error) result
+
+(** Takes one ready replay activation without waiting. *)
+val replay_worker_try_poll_workflow : runtime -> (bytes, error) result
+
+(** Waits for replay readiness without consuming a task. *)
+val replay_worker_wait_workflow : runtime -> (unit, error) result
+
+(** Validates and completes one previously leased replay activation. *)
+val replay_worker_complete_workflow_json :
+  runtime -> bytes -> (unit, error) result
+
+(** Retires one replay activation that OCaml could not decode. *)
+val replay_worker_reject_workflow_json :
+  runtime -> bytes -> (unit, error) result
+
+(** Finalizes a naturally drained replay. A failure retains the native graph. *)
+val replay_worker_finalize : runtime -> (unit, error) result
+
+(** Explicitly abandons replay and force-completes native debts. *)
+val replay_worker_dispose : runtime -> (unit, error) result
+
 (** Takes one ready workflow activation without waiting. [Not_ready] is an
     expected empty-lane result. Successful bytes are a closed semantic JSON
     document copied into the OCaml heap. *)

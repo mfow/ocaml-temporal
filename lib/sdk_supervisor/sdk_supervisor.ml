@@ -628,6 +628,17 @@ module Native_backend = struct
         Client.cancel_request ->
         (unit, Client.client_error) result operation
     | Start_worker : Bridge.worker_config -> unit operation
+    | Start_replay_worker : Bridge.worker_config -> unit operation
+    | Feed_replay_history : bytes -> unit operation
+    | Finish_replay_input : unit operation
+    | Try_poll_replay_workflow :
+        Temporal_protocol.Workflow_protocol.activation option operation
+    | Wait_replay_workflow : unit operation
+    | Complete_replay_workflow :
+        Temporal_protocol.Workflow_protocol.completion -> unit operation
+    | Reject_replay_workflow : bytes -> unit operation
+    | Finalize_replay : unit operation
+    | Dispose_replay : unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation
     | Wait_workflow : unit operation
@@ -691,6 +702,23 @@ module Native_backend = struct
             Protocol_adapter.decode_client_cancel_result
               (Bridge.client_cancel_workflow_json runtime input))
     | Start_worker config -> Bridge.worker_start runtime config
+    | Start_replay_worker config -> Bridge.replay_worker_start runtime config
+    | Feed_replay_history input ->
+        Bridge.replay_worker_feed_history runtime input
+    | Finish_replay_input -> Bridge.replay_worker_finish_input runtime
+    | Try_poll_replay_workflow ->
+        Protocol_adapter.workflow_poll_result
+          ~reject:(Bridge.replay_worker_reject_workflow_json runtime)
+          (Bridge.replay_worker_try_poll_workflow runtime)
+    | Wait_replay_workflow -> Bridge.replay_worker_wait_workflow runtime
+    | Complete_replay_workflow completion ->
+        Result.bind
+          (Protocol_adapter.encode_workflow_completion completion)
+          (Bridge.replay_worker_complete_workflow_json runtime)
+    | Reject_replay_workflow input ->
+        Bridge.replay_worker_reject_workflow_json runtime input
+    | Finalize_replay -> Bridge.replay_worker_finalize runtime
+    | Dispose_replay -> Bridge.replay_worker_dispose runtime
     | Try_poll_workflow ->
         Protocol_adapter.workflow_poll_result
           ~reject:(Bridge.worker_reject_workflow_json runtime)
@@ -722,6 +750,7 @@ module Native_backend = struct
       Runtime close is itself defensive and reclaims any child remaining after
       an earlier error; the first diagnostic is preserved for the caller. *)
   let shutdown runtime =
+    let replay_result = Bridge.replay_worker_dispose runtime in
     let worker_result = Bridge.worker_shutdown runtime in
     let client_result =
       match worker_result with
@@ -729,10 +758,11 @@ module Native_backend = struct
       | Error _ as error -> error
     in
     let runtime_result = Bridge.runtime_close runtime in
-    match (worker_result, client_result, runtime_result) with
-    | Error _ as error, _, _ -> error
-    | Ok (), (Error _ as error), _ -> error
-    | Ok (), Ok (), result -> result
+    match (replay_result, worker_result, client_result, runtime_result) with
+    | Error _ as error, _, _, _ -> error
+    | Ok (), (Error _ as error), _, _ -> error
+    | Ok (), Ok (), (Error _ as error), _ -> error
+    | Ok (), Ok (), Ok (), result -> result
 end
 
 (** Specializes the generic supervisor to the real native runtime. *)
@@ -765,6 +795,17 @@ module Native = struct
         Client.cancel_request ->
         (unit, Client.client_error) result operation
     | Start_worker : worker_config -> unit operation
+    | Start_replay_worker : worker_config -> unit operation
+    | Feed_replay_history : bytes -> unit operation
+    | Finish_replay_input : unit operation
+    | Try_poll_replay_workflow :
+        Temporal_protocol.Workflow_protocol.activation option operation
+    | Wait_replay_workflow : unit operation
+    | Complete_replay_workflow :
+        Temporal_protocol.Workflow_protocol.completion -> unit operation
+    | Reject_replay_workflow : bytes -> unit operation
+    | Finalize_replay : unit operation
+    | Dispose_replay : unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation
     | Wait_workflow : unit operation

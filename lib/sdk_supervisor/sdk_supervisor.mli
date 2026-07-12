@@ -248,6 +248,26 @@ module Native : sig
         (** Requests cancellation of one exact run. The acknowledgement does
             not itself prove that the run has reached its cancelled outcome. *)
     | Start_worker : worker_config -> unit operation
+    | Start_replay_worker : worker_config -> unit operation
+        (** Starts a workflow-only replay worker without a Temporal client. *)
+    | Feed_replay_history : bytes -> unit operation
+        (** Queues one strict replay-history JSON document. *)
+    | Finish_replay_input : unit operation
+        (** Closes replay input after the final history has been admitted. *)
+    | Try_poll_replay_workflow :
+        Temporal_protocol.Workflow_protocol.activation option operation
+        (** Takes one ready replay activation. *)
+    | Wait_replay_workflow : unit operation
+        (** Waits for replay readiness without consuming an activation. *)
+    | Complete_replay_workflow :
+        Temporal_protocol.Workflow_protocol.completion -> unit operation
+        (** Completes one previously leased replay activation. *)
+    | Reject_replay_workflow : bytes -> unit operation
+        (** Retires a replay activation rejected by OCaml semantic decoding. *)
+    | Finalize_replay : unit operation
+        (** Finalizes a naturally drained replay, retaining it on failure. *)
+    | Dispose_replay : unit operation
+        (** Explicitly abandons replay and force-completes native debts. *)
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation
         (** Takes and validates one already-ready workflow activation. [None]

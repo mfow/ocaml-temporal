@@ -145,6 +145,64 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_worker_start_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* Construct a workflow-only replay worker. Replay histories are supplied by
+ * the bounded JSON feeder below, so no Temporal client is required. Replay
+ * and live workers are mutually exclusive within one runtime graph. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_replay_worker_start_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Validate and queue one replay-history JSON document. The feeder accepts one
+ * queued history at a time and applies backpressure rather than growing an
+ * unbounded native allocation. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_replay_worker_feed_history_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Close replay input. Core reaches natural shutdown only after the queued
+ * histories and their activations have been completed. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_replay_worker_finish_input(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/* Non-blocking replay activation handoff. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_replay_worker_try_poll_workflow(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/* Bounded replay readiness wait. The binding must release the OCaml runtime
+ * lock while waiting; success is a wake signal and does not consume a task. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_replay_worker_wait_workflow(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/* Complete one replay activation previously handed to OCaml. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_replay_worker_complete_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Retire one replay activation whose semantic JSON could not be decoded. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_replay_worker_reject_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Finalize only after feeder closure and natural Core shutdown. A failure
+ * retains the replay worker for another owner-serialized attempt. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_replay_worker_finalize(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
+/* Explicitly abandon replay and force-complete native debts. A terminal Core
+ * failure retains the worker instead of silently dropping its ownership graph. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_replay_worker_dispose(
+    ocaml_temporal_core_runtime *runtime,
+    ocaml_temporal_core_result *output);
+
 /* Non-blocking Rust-owned task handoff. `NOT_READY` is an expected empty-lane
  * result; success owns one strictly validated semantic JSON document. */
 ocaml_temporal_core_status ocaml_temporal_core_v1_worker_try_poll_workflow(

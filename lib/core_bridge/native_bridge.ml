@@ -26,6 +26,12 @@ type error = {
     consumer's logging setup cannot change bridge behavior. *)
 module Observability = Temporal_base.Observability
 
+(** The shared strict parser also owns the canonical base64 implementation used
+    by replay-history documents. Keeping this validation in OCaml means a
+    caller cannot bypass the semantic boundary merely by calling the private
+    native bridge module instead of the supervisor. *)
+module Control_protocol = Temporal_protocol.Control_protocol
+
 (** Version requested by this binding layer. *)
 let abi_version = 1l
 
@@ -112,6 +118,33 @@ external client_wait_workflow_json_raw : runtime -> bytes -> response
 
 external worker_start_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_start"
+
+external replay_worker_start_raw : runtime -> bytes -> response
+  = "ocaml_temporal_replay_worker_start"
+
+external replay_worker_feed_history_raw : runtime -> bytes -> response
+  = "ocaml_temporal_replay_worker_feed_history"
+
+external replay_worker_finish_input_raw : runtime -> response
+  = "ocaml_temporal_replay_worker_finish_input"
+
+external replay_worker_try_poll_workflow_raw : runtime -> response
+  = "ocaml_temporal_replay_worker_try_poll_workflow"
+
+external replay_worker_wait_workflow_raw : runtime -> response
+  = "ocaml_temporal_replay_worker_wait_workflow"
+
+external replay_worker_complete_workflow_raw : runtime -> bytes -> response
+  = "ocaml_temporal_replay_worker_complete_workflow"
+
+external replay_worker_reject_workflow_raw : runtime -> bytes -> response
+  = "ocaml_temporal_replay_worker_reject_workflow"
+
+external replay_worker_finalize_raw : runtime -> response
+  = "ocaml_temporal_replay_worker_finalize"
+
+external replay_worker_dispose_raw : runtime -> response
+  = "ocaml_temporal_replay_worker_dispose"
 
 external worker_try_poll_workflow_raw : runtime -> response
   = "ocaml_temporal_worker_try_poll_workflow"
@@ -315,6 +348,42 @@ let encode_worker_config config =
     ]
   |> Yojson.Safe.to_string |> Bytes.of_string
 
+(** Returns one closed protocol error for malformed replay input. The Rust
+    side repeats the complete checks; this sender-side copy rejects bad JSON
+    before a native call and keeps diagnostics independent of input content. *)
+let replay_protocol_error () =
+  Error
+    {
+      status = Protocol;
+      message = "replay history document failed OCaml validation";
+    }
+
+(** Validates the replay-history envelope before it crosses the C boundary.
+    The shared parser rejects duplicate keys and resource attacks, while the
+    nested payload decoder proves canonical padded base64 and its byte limit. *)
+let validate_replay_history input =
+  let invalid () = replay_protocol_error () in
+  match Control_protocol.decode_payload_object (Bytes.to_string input) with
+  | Error _ -> invalid ()
+  | Ok (`Assoc entries) -> (
+      match
+        ( List.assoc_opt "workflow_id" entries,
+          List.assoc_opt "history" entries,
+          List.length entries )
+      with
+      | Some (`String workflow_id), Some history_json, 2
+        when String.length workflow_id > 0
+             && String.length workflow_id <= max_transport_string_bytes
+             && not (String.contains workflow_id '\000') -> (
+          match
+            Control_protocol.decode_payload
+              (Yojson.Safe.to_string history_json)
+          with
+          | Ok _ -> Ok ()
+          | Error _ -> invalid ())
+      | _ -> invalid ())
+  | Ok _ -> invalid ()
+
 (** Copies either the successful bytes or error message into OCaml, then always
     frees the Rust allocation. [Fun.protect] still runs cleanup if copying
     raises an OCaml exception. *)
@@ -428,6 +497,65 @@ let worker_start runtime config =
   bridge_call "worker_start" (fun () ->
       Result.map (fun _ -> ())
         (decode (worker_start_raw runtime (encode_worker_config config))))
+
+(** Constructs the private workflow-only replay worker. It uses the same
+    validated settings as a live worker but consumes caller-supplied histories
+    instead of polling a Temporal Server. *)
+let replay_worker_start runtime config =
+  bridge_call "replay_worker_start" (fun () ->
+      Result.map (fun _ -> ())
+        (decode
+           (replay_worker_start_raw runtime (encode_worker_config config))))
+
+(** Validates and feeds one strict replay-history JSON document. Rust keeps the
+    feeder bounded and applies backpressure while the C call releases the
+    OCaml runtime lock. *)
+let replay_worker_feed_history runtime input =
+  bridge_call "replay_worker_feed_history" (fun () ->
+      match validate_replay_history input with
+      | Error _ as error -> error
+      | Ok () ->
+          Result.map (fun _ -> ())
+            (decode (replay_worker_feed_history_raw runtime input)))
+
+(** Closes replay input; later calls only drain and complete already admitted
+    histories. *)
+let replay_worker_finish_input runtime =
+  bridge_call "replay_worker_finish_input" (fun () ->
+      Result.map (fun _ -> ()) (decode (replay_worker_finish_input_raw runtime)))
+
+(** Takes one already-ready replay activation without waiting. *)
+let replay_worker_try_poll_workflow runtime =
+  bridge_call "replay_worker_try_poll_workflow" (fun () ->
+      decode (replay_worker_try_poll_workflow_raw runtime))
+
+(** Waits for replay readiness under the same bounded lock-release contract as
+    the live worker wait. *)
+let replay_worker_wait_workflow runtime =
+  bridge_call "replay_worker_wait_workflow" (fun () ->
+      Result.map (fun _ -> ()) (decode (replay_worker_wait_workflow_raw runtime)))
+
+(** Validates and submits one replay workflow completion. *)
+let replay_worker_complete_workflow_json runtime input =
+  bridge_call "replay_worker_complete_workflow" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (replay_worker_complete_workflow_raw runtime input)))
+
+(** Retires one replay activation after OCaml semantic decode failure. *)
+let replay_worker_reject_workflow_json runtime input =
+  bridge_call "replay_worker_reject_workflow" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (replay_worker_reject_workflow_raw runtime input)))
+
+(** Finalizes a naturally drained replay, retaining the native graph on error. *)
+let replay_worker_finalize runtime =
+  bridge_call "replay_worker_finalize" (fun () ->
+      Result.map (fun _ -> ()) (decode (replay_worker_finalize_raw runtime)))
+
+(** Explicitly abandons replay and force-completes native debts. *)
+let replay_worker_dispose runtime =
+  bridge_call "replay_worker_dispose" (fun () ->
+      Result.map (fun _ -> ()) (decode (replay_worker_dispose_raw runtime)))
 
 (** Takes one already-ready workflow activation without waiting for Core. The
     [Not_ready] status is an expected result while both poll lanes are empty;

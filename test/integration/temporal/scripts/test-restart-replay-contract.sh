@@ -60,6 +60,21 @@ expect_failure "$validator" \
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
+# Keep the validator's configurable jq executable path quoted end to end. A
+# path containing spaces is valid on the host and catches command substitutions
+# that accidentally split [JQ_BIN] after the structural checks have passed.
+jq_path=$(command -v jq)
+space_jq="$tmp/jq wrapper"
+ln -s "$jq_path" "$space_jq"
+JQ_BIN="$space_jq" "$validator" \
+  --history "$fixture/history.terminal.json" \
+  --initial-history "$fixture/history.initial.json" \
+  --diagnostics "$fixture/diagnostics.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id" \
+  --stage terminal \
+  --require-replay >/dev/null
+
 # A terminal event before the timer is observed must not satisfy the initial
 # stop boundary. jq is used only to create an ephemeral negative fixture; it is
 # not part of the production worker or the future Temporal history adapter.

@@ -209,6 +209,32 @@ let failure_info_summary = function
          started_event_id=%Ld retry_state=%s"
         activity_id activity_type identity scheduled_event_id started_event_id
         retry_state
+  | Protocol.Child_workflow
+      {
+        namespace;
+        workflow_id;
+        run_id;
+        workflow_type;
+        initiated_event_id;
+        started_event_id;
+        retry_state;
+      } ->
+      let retry_state =
+        match retry_state with
+        | Protocol.Unspecified -> "unspecified"
+        | In_progress -> "in_progress"
+        | Non_retryable_failure -> "non_retryable_failure"
+        | Timeout -> "timeout"
+        | Maximum_attempts_reached -> "maximum_attempts_reached"
+        | Retry_policy_not_set -> "retry_policy_not_set"
+        | Internal_server_error -> "internal_server_error"
+        | Cancel_requested -> "cancel_requested"
+      in
+      Printf.sprintf
+        "child_workflow namespace=%s id=%s run_id=%s type=%s initiated_event_id=%Ld \
+         started_event_id=%Ld retry_state=%s"
+        namespace workflow_id run_id workflow_type initiated_event_id
+        started_event_id retry_state
 
 (** Flattens a bounded failure chain into one deterministic diagnostic. The JSON
     protocol already limits nesting; the depth guard also protects callers that
@@ -256,7 +282,7 @@ let failure_details (failure : Protocol.failure) =
       | Protocol.Application { details; _ } | Protocol.Canceled { details; _ }
         ->
           List.rev_append details reversed
-      | Protocol.Activity _ -> reversed
+      | Protocol.Activity _ | Protocol.Child_workflow _ -> reversed
     in
     match value.cause with
     | Some cause when depth < 128 -> loop (depth + 1) reversed cause
@@ -281,6 +307,12 @@ let runtime_error_of_failure path ~category (failure : Protocol.failure) =
     | Protocol.Application { non_retryable; _ } -> non_retryable
     | Protocol.Canceled _ -> false
     | Protocol.Activity { retry_state; _ } -> (
+        match retry_state with
+        | Protocol.Non_retryable_failure | Maximum_attempts_reached -> true
+        | Unspecified | In_progress | Timeout | Retry_policy_not_set
+        | Internal_server_error | Cancel_requested ->
+            false)
+    | Protocol.Child_workflow { retry_state; _ } -> (
         match retry_state with
         | Protocol.Non_retryable_failure | Maximum_attempts_reached -> true
         | Unspecified | In_progress | Timeout | Retry_policy_not_set
@@ -312,8 +344,62 @@ let runtime_activity_result path result =
       in
       Ok (Error error)
 
+(** Converts the child-start acknowledgment. A successful run ID advances the
+    per-sequence lifecycle without completing the child future; start failures
+    become typed child/cancellation errors so no child remains indefinitely
+    pending. *)
+let runtime_child_workflow_start_result path result =
+  match result with
+  | Protocol.Child_start_succeeded run_id ->
+      let* () = validate_identifier (path ^ ".run_id") run_id in
+      Ok (Ok run_id)
+  | Protocol.Child_start_failed { workflow_id; workflow_type; cause } ->
+      let cause =
+        match cause with
+        | Protocol.Child_start_unspecified -> "unspecified"
+        | Child_start_workflow_already_exists -> "workflow_already_exists"
+      in
+      Ok
+        (Error
+           (Temporal_base.Error.make ~non_retryable:true
+              ~category:`Child_workflow
+              ~message:
+                (Printf.sprintf
+                   "child workflow start failed: id=%s type=%s cause=%s"
+                   workflow_id workflow_type cause)
+              ()))
+  | Protocol.Child_start_cancelled failure ->
+      let* error =
+        runtime_error_of_failure (path ^ ".failure") ~category:`Cancelled
+          failure
+      in
+      Ok (Error error)
+
+(** Converts the terminal child result while retaining the same null-payload
+    convention as activity completion. *)
+let runtime_child_workflow_result path result =
+  match result with
+  | Protocol.Child_completed None -> Ok (Ok null_runtime_payload)
+  | Protocol.Child_completed (Some payload) ->
+      let* payload = runtime_payload (path ^ ".payload") payload in
+      Ok (Ok payload)
+  | Protocol.Child_failed failure ->
+      let* error =
+        runtime_error_of_failure (path ^ ".failure") ~category:`Child_workflow
+          failure
+      in
+      Ok (Error error)
+  | Protocol.Child_cancelled failure ->
+      let* error =
+        runtime_error_of_failure (path ^ ".failure") ~category:`Cancelled
+          failure
+      in
+      Ok (Error error)
+
 (** Converts an activation job and checks its sequence number before any mutable
     execution state is touched. *)
+type sequence_kind = Activity | Child_start | Child_result | Timer
+
 let runtime_job path = function
   | Protocol.Initialize_workflow
       {
@@ -347,10 +433,26 @@ let runtime_job path = function
       let* () = validate_sequence (path ^ ".seq") seq in
       let* result = runtime_activity_result (path ^ ".result") result in
       Ok
-        (Activation.Resolve_activity { seq; result }, None, None, None, Some seq)
+        ( Activation.Resolve_activity { seq; result }, None, None, None,
+          Some (Activity, seq) )
+  | Protocol.Resolve_child_workflow_start { seq; result } ->
+      let* () = validate_sequence (path ^ ".seq") seq in
+      let* result =
+        runtime_child_workflow_start_result (path ^ ".result") result
+      in
+      Ok
+        ( Activation.Resolve_child_workflow_start { seq; result }, None, None,
+          None, Some (Child_start, seq) )
+  | Protocol.Resolve_child_workflow { seq; result } ->
+      let* () = validate_sequence (path ^ ".seq") seq in
+      let* result = runtime_child_workflow_result (path ^ ".result") result in
+      Ok
+        ( Activation.Resolve_child_workflow { seq; result }, None, None, None,
+          Some (Child_result, seq) )
   | Protocol.Fire_timer { seq } ->
       let* () = validate_sequence (path ^ ".seq") seq in
-      Ok (Activation.Fire_timer { seq }, None, None, None, Some seq)
+      Ok
+        (Activation.Fire_timer { seq }, None, None, None, Some (Timer, seq))
   | Protocol.Cancel_workflow { reason } ->
       Ok (Activation.Cancel_workflow, None, Some reason, None, None)
   | Protocol.Remove_from_cache { message; reason } ->
@@ -373,6 +475,11 @@ let validate_activation value =
     protocol metadata that the runtime's smaller algebra cannot carry. *)
 let translate_activation (value : Protocol.activation) =
   let* () = validate_activation value in
+  (* Core normally allocates one sequence namespace for all commands.  Child
+     resolution is the deliberate exception: the same sequence appears once
+     for the start acknowledgment and once for the terminal result.  Keep the
+     accepted kinds per sequence so every other cross-kind collision remains a
+     protocol error. *)
   let seen_sequences = Hashtbl.create (List.length value.jobs) in
   let initialization = ref None in
   let cancellation_reason = ref None in
@@ -397,13 +504,28 @@ let translate_activation (value : Protocol.activation) =
         let* () =
           match sequence with
           | None -> Ok ()
-          | Some sequence ->
-              if Hashtbl.mem seen_sequences sequence then
+          | Some (kind, sequence) ->
+              let previous =
+                match Hashtbl.find_opt seen_sequences sequence with
+                | None -> []
+                | Some kinds -> kinds
+              in
+              let child_pair_allowed =
+                match (kind, previous) with
+                | Child_start, [ Child_result ]
+                | Child_result, [ Child_start ] -> true
+                | _ -> false
+              in
+              if previous <> [] && not child_pair_allowed then
                 Error
                   (invalid (path ^ ".seq")
-                     "duplicate activation sequence number")
+                     "duplicate activation sequence for a different operation")
+              else if List.mem kind previous then
+                Error
+                  (invalid (path ^ ".seq")
+                     "duplicate activation sequence for the same operation kind")
               else (
-                Hashtbl.add seen_sequences sequence ();
+                Hashtbl.replace seen_sequences sequence (kind :: previous);
                 Ok ())
         in
         begin match init with

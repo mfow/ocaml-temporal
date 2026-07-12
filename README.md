@@ -61,11 +61,11 @@ opaque bytes and applications may choose another deterministic codec.
   and worker construction, and lifecycle cleanup; it does not yet start a
   workflow through one OCaml binary and assert its result in another worker.
 - Child-workflow commands can be authored and are translated by the semantic
-  layer, but the native worker does not yet accept a parent completion that
-  contains a child start. The activation schema still needs child-resolution
-  jobs so a parent can resume safely. On the native path this is an explicit
-  typed rejection, not live child-workflow support. Synthetic tests are not
-  evidence that this works against Temporal Server.
+  layer. The native worker now accepts a parent completion containing a child
+  start, retains the parent future through the start acknowledgment, and
+  resumes it from a later terminal child-resolution activation. Focused Rust,
+  OCaml, and fixture tests cover this protocol and lifecycle; the two-binary
+  Compose acceptance still needs to prove the path against Temporal Server.
 - Signals, queries, updates, continue-as-new, versioning, local activities,
   Nexus, and the remaining cross-SDK parity surface are roadmap work.
 - The public API, native protocol, and Temporal Core pin remain experimental

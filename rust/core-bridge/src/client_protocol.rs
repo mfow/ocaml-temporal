@@ -140,7 +140,12 @@ pub enum WorkflowOutcome {
     /// The run failed with a structured Temporal failure.
     Failed {
         /// Failure tree supplied by Temporal.
-        failure: workflow_protocol::Failure,
+        ///
+        /// A failure tree is recursive and materially larger than the other
+        /// terminal outcome variants.  Keeping it behind one allocation
+        /// keeps the outcome enum compact while preserving the exact JSON
+        /// object shape and ownership of the tree.
+        failure: Box<workflow_protocol::Failure>,
         /// Successor metadata, if the failed event links to a successor.
         successor: Option<SuccessorRef>,
     },
@@ -574,7 +579,7 @@ fn outcome_from_event(
                         .map_err(ClientOperationError::Core)
                 })?;
             WorkflowOutcome::Failed {
-                failure,
+                failure: Box::new(failure),
                 successor: successor(&attributes.new_execution_run_id),
             }
         }
@@ -1090,6 +1095,40 @@ mod tests {
         let decoded: WaitWorkflowResponse = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, response);
         assert!(encoded.contains("run-2"));
+    }
+
+    #[test]
+    /// Keeps the public failure JSON unchanged after boxing the recursive
+    /// failure tree used to keep `WorkflowOutcome` compact in memory.
+    fn failed_response_round_trips_with_boxed_failure_tree() {
+        let response = WaitWorkflowResponse {
+            execution: ExecutionRef {
+                namespace: "default".to_owned(),
+                workflow_id: "workflow-1".to_owned(),
+                run_id: "run-1".to_owned(),
+            },
+            outcome: WorkflowOutcome::Failed {
+                failure: Box::new(workflow_protocol::Failure {
+                    message: "failed".to_owned(),
+                    source: "workflow".to_owned(),
+                    stack_trace: String::new(),
+                    encoded_attributes: None,
+                    cause: None,
+                    info: workflow_protocol::FailureInfo::Application {
+                        type_name: "application".to_owned(),
+                        non_retryable: false,
+                        details: Vec::new(),
+                    },
+                }),
+                successor: None,
+            },
+        };
+
+        let encoded = encode_wait_response(&response).expect("failed response encodes");
+        let decoded: WaitWorkflowResponse =
+            serde_json::from_str(&encoded).expect("failed response decodes");
+        assert_eq!(decoded, response);
+        assert!(encoded.contains(r#""kind":"failed""#));
     }
 
     #[test]

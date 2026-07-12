@@ -44,7 +44,13 @@ let test_valid_activations () =
       in
       check_string name expected (unwrap (Protocol.encode_activation value));
       ignore (unwrap (Protocol.decode_activation expected)))
-    [ "activation"; "eviction"; "realistic-initialize"; "child-initialize" ]
+    [
+      "activation";
+      "eviction";
+      "realistic-initialize";
+      "child-initialize";
+      "child-resolution";
+    ]
 
 (** Verifies every first-slice completion command and command ordering. *)
 let test_valid_completion () =

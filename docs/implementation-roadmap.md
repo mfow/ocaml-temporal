@@ -20,7 +20,7 @@ cleaner and more maintainable OCaml design.
 | 1 | Repository foundation, typed public definitions, codecs, deterministic futures, effect scheduler, and synthetic activations | `make verify` runs from Docker Compose and deterministic command tests pass | Complete |
 | 2 | Rust static library, OCaml C stubs, private owner-Domain mailbox, live worker poll/completion loop, minimum OCaml client, and the real Compose smoke-test topology | An OCaml test-client container starts a workflow executed by a separate OCaml worker against Temporal Server and PostgreSQL | In progress |
 | 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | Planned |
-| 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes), added to the live smoke suite | Parent workflows fan out to mock activities and children, await one/all, and cancel safely through the real cluster | In progress: child-start command translation complete and safely gated in the native worker; child resolution, live wiring, and scopes pending |
+| 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes), added to the live smoke suite | Parent workflows fan out to mock activities and children, await one/all, and cancel safely through the real cluster | In progress: child command and two-stage start/terminal resolution translation are complete; live wiring and structured-concurrency scopes pending |
 | 5 | Signals, queries, updates, validators, conditions, and handler policies | CLI-driven interactive workflow tests pass, including mode violations | Planned |
 | 6 | Continue-as-new, patches, side effects, external workflow operations, memo, search attributes, priority, and fairness | Recorded histories replay and advanced command integration tests pass | Planned |
 | 7 | OCaml activities, local activities, heartbeats, async completion, interceptors, payload codecs, and graceful shutdown | Activity conformance and Kubernetes-style termination tests pass | Planned |
@@ -48,8 +48,10 @@ cleaner and more maintainable OCaml design.
    is quiet. The current
    translation now preserves and validates every field needed by Core activity
    commands, including deterministic defaults for omitted queue and timeout
-   options. Child-start commands now have a closed semantic record and Core
-   conversion; child resolution, live worker wiring, and the Compose
+   options. Child commands now have closed semantic records and Core
+   conversion; start acknowledgments and terminal child results are translated
+   through the same JSON protocol and are covered by focused lifecycle tests.
+   Live worker wiring, structured-concurrency scopes, and the Compose
    acceptance path are still pending.
    Poll decode failures use an exact-document rejection ABI: Rust retains
    semantic handoff state and will not retire a lease for a changed workflow

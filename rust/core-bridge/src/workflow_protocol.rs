@@ -278,6 +278,15 @@ pub enum FailureInfo {
         activity_id: String,
         retry_state: RetryState,
     },
+    ChildWorkflow {
+        namespace: String,
+        workflow_id: String,
+        run_id: String,
+        workflow_type: String,
+        initiated_event_id: i64,
+        started_event_id: i64,
+        retry_state: RetryState,
+    },
 }
 
 /// Recursive Temporal failure with one explicitly supported info variant.
@@ -298,6 +307,49 @@ pub struct Failure {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActivityResolution {
+    Completed {
+        #[serde(deserialize_with = "required_nullable")]
+        payload: Option<Payload>,
+    },
+    Failed {
+        failure: Failure,
+    },
+    Cancelled {
+        failure: Failure,
+    },
+}
+
+/// Why Core could not start a child workflow execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildWorkflowStartFailureCause {
+    Unspecified,
+    WorkflowAlreadyExists,
+}
+
+/// Result of the initial child-workflow start command. A successful start only
+/// records the run ID; the child future remains pending until the separate
+/// terminal resolution arrives.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ChildWorkflowStartResolution {
+    Succeeded {
+        run_id: String,
+    },
+    Failed {
+        workflow_id: String,
+        workflow_type: String,
+        cause: ChildWorkflowStartFailureCause,
+    },
+    Cancelled {
+        failure: Failure,
+    },
+}
+
+/// Terminal result of a child workflow execution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ChildWorkflowResolution {
     Completed {
         #[serde(deserialize_with = "required_nullable")]
         payload: Option<Payload>,
@@ -343,6 +395,14 @@ pub enum ActivationJob {
     ResolveActivity {
         seq: u32,
         result: ActivityResolution,
+    },
+    ResolveChildWorkflowStart {
+        seq: u32,
+        result: ChildWorkflowStartResolution,
+    },
+    ResolveChildWorkflow {
+        seq: u32,
+        result: ChildWorkflowResolution,
     },
     FireTimer {
         seq: u32,
@@ -551,6 +611,26 @@ pub(crate) fn validate_failure(value: &Failure, path: &str) -> Result<(), Protoc
             identifier(activity_type, path)?;
             identifier(activity_id, path)?;
         }
+        FailureInfo::ChildWorkflow {
+            namespace,
+            workflow_id,
+            run_id,
+            workflow_type,
+            initiated_event_id,
+            started_event_id,
+            retry_state: _,
+        } => {
+            identifier(namespace, path)?;
+            identifier(workflow_id, path)?;
+            identifier(run_id, path)?;
+            identifier(workflow_type, path)?;
+            if *initiated_event_id < 0 || *started_event_id < 0 {
+                return Err(ProtocolError::invalid(
+                    path,
+                    "child workflow failure event IDs must not be negative",
+                ));
+            }
+        }
     }
     if let Some(cause) = &value.cause {
         validate_failure(cause, path)?;
@@ -698,6 +778,29 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                 ActivityResolution::Completed { .. } => {}
                 ActivityResolution::Failed { failure }
                 | ActivityResolution::Cancelled { failure } => {
+                    validate_failure(failure, "$.jobs.result.failure")?
+                }
+            },
+            ActivationJob::ResolveChildWorkflowStart { result, .. } => match result {
+                ChildWorkflowStartResolution::Succeeded { run_id } => {
+                    identifier(run_id, "$.jobs.result.run_id")?
+                }
+                ChildWorkflowStartResolution::Failed {
+                    workflow_id,
+                    workflow_type,
+                    ..
+                } => {
+                    identifier(workflow_id, "$.jobs.result.workflow_id")?;
+                    identifier(workflow_type, "$.jobs.result.workflow_type")?;
+                }
+                ChildWorkflowStartResolution::Cancelled { failure } => {
+                    validate_failure(failure, "$.jobs.result.failure")?
+                }
+            },
+            ActivationJob::ResolveChildWorkflow { result, .. } => match result {
+                ChildWorkflowResolution::Completed { .. } => {}
+                ChildWorkflowResolution::Failed { failure }
+                | ChildWorkflowResolution::Cancelled { failure } => {
                     validate_failure(failure, "$.jobs.result.failure")?
                 }
             },
@@ -883,8 +986,9 @@ pub(crate) fn invalid_core(message: &'static str) -> CoreConversionError {
 
 use temporalio_protos::{
     coresdk::{
-        activity_result as core_activity, workflow_activation as core_activation,
-        workflow_commands as core_commands, workflow_completion as core_completion,
+        activity_result as core_activity, child_workflow as core_child_workflow,
+        workflow_activation as core_activation, workflow_commands as core_commands,
+        workflow_completion as core_completion,
     },
     temporal::api::{common::v1 as api_common, enums::v1 as api_enums, failure::v1 as api_failure},
 };
@@ -1043,6 +1147,25 @@ pub(crate) fn failure_from_core(
             activity_id: info.activity_id.clone(),
             retry_state: retry_state_from_core(info.retry_state)?,
         },
+        Core::ChildWorkflowExecutionFailureInfo(info) => {
+            let execution = info
+                .workflow_execution
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core child failure execution is absent"))?;
+            let workflow_type = info
+                .workflow_type
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core child failure workflow type is absent"))?;
+            FailureInfo::ChildWorkflow {
+                namespace: info.namespace.clone(),
+                workflow_id: execution.workflow_id.clone(),
+                run_id: execution.run_id.clone(),
+                workflow_type: workflow_type.name.clone(),
+                initiated_event_id: info.initiated_event_id,
+                started_event_id: info.started_event_id,
+                retry_state: retry_state_from_core(info.retry_state)?,
+            }
+        }
         _ => return Err(unsupported("Core failure info kind is not supported")),
     };
     Ok(Failure {
@@ -1104,6 +1227,29 @@ pub(crate) fn failure_to_core(
             activity_id: activity_id.clone(),
             retry_state: retry_state_to_core(*retry_state),
         }),
+        FailureInfo::ChildWorkflow {
+            namespace,
+            workflow_id,
+            run_id,
+            workflow_type,
+            initiated_event_id,
+            started_event_id,
+            retry_state,
+        } => Core::ChildWorkflowExecutionFailureInfo(
+            api_failure::ChildWorkflowExecutionFailureInfo {
+                namespace: namespace.clone(),
+                workflow_execution: Some(api_common::WorkflowExecution {
+                    workflow_id: workflow_id.clone(),
+                    run_id: run_id.clone(),
+                }),
+                workflow_type: Some(api_common::WorkflowType {
+                    name: workflow_type.clone(),
+                }),
+                initiated_event_id: *initiated_event_id,
+                started_event_id: *started_event_id,
+                retry_state: retry_state_to_core(*retry_state),
+            },
+        ),
     });
     Ok(api_failure::Failure {
         message: value.message.clone(),
@@ -1154,6 +1300,83 @@ fn activity_resolution_from_core(
             )?,
         }),
         Status::Backoff(_) => Err(unsupported("local activity backoff is not supported")),
+    }
+}
+
+/// Maps Core's child-start failure enum while rejecting numbers unknown to the
+/// pinned Core revision instead of silently changing the failure meaning.
+fn child_start_failure_cause_from_core(
+    value: i32,
+) -> Result<ChildWorkflowStartFailureCause, CoreConversionError> {
+    use core_child_workflow::StartChildWorkflowExecutionFailedCause as Core;
+    Ok(
+        match Core::try_from(value)
+            .map_err(|_| invalid_core("unknown Core child start failure cause"))?
+        {
+            Core::Unspecified => ChildWorkflowStartFailureCause::Unspecified,
+            Core::WorkflowAlreadyExists => ChildWorkflowStartFailureCause::WorkflowAlreadyExists,
+        },
+    )
+}
+
+/// Converts the activation sent when Core accepts or rejects the start command.
+fn child_workflow_start_resolution_from_core(
+    value: &core_activation::ResolveChildWorkflowExecutionStart,
+) -> Result<ChildWorkflowStartResolution, CoreConversionError> {
+    use core_activation::resolve_child_workflow_execution_start::Status;
+    match value
+        .status
+        .as_ref()
+        .ok_or_else(|| invalid_core("Core child start resolution status is absent"))?
+    {
+        Status::Succeeded(value) => Ok(ChildWorkflowStartResolution::Succeeded {
+            run_id: value.run_id.clone(),
+        }),
+        Status::Failed(value) => Ok(ChildWorkflowStartResolution::Failed {
+            workflow_id: value.workflow_id.clone(),
+            workflow_type: value.workflow_type.clone(),
+            cause: child_start_failure_cause_from_core(value.cause)?,
+        }),
+        Status::Cancelled(value) => Ok(ChildWorkflowStartResolution::Cancelled {
+            failure: failure_from_core(
+                value
+                    .failure
+                    .as_ref()
+                    .ok_or_else(|| invalid_core("Core cancelled child start has no failure"))?,
+            )?,
+        }),
+    }
+}
+
+/// Converts a terminal child-workflow result without dropping payloads or the
+/// recursive failure diagnostics constructed by Core.
+fn child_workflow_resolution_from_core(
+    value: &core_child_workflow::ChildWorkflowResult,
+) -> Result<ChildWorkflowResolution, CoreConversionError> {
+    use core_child_workflow::child_workflow_result::Status;
+    match value
+        .status
+        .as_ref()
+        .ok_or_else(|| invalid_core("Core child workflow result status is absent"))?
+    {
+        Status::Completed(value) => Ok(ChildWorkflowResolution::Completed {
+            payload: value.result.as_ref().map(payload_from_core).transpose()?,
+        }),
+        Status::Failed(value) => Ok(ChildWorkflowResolution::Failed {
+            failure: failure_from_core(
+                value
+                    .failure
+                    .as_ref()
+                    .ok_or_else(|| invalid_core("Core failed child workflow has no failure"))?,
+            )?,
+        }),
+        Status::Cancelled(value) => {
+            Ok(ChildWorkflowResolution::Cancelled {
+                failure: failure_from_core(value.failure.as_ref().ok_or_else(|| {
+                    invalid_core("Core cancelled child workflow has no failure")
+                })?)?,
+            })
+        }
     }
 }
 
@@ -1302,6 +1525,22 @@ pub fn activation_from_core(
                                 .result
                                 .as_ref()
                                 .ok_or_else(|| invalid_core("Core activity result is absent"))?,
+                        )?,
+                    })
+                }
+                Variant::ResolveChildWorkflowExecutionStart(value) => {
+                    Ok(ActivationJob::ResolveChildWorkflowStart {
+                        seq: value.seq,
+                        result: child_workflow_start_resolution_from_core(value)?,
+                    })
+                }
+                Variant::ResolveChildWorkflowExecution(value) => {
+                    Ok(ActivationJob::ResolveChildWorkflow {
+                        seq: value.seq,
+                        result: child_workflow_resolution_from_core(
+                            value.result.as_ref().ok_or_else(|| {
+                                invalid_core("Core child workflow result is absent")
+                            })?,
                         )?,
                     })
                 }

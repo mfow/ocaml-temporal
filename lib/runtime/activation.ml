@@ -8,6 +8,10 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  | Resolve_child_workflow_start of {
+      seq : int64;
+      result : (string, Temporal_base.Error.t) result;
+    }
   | Resolve_child_workflow of {
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;

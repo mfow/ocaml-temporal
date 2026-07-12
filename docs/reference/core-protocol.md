@@ -199,8 +199,9 @@ and retains Core's replay state, history state, and job order. Core's synthetic
 cache-eviction constructor deliberately omits the timestamp, represented as
 JSON `null`; no other activation may omit it. The supported job slice is initialization,
 remote-activity resolution, timer firing, workflow cancellation, and cache
-eviction. An eviction must be the only job in its activation. Initialization,
-when present, must occur exactly once and as the first job. Sequence numbers
+eviction, and both stages of child-workflow resolution. An eviction must be the
+only job in its activation. Initialization, when present, must occur exactly
+once and as the first job. Sequence numbers
 and history length are unsigned 32-bit integers. Sequence zero is valid because
 Core defines the value as language-SDK supplied and its pinned tests exercise
 zero for timers and activities. Randomness seeds and history
@@ -217,6 +218,17 @@ also preserved. Optional `context` and `metadata` objects may be absent for
 older synthetic fixtures, but when present their nested shapes are closed.
 Other Core initialization fields outside this first slice are rejected as
 `unsupported`; they are never discarded silently.
+
+A child resolution is deliberately split into two activation jobs. A
+`resolve_child_workflow_start` job carries either the assigned run ID, a typed
+start cause (`workflow_already_exists` or `unspecified`), or a cancellation
+failure. A later `resolve_child_workflow` job carries a nullable successful
+payload, a structured child failure, or a cancellation failure. Both jobs use
+the sequence from the original start command. The OCaml runtime accepts that
+sequence twice only for this start/terminal pair; duplicate events and
+cross-kind collisions are invalid. A terminal job before a successful start is
+rejected by the runtime so a parent cannot observe a child that Core has not
+started.
 
 A completion is a closed object sent from OCaml to Rust. Its ordered commands
 cover scheduling and requesting cancellation of remote activities, starting a
@@ -244,7 +256,8 @@ timestamps allow signed seconds with the same nanosecond range. Payload metadata
 and initialization header maps normalize keys lexicographically on both sides.
 Payload values preserve opaque data and metadata bytes using the canonical
 base64 wrapper. Supported structured failures are application, cancellation,
-and activity failures, including recursive causes and retry state. Unknown
+activity, and child-workflow failures, including recursive causes, child
+execution identity, event IDs, and retry state. Unknown
 protobuf oneofs, enum values, external payload references, unsupported failure
 variants, or omitted Core fields with non-default values fail conversion.
 

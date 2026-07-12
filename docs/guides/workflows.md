@@ -18,7 +18,7 @@ boundary honestly:
 | Target | What it is useful for today |
 | --- | --- |
 | `mock://...` | Fast deterministic unit tests for client/worker registration and dispatch. The pure runtime tests also exercise timers, activities, child scheduling, replay, cancellation, and future combinators without a server. |
-| `http://...` or `https://...` | The OCaml-owned native client/worker path backed by Rust Temporal Core. The current native command slice handles activity and timer work plus terminal, cancellation, and cache paths. It is covered by focused bridge and adapter tests. |
+| `http://...` or `https://...` | The OCaml-owned native client/worker path backed by Rust Temporal Core. The current native command slice handles activity, timer, terminal, cancellation, cache, and two-stage child-resolution paths. It is covered by focused bridge and adapter tests. |
 | Live Compose acceptance | Real PostgreSQL and Temporal Server lifecycle validation. It does not yet run the two-OCaml-binary workflow-result scaffold. |
 
 The first two rows are different test boundaries, not different workflow
@@ -68,9 +68,12 @@ holding a mutex or sleeping a native thread. The same rule applies to
 second monad or expose the effect scheduler.
 
 Child-workflow code is valid in the synthetic runtime and the semantic command
-translator. It is **not** a supported native end-to-end feature yet: the native
-worker rejects a parent completion containing a child start until Core child
-resolution jobs are represented and replay-tested.
+translator. The native adapter also represents the complete two-stage
+resolution lifecycle: a successful start acknowledgment records the child run
+ID, and a later terminal resolution resumes the parent future. Focused tests
+cover success, start failure, final-before-start, duplicate sequences, and
+lease retirement. The live Compose acceptance is still pending, so this is not
+yet a claim of end-to-end Temporal Server compatibility.
 
 ## 1. Write a deterministic OCaml function
 
@@ -318,13 +321,13 @@ NUL bytes, and within the bridge's bounded length. `Child_workflow.execute`
 starts and waits in one call.
 
 The definitions and calls above compile, and the synthetic runtime tests cover
-child scheduling and deterministic future resolution. The current native
-worker does not yet complete this path against Temporal Server. It can encode
-the child-start command, but the activation protocol does not yet carry the
-child-resolution job needed to resume the parent. To avoid acknowledging a
-parent task that cannot be resumed, the native adapter returns an explicit
-typed rejection. Treat child workflows as experimental/synthetic-only until
-the live acceptance test and matching resolution tests are added.
+child scheduling and deterministic future resolution. The native protocol and
+worker adapter now also carry the child-start acknowledgment and terminal
+resolution required to resume the parent. The adapter rejects final-before-
+start, duplicate, and unknown sequences as typed bridge failures, preserving
+the parent lease rather than acknowledging an unsafe completion. Focused tests
+cover the complete lifecycle, but the live acceptance test still needs to
+exercise it against Temporal Server.
 
 ## 7. Compose ordinary helpers
 

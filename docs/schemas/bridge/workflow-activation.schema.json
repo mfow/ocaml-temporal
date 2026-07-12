@@ -116,6 +116,49 @@
         }
       ]
     },
+    "child_workflow_start_resolution": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "run_id"],
+          "properties": {"kind": {"const": "succeeded"}, "run_id": {"$ref": "#/$defs/identifier"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "workflow_id", "workflow_type", "cause"],
+          "properties": {
+            "kind": {"const": "failed"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "workflow_type": {"$ref": "#/$defs/identifier"},
+            "cause": {"enum": ["unspecified", "workflow_already_exists"]}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {"kind": {"const": "cancelled"}, "failure": {"$ref": "#/$defs/failure"}}
+        }
+      ]
+    },
+    "child_workflow_resolution": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "payload"],
+          "properties": {"kind": {"const": "completed"}, "payload": {"oneOf": [{"$ref": "#/$defs/payload"}, {"type": "null"}]}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {"kind": {"const": "failed"}, "failure": {"$ref": "#/$defs/failure"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {"kind": {"const": "cancelled"}, "failure": {"$ref": "#/$defs/failure"}}
+        }
+      ]
+    },
     "job": {
       "oneOf": [
         {
@@ -135,6 +178,16 @@
           "type": "object", "additionalProperties": false,
           "required": ["kind", "seq", "result"],
           "properties": {"kind": {"const": "resolve_activity"}, "seq": {"$ref": "#/$defs/u32"}, "result": {"$ref": "#/$defs/activity_resolution"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "result"],
+          "properties": {"kind": {"const": "resolve_child_workflow_start"}, "seq": {"$ref": "#/$defs/u32"}, "result": {"$ref": "#/$defs/child_workflow_start_resolution"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "result"],
+          "properties": {"kind": {"const": "resolve_child_workflow"}, "seq": {"$ref": "#/$defs/u32"}, "result": {"$ref": "#/$defs/child_workflow_resolution"}}
         },
         {
           "type": "object", "additionalProperties": false,

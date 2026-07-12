@@ -212,6 +212,55 @@ let test_activity_failure_details_are_preserved () =
       end
   | _ -> failwith "activity failure did not become a typed runtime error"
 
+(** Confirms child start and terminal resolutions remain distinct jobs while
+    sharing one Core sequence number. A repeated start or repeated terminal
+    result is still rejected, but the valid two-stage pair is accepted. *)
+let test_child_resolution_translation () =
+  let translated =
+    unwrap "child resolution translation"
+      (Native_execution.translate_activation
+         (activation
+            [
+              Protocol.Resolve_child_workflow_start
+                {
+                  seq = 8L;
+                  result = Protocol.Child_start_succeeded "child-run";
+                };
+              Protocol.Resolve_child_workflow
+                {
+                  seq = 8L;
+                  result = Protocol.Child_completed (Some (protocol_payload "ok"));
+                };
+            ]))
+  in
+  if
+    translated.jobs
+    <> [
+         Activation.Resolve_child_workflow_start
+           { seq = 8L; result = Ok "child-run" };
+         Activation.Resolve_child_workflow
+           { seq = 8L; result = Ok (runtime_payload "ok") };
+       ]
+  then failwith "child start and terminal jobs were not preserved in order";
+  expect_error_code "duplicate child start sequence" "invalid_message"
+    (Native_execution.translate_activation
+       (activation
+          [
+            Protocol.Resolve_child_workflow_start
+              { seq = 8L; result = Protocol.Child_start_succeeded "run-1" };
+            Protocol.Resolve_child_workflow_start
+              { seq = 8L; result = Protocol.Child_start_succeeded "run-2" };
+          ]));
+  expect_error_code "duplicate child terminal sequence" "invalid_message"
+    (Native_execution.translate_activation
+       (activation
+          [
+            Protocol.Resolve_child_workflow
+              { seq = 8L; result = Protocol.Child_completed None };
+            Protocol.Resolve_child_workflow
+              { seq = 8L; result = Protocol.Child_completed None };
+          ]))
+
 (** Confirms cancellation and cache-removal facts are retained instead of being
     silently lost by marker-only runtime jobs. *)
 let test_cancellation_and_eviction () =
@@ -524,6 +573,7 @@ let () =
   test_activation_metadata_and_order ();
   test_retained_payloads_are_copied ();
   test_activity_failure_details_are_preserved ();
+  test_child_resolution_translation ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();
   test_activate_eviction_completion ();

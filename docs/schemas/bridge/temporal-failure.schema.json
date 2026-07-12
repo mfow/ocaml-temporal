@@ -55,6 +55,21 @@
             "activity_id": {"type": "string", "minLength": 1, "maxLength": 65536},
             "retry_state": {"enum": ["unspecified", "in_progress", "non_retryable_failure", "timeout", "maximum_attempts_reached", "retry_policy_not_set", "internal_server_error", "cancel_requested"]}
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "namespace", "workflow_id", "run_id", "workflow_type", "initiated_event_id", "started_event_id", "retry_state"],
+          "properties": {
+            "kind": {"const": "child_workflow"},
+            "namespace": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "workflow_id": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "run_id": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "workflow_type": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "initiated_event_id": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+            "started_event_id": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+            "retry_state": {"enum": ["unspecified", "in_progress", "non_retryable_failure", "timeout", "maximum_attempts_reached", "retry_policy_not_set", "internal_server_error", "cancel_requested"]}
+          }
         }
       ]
     }

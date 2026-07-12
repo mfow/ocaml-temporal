@@ -96,8 +96,8 @@ module Make (Supervisor : SUPERVISOR) : sig
       lanes return [Ok Not_ready]. Unknown run IDs and invalid initialization
       inputs are converted to typed non-retryable workflow failures and
       reported as [Ok (Rejected _)] after their lease is retired. Child-start
-      commands are translated to Core; child result resolution remains outside
-      this first worker-loop slice. *)
+      commands and two-stage child start/result resolutions are translated to
+      Core without allowing a completed child to remain leased. *)
   val poll : t -> (outcome, error_view) result
 
   (** Retries all completions whose native acknowledgement previously failed.

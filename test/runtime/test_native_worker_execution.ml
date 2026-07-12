@@ -441,55 +441,73 @@ let test_activity_command_retires_lease () =
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "activity command left a native lease outstanding"
 
-(** Child starts are represented by the bilateral protocol, but this worker
-    adapter must reject them until Core child-resolution activations are
-    decoded and their leases can be retired safely. The workflow is removed
-    after the typed failure; no partially supported child command is submitted.
-*)
-let test_child_command_is_gated_until_resolution () =
+(** Child starts and their two-stage Core resolutions share one worker lease.
+    The first completion records the start command, a successful start
+    acknowledgment leaves the workflow pending, and the terminal child result
+    finally retires the run with the parent output. *)
+let test_child_command_and_resolution_lifecycle () =
   let supervisor = fake_supervisor () in
   let child =
     Temporal.Workflow.remote ~name:"native_worker_child"
       ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
   in
   let workflow =
-    Temporal.Workflow.define ~name:"native_worker_child_gate"
+    Temporal.Workflow.define ~name:"native_worker_child_lifecycle"
       ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
-        let _pending = Temporal.Child_workflow.start ~id:"child-1" child () in
-        Ok ())
+        let pending = Temporal.Child_workflow.start ~id:"child-1" child () in
+        Temporal.Future.await pending)
   in
   enqueue supervisor
     (activation ~run_id:"run-child-gate"
        [ initialize ~run_id:"run-child-gate"
-           ~workflow_type:"native_worker_child_gate" ]);
+           ~workflow_type:"native_worker_child_lifecycle" ]);
   let worker = worker supervisor [ Adapter.register workflow ] in
   begin match Worker.poll worker with
-  | Ok
-      (Adapter.Rejected
-        {
-          run_id = Some "run-child-gate";
-          error = { code = "unsupported"; path = "$.completion.commands"; _ };
-          lease_retired = true;
-        }) ->
+  | Ok (Adapter.Completed { run_id = "run-child-gate"; terminal = false; command_count = 1 }) ->
       ()
-  | Ok _ -> failwith "partially supported child command was not rejected"
+  | Ok _ -> failwith "child command was not submitted as a pending completion"
   | Error error ->
-      failwith ("child command gate returned an adapter error: " ^ error.message)
+      failwith ("child command lifecycle returned an adapter error: " ^ error.message)
   end;
   begin match (latest_completion supervisor).commands with
-  | [ Protocol.Fail_workflow _ ] -> ()
-  | _ -> failwith "child command gate did not send a failure completion"
+  | [ Protocol.Start_child_workflow { workflow_id = "child-1"; _ } ] -> ()
+  | _ -> failwith "child command did not submit its protocol completion"
   end;
-  if Hashtbl.length supervisor.leased <> 0 then
-    failwith "child command gate left a native lease outstanding";
   enqueue supervisor
     (activation ~run_id:"run-child-gate"
-       [ Protocol.Cancel_workflow { reason = "stale child gate run" } ]);
+       [
+         Protocol.Resolve_child_workflow_start
+           {
+             seq = 1L;
+             result = Protocol.Child_start_succeeded "child-run";
+           };
+       ]);
   begin match Worker.poll worker with
-  | Ok (Adapter.Rejected { error = { code = "unknown_run_id"; _ }; lease_retired = true; _ }) ->
+  | Ok (Adapter.Completed { run_id = "run-child-gate"; terminal = false; command_count = 0 }) ->
       ()
-  | _ -> failwith "child command gate retained the rejected execution"
-  end
+  | Ok _ -> failwith "child start acknowledgment unexpectedly completed the parent"
+  | Error error ->
+      failwith ("child start acknowledgment failed: " ^ error.message)
+  end;
+  enqueue supervisor
+    (activation ~run_id:"run-child-gate"
+       [
+         Protocol.Resolve_child_workflow
+           { seq = 1L; result = Protocol.Child_completed None };
+       ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Completed { run_id = "run-child-gate"; terminal = true; command_count = 1 }) ->
+      ()
+  | Ok _ -> failwith "child terminal result did not complete the parent"
+  | Error error ->
+      failwith ("child terminal result failed: " ^ error.message)
+  end;
+  begin match (latest_completion supervisor).commands with
+  | [ Protocol.Complete_workflow { result = None } ] -> ()
+  | _ -> failwith "child terminal result did not submit parent completion"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "child lifecycle left a native lease outstanding"
 
 (** An activation for a run not present in the existential registry is rejected
     and completed as a non-retryable bridge failure. *)
@@ -583,7 +601,7 @@ let () =
   test_failure_completion_exception_is_typed ();
   test_resumed_failure_removes_run ();
   test_activity_command_retires_lease ();
-  test_child_command_is_gated_until_resolution ();
+  test_child_command_and_resolution_lifecycle ();
   test_unknown_run_retires_lease ();
   test_malformed_activation_error_is_typed ();
   test_registration_validation ();

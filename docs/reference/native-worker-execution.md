@@ -41,6 +41,17 @@ supervisor's own owner-Domain serialization, so two ordinary producer Domains
 cannot execute the same run concurrently. Workflow fibers must not call the
 adapter directly because supervisor operations may block their producer Domain.
 
+## Worker configuration validation
+
+`Make.create` validates the worker's implicit activity queue before it stores
+any workflow definitions or accepts an activation. The queue must be non-empty,
+contain no NUL byte, fit within 65,536 bytes, and be valid UTF-8. Invalid input
+returns `Error { code = "invalid_configuration"; path = "$.task_queue"; ... }`;
+it does not call the supervisor or wait until the first workflow starts. The
+same predicate is used when an execution context is created, so a malformed
+queue cannot turn into a late `Invalid_argument` after a Temporal lease has
+already been accepted.
+
 ## One poll transaction
 
 `Native_worker_execution.Make` processes at most one activation per `poll`:
@@ -66,8 +77,8 @@ adapter directly because supervisor operations may block their producer Domain.
    completion. Activity commands retain their complete Core fields and are
    validated before submission. Child-workflow commands remain explicit
    `unsupported` errors because the first semantic protocol has no child
-   command variant; no task queue, timeout, ID, or cancellation default is
-   invented for that unsupported path.
+   command variant; no replacement command is fabricated for that unsupported
+   path.
 7. The completion is submitted through the same supervisor. The run entry is
    removed only after the supervisor confirms completion retirement. Terminal
    commands remove the run; a cache-removal activation also removes it after
@@ -115,7 +126,9 @@ verify:
 - typed cleanup when completion raises, including the unacknowledged-lease
   path when the failure completion itself raises;
 - typed propagation of lower-layer malformed-activation errors; and
-- duplicate and remote-only registration rejection before worker publication.
+- duplicate and remote-only registration rejection before worker publication;
+- rejection of empty, NUL-containing, oversized, and non-UTF-8 worker queues
+  before worker publication.
 
 The fake tests do not claim live Temporal compatibility. The Compose
 acceptance suite remains the gate for the concrete supervisor wiring and real

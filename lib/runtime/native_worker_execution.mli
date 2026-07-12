@@ -77,10 +77,13 @@ module Make (Supervisor : SUPERVISOR) : sig
   type t
 
   (** Creates a registry after validating every executable definition and
-      rejecting duplicate Temporal workflow type names. [task_queue] is copied
-      into every execution context so an activity without an explicit queue is
-      sent back to the same queue as its workflow worker. No native operation
-      is performed and no workflow function is called during creation. *)
+      rejecting duplicate Temporal workflow type names. [task_queue] is checked
+      before the registry is published; empty, NUL-containing, oversized, or
+      non-UTF-8 values return a typed configuration error instead of failing
+      the first workflow activation. A valid queue is copied into every
+      execution context so an activity without an explicit queue is sent back
+      to the same queue as its workflow worker. No native operation is
+      performed and no workflow function is called during creation. *)
   val create :
     ?task_queue:string ->
     supervisor:Supervisor.t ->

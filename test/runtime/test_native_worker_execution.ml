@@ -456,6 +456,29 @@ let test_registration_validation () =
   | _ -> failwith "remote workflow registration was accepted as executable"
   end
 
+(** Rejects malformed worker defaults before the adapter publishes its
+    registry. These values are the same four cases checked by the lower
+    workflow context, but this test proves the worker-facing constructor
+    returns a typed configuration error instead of deferring the defect to the
+    first activation. *)
+let test_task_queue_validation () =
+  let expect_invalid label task_queue =
+    let supervisor = fake_supervisor () in
+    match Worker.create ~supervisor ~task_queue ~workflows:[] () with
+    | Error { code = "invalid_configuration"; path = "$.task_queue"; message }
+      when not (String.equal message "") -> ()
+    | Error error ->
+        failwith
+          (Printf.sprintf
+             "%s task queue returned %s at %s without a diagnostic" label
+             error.code error.path)
+    | Ok _ -> failwith (label ^ " task queue was accepted")
+  in
+  expect_invalid "empty" "";
+  expect_invalid "NUL" "bad\000queue";
+  expect_invalid "oversized" (String.make 65_537 'x');
+  expect_invalid "UTF-8" (String.make 1 (Char.chr 0xff))
+
 (** Runs all native worker adapter assertions. *)
 let () =
   test_terminal_workflow ();
@@ -468,4 +491,5 @@ let () =
   test_activity_command_retires_lease ();
   test_unknown_run_retires_lease ();
   test_malformed_activation_error_is_typed ();
-  test_registration_validation ()
+  test_registration_validation ();
+  test_task_queue_validation ()

@@ -6,12 +6,13 @@ use ocaml_temporal_core_bridge::worker_bridge::{
 };
 use ocaml_temporal_core_bridge::{
     ABI_VERSION, Buffer, Result as AbiResult, STATUS_ABI_MISMATCH, STATUS_INVALID_ARGUMENT,
-    STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, ocaml_temporal_core_v1_check_abi_version,
-    ocaml_temporal_core_v1_conformance_wait_ms, ocaml_temporal_core_v1_echo,
-    ocaml_temporal_core_v1_result_free, ocaml_temporal_core_v1_runtime_dispose,
-    ocaml_temporal_core_v1_runtime_free, ocaml_temporal_core_v1_runtime_new,
-    ocaml_temporal_core_v1_worker_complete_activity_json,
+    STATUS_INVALID_STATE, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
+    ocaml_temporal_core_v1_check_abi_version, ocaml_temporal_core_v1_conformance_wait_ms,
+    ocaml_temporal_core_v1_echo, ocaml_temporal_core_v1_result_free,
+    ocaml_temporal_core_v1_runtime_dispose, ocaml_temporal_core_v1_runtime_free,
+    ocaml_temporal_core_v1_runtime_new, ocaml_temporal_core_v1_worker_complete_activity_json,
     ocaml_temporal_core_v1_worker_complete_workflow_json,
+    ocaml_temporal_core_v1_worker_record_activity_heartbeat_json,
     ocaml_temporal_core_v1_worker_reject_activity_json,
     ocaml_temporal_core_v1_worker_reject_workflow_json,
     ocaml_temporal_core_v1_worker_try_poll_activity,
@@ -338,6 +339,67 @@ fn task_rejection_requires_retained_delivery_before_worker_state() {
         },
         STATUS_PROTOCOL
     );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
+}
+
+/// Proves malformed heartbeat input is rejected before worker access and that
+/// the owned error buffer can be freed before the same result slot is reused.
+/// The second, valid heartbeat reaches the lifecycle check and therefore
+/// demonstrates that no malformed payload state leaked into the next call.
+#[test]
+fn malformed_heartbeat_is_rejected_and_result_cleanup_is_reusable() {
+    let mut runtime = ptr::null_mut();
+    let mut result = empty_result();
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    let malformed = br#"{"task_token":"AA==","details":[{"metadata":{},"data":{"encoding":"raw","data":"AA=="}}]}"#;
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_worker_record_activity_heartbeat_json(
+                runtime,
+                malformed.as_ptr(),
+                malformed.len(),
+                &mut result,
+            )
+        },
+        STATUS_PROTOCOL
+    );
+    assert_eq!(result.status, STATUS_PROTOCOL);
+    assert!(!result.error.ptr.is_null());
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(result, empty_result());
+
+    let valid = br#"{"task_token":"AA==","details":[]}"#;
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_worker_record_activity_heartbeat_json(
+                runtime,
+                valid.as_ptr(),
+                valid.len(),
+                &mut result,
+            )
+        },
+        STATUS_INVALID_STATE
+    );
+    assert_eq!(result.status, STATUS_INVALID_STATE);
+    assert!(!result.error.ptr.is_null());
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
         STATUS_OK

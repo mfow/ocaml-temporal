@@ -80,6 +80,31 @@ fn activity_heartbeat_round_trips_binary_details() {
     assert!(encoded.contains("\"details\""));
 }
 
+/// Proves that heartbeat details are copied into owned Rust values instead of
+/// borrowing the temporary JSON input. The bridge must be able to retain the
+/// decoded payload until Core consumes it after the parser's input buffer has
+/// been released.
+#[test]
+fn activity_heartbeat_owns_input_after_decode() {
+    let input = String::from(
+        r#"{"task_token":"AAEC/v8=","details":[{"metadata":{"encoding":{"encoding":"base64","data":"YmluYXJ5L3BsYWlu"}},"data":{"encoding":"base64","data":"AAEC/v8="}}]}"#,
+    );
+
+    let heartbeat = decode_heartbeat(&input).expect("heartbeat should decode");
+    drop(input);
+
+    assert_eq!(heartbeat.task_token, "AAEC/v8=");
+    assert_eq!(heartbeat.details.len(), 1);
+    assert_eq!(heartbeat.details[0].data, vec![0, 1, 2, 254, 255]);
+    assert_eq!(
+        heartbeat.details[0]
+            .metadata
+            .get("encoding")
+            .expect("encoding metadata should survive input drop"),
+        &b"binary/plain".to_vec()
+    );
+}
+
 /// The heartbeat decoder rejects unknown fields, empty/non-canonical tokens,
 /// and payload encodings that are not the canonical binary representation.
 #[test]

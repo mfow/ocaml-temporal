@@ -31,9 +31,16 @@ module type SUPERVISOR = sig
   val record_activity_heartbeat : t -> Protocol.heartbeat -> (unit, error) result
   val error_code : error -> string
   val error_message : error -> string
+  val error_is_retryable : error -> bool
+  val exception_is_retryable : exn -> bool
 end
 
-type error_view = { code : string; path : string; message : string }
+type error_view = {
+  code : string;
+  path : string;
+  message : string;
+  retryable : bool;
+}
 (** Stable diagnostics never contain payload bytes or opaque task-token data. *)
 
 (** Public registration is existential so definitions with unrelated OCaml
@@ -124,26 +131,28 @@ let bounded_text ~fallback value =
 let bounded_code value = bounded_text ~fallback:"native_activity_error" value
 
 (** Constructs one immutable privacy-safe diagnostic. *)
-let make_error ?(path = "$") code message : error_view =
+let make_error ?(path = "$") ?(retryable = false) code message : error_view =
   {
     code = bounded_code code;
     path;
     message = bounded_text ~fallback:"invalid activity diagnostic" message;
+    retryable;
   }
 
 (** Converts an unexpected OCaml exception into a typed boundary diagnostic.
     Exceptions are still defects; catching them here prevents a user activity
     from unwinding past the lease and leaving native Core without a response. *)
-let exception_error ?(path = "$") exception_ =
+let exception_error ?(path = "$") ?(retryable = false) exception_ =
   let message =
     try Printexc.to_string exception_ with _ -> "unprintable OCaml exception"
   in
-  make_error ~path "ocaml_exception" message
+  make_error ~path ~retryable "ocaml_exception" message
 
 (** Converts a supervisor error without trusting its diagnostic accessors to be
     exception-free. This guard keeps lifecycle failures on the typed path. *)
-let supervisor_error ?(path = "$") ~error_code ~error_message source_error =
-  try make_error ~path (error_code source_error) (error_message source_error)
+let supervisor_error ?(path = "$") ?(retryable = false) ~error_code
+    ~error_message source_error =
+  try make_error ~path ~retryable (error_code source_error) (error_message source_error)
   with exception_ -> exception_error ~path exception_
 
 (** Converts the protocol's private diagnostic into this adapter's stable
@@ -430,8 +439,8 @@ let validate_completion completion =
 
 (** Converts a supervisor completion exception to a stable diagnostic without
     revealing the opaque token or native exception object. *)
-let completion_exception_error exception_ =
-  make_error ~path:"$.completion" "completion_failed"
+let completion_exception_error ?(retryable = false) exception_ =
+  make_error ~path:"$.completion" ~retryable "completion_failed"
     (Printf.sprintf "supervisor completion raised: %s"
        (exception_error exception_).message)
 
@@ -455,6 +464,19 @@ module Make (Supervisor : SUPERVISOR) = struct
 
   (** The public worker handle is the mutex-confined state above. *)
   type t = adapter_state
+
+  (** A malformed test double or future supervisor must not be able to turn a
+      diagnostic-classifier exception into an unbounded retry loop. Treat a
+      classifier defect as permanent; only an explicit [true] classification
+      can authorize retained-completion retry. *)
+  let source_error_is_retryable source_error =
+    try Supervisor.error_is_retryable source_error with _ -> false
+
+  (** Exception classification is equally conservative: arbitrary exceptions
+      are owner-domain defects unless the supervisor explicitly marks one as a
+      transient completion transport failure. *)
+  let completion_exception_is_retryable exception_ =
+    try Supervisor.exception_is_retryable exception_ with _ -> false
 
   (** Builds the context passed to one activity attempt. Heartbeats go back
       through the same typed supervisor mailbox as polling and completion; the
@@ -496,6 +518,7 @@ module Make (Supervisor : SUPERVISOR) = struct
             | Error source_error ->
                 let source =
                   supervisor_error ~path:"$.heartbeat"
+                    ~retryable:(source_error_is_retryable source_error)
                     ~error_code:Supervisor.error_code
                     ~error_message:Supervisor.error_message source_error
                 in
@@ -541,11 +564,13 @@ module Make (Supervisor : SUPERVISOR) = struct
           | Error source_error ->
               let source =
                 supervisor_error ~path:"$.completion"
+                  ~retryable:(source_error_is_retryable source_error)
                   ~error_code:Supervisor.error_code
                   ~error_message:Supervisor.error_message source_error
               in
               Rejected_by_supervisor
-                (make_error ~path:"$.completion" "completion_failed"
+                (make_error ~path:"$.completion" ~retryable:source.retryable
+                   "completion_failed"
                    (Printf.sprintf "supervisor rejected completion (%s): %s"
                       source.code source.message))
         with exception_ -> Raised_by_supervisor exception_)
@@ -569,7 +594,10 @@ module Make (Supervisor : SUPERVISOR) = struct
     match attempt_completion adapter.supervisor lease.completion with
     | Rejected_by_supervisor error -> Error error
     | Raised_by_supervisor exception_ ->
-        Error (completion_exception_error exception_)
+        let retryable =
+          completion_exception_is_retryable exception_
+        in
+        Error (completion_exception_error ~retryable exception_)
     | Accepted ->
         adapter.leases <- Token_map.remove lease.token adapter.leases;
         begin match lease.accepted_result with
@@ -773,6 +801,7 @@ module Make (Supervisor : SUPERVISOR) = struct
             | Error source_error ->
                 Error
                   (supervisor_error ~path:"$.poll"
+                     ~retryable:(source_error_is_retryable source_error)
                      ~error_code:Supervisor.error_code
                      ~error_message:Supervisor.error_message source_error)
             | Ok None ->

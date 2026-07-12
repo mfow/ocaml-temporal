@@ -14,6 +14,25 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Retained activity completion worker-loop resilience
+
+The native activity adapter now carries an explicit retryability classification
+from the supervisor for completion rejections and separately classifies private
+transient completion exceptions. Only connection and bounded-not-ready native
+statuses are retryable in production; protocol, configuration, worker-state,
+and supervisor-defect failures remain fatal. A new private
+`Temporal_runtime.Native_worker_loop` applies a bounded activity-lane readiness
+wait before retrying a retained completion, then allows the next activity task
+to run without invoking the original OCaml implementation again. The wait is
+performed by the blocking worker Domain through the existing native readiness
+operation, so workflow effect schedulers and adapter mutexes are not blocked.
+
+Focused local regressions cover one transient rejection followed by completion
+acceptance and a subsequent task, a permanent protocol error that stops the
+loop, and a specifically classified transient completion exception. The
+runtime suite and focused native build pass locally; GitHub Actions remains
+queued under the repository quota, so this entry makes no CI-success claim.
+
 ## 2026-07-13: Per-run worker shutdown evidence
 
 The two-binary Compose teardown now removes a per-run marker before stopping

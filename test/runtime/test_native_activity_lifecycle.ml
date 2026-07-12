@@ -10,7 +10,7 @@ module Protocol = Temporal_protocol.Activity_protocol
 module Adapter = Temporal_runtime.Native_activity_execution
 
 (** A deterministic source error used by the fake supervisor. *)
-type source_error = { code : string; message : string }
+type source_error = { code : string; message : string; retryable : bool }
 
 (** Fake supervisor state. Tokens are kept as bytes so the test exercises the
     same binary-safe lease key used by the native worker. *)
@@ -68,6 +68,7 @@ module Fake_supervisor = struct
         {
           code = "temporarily_unavailable";
           message = "completion transport unavailable";
+          retryable = true;
         }
     end
     else
@@ -75,7 +76,12 @@ module Fake_supervisor = struct
         remove_token completion.task_token !(supervisor.leased)
       in
       if not found then
-        Error { code = "stale_lease"; message = "activity token is not leased" }
+        Error
+          {
+            code = "stale_lease";
+            message = "activity token is not leased";
+            retryable = false;
+          }
       else begin
         supervisor.leased := remaining;
         supervisor.completions := completion :: !(supervisor.completions);
@@ -93,6 +99,13 @@ module Fake_supervisor = struct
 
   (** Exposes the source diagnostic expected by the adapter signature. *)
   let error_message error = error.message
+
+  (** The lifecycle fake rejects only with the explicitly transient transport
+      category; stale-token errors remain fatal protocol failures. *)
+  let error_is_retryable error = error.retryable
+
+  (** This fake does not inject completion exceptions. *)
+  let exception_is_retryable _exception = false
 end
 
 module Worker = Adapter.Make (Fake_supervisor)

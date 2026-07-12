@@ -163,6 +163,34 @@ drain leaves the exact completion and the native graph usable, so callers can
 retry rather than converting a transient transport error into an
 `outstanding_tasks` shutdown failure.
 
+### Worker-loop retry policy
+
+The adapter and the worker loop deliberately use two different signals for a
+completion transport failure. `Native_activity_execution.poll` returns a
+typed error with `retryable = true` only when the supervisor explicitly marks
+the source failure as transient; it never searches an error message for words
+such as `timeout` or `temporary`. A raised completion is classified by a
+separate private exception classifier. An unexpected exception, protocol
+failure, invalid state, configuration error, or worker error remains
+non-retryable.
+
+`Temporal_runtime.Native_worker_loop` converts that explicit transient result
+to `Retry_pending`. The production `Temporal.Worker.run` then waits on the
+bounded native activity-readiness operation before polling again. The wait is
+performed by the blocking worker Domain, while the C bridge releases the OCaml
+runtime lock; it never blocks a workflow effect scheduler or holds the adapter
+mutex. Once the same copied completion is accepted, the next loop iteration is
+free to poll a new activity. Thus a lost completion acknowledgement cannot
+rerun user code, terminate an otherwise healthy worker, or create a busy spin.
+
+The production source currently marks only explicit native connection and
+bounded-not-ready statuses as retryable. This intentionally conservative list
+keeps permanent and protocol errors visible. The fake-source regressions in
+[`test/runtime/test_native_worker_loop.ml`](../../test/runtime/test_native_worker_loop.ml)
+cover one transient rejection followed by a successful retry and a permanent
+protocol error that stops immediately; the activity execution regression also
+covers a specifically classified transient completion exception.
+
 `test/runtime/test_native_activity_lifecycle.ml` keeps this shutdown contract
 in a separate focused test. It forces one completion rejection during polling
 and another during the first drain, then verifies that the second drain retires

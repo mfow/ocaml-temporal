@@ -13,6 +13,10 @@ type context = Temporal_base.Activity_context.t
 type ('input, 'output) contextual_implementation =
   context -> 'input -> ('output, Error.t) result
 
+(** Immutable public activity definition. The paired codecs describe the
+    payload boundary, while exactly one implementation mode is retained:
+    local, context-aware, or remote-only. Keeping the mode explicit prevents a
+    command-only reference from being invoked as though it owned worker code. *)
 type ('input, 'output) t = {
   name : string;
   input : 'input Codec.t;
@@ -99,6 +103,8 @@ let heartbeat (context : context) (codec : 'a Codec.t) (value : 'a) =
 
 (** Safe operations exposed to contextual activity implementations. *)
 module Context = struct
+  (** Alias used by contextual activity helpers; the private context controls
+      attempt lifetime and copies payloads at every public boundary. *)
   type t = context
 
   (** Sends one typed heartbeat value. *)
@@ -137,6 +143,9 @@ module Context = struct
            Duration.of_ms (Temporal_base.Duration.to_ms duration))
 end
 
+(** Cancellation policy carried by a scheduled activity command. The closed
+    variant keeps the deterministic mapping to Temporal Core explicit and
+    avoids exposing the private runtime constructors in the public API. *)
 type cancellation_type =
   | Try_cancel
   | Wait_cancellation_completed

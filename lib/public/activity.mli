@@ -65,6 +65,7 @@ val heartbeat : context -> 'a Codec.t -> 'a -> (unit, Error.t) result
 
 (** Operations available to a contextual activity attempt. *)
 module Context : sig
+  (** The attempt-scoped context passed to contextual activity helpers. *)
   type t = context
 
   (** Sends one typed heartbeat value. *)
@@ -98,6 +99,7 @@ type cancellation_type =
     returns a typed defect instead of raising so callers can validate policy
     configuration while assembling a workflow definition. *)
 module Retry_policy : sig
+  (** Opaque immutable retry policy validated before command construction. *)
   type t
 
   (** Validates and constructs an immutable retry policy. *)

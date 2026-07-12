@@ -19,6 +19,9 @@ type error = { code : string; path : string; message : string }
     representation lets us change internal constructors without changing the
     diagnostics consumed by a worker loop. *)
 
+(** Publicly safe projection of [error]. Keeping this record separate from the
+    private error value prevents callers from depending on internal
+    construction details while allowing stable logging and assertions. *)
 type error_view = { code : string; path : string; message : string }
 
 type initialization = {
@@ -410,10 +413,15 @@ let runtime_child_workflow_result path result =
       in
       Ok (Error error)
 
-(** Converts an activation job and checks its sequence number before any mutable
-    execution state is touched. *)
+(** Operation families that may consume a Core sequence number. A child
+    workflow intentionally has two entries—start acknowledgement and terminal
+    result—while all other families must appear at most once per activation. *)
 type sequence_kind = Activity | Child_start | Child_result | Timer
 
+(** Converts an activation job and checks its sequence number before any
+    mutable execution state is touched. The optional tuple fields retain
+    initialization, cancellation, and eviction facts that the compact runtime
+    job algebra cannot carry directly. *)
 let runtime_job path = function
   | Protocol.Initialize_workflow
       {

@@ -18,16 +18,27 @@ let activity definition = Activity definition
     decoding and execution cannot accidentally use different codecs. *)
 type workflow_entry =
   | Workflow_entry : {
+      (* The definition supplies the registered name and the codecs used at
+         the backend boundary. *)
       definition : ('input, 'output) Workflow.t;
+      (* This callback has the same input and output types as [definition], so
+         the existential package cannot pair a function with another codec. *)
       implementation : ('input, 'output) Workflow.implementation;
     }
       -> workflow_entry
 
-(** A local activity entry has the same invariant as a workflow entry. *)
+(** A local activity entry keeps the definition and whichever typed callback
+    was registered together. The two optional fields preserve the distinction
+    between ordinary and context-aware activity APIs for dispatch. *)
 type activity_entry =
   | Activity_entry : {
+      (* The definition supplies the stable activity name and payload codecs. *)
       definition : ('input, 'output) Activity.t;
+      (* A plain callback is present when the activity does not need runtime
+         context such as heartbeat metadata. *)
       implementation : ('input, 'output) Activity.implementation option;
+      (* A context-aware callback is retained separately so dispatch can build
+         the appropriate context without changing the public callback type. *)
       contextual_implementation :
         ('input, 'output) Activity.contextual_implementation option;
     }
@@ -41,14 +52,23 @@ module Name_map = Map.Make (String)
     adapters. The choice is made once at construction and cannot change while
     polling, which keeps lifecycle ownership explicit. *)
 type backend =
+  (* Deterministic in-memory task streams used by unit tests and examples. *)
   | Mock_backend of Backend.worker
+  (* OCaml-owned native worker adapters backed by the Rust/Core bridge. *)
   | Native_backend of Native_worker.t
 
 (** A worker owns one backend and immutable registries after construction. *)
 type t = {
+  (* The backend is the sole owner of the native/mock handle graph; lifecycle
+     operations reach it through [run] and [shutdown]. *)
   backend : backend;
+  (* Workflow definitions are keyed by their stable names; the map is never
+     mutated after construction, which keeps dispatch independent of callers. *)
   workflows : workflow_entry Name_map.t;
+  (* Activity definitions follow the same immutable name-based lookup rule. *)
   activities : activity_entry Name_map.t;
+  (* This atomic gate records shutdown admission without holding a lock while
+     backend polling blocks, allowing repeated shutdown calls to be harmless. *)
   closed : bool Atomic.t;
 }
 
@@ -234,6 +254,9 @@ let dispatch_activity worker task =
           let result =
             match contextual_implementation with
             | Some implementation ->
+                (* Mock tasks have no native activity lease, so the callback
+                   receives an explicit unavailable context instead of a
+                   fabricated heartbeat capability. *)
                 let context =
                   Temporal_base.Activity_context.unavailable ~details:[]
                     ~heartbeat_timeout:None
@@ -297,6 +320,9 @@ let run_mock worker backend =
     Error
       (Error.make ~category:`Bridge ~message:"worker is shut down" ())
   else
+    (* Keep independent shutdown state for the workflow and activity streams.
+       A ready task is completed before either stream is considered drained,
+       so observing shutdown on one stream cannot discard work on the other. *)
     let rec loop workflow_shutdown activity_shutdown =
       if workflow_shutdown && activity_shutdown then Ok ()
       else

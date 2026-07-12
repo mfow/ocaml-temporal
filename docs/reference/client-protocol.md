@@ -197,6 +197,12 @@ and
 [`client-cancel-response.schema.json`](../schemas/bridge/client-cancel-response.schema.json).
 Both OCaml and Rust validate every field, reject unknown/duplicate members,
 and validate the positive acknowledgement before it crosses the FFI boundary.
+The exact-run cancellation path is covered by local mock, supervisor, OCaml
+bridge, and Rust protocol tests. The live driver contains the same scenario,
+but the available green live evidence covers the baseline start and wait paths;
+cancellation remains local-only until that scenario completes successfully
+against a real Temporal Server. See the [live acceptance coverage](live-acceptance-coverage.md)
+for the evidence boundary.
 
 ## Wait for one exact run
 
@@ -216,13 +222,15 @@ history long poll with the equivalent of `follow_runs = false`, bounded to
 `STATUS_NOT_READY` and no response object; the caller or a later orchestration
 loop can retry the same request through its mailbox. A timeout is therefore a
 pending observation, not a workflow failure. A terminal response always names
-the exact run requested:
+the exact run requested.
 
 The public `Temporal.Client.wait handle` performs that retry loop internally:
 it resubmits the same exact-run request after each bounded `NOT_READY` result
 and yields the calling Domain between attempts. Code using the private bridge
 directly may handle the status itself, but ordinary client callers receive only
 a terminal `Ok` value or an outer typed `Error.t`.
+
+For example, a terminal response has this shape:
 
 ```json
 {
@@ -322,8 +330,10 @@ The current milestone wires these messages through private OCaml/C/Rust
 bindings and the single-owner supervisor. Public `Temporal.Client` uses this
 native path for `http://` and `https://` targets, including asynchronous start
 and exact-run wait. The deterministic `mock://` transport remains available
-only as a private unit-test seam. A live two-binary Compose gate now exercises
-native client starts and exact-run waits while a public worker polls and
-dispatches the first success scenarios. Its boundary and remaining cases are
-tracked in the
+only as a private unit-test seam. A historical green two-binary Compose run
+exercises native client starts and exact-run waits while a public worker polls
+and dispatches the first success scenarios. The current driver also contains
+heartbeat-detail retry and exact-run cancellation assertions, but those paths
+are locally covered rather than live evidence until a run completes
+successfully. The boundary and remaining cases are tracked in the
 [`two-OCaml-binary acceptance design`](two-ocaml-binary-e2e-acceptance.md).

@@ -5,14 +5,17 @@ All project and build dependencies are checked before a milestone commit.
 exact license metadata, and rejects missing or unapproved values. The
 standalone GitHub Actions license job streams locked metadata emitted by
 `make cargo-metadata` into the repository scanner running in a separate
-official Python container. Cargo
-license scanning deliberately does not run in the compiler/architecture
-matrix or from the Makefile.
+official Python container. `make cargo-metadata` only emits the locked Cargo
+metadata; it does not run the scanner. Cargo license scanning deliberately
+does not run in the compiler/architecture matrix or as a Makefile target.
+The Makefile's `quality` target is a separate contributor/CI gate for RustSec,
+unused-dependency, and spelling checks.
 
 ## Policy
 
-Accepted licenses are MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib,
-and PostgreSQL. An OCaml compiler/runtime package may use
+For OPAM packages, the exact accepted license values are MIT, Apache-2.0,
+BSD-2-Clause, BSD-3-Clause, ISC, Zlib, and PostgreSQL. An OCaml compiler/runtime
+package may use
 `LGPL-2.1-or-later WITH OCaml-LGPL-linking-exception`. Other copyleft,
 source-available, non-commercial, missing, and unknown terms are rejected.
 
@@ -122,10 +125,13 @@ before publication.
 
 `rust/Cargo.lock` locks 319 dependencies rooted at Temporal Core commit
 `95e97686a079dcfe6c42e3254b2f3f5e3d97408f`; metadata contains 320 packages
-including the project bridge itself. The Core dependency disables default
-features and currently enables only `tls-ring`. The project bridge is
-Apache-2.0 and emits a native `staticlib` for OCaml plus an internal `rlib` for
-Rust integration tests.
+including the project bridge itself. The client, common, and SDK-Core
+dependencies disable their default features: `temporalio-client` enables
+`core-based-sdk` and `tls-ring`, `temporalio-sdk-core` enables `tls-ring`, and
+`temporalio-common` uses no additional features. `temporalio-protos` uses its
+default feature set. The project bridge is Apache-2.0 and
+emits `staticlib` and `cdylib` artifacts for the native boundary plus an
+internal `rlib` for Rust integration tests.
 
 The bridge declares `serde` 1.0.228 (MIT OR Apache-2.0), `serde_json` 1.0.150
 (MIT OR Apache-2.0), and `base64` 0.22.1 (MIT OR Apache-2.0) directly for its
@@ -133,7 +139,9 @@ private control protocol. The semantic adapter additionally declares the
 first-party `temporalio-protos` package at the same immutable Core revision and
 `prost-wkt-types` 0.7.1 (Apache-2.0) for exact protobuf timestamps and
 durations. The guarded poll lanes directly declare Tokio 1.52.3 (MIT) for its
-bounded channels and task handles; Temporal Core already selected and used
+executor, channels, and task handles; their hand-off channels are intentionally
+unbounded because Core's outstanding-task permits provide the bound and a
+bounded send could deadlock shutdown. Temporal Core already selected and used
 that exact locked runtime, so the bridge does not create a second executor.
 Every package was already present at the exact locked version in the
 Temporal Core closure, so these declarations change package ownership metadata
@@ -149,9 +157,9 @@ matching substrings. For an `OR`, it prints the exact approved branch selected;
 every `AND` branch must be approved. It also understands Cargo's historical
 slash-as-OR spelling. GPL, LGPL, AGPL, MPL, missing, malformed, and unknown
 licenses fail policy fixtures. Approved permissive identifiers found in the
-closure include MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0, 0BSD, MIT-0,
-CC0-1.0, Unlicense, and CDLA-Permissive-2.0. The Apache LLVM exception is an
-exact approved exception.
+closure include MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib,
+Unicode-3.0, 0BSD, MIT-0, CC0-1.0, Unlicense, and CDLA-Permissive-2.0. The
+Apache LLVM exception is an exact approved exception.
 
 Six first-party packages inherit the upstream workspace `LICENSE.txt` rather
 than publishing a Cargo `license` expression: `temporalio-client`,

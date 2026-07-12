@@ -154,6 +154,9 @@ type mock_worker = {
   _namespace : string;
   _task_queue : string;
   mutable closed : bool;
+  (** Protects queues, outstanding tables, and idle counters. Unit tests may
+      exercise the mock worker from more than one Domain. *)
+  mutex : Mutex.t;
   workflow_tasks : workflow_task Queue.t;
   activity_tasks : activity_task Queue.t;
   outstanding_workflows : (string, unit) Hashtbl.t;
@@ -805,6 +808,7 @@ let worker_create config ~workflow_names ~activity_names =
                _namespace = config.namespace;
                _task_queue = Option.get config.task_queue;
                closed = false;
+               mutex = Mutex.create ();
                workflow_tasks;
                activity_tasks;
                outstanding_workflows = Hashtbl.create 16;
@@ -815,25 +819,33 @@ let worker_create config ~workflow_names ~activity_names =
 
 (** Polls the workflow queue and records ownership before exposing a task. *)
 let worker_poll_workflow (Mock_worker worker) =
-  if worker.closed then Ok Shutdown
-  else if Queue.is_empty worker.workflow_tasks then (
-    worker.idle_workflow_polls <- worker.idle_workflow_polls + 1;
-    Ok Shutdown)
-  else
-    let task = Queue.take worker.workflow_tasks in
-    Hashtbl.replace worker.outstanding_workflows task.task_token ();
-    Ok (Task task)
+  Mutex.lock worker.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock worker.mutex)
+    (fun () ->
+      if worker.closed then Ok Shutdown
+      else if Queue.is_empty worker.workflow_tasks then (
+        worker.idle_workflow_polls <- worker.idle_workflow_polls + 1;
+        Ok Shutdown)
+      else
+        let task = Queue.take worker.workflow_tasks in
+        Hashtbl.replace worker.outstanding_workflows task.task_token ();
+        Ok (Task task))
 
 (** Polls the activity queue and records ownership before exposing a task. *)
 let worker_poll_activity (Mock_worker worker) =
-  if worker.closed then Ok Shutdown
-  else if Queue.is_empty worker.activity_tasks then (
-    worker.idle_activity_polls <- worker.idle_activity_polls + 1;
-    Ok Shutdown)
-  else
-    let task = Queue.take worker.activity_tasks in
-    Hashtbl.replace worker.outstanding_activities task.task_token ();
-    Ok (Task task)
+  Mutex.lock worker.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock worker.mutex)
+    (fun () ->
+      if worker.closed then Ok Shutdown
+      else if Queue.is_empty worker.activity_tasks then (
+        worker.idle_activity_polls <- worker.idle_activity_polls + 1;
+        Ok Shutdown)
+      else
+        let task = Queue.take worker.activity_tasks in
+        Hashtbl.replace worker.outstanding_activities task.task_token ();
+        Ok (Task task))
 
 (** Removes an outstanding workflow task exactly once. *)
 let require_workflow_token worker token =
@@ -851,28 +863,40 @@ let require_activity_token worker token =
 
 (** Completes a workflow task after checking its one-shot token lease. *)
 let worker_complete_workflow (Mock_worker worker) completion =
-  if worker.closed then Error (bridge_error "worker is shut down")
-  else
-    let token =
-      match completion with
-      | Workflow_completed { task_token; _ }
-      | Workflow_failed { task_token; _ } -> task_token
-    in
-    require_workflow_token worker token
+  Mutex.lock worker.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock worker.mutex)
+    (fun () ->
+      if worker.closed then Error (bridge_error "worker is shut down")
+      else
+        let token =
+          match completion with
+          | Workflow_completed { task_token; _ }
+          | Workflow_failed { task_token; _ } -> task_token
+        in
+        require_workflow_token worker token)
 
 (** Completes an activity task after checking its one-shot token lease. *)
 let worker_complete_activity (Mock_worker worker) completion =
-  if worker.closed then Error (bridge_error "worker is shut down")
-  else
-    let token =
-      match completion with
-      | Activity_completed { task_token; _ }
-      | Activity_failed { task_token; _ } -> task_token
-    in
-    require_activity_token worker token
+  Mutex.lock worker.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock worker.mutex)
+    (fun () ->
+      if worker.closed then Error (bridge_error "worker is shut down")
+      else
+        let token =
+          match completion with
+          | Activity_completed { task_token; _ }
+          | Activity_failed { task_token; _ } -> task_token
+        in
+        require_activity_token worker token)
 
 (** Closes worker admission; Core-backed implementations will first drain
     pollers and outstanding leases before returning from this function. *)
 let worker_shutdown (Mock_worker worker) =
-  worker.closed <- true;
-  Ok ()
+  Mutex.lock worker.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock worker.mutex)
+    (fun () ->
+      worker.closed <- true;
+      Ok ())

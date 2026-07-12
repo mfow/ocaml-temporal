@@ -33,6 +33,20 @@ produce a ready failed handle without scheduling a command. Focused tests cover
 command ordering, typed cancellation resolution, invalid and detached calls,
 ownership checks, and natural or failed terminal races.
 
+## 2026-07-13: Two-binary child failure and cancellation acceptance coverage
+
+Status: locally contract-checked after the squash-merged [PR #193](https://github.com/mfow/ocaml-temporal/pull/193), commit `48ed97f`. No live Temporal Server or GitHub Actions success claim is made here. The expanded Actions run was cancelled, and subsequent checks may remain queued while the repository quota is exhausted.
+
+The two-binary fixture now starts nine top-level workflows before awaiting any
+result. In addition to the historical success and retry scenarios, the driver
+asserts a parent that propagates a deterministic non-retryable child failure
+and a parent that cancels a long-running child through its typed child handle,
+waiting for `Wait_cancellation_requested` before returning an exact marker.
+The worker registers both workflows and the driver checks their typed results.
+Docker-free fixture/role/readiness/stop/quality contracts, focused Dune builds,
+format checks, and `git diff --check` passed locally. The Docker-backed
+PostgreSQL/Temporal run was not available in this environment.
+
 ## 2026-07-13: Replay worker ABI and supervisor operation
 
 The bounded replay worker is now reachable through the private C ABI and the

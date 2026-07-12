@@ -90,8 +90,9 @@ validating the readiness path and before validating later marker settings; its
 finalizer removes the marker again.
 This ordering prevents a reused container from reporting a previous run's
 readiness while the current worker is still being constructed or has failed.
-The driver implementation starts seven smoke workflows before waiting for any
-result. For
+The driver implementation starts nine smoke workflows before waiting for any
+result. This includes the successful parent/child, propagated child-failure,
+and child-cancellation scenarios. For
 the heartbeat workflow, the first activity attempt records a progress detail
 with a 500 ms heartbeat timeout and returns a retryable error; the driver
 requires the second attempt to receive that detail and timeout from Temporal.
@@ -99,13 +100,15 @@ For the long-running workflow, it waits for the test-only marker activity to
 publish the current run token after the durable timer and marker commands are
 accepted together, then sends `Temporal.Client.cancel` for that exact handle.
 The local assertion checks five exact success payloads (the heartbeat-detail
-retry is one of those five), one typed non-retryable workflow failure, and one
-typed `Cancelled` result for the same workflow/run pair. The parent/child and
-ordinary retry scenarios are part of the same driver and are also started before
-the first wait. Historical live evidence covers the four baseline success
-payloads and the typed failure; the heartbeat and cancellation assertions are
-implemented and locally covered, but they are not live-verified because the
-attempted Actions run was cancelled. After the driver exits, the Makefile stops
+retry is one of those five), one typed non-retryable workflow failure, one
+typed child failure, one typed child cancellation, and one typed `Cancelled`
+result for the same workflow/run pair. The parent/child and ordinary retry
+scenarios are part of the same driver and are also started before the first
+wait. Historical live evidence covers the four baseline success
+payloads and the typed failure; the heartbeat, cancellation, and child
+failure/cancellation assertions are implemented and locally covered, but they
+are not live-verified because the attempted Actions run was cancelled and
+later checks may remain queued under the repository quota. After the driver exits, the Makefile stops
 the worker and requires the current run's exact `.worker-stopped` marker; the
 driver's successful `client_shutdown` phase provides the corresponding client
 teardown evidence.
@@ -114,10 +117,10 @@ This is a real workflow-result acceptance fixture, not only a lifecycle test.
 It has live evidence for the baseline fan-out, timer/activity, and parent/child
 success paths, one server-managed ordinary activity retry, and one
 non-retryable workflow-failure classification.
-The heartbeat-detail retry and cancellation implementations and local
-assertions are present, but do not yet establish live evidence in this
-environment. The fixture does not yet establish child
-start-failure/cancellation, heartbeat-timeout-triggered retry, asynchronous
+The heartbeat-detail retry, cancellation, and child failure/cancellation
+implementations and local assertions are present, but do not yet establish
+live evidence in this environment. The fixture does not yet establish child
+start-failure, heartbeat-timeout-triggered retry, asynchronous
 activity completion, worker restart, replay, or cache eviction.
 The workflow configuration runs this target on pull requests and pushes to
 `master` in a standalone Ubuntu job labelled for OCaml 5.5; a queued or

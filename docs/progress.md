@@ -14,6 +14,38 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-12: Exact-run client cancellation control path
+
+Status: focused OCaml, Rust, bridge, supervisor, and mock-client tests pass
+locally; the live Compose cancellation scenario remains follow-up work.
+
+`Temporal.Client.cancel` now requests cancellation for the exact workflow and
+run retained by a typed client handle. The public API accepts an optional
+caller-supplied request ID and reason, validates both before crossing the
+native boundary, and generates a stable request ID when the caller omits one.
+The operation returns only after Temporal acknowledges the control request;
+the caller observes the eventual terminal state by waiting on the same handle.
+Expected failures remain typed `result` values, and the mock backend models the
+same exact-run and idempotent behavior for deterministic unit tests.
+
+The private OCaml/Rust JSON protocol has closed request and acknowledgement
+documents with bilateral unknown-field, duplicate-field, identifier, reason,
+and positive-acknowledgement validation. Rust calls the official
+`RequestCancelWorkflowExecution` RPC through the existing supervisor-owned
+Core connection and bounds that RPC to one second, so a stalled server cannot
+hold the owner Domain indefinitely. A timeout is reported as a typed bridge
+failure and the caller can retry the same request ID. The C ABI, header, and
+native OCaml wrapper preserve the existing ownership and panic-containment
+rules; no Rust task calls OCaml.
+
+Evidence: the OCaml client protocol executable, Rust cancellation protocol
+tests, public mock-client cancellation tests, native worker-operation tests,
+Rust formatting, and `git diff --check` passed. Schemas and wire semantics are
+documented in [client protocol](reference/client-protocol.md). This milestone
+does not claim live cancellation coverage; that scenario must keep a workflow
+outstanding, issue the request through the two-binary fixture, observe the
+server's cancelled terminal result, and then verify clean shutdown.
+
 ## 2026-07-12: Live activity retry acceptance scenario
 
 Status: verified in Linux CI run

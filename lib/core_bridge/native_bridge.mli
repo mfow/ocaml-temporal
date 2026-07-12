@@ -82,6 +82,11 @@ val client_connect : runtime -> client_config -> (unit, error) result
     structured error document. *)
 val client_start_workflow_json : runtime -> bytes -> (bytes, error) result
 
+(** Requests cancellation of one exact workflow run. A successful response is
+    only the server acknowledgement; callers must use the exact-run wait
+    operation to observe the eventual [Cancelled] terminal outcome. *)
+val client_cancel_workflow_json : runtime -> bytes -> (bytes, error) result
+
 (** Admits one asynchronous workflow start and returns a strict opaque ticket
     document. Rust owns the pending task and its request metadata until a
     later poll or bounded wait reaches a terminal outcome. *)

@@ -2,11 +2,13 @@
 //!
 //! This module deliberately exposes neither `temporalio_client::Client` nor
 //! protobuf values to OCaml.  The bridge accepts a small, lossless request
-//! document for starting a workflow and a request naming one exact run to
-//! observe.  A wait never follows a continued-as-new successor: callers can
-//! inspect the successor metadata and decide what to do in OCaml.
+//! documents for starting a workflow, observing one exact run, and requesting
+//! cancellation of that same exact run. A wait never follows a continued-as-
+//! new successor: callers can inspect the successor metadata and decide what
+//! to do in OCaml.
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use temporalio_client::Connection;
 use temporalio_client::tonic::{Code, IntoRequest, Status};
 use temporalio_common::protos::temporal::api::{
@@ -14,7 +16,10 @@ use temporalio_common::protos::temporal::api::{
     enums::v1::HistoryEventFilterType,
     history::v1::{HistoryEvent, history_event::Attributes},
     taskqueue::v1::TaskQueue,
-    workflowservice::v1::{GetWorkflowExecutionHistoryRequest, StartWorkflowExecutionRequest},
+    workflowservice::v1::{
+        GetWorkflowExecutionHistoryRequest, RequestCancelWorkflowExecutionRequest,
+        StartWorkflowExecutionRequest,
+    },
 };
 
 use crate::{protocol, workflow_protocol};
@@ -112,6 +117,30 @@ pub struct WaitWorkflowRequest {
     pub workflow_id: String,
     /// Concrete run identifier to observe without following successors.
     pub run_id: String,
+}
+
+/// Request to ask Temporal to cancel one exact workflow run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelWorkflowRequest {
+    /// Namespace containing the execution.
+    pub namespace: String,
+    /// Stable workflow identifier.
+    pub workflow_id: String,
+    /// Concrete run identifier; an empty run is never treated as "latest".
+    pub run_id: String,
+    /// Caller-owned idempotency key for the cancellation RPC.
+    pub request_id: String,
+    /// Operator-facing reason copied to Temporal. Empty is permitted.
+    pub reason: String,
+}
+
+/// Positive acknowledgement returned after Temporal accepts the request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelWorkflowResponse {
+    /// Always true for a response emitted by this bridge.
+    pub acknowledged: bool,
 }
 
 /// Metadata for a successor run created by continued-as-new.
@@ -394,12 +423,79 @@ pub fn decode_wait_request(input: &str) -> Result<WaitWorkflowRequest, protocol:
     Ok(request)
 }
 
+/// Strictly parses one exact-run cancellation request.
+pub fn decode_cancel_request(
+    input: &str,
+) -> Result<CancelWorkflowRequest, protocol::ProtocolError> {
+    protocol::decode_object(input)?;
+    let request = serde_json::from_str(input)
+        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client cancel request"))?;
+    validate_cancel_request(&request)?;
+    Ok(request)
+}
+
 /// Encodes and reparses a start response before ownership leaves Rust.
 pub fn encode_start_response(
     response: &StartWorkflowResponse,
 ) -> Result<String, protocol::ProtocolError> {
     validate_execution(&response.execution, "$.execution")?;
     encode_document(response)
+}
+
+/// Encodes and reparses a positive cancellation acknowledgement before it
+/// crosses the native boundary.
+pub fn encode_cancel_response(
+    response: &CancelWorkflowResponse,
+) -> Result<String, protocol::ProtocolError> {
+    if !response.acknowledged {
+        return Err(protocol::ProtocolError::invalid(
+            "$.acknowledged",
+            "cancellation acknowledgement must be true",
+        ));
+    }
+    encode_document(response)
+}
+
+/// Requests cancellation of one exact run through Temporal's official
+/// workflow service. The connection is cloned by the owner Domain and no
+/// Tokio task calls back into OCaml.
+pub async fn cancel_workflow(
+    connection: Connection,
+    request: CancelWorkflowRequest,
+) -> Result<CancelWorkflowResponse, ClientOperationError> {
+    // A cancellation acknowledgement is a control-plane RPC, not a workflow
+    // wait. Bound it so a stalled server cannot hold the owner Domain mailbox
+    // forever; callers can retry the same request ID when the outcome is
+    // uncertain.
+    const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(1);
+    let mut service = connection.workflow_service();
+    let request = RequestCancelWorkflowExecutionRequest {
+        namespace: request.namespace,
+        workflow_execution: Some(WorkflowExecution {
+            workflow_id: request.workflow_id,
+            run_id: request.run_id,
+        }),
+        identity: connection.identity().to_owned(),
+        request_id: request.request_id,
+        reason: request.reason,
+        ..Default::default()
+    };
+    match tokio::time::timeout(
+        CONTROL_RPC_TIMEOUT,
+        service.request_cancel_workflow_execution(request.into_request()),
+    )
+    .await
+    {
+        Ok(result) => {
+            result.map_err(map_rpc_status)?;
+        }
+        Err(_) => {
+            return Err(ClientOperationError::Rpc {
+                code: "deadline_exceeded".to_owned(),
+            });
+        }
+    }
+    Ok(CancelWorkflowResponse { acknowledged: true })
 }
 
 /// Encodes one terminal asynchronous-start outcome and reparses the bytes
@@ -735,6 +831,27 @@ fn validate_wait_request(value: &WaitWorkflowRequest) -> Result<(), protocol::Pr
     Ok(())
 }
 
+/// Validates one exact-run cancellation request and keeps its reason bounded.
+fn validate_cancel_request(value: &CancelWorkflowRequest) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.namespace, "$.namespace")?;
+    validate_identifier(&value.workflow_id, "$.workflow_id")?;
+    validate_identifier(&value.run_id, "$.run_id")?;
+    validate_identifier(&value.request_id, "$.request_id")?;
+    if value.reason.len() > protocol::MAX_STRING_BYTES {
+        return Err(protocol::ProtocolError::invalid(
+            "$.reason",
+            "reason exceeds the protocol string safety limit",
+        ));
+    }
+    if value.reason.contains('\0') {
+        return Err(protocol::ProtocolError::invalid(
+            "$.reason",
+            "reason contains a NUL byte",
+        ));
+    }
+    Ok(())
+}
+
 /// Validates one execution reference.
 fn validate_execution(value: &ExecutionRef, path: &str) -> Result<(), protocol::ProtocolError> {
     validate_identifier(&value.namespace, &format!("{path}.namespace"))?;
@@ -891,6 +1008,19 @@ mod tests {
         .to_string()
     }
 
+    /// Builds a valid exact-run cancellation request, including the stable
+    /// request ID that lets a caller retry a timed-out RPC safely.
+    fn cancel_json() -> String {
+        serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "request_id":"cancel-1",
+            "reason":"operator requested cancellation"
+        })
+        .to_string()
+    }
+
     #[test]
     /// Rejects a syntactically valid request containing an unknown member.
     fn start_request_requires_closed_payload_shape() {
@@ -990,6 +1120,98 @@ mod tests {
         let json =
             r#"{"namespace":"default","workflow_id":"id","run_id":"run","follow_runs":true}"#;
         assert!(decode_wait_request(json).is_err());
+    }
+
+    #[test]
+    /// Decodes every cancellation field without treating an empty reason as a
+    /// missing field, and emits only a positive acknowledgement.
+    fn cancellation_request_and_acknowledgement_round_trip() {
+        let request = decode_cancel_request(&cancel_json()).expect("cancel request decodes");
+        assert_eq!(request.namespace, "default");
+        assert_eq!(request.workflow_id, "workflow-1");
+        assert_eq!(request.run_id, "run-1");
+        assert_eq!(request.request_id, "cancel-1");
+        assert_eq!(request.reason, "operator requested cancellation");
+
+        let empty_reason = serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "request_id":"cancel-2",
+            "reason":""
+        })
+        .to_string();
+        assert_eq!(decode_cancel_request(&empty_reason).unwrap().reason, "");
+
+        let encoded = encode_cancel_response(&CancelWorkflowResponse { acknowledged: true })
+            .expect("positive cancellation acknowledgement encodes");
+        assert_eq!(encoded, r#"{"acknowledged":true}"#);
+    }
+
+    #[test]
+    /// Rejects cancellation documents that could lose identity or change the
+    /// operation's meaning when decoded by a permissive JSON map.
+    fn cancellation_request_is_closed_and_bounded() {
+        let mut unknown = cancel_json();
+        unknown.insert_str(unknown.len() - 1, ",\"unexpected\":true");
+        assert!(decode_cancel_request(&unknown).is_err());
+
+        let duplicate = r#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","request_id":"cancel-1","request_id":"other","reason":""}"#;
+        assert!(decode_cancel_request(duplicate).is_err());
+
+        for field in ["namespace", "workflow_id", "run_id", "request_id"] {
+            let document = serde_json::json!({
+                "namespace":"default",
+                "workflow_id":"workflow-1",
+                "run_id":"run-1",
+                "request_id":"cancel-1",
+                "reason":""
+            });
+            let mut object = document.as_object().unwrap().clone();
+            object.insert(field.to_owned(), serde_json::Value::String(String::new()));
+            assert!(
+                decode_cancel_request(&serde_json::Value::Object(object).to_string()).is_err(),
+                "empty {field} must be rejected"
+            );
+        }
+
+        let nul_reason = serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "request_id":"cancel-1",
+            "reason":"contains\0nul"
+        })
+        .to_string();
+        assert!(decode_cancel_request(&nul_reason).is_err());
+
+        let oversized_reason = serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "request_id":"cancel-1",
+            "reason": "x".repeat(protocol::MAX_STRING_BYTES + 1)
+        })
+        .to_string();
+        assert!(decode_cancel_request(&oversized_reason).is_err());
+    }
+
+    #[test]
+    /// Refuses a false acknowledgement so transport success cannot be
+    /// confused with Temporal accepting a cancellation request.
+    fn cancellation_acknowledgement_must_be_true_and_closed() {
+        assert!(
+            encode_cancel_response(&CancelWorkflowResponse {
+                acknowledged: false
+            })
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<CancelWorkflowResponse>(
+                r#"{"acknowledged":true,"unexpected":true}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

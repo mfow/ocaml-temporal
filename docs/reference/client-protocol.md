@@ -135,6 +135,53 @@ an absent caller. This is the cancellation boundary for asynchronous starts:
 Rust tasks never call OCaml, and no task is detached while it retains a Core
 connection clone.
 
+## Request cancellation of one exact run
+
+The public `Temporal.Client.cancel` operation sends a control-plane request for
+the exact execution retained by a workflow handle. The OCaml side supplies the
+client namespace and these five fields to Rust:
+
+```json
+{
+  "namespace": "default",
+  "workflow_id": "summarize-1",
+  "run_id": "server-assigned-run-id",
+  "request_id": "cancel-summarize-1",
+  "reason": "operator requested shutdown"
+}
+```
+
+`run_id` is required. There is no implicit “latest run” form, so a cancellation
+cannot accidentally target a continued-as-new successor or another execution
+with the same workflow ID. `request_id` is the Temporal idempotency key for the
+logical cancellation operation. If a transport timeout leaves the outcome
+uncertain, the caller should retry with the same request ID and exact handle.
+The optional `reason` is copied as operator context and may be empty; it is
+bounded and NUL-free like all bridge strings.
+
+Rust calls Temporal's official `RequestCancelWorkflowExecution` RPC and returns
+only this positive acknowledgement:
+
+```json
+{"acknowledged":true}
+```
+
+The acknowledgement means that Temporal accepted the request, not that the
+workflow has already stopped. The request is bounded to a short native RPC
+deadline so a stalled server cannot hold the single supervisor owner forever.
+On timeout the operation returns a typed bridge failure; retrying the same
+`request_id` is safe. The caller then uses `Temporal.Client.wait handle` to
+observe the eventual `Cancelled` terminal value. Cancellation errors use the
+same closed `rpc` and `protocol` error documents as other client operations;
+`already_started` is rejected as impossible for this operation.
+
+The request and acknowledgement shapes are defined by
+[`client-cancel-request.schema.json`](../schemas/bridge/client-cancel-request.schema.json)
+and
+[`client-cancel-response.schema.json`](../schemas/bridge/client-cancel-response.schema.json).
+Both OCaml and Rust validate every field, reject unknown/duplicate members,
+and validate the positive acknowledgement before it crosses the FFI boundary.
+
 ## Wait for one exact run
 
 The wait request contains exactly the three identity fields:

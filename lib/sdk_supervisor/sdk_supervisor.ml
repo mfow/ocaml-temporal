@@ -358,6 +358,14 @@ module Protocol_adapter = struct
     | Ok output -> Ok (Bytes.of_string output)
     | Error error -> client_error "client start request encoding" error
 
+  (** Canonically serializes a typed exact-run cancellation request before it
+      reaches the native bridge. The reason is validated by the codec so a
+      malformed operator message cannot cross the C boundary. *)
+  let encode_client_cancel_request request =
+    match Client.encode_cancel_request request with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> client_error "client cancellation request encoding" error
+
   (** Decodes the opaque ticket returned by native asynchronous-start
       admission. The ticket is bound to [request] before it is published to
       the supervisor caller, so later poll operations cannot mix identities. *)
@@ -451,6 +459,33 @@ module Protocol_adapter = struct
           }
     | _ -> Error native_error
 
+  (** Decodes and status-checks one structured cancellation failure. The
+      native status must agree with the closed JSON error kind, and the
+      start-only [Already_started] category is rejected by the codec. *)
+  let decode_client_cancel_failure native_error =
+    match native_error.Bridge.status with
+    | Connection | Protocol -> (
+        match Client.decode_cancel_error native_error.message with
+        | Error error -> malformed_client_error "client cancellation" error
+        | Ok client_error ->
+            if native_error.Bridge.status = client_error_status client_error then
+              Ok (Error client_error)
+            else
+              Error
+                {
+                  Bridge.status = Protocol;
+                  message =
+                    "client cancellation error status does not match its JSON kind";
+                })
+    | Already_started ->
+        Error
+          {
+            Bridge.status = Protocol;
+            message =
+              "client cancellation returned an impossible already-started status";
+          }
+    | _ -> Error native_error
+
   (** Validates a successful native start response and translates it to the
       typed protocol result. Response identity correlation happens in the
       codec using the original request. *)
@@ -486,6 +521,16 @@ module Protocol_adapter = struct
         | Ok response -> Ok (Ok response)
         | Error error -> client_error "client wait response decoding" error)
     | Error native_error -> decode_client_wait_failure request native_error
+
+  (** Decodes the positive cancellation acknowledgement or a structured
+      server failure. An acknowledgement is intentionally represented as
+      [unit]: the public caller must wait separately for the terminal outcome. *)
+  let decode_client_cancel_result = function
+    | Ok input -> (
+        match Client.decode_cancel_response (Bytes.to_string input) with
+        | Ok _response -> Ok (Ok ())
+        | Error error -> client_error "client cancellation response decoding" error)
+    | Error native_error -> decode_client_cancel_failure native_error
 end
 
 (** The production backend owns one runtime-client-worker graph. Every
@@ -514,6 +559,9 @@ module Native_backend = struct
     | Client_wait_workflow :
         Client.wait_request ->
         (Client.wait_response, Client.client_error) result operation
+    | Client_cancel_workflow :
+        Client.cancel_request ->
+        (unit, Client.client_error) result operation
     | Start_worker : Bridge.worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation
@@ -568,6 +616,12 @@ module Native_backend = struct
         | Ok input ->
             Protocol_adapter.decode_client_wait_result request
               (Bridge.client_wait_workflow_json runtime input))
+    | Client_cancel_workflow request -> (
+        match Protocol_adapter.encode_client_cancel_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_cancel_result
+              (Bridge.client_cancel_workflow_json runtime input))
     | Start_worker config -> Bridge.worker_start runtime config
     | Try_poll_workflow ->
         Protocol_adapter.workflow_poll_result
@@ -633,6 +687,9 @@ module Native = struct
     | Client_wait_workflow :
         Client.wait_request ->
         (Client.wait_response, Client.client_error) result operation
+    | Client_cancel_workflow :
+        Client.cancel_request ->
+        (unit, Client.client_error) result operation
     | Start_worker : worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation

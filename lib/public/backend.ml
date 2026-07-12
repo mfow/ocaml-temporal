@@ -44,6 +44,14 @@ type wait_request = {
   run_id : string;
 }
 
+(** Exact workflow/run pair and stable control-operation metadata. *)
+type cancel_request = {
+  workflow_id : string;
+  run_id : string;
+  request_id : string;
+  reason : string;
+}
+
 (** Terminal workflow outcome represented independently from transport errors. *)
 type terminal_result =
   | Completed of Payload.t
@@ -98,11 +106,17 @@ type activity_completion =
       error : Error.t;
     }
 
-(** A completed mock execution is retained so a later exact wait has stable
-    semantics even when callers await the same handle more than once. *)
+(** Terminal state for one mock execution. The state is monotone: once a wait
+    observes completion, a later cancellation cannot rewrite that terminal
+    result, which mirrors Temporal's immutable execution history. *)
+type mock_terminal = Mock_pending | Mock_completed | Mock_cancelled
+
+(** A mock execution is retained so repeated exact waits return the same
+    terminal result and cancellation can only affect work still pending. *)
 type mock_execution = {
   run_id : string;
   input : Payload.t;
+  mutable terminal : mock_terminal;
 }
 
 (** A client graph has one mutable lifecycle bit and an exact-run ledger.
@@ -588,7 +602,7 @@ let mock_client_start (client : mock_client) (request : start_request) =
           Printf.sprintf "mock-run-%d" client.next_run
         in
         Hashtbl.add client.executions request.workflow_id
-          { run_id; input = copy_payload request.input };
+          { run_id; input = copy_payload request.input; terminal = Mock_pending };
         let response : start_response =
           { workflow_id = request.workflow_id; run_id }
         in
@@ -627,7 +641,7 @@ let native_client_wait (client : native_client) (request : wait_request) =
 (** Waits for a mock execution and echoes its input as the completed output.
     Echoing is sufficient to test typed output decoding without coupling this
     private transport to any application workflow implementation. *)
-let mock_client_wait (client : mock_client) request =
+let mock_client_wait (client : mock_client) (request : wait_request) =
   Mutex.lock client.mutex;
   Fun.protect
     ~finally:(fun () -> Mutex.unlock client.mutex)
@@ -639,13 +653,86 @@ let mock_client_wait (client : mock_client) request =
         | Some execution
           when not (String.equal execution.run_id request.run_id) ->
             Error (bridge_error "workflow run id does not match the started run")
-        | Some execution -> Ok (Completed (copy_payload execution.input)))
+        | Some execution -> (
+            match execution.terminal with
+            | Mock_pending ->
+                (* The first wait linearizes the synthetic execution into its
+                   completed terminal state before returning the copied
+                   payload. *)
+                execution.terminal <- Mock_completed;
+                Ok (Completed (copy_payload execution.input))
+            | Mock_completed -> Ok (Completed (copy_payload execution.input))
+            | Mock_cancelled ->
+                Ok
+                  (Cancelled
+                     (Error.make ~category:`Cancelled
+                        ~message:"workflow execution was cancelled" ()))))
 
 (** Waits for a terminal result on the selected private transport. *)
-let client_wait client request =
+let client_wait client (request : wait_request) =
   match client with
   | Mock_client client -> mock_client_wait client request
   | Native_client client -> native_client_wait client request
+
+(** Converts one public cancellation request to the closed native protocol
+    representation. The namespace is supplied by the connected client rather
+    than copied from a caller-controlled handle. *)
+let native_cancel_request client (request : cancel_request) :
+    Client_protocol.cancel_request =
+  {
+    execution =
+      {
+        namespace = client.namespace;
+        workflow_id = request.workflow_id;
+        run_id = request.run_id;
+      };
+    request_id = request.request_id;
+    reason = request.reason;
+  }
+
+(** Requests cancellation through the serialized supervisor operation. The
+    returned acknowledgement only means Temporal accepted the RPC; the exact
+    wait path remains responsible for observing the eventual terminal state. *)
+let native_client_cancel (client : native_client) (request : cancel_request) :
+    (unit, Error.t) result =
+  if Atomic.get client.closed then Error (bridge_error "client is shut down")
+  else
+    match
+      Native.perform client.supervisor
+        (Native.Client_cancel_workflow (native_cancel_request client request))
+    with
+    | Error error -> Error (native_supervisor_error error)
+    | Ok (Error error) -> Error (native_client_error error)
+    | Ok (Ok ()) -> Ok ()
+
+(** Marks one exact mock execution cancelled. Repeated cancellation requests
+    are idempotent, while a mismatched workflow/run pair is rejected so the
+    deterministic seam exercises the same identity contract as native Core.
+    A completed execution is deliberately left unchanged: terminal history is
+    immutable even when a caller sends a late cancellation request. *)
+let mock_client_cancel (client : mock_client) (request : cancel_request) =
+  Mutex.lock client.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock client.mutex)
+    (fun () ->
+      if client.closed then Error (bridge_error "client is shut down")
+      else
+        match Hashtbl.find_opt client.executions request.workflow_id with
+        | None -> Error (bridge_error "workflow execution was not started")
+        | Some execution
+          when not (String.equal execution.run_id request.run_id) ->
+            Error (bridge_error "workflow run id does not match the started run")
+        | Some execution ->
+            (match execution.terminal with
+            | Mock_pending -> execution.terminal <- Mock_cancelled
+            | Mock_completed | Mock_cancelled -> ());
+            Ok ())
+
+(** Requests cancellation on the selected private transport. *)
+let client_cancel client request =
+  match client with
+  | Mock_client client -> mock_client_cancel client request
+  | Native_client client -> native_client_cancel client request
 
 (** Marks a client closed while preserving idempotent cleanup. Native shutdown
     runs the supervisor's reverse-order worker/client/runtime release path;

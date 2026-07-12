@@ -179,6 +179,13 @@ let test_client_protocol_adapter () =
   let wait_request : Client.wait_request =
     { namespace = "default"; workflow_id = "workflow-1"; run_id = "run-1" }
   in
+  let cancel_request : Client.cancel_request =
+    {
+      execution = wait_request;
+      request_id = "cancel-request-1";
+      reason = "operator requested shutdown";
+    }
+  in
   let start_json =
     {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"}}|}
   in
@@ -197,6 +204,18 @@ let test_client_protocol_adapter () =
   in
   if not (contains_substring (Bytes.to_string wait_bytes) "run-1") then
     failwith "typed wait request was not encoded";
+  let cancel_bytes =
+    require_bridge
+      (Supervisor.Protocol_adapter.encode_client_cancel_request cancel_request)
+  in
+  if not (contains_substring (Bytes.to_string cancel_bytes) "cancel-request-1")
+  then failwith "typed cancellation request was not encoded";
+  (match
+     Supervisor.Protocol_adapter.decode_client_cancel_result
+       (Ok (Bytes.of_string {|{"acknowledged":true}|}))
+   with
+  | Ok (Ok ()) -> ()
+  | _ -> failwith "positive cancellation acknowledgement was not typed");
   (match
      Supervisor.Protocol_adapter.decode_client_start_result start_request
        (Ok (Bytes.of_string start_json))
@@ -274,6 +293,27 @@ let test_client_protocol_adapter () =
    with
   | Error { Bridge.status = Not_ready; _ } -> ()
   | _ -> failwith "wait readiness status was converted into a terminal value");
+  (match
+     Supervisor.Protocol_adapter.decode_client_cancel_result
+       (Error
+          {
+            Bridge.status = Connection;
+            message = {|{"kind":"rpc","code":"deadline_exceeded"}|};
+          })
+   with
+  | Ok (Error (Client.Rpc { code = "deadline_exceeded" })) -> ()
+  | _ -> failwith "structured cancellation RPC error was not typed");
+  (match
+     Supervisor.Protocol_adapter.decode_client_cancel_result
+       (Error
+          {
+            Bridge.status = Already_started;
+            message =
+              {|{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":null}|};
+          })
+   with
+  | Error { Bridge.status = Protocol; _ } -> ()
+  | _ -> failwith "impossible cancellation error status was accepted");
   (match
      Supervisor.Protocol_adapter.decode_client_start_result start_request
        (Ok
@@ -417,6 +457,17 @@ let test_native_client_lifecycle_guards () =
    with
   | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
   | _ -> failwith "client wait without connection was accepted");
+  (match
+     Supervisor.perform supervisor
+       (Supervisor.Client_cancel_workflow
+          {
+            execution = wait_request;
+            request_id = "cancel-before-connect";
+            reason = "test";
+          })
+   with
+  | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
+  | _ -> failwith "client cancellation without connection was accepted");
   expect "client lifecycle shutdown" (Ok ()) (Supervisor.shutdown supervisor)
 
 let () =

@@ -178,6 +178,7 @@ are excluded from log messages. See the [observability reference](docs/reference
 - [Native Core bridge and ownership](docs/reference/core-bridge.md)
 - [Private JSON control protocol](docs/reference/core-protocol.md)
 - [Native client JSON protocol](docs/reference/client-protocol.md)
+- [Feature coverage and implementation status](docs/reference/feature-coverage.md)
 - [Local Temporal and PostgreSQL stack](docs/reference/local-temporal-stack.md)
 - [Quality and security gates](docs/reference/quality-gates.md)
 - [Dependency and license inventory](docs/dependencies.md)

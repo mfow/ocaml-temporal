@@ -16,9 +16,13 @@ type source_error = { code : string; message : string }
 (** Fake supervisor state. The adapter's mutex is the only permitted writer to
     the lease and completion ledgers; the test inspects them after each call. *)
 type fake_supervisor = {
+  (* Activations waiting to be leased by the adapter. *)
   queue : Protocol.activation Queue.t;
+  (* Run IDs whose native lease has not yet been acknowledged. *)
   leased : (string, unit) Hashtbl.t;
+  (* Accepted completions, retained for the final exactly-once assertion. *)
   completions : Protocol.completion list ref;
+  (* Number of deliberately rejected completion attempts remaining. *)
   completion_rejections : int ref;
 }
 

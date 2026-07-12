@@ -67,6 +67,27 @@ holding a mutex or sleeping a native thread. The same rule applies to
 `let*` makes it easy to stop on the first expected error; it does not add a
 second monad or expose the effect scheduler.
 
+### Future ownership and shutdown
+
+Every `Temporal.Future.t` belongs to the workflow execution that created it.
+It is a handle to that execution's deterministic completion, not a general
+purpose promise that can be shared with application threads or retained as a
+long-lived cache entry. Combinators such as `Future.map`, `Future.both`, and
+`Future.all` preserve the same workflow ownership.
+
+When an execution completes, is evicted, is cancelled, or shuts down, its
+pending futures and captured continuations are disposed. Callback work that is
+already queued for that owner becomes inert; it must not run workflow code
+after the owner has ended. This is part of the scheduler's cleanup contract,
+not a signal that a queued callback can safely be reused by another execution.
+
+Drop future handles when their workflow ends. Do not call `Future.await`,
+register more composition, or use a retained handle to coordinate unrelated
+work after its owner has shut down. If code needs a result outside the
+workflow, have the owning workflow return that result through its normal
+completion path and keep the application-level value rather than the future
+handle.
+
 Child-workflow code is valid in the synthetic runtime and the semantic command
 translator. The native adapter also represents the complete two-stage
 resolution lifecycle: a successful start acknowledgment records the child run

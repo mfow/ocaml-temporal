@@ -14,6 +14,51 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-12: Public future shutdown guards
+
+Status: locally verified in the focused runtime and package checks; this
+milestone has no live Temporal or GitHub Actions success claim. The change was
+merged in [PR #99](https://github.com/mfow/ocaml-temporal/pull/99) as commit
+`efb02dd`.
+
+Shutdown now makes queued public-future observers, derived-future mappers, and
+ready continuations inert before they can run. A future awaited after its
+owner has shut down returns the typed outside-owner error instead of resuming
+workflow code. The regression tests cover both callback suppression and
+re-entrant awaits, in addition to the existing root-future shutdown cases.
+The PR recorded `DUNE_CACHE=disabled dune build --root . -j 1`, the focused
+runtime tests, locked Rust tests, package-consumer smoke checks, formatting,
+and `git diff --check` as passing locally.
+
+## 2026-07-12: Correction to live cancellation evidence
+
+Status: documentation correction merged in
+[PR #100](https://github.com/mfow/ocaml-temporal/pull/100) as commit `9baa00a`;
+no new live acceptance result was produced by that documentation change.
+
+The acceptance references now distinguish the historical five-execution green
+run [`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+from the current six-run cancellation implementation and its local protocol,
+client, worker, and supervisor checks. The one-shot OCaml assertion driver and
+the long-lived worker are described separately. GitHub Actions run
+[`29193818312`](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
+was cancelled, so the six-run cancellation scenario remains unverified against
+a live Temporal Server.
+
+## 2026-07-12: GitHub Actions pending-capacity limitation
+
+Status: the observable CI state at this update is pending, not a pass or a
+failure. The PR #100 run
+[`29194514765`](https://github.com/mfow/ocaml-temporal/actions/runs/29194514765)
+and the push run for merge commit `9baa00a`
+[`29194534789`](https://github.com/mfow/ocaml-temporal/actions/runs/29194534789)
+were queued with no conclusion. Repeated updates can also cancel superseded
+runs because `.github/workflows/build.yml` enables `cancel-in-progress`.
+GitHub did not expose a usable billing/quota result through the checked API,
+so this entry records only the observed pending state. Queued or cancelled
+runs must not be treated as live verification; the last successful live
+acceptance evidence remains run `29191260073` above.
+
 ## 2026-07-12: Exact-run client cancellation control path
 
 Status: focused OCaml, Rust, bridge, supervisor, and mock-client tests pass

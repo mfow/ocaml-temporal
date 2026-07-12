@@ -79,14 +79,25 @@
         },
         {
           "type": "object", "additionalProperties": false,
-          "required": ["kind", "seq", "workflow_id", "workflow_type", "input"],
+          "required": ["kind", "seq", "workflow_id", "workflow_type", "input", "cancellation_type"],
           "description": "Starts a child workflow. Namespace, task queue, timeouts, policies, retry settings, headers, memo, search attributes, versioning, and priority remain Core defaults until the OCaml API exposes them explicitly.",
           "properties": {
             "kind": {"const": "start_child_workflow"},
             "seq": {"$ref": "#/$defs/u32"},
             "workflow_id": {"$ref": "#/$defs/identifier"},
             "workflow_type": {"$ref": "#/$defs/identifier"},
-            "input": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}}
+            "input": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}},
+            "cancellation_type": {"enum": ["try_cancel", "wait_cancellation_completed", "abandon", "wait_cancellation_requested"]}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "reason"],
+          "description": "Requests cancellation of a previously started child workflow. Core applies the policy recorded by the start command and retains the reason in history.",
+          "properties": {
+            "kind": {"const": "cancel_child_workflow"},
+            "seq": {"$ref": "#/$defs/u32"},
+            "reason": {"$ref": "#/$defs/identifier"}
           }
         },
         {

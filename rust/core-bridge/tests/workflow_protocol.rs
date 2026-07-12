@@ -94,6 +94,7 @@ fn converts_start_child_workflow_command() {
             workflow_id: "child/1".to_owned(),
             workflow_type: "child".to_owned(),
             input: vec![input.clone()],
+            cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
         }],
     };
     let encoded = workflow_protocol::encode_completion(&completion).unwrap();
@@ -118,6 +119,7 @@ fn converts_start_child_workflow_command() {
     assert_eq!(child.workflow_id, "child/1");
     assert_eq!(child.workflow_type, "child");
     assert_eq!(child.input.len(), 1);
+    assert_eq!(child.cancellation_type, 1);
     assert_eq!(
         workflow_protocol::completion_from_core(&core).unwrap(),
         completion
@@ -143,6 +145,84 @@ fn converts_start_child_workflow_command() {
     );
 }
 
+/// Proves an explicit child cancellation retains its sequence and reason when
+/// translated to Core and back through the semantic protocol.
+#[test]
+fn converts_cancel_child_workflow_command() {
+    let completion = workflow_protocol::Completion {
+        run_id: "parent-run".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::CancelChildWorkflow {
+            seq: 7,
+            reason: "stop child".to_owned(),
+        }],
+    };
+    let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+    assert!(encoded.contains("\"kind\":\"cancel_child_workflow\""));
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        completion
+    );
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("child cancellation must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::CancelChildWorkflowExecution(cancel)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("child cancellation must map to Core's cancel-child variant");
+    };
+    assert_eq!(cancel.child_workflow_seq, 7);
+    assert_eq!(cancel.reason, "stop child");
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+}
+
+/// Proves both decoders reject cancellation text that could not be retained
+/// safely in deterministic history.  The NUL case arrives through a legal JSON
+/// escape, so this also guards against validating only the serialized bytes.
+#[test]
+fn rejects_invalid_child_cancellation_commands() {
+    for reason in ["", "\u{0}"] {
+        let document = serde_json::json!({
+            "run_id": "parent-run",
+            "commands": [{
+                "kind": "cancel_child_workflow",
+                "seq": 7,
+                "reason": reason,
+            }],
+        });
+        assert!(
+            workflow_protocol::decode_completion(&document.to_string()).is_err(),
+            "invalid reason was accepted: {reason:?}"
+        );
+    }
+    let oversized = serde_json::json!({
+        "run_id": "parent-run",
+        "commands": [{
+            "kind": "cancel_child_workflow",
+            "seq": 7,
+            "reason": "x".repeat(65_537),
+        }],
+    });
+    assert!(workflow_protocol::decode_completion(&oversized.to_string()).is_err());
+    let unknown_policy = serde_json::json!({
+        "run_id": "parent-run",
+        "commands": [{
+            "kind": "start_child_workflow",
+            "seq": 7,
+            "workflow_id": "child",
+            "workflow_type": "child",
+            "input": [],
+            "cancellation_type": "unknown",
+        }],
+    });
+    assert!(workflow_protocol::decode_completion(&unknown_policy.to_string()).is_err());
+}
+
 /// Proves continue-as-new retains its workflow identity and arguments while
 /// rejecting Core options that the deliberately small semantic protocol does
 /// not expose yet.
@@ -165,7 +245,6 @@ fn converts_continue_as_new_command() {
         workflow_protocol::decode_completion(&encoded).unwrap(),
         completion
     );
-
     let core = workflow_protocol::completion_to_core(&completion).unwrap();
     let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
         core.status.as_ref()
@@ -183,7 +262,6 @@ fn converts_continue_as_new_command() {
         workflow_protocol::completion_from_core(&core).unwrap(),
         completion
     );
-
     let mut unsupported = core;
     let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
         unsupported.status.as_mut()

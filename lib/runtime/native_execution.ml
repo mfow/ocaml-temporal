@@ -93,6 +93,20 @@ let validate_identifier path value : (unit, error) result =
     Error (invalid path "identifier must be valid UTF-8")
   else Ok ()
 
+(** Applies the stricter text contract used for cancellation reasons.  Reasons
+    are stored in Temporal history, so accepting malformed or empty text here
+    would make replay and the Rust boundary disagree about one command. *)
+let validate_cancellation_reason path value : (unit, error) result =
+  if String.length value = 0 then
+    Error (invalid path "reason must not be empty")
+  else if String.contains value '\000' then
+    Error (invalid path "reason must not contain NUL")
+  else if String.length value > 65_536 then
+    Error (invalid path "reason exceeds 65536 bytes")
+  else if not (Temporal_base.Codec.valid_utf_8 value) then
+    Error (invalid path "reason must be valid UTF-8")
+  else Ok ()
+
 (** Copies a protocol payload before retaining it in translated activation
     metadata. Protocol payload bodies and metadata values are mutable [bytes],
     so retaining the caller's record directly would let a later mutation alter
@@ -573,6 +587,16 @@ let protocol_cancellation_type = function
   | Activation.Wait_cancellation_completed -> Protocol.Wait_cancellation_completed
   | Activation.Abandon -> Protocol.Abandon
 
+(** Maps the runtime child policy to the semantic protocol without allowing the
+    activity-only policy type to leak across the module boundary. *)
+let protocol_child_cancellation_type = function
+  | Activation.Child_try_cancel -> Protocol.Child_try_cancel
+  | Activation.Child_wait_cancellation_completed ->
+      Protocol.Child_wait_cancellation_completed
+  | Activation.Child_abandon -> Protocol.Child_abandon
+  | Activation.Child_wait_cancellation_requested ->
+      Protocol.Child_wait_cancellation_requested
+
 (** Converts the broad runtime error into the protocol's structured failure
     shape. Category and retryability remain explicit in the application-info
     variant, while details are copied as binary-safe protocol payloads. *)
@@ -713,14 +737,25 @@ let command_to_protocol command =
                cancellation_type = protocol_cancellation_type cancellation_type;
                do_not_eagerly_execute;
              })
-  | Activation.Start_child_workflow { seq; id; name; input } ->
+  | Activation.Start_child_workflow
+      { seq; id; name; input; cancellation_type } ->
       let* () = validate_sequence "$.command.seq" seq in
       let* () = validate_identifier "$.command.id" id in
       let* () = validate_identifier "$.command.name" name in
       let* input = protocol_payload "$.command.input" input in
       Ok
         (Protocol.Start_child_workflow
-           { seq; workflow_id = id; workflow_type = name; input = [ input ] })
+           {
+             seq;
+             workflow_id = id;
+             workflow_type = name;
+             input = [ input ];
+             cancellation_type = protocol_child_cancellation_type cancellation_type;
+           })
+  | Activation.Cancel_child_workflow { seq; reason } ->
+      let* () = validate_sequence "$.command.seq" seq in
+      let* () = validate_cancellation_reason "$.command.reason" reason in
+      Ok (Protocol.Cancel_child_workflow { seq; reason })
   | Activation.Request_cancel_activity { seq } ->
       let* () = validate_sequence "$.command.seq" seq in
       Ok (Protocol.Request_cancel_activity { seq })

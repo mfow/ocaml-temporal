@@ -132,6 +132,123 @@ let child_parent_workflow =
 let expect label expected actual =
   if expected <> actual then failwith (label ^ " did not match")
 
+(** Parent fixture that retains a child handle, requests cancellation before
+    the start acknowledgment, and then waits for Core's typed cancellation
+    result. Calling [cancel] before and after resolution verifies that one
+    handle emits only one durable command even when application code retries
+    the request. *)
+let cancelling_child_parent_workflow =
+  Temporal.Workflow.define ~name:"cancelling_child_parent"
+    ~input:Temporal.Codec.unit ~output:Temporal.Codec.string (fun () ->
+      let handle =
+        Temporal.Child_workflow.start_handle
+          ~cancellation_type:
+            Temporal.Child_workflow.Wait_cancellation_requested
+          ~id:"cancel-me" greeting_child "Ada"
+      in
+      match
+        ( Temporal.Child_workflow.cancel ~reason:"no longer needed" handle,
+          Temporal.Child_workflow.cancel ~reason:"retry request" handle )
+      with
+      | Ok (), Ok () -> (
+          match Temporal.Future.await (Temporal.Child_workflow.future handle) with
+          | Ok _ ->
+              Error
+                (Temporal.Error.defect
+                   ~message:"cancelled child unexpectedly completed")
+          | Error error -> (
+              match Temporal.Child_workflow.cancel handle with
+              | Ok () -> Ok (Temporal.Error.kind error)
+              | Error cancel_error -> Error cancel_error))
+      | Error error, _ | _, Error error -> Error error)
+
+(** Verifies explicit child policy, cancellation command ordering, idempotence,
+    and typed cancellation resolution without relying on a live server. *)
+let test_child_workflow_cancellation () =
+  let execution = Execution.start cancelling_child_parent_workflow () in
+  expect "child cancellation commands"
+    [
+      Activation.Start_child_workflow
+        {
+          seq = 1L;
+          id = "cancel-me";
+          name = "greeting_child";
+          input = payload "Ada";
+          cancellation_type = Activation.Child_wait_cancellation_requested;
+        };
+      Activation.Cancel_child_workflow { seq = 1L; reason = "no longer needed" };
+    ]
+    (Execution.activate execution [ Activation.Start_workflow ]);
+  expect "cancelled child resolves parent"
+    [ Activation.Complete_workflow (payload "cancelled") ]
+    (Execution.activate execution
+       [
+         child_started 1L;
+         Activation.Resolve_child_workflow
+           {
+             seq = 1L;
+             result =
+               Error
+                 (Temporal_base.Error.make ~category:`Cancelled
+                    ~message:"child cancellation acknowledged" ());
+           };
+       ])
+
+(** Parent fixture that uses the public cancellation default rather than
+    choosing a policy explicitly. The command assertion below is the
+    regression guard for the public API: a handle that exposes [cancel] must
+    request child cancellation by default, not silently abandon the child. *)
+let default_cancelling_child_parent_workflow =
+  Temporal.Workflow.define ~name:"default_cancelling_child_parent"
+    ~input:Temporal.Codec.unit ~output:Temporal.Codec.string (fun () ->
+      let handle =
+        Temporal.Child_workflow.start_handle ~id:"default-cancel-me"
+          greeting_child "Ada"
+      in
+      match Temporal.Child_workflow.cancel handle with
+      | Error error -> Error error
+      | Ok () -> (
+          match Temporal.Future.await (Temporal.Child_workflow.future handle) with
+          | Ok _ ->
+              Error
+                (Temporal.Error.defect
+                   ~message:"default-cancelled child unexpectedly completed")
+          | Error error -> Ok (Temporal.Error.kind error)))
+
+(** Confirms that omitting [cancellation_type] still emits [Try_cancel] and
+    that the public default reason crosses the deterministic command boundary
+    unchanged. *)
+let test_default_child_workflow_cancellation_policy () =
+  let execution = Execution.start default_cancelling_child_parent_workflow () in
+  expect "default child cancellation commands"
+    [
+      Activation.Start_child_workflow
+        {
+          seq = 1L;
+          id = "default-cancel-me";
+          name = "greeting_child";
+          input = payload "Ada";
+          cancellation_type = Activation.Child_try_cancel;
+        };
+      Activation.Cancel_child_workflow
+        { seq = 1L; reason = "cancelled by workflow" };
+    ]
+    (Execution.activate execution [ Activation.Start_workflow ]);
+  expect "default cancellation resolves parent"
+    [ Activation.Complete_workflow (payload "cancelled") ]
+    (Execution.activate execution
+       [
+         child_started 1L;
+         Activation.Resolve_child_workflow
+           {
+             seq = 1L;
+             result =
+               Error
+                 (Temporal_base.Error.make ~category:`Cancelled
+                    ~message:"child cancellation acknowledged" ());
+           };
+       ])
+
 (** Exercises the full synthetic start/activity/timer/completion sequence. *)
 let test_commands_and_completion () =
   let execution = Execution.start greeting_workflow "Ada" in
@@ -484,6 +601,7 @@ let test_child_workflow_completion () =
           id = "greeting/Ada";
           name = "greeting_child";
           input = payload "Ada";
+          cancellation_type = Activation.Child_try_cancel;
         };
     ]
     (Execution.activate execution [ Activation.Start_workflow ]);
@@ -521,6 +639,7 @@ let test_child_workflow_concurrency_and_decoding () =
           id = "child-1";
           name = "greeting_child";
           input = payload "Ada";
+          cancellation_type = Activation.Child_try_cancel;
         };
       Activation.Schedule_activity
         {
@@ -675,6 +794,7 @@ let test_child_workflow_id_boundary () =
           id = "after-invalid";
           name = "greeting_child";
           input = payload "Ada";
+          cancellation_type = Activation.Child_try_cancel;
         };
     ]
     (Execution.activate execution [ Activation.Start_workflow ]);
@@ -769,10 +889,10 @@ let test_child_workflow_failures_and_sequence_ownership () =
 let test_child_start_conflicting_result_keeps_future_pending () =
   let scheduler = Scheduler.create () in
   let context = Workflow_context_store.create scheduler in
-  let future =
+  let future, _cancel =
     Workflow_context_store.start_child_workflow context ~id:"child-id"
       ~name:"child-workflow" ~input:(payload "Ada")
-      ~decode:(fun value -> Ok value)
+      ~decode:(fun value -> Ok value) ()
   in
   (match
      Workflow_context_store.resolve_child_workflow_start context ~seq:1L
@@ -816,10 +936,10 @@ let test_child_start_conflicting_result_keeps_future_pending () =
 let test_child_resolution_rejections_preserve_lifecycle_state () =
   let scheduler = Scheduler.create () in
   let context = Workflow_context_store.create scheduler in
-  let future =
+  let future, _cancel =
     Workflow_context_store.start_child_workflow context ~id:"ordered-child"
       ~name:"child-workflow" ~input:(payload "Ada")
-      ~decode:(fun value -> Ok value)
+      ~decode:(fun value -> Ok value) ()
   in
   (match
      Workflow_context_store.resolve_child_workflow context ~seq:1L
@@ -930,6 +1050,8 @@ let () =
   test_start_sleep ();
   test_empty_all_uses_current_workflow_owner ();
   test_child_workflow_completion ();
+  test_child_workflow_cancellation ();
+  test_default_child_workflow_cancellation_policy ();
   test_child_workflow_concurrency_and_decoding ();
   test_child_workflow_validation ();
   test_child_workflow_id_boundary ();

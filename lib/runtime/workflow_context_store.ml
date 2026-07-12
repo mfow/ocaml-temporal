@@ -196,11 +196,22 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
        });
   future
 
+(** Builds an error indicating that Core and the OCaml runtime disagree about
+    which operation sequence is pending or that a bridge lifecycle rule was
+    violated. *)
+let bridge_error message =
+  Temporal_base.Error.make ~non_retryable:true ~category:`Bridge ~message ()
+
 (** Saves a child resolver before emitting its command. The explicit [id] is
     application-owned durable identity; the private [seq] only correlates Core
     completion jobs with this in-memory execution. *)
-let start_child_workflow context ~id ~name ~input ~decode =
+let start_child_workflow context ~id ~name ~input
+    ?(cancellation_type = Activation.Child_try_cancel) ~decode () =
   let seq = allocate_sequence context in
+  (* Keep this bit in the handle closure rather than in the pending table so a
+     repeated cancel remains idempotent even after Core has removed the child
+     state while delivering its terminal result. *)
+  let cancellation_requested = ref false in
   let future, resolve = Scheduler.promise context.scheduler ~outside_error in
   Hashtbl.add context.child_workflows seq
     {
@@ -220,8 +231,47 @@ let start_child_workflow context ~id ~name ~input ~decode =
                             ^ Printexc.to_string exn)))));
       start_run_id = None;
     };
-  emit context (Activation.Start_child_workflow { seq; id; name; input });
-  future
+  emit context
+    (Activation.Start_child_workflow
+       { seq; id; name; input; cancellation_type });
+  let cancel ~reason =
+    match current () with
+    | Some current when current == context ->
+        if String.equal reason "" then
+          Error
+            (Temporal_base.Error.defect
+               ~message:"child cancellation reason must not be empty")
+        else if String.contains reason '\000' then
+          Error
+            (Temporal_base.Error.defect
+               ~message:"child cancellation reason must not contain NUL")
+        else if String.length reason > 65_536 then
+          Error
+            (Temporal_base.Error.defect
+               ~message:"child cancellation reason exceeds 65536 bytes")
+        else if not (Temporal_base.Codec.valid_utf_8 reason) then
+          Error
+            (Temporal_base.Error.defect
+               ~message:"child cancellation reason must be valid UTF-8")
+        else (
+          match Hashtbl.find_opt context.child_workflows seq with
+          | None when not !cancellation_requested ->
+              Error
+                (bridge_error
+                   (Printf.sprintf
+                      "unknown or completed child workflow sequence %Ld" seq))
+          | None -> Ok ()
+          | Some _ when !cancellation_requested -> Ok ()
+          | Some _ ->
+              emit context (Activation.Cancel_child_workflow { seq; reason });
+              cancellation_requested := true;
+              Ok ())
+    | _ ->
+        Error
+          (Temporal_base.Error.defect
+             ~message:"child workflow cancellation used outside its workflow")
+  in
+  (future, cancel)
 
 (** Starts a timer whose future completes with [()] because a timer firing has
     no result payload. *)
@@ -231,11 +281,6 @@ let start_timer context milliseconds =
   Hashtbl.add context.timers seq (fun () -> resolve (Ok ()));
   emit context (Activation.Start_timer { seq; milliseconds });
   future
-
-(** Builds an error indicating that Core and the OCaml runtime disagree about
-    which activity or timer is pending. *)
-let bridge_error message =
-  Temporal_base.Error.make ~non_retryable:true ~category:`Bridge ~message ()
 
 (** Removes the activity before invoking its resolver. If resolving triggers a
     repeated completion immediately, the repeated sequence is rejected instead

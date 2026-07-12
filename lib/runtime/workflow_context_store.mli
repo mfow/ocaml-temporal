@@ -71,14 +71,21 @@ val schedule_activity :
 
 (** Assigns a private correlation sequence, records how to decode the child
     result, emits a command containing the application-supplied durable [id],
-    and returns the child result future. *)
+    and returns the child result future together with a cancellation operation.
+    The default policy is [Child_try_cancel], so cancellation requests the
+    child unless a caller explicitly chooses [Child_abandon]. The operation is
+    valid only while this context is current; it emits at most one cancellation
+    command and leaves Core to resolve the future. *)
 val start_child_workflow :
   t ->
   id:string ->
   name:string ->
   input:Temporal_base.Codec.payload ->
+  ?cancellation_type:Activation.child_workflow_cancellation_type ->
   decode:(Temporal_base.Codec.payload -> ('output, Temporal_base.Error.t) result) ->
-  ('output, Temporal_base.Error.t) Future_store.t
+  unit ->
+  ( ('output, Temporal_base.Error.t) Future_store.t
+  * (reason:string -> (unit, Temporal_base.Error.t) result) )
 
 (** Emits a durable timer command and returns a future resolved by [fire_timer].
     The duration is an exact non-negative millisecond count. *)

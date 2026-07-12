@@ -28,6 +28,16 @@ type activity_cancellation_type =
   | Wait_cancellation_completed
   | Abandon
 
+(** Controls when Core resolves a parent future after a child cancellation
+    request.  [Abandon] reports cancellation without asking the child worker;
+    [Try_cancel] requests cancellation and resolves immediately; the two wait
+    policies retain the child state until Core reports the requested outcome. *)
+type child_workflow_cancellation_type =
+  | Child_try_cancel
+  | Child_wait_cancellation_completed
+  | Child_abandon
+  | Child_wait_cancellation_requested
+
 (** The validated retry policy attached to a scheduled remote activity.  The
     runtime stores the backoff coefficient as its canonical unsigned IEEE-754
     bit string so replay and the JSON bridge never depend on a decimal float
@@ -65,7 +75,12 @@ type command =
       id : string;
       name : string;
       input : Temporal_base.Codec.payload;
+      cancellation_type : child_workflow_cancellation_type;
     }
+  (** Requests cancellation of the child identified by the start command's
+      sequence.  Core owns the race between this command and the start
+      acknowledgment; the OCaml runtime only emits it once per pending child. *)
+  | Cancel_child_workflow of { seq : int64; reason : string }
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; milliseconds : int64 }
   | Cancel_timer of { seq : int64 }

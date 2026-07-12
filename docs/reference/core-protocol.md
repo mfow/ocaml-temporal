@@ -241,10 +241,12 @@ duplicate start, duplicate terminal, or unknown sequence returns a typed bridge
 defect and leaves the existing resolver state unchanged.
 
 A completion is a closed object sent from OCaml to Rust. Its ordered commands
-cover scheduling and requesting cancellation of remote activities, starting a
-child workflow with its workflow identity and input payload, starting and
-cancelling timers, and completing, failing, or cancelling the workflow. The
-child command deliberately omits namespace, task queue, timeout, policy,
+cover scheduling and requesting cancellation of remote activities, starting and
+cancelling a child workflow, starting and cancelling timers, and completing,
+failing, or cancelling the workflow. A child start includes an explicit
+cancellation policy, and a later cancel command carries a validated reason;
+Core applies that policy while preserving command order for replay. The child
+command deliberately omits namespace, task queue, timeout,
 retry, header, memo, search-attribute, versioning, and priority fields because
 the current OCaml runtime does not expose them; Rust fills those Core fields
 with explicit defaults and rejects non-default values on reverse conversion.

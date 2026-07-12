@@ -10,9 +10,16 @@ and bilateral JSON/Core conversion remain synthetic evidence; the CI run is
 the live evidence for this one server-managed retry delivery. The fifth
 top-level workflow also returns a typed non-retryable `Workflow` failure. The
 six-run exact-run cancellation path is implemented and covered by local
-acceptance checks, but it is not live-verified yet: the PR #85 [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
-was cancelled before producing a green result. The worker and driver remain guarded by
-`TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
+acceptance checks, but it is not live-verified yet: the attempted [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
+was cancelled before producing a green result. The worker and driver remain
+guarded by `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services
+set it.
+
+The current implementation starts all six top-level workflows before waiting
+for any result, and its local assertion target requires four exact successes,
+one typed non-retryable failure, and one exact-run cancellation. Only the five
+baseline executions are currently backed by live CI evidence; the cancellation
+assertion remains local-only until a green live run verifies it.
 
 `smoke-worker` publishes an atomic readiness marker after public
 `Temporal.Worker.create` succeeds. Compose waits for that health check before
@@ -42,9 +49,10 @@ only sets an atomic flag. The 30-second worker stop grace period gives the
 bounded native waits time to leave their poll loop before the container is
 removed. This is test-process lifecycle code, not a second worker supervisor.
 
-The fixture starts the two public binaries after Temporal/PostgreSQL readiness
-and asserts terminal workflow results while the worker executes registered
-workflows and a mock activity against the live server. This revision adds a
+The fixture implementation is designed to start the two public binaries after
+Temporal/PostgreSQL readiness and assert terminal workflow results while the
+worker executes registered workflows and a mock activity against the live
+server. This revision adds a
 parent/child success case: the parent calls `Temporal.Child_workflow.execute`,
 the registered child waits on a short durable timer, and the driver asserts the
 parent's exact result. It also runs `smoke.activity_retry`: the first
@@ -55,8 +63,8 @@ stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
 for its `smoke.cancellation_ready` marker activity (with eager execution
 disabled), sends an exact-run cancellation request, and requires the same
 handle to return a typed `Cancelled` error. The cancellation implementation and
-local assertions are ready, but the path remains without green live CI evidence
-because the PR #85 [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
+local assertions are ready, but this six-run path remains without green live CI
+evidence because the attempted [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
 was cancelled. Child start failures, activity retry timeouts, replay, and worker
 recovery remain separate scenarios. The
 intentionally broader follow-up requirements are listed in [Required
@@ -89,7 +97,8 @@ library surface. Rust remains a private static-library implementation detail
 of each executable.
 
 This is deliberately a worker-SDK acceptance test, not merely a client
-smoke test. A green result means the complete path below was observed:
+smoke test. A green result for the full current acceptance contract would mean
+the complete path below was observed:
 
 ```mermaid
 sequenceDiagram
@@ -449,7 +458,9 @@ thread.
 
 ## Required assertions and failure evidence
 
-The driver's successful exit establishes all of the following:
+The current driver's successful exit is intended to establish all of the
+following locally; a green live run is still required before the six-run
+claims become live evidence:
 
 1. each top-level workflow start returned a nonempty run ID that the driver
    retained for its corresponding exact-run wait; the driver starts six
@@ -511,8 +522,10 @@ or recovery behavior.
 
 ## Completion criteria for this design
 
-The current vertical slice is verified in Linux CI only when all of the
-following are true:
+The full current acceptance contract will be verified in Linux CI only when all
+of the following are true. The historical live result verifies the five
+baseline executions; the six-run cancellation assertion remains local-only
+until a run satisfies this complete contract:
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;

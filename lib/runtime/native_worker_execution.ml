@@ -251,6 +251,7 @@ let is_terminal completion =
       | Protocol.Fail_workflow _
       | Protocol.Cancel_workflow_execution -> true
       | Protocol.Schedule_activity _
+      | Protocol.Start_child_workflow _
       | Protocol.Request_cancel_activity _
       | Protocol.Start_timer _
       | Protocol.Cancel_timer _ -> false)

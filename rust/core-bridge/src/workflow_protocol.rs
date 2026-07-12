@@ -401,6 +401,15 @@ pub enum CompletionCommand {
         cancellation_type: ActivityCancellationType,
         do_not_eagerly_execute: bool,
     },
+    /// Starts a child workflow using the fields currently exposed by the
+    /// OCaml runtime. Core-only options stay at their documented defaults
+    /// until the language API grows explicit controls for them.
+    StartChildWorkflow {
+        seq: u32,
+        workflow_id: String,
+        workflow_type: String,
+        input: Vec<Payload>,
+    },
     RequestCancelActivity {
         seq: u32,
     },
@@ -773,6 +782,14 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                         "$.commands.timeout",
                     )?;
                 }
+            }
+            CompletionCommand::StartChildWorkflow {
+                workflow_id,
+                workflow_type,
+                ..
+            } => {
+                identifier(workflow_id, "$.commands.workflow_id")?;
+                identifier(workflow_type, "$.commands.workflow_type")?;
             }
             CompletionCommand::StartTimer {
                 start_to_fire_timeout,
@@ -1420,6 +1437,24 @@ fn command_to_core(
         CompletionCommand::RequestCancelActivity { seq } => {
             Variant::RequestCancelActivity(core_commands::RequestCancelActivity { seq: *seq })
         }
+        CompletionCommand::StartChildWorkflow {
+            seq,
+            workflow_id,
+            workflow_type,
+            input,
+        } => Variant::StartChildWorkflowExecution(core_commands::StartChildWorkflowExecution {
+            seq: *seq,
+            workflow_id: workflow_id.clone(),
+            workflow_type: workflow_type.clone(),
+            input: input
+                .iter()
+                .map(payload_to_core)
+                .collect::<Result<_, _>>()?,
+            // The current OCaml command carries no task queue, namespace, or
+            // child policy options. Defaulting the remaining Core fields is
+            // deliberate and documented by the semantic schema.
+            ..Default::default()
+        }),
         CompletionCommand::StartTimer {
             seq,
             start_to_fire_timeout,
@@ -1505,6 +1540,38 @@ fn command_from_core(
                     .transpose()?,
                 cancellation_type: cancellation_from_core(value.cancellation_type)?,
                 do_not_eagerly_execute: value.do_not_eagerly_execute,
+            })
+        }
+        Variant::StartChildWorkflowExecution(value) => {
+            if !value.namespace.is_empty()
+                || !value.task_queue.is_empty()
+                || value.workflow_execution_timeout.is_some()
+                || value.workflow_run_timeout.is_some()
+                || value.workflow_task_timeout.is_some()
+                || value.parent_close_policy != 0
+                || value.workflow_id_reuse_policy != 0
+                || value.retry_policy.is_some()
+                || !value.cron_schedule.is_empty()
+                || !value.headers.is_empty()
+                || !value.memo.is_empty()
+                || value.search_attributes.is_some()
+                || value.cancellation_type != 0
+                || value.versioning_intent != 0
+                || value.priority.is_some()
+            {
+                return Err(unsupported(
+                    "Core child workflow options are not represented by this protocol",
+                ));
+            }
+            Ok(CompletionCommand::StartChildWorkflow {
+                seq: value.seq,
+                workflow_id: value.workflow_id.clone(),
+                workflow_type: value.workflow_type.clone(),
+                input: value
+                    .input
+                    .iter()
+                    .map(payload_from_core)
+                    .collect::<Result<_, _>>()?,
             })
         }
         Variant::RequestCancelActivity(value) => {

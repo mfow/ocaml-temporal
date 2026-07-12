@@ -123,9 +123,11 @@ and bridge, read the [documentation guide](../README.md) first.
   kernel uses only a marker job. Eviction is acknowledged with an empty
   completion and never emits workflow commands.
 - A valid value with no lossless representation is an explicit typed
-  `unsupported` error. Activity commands now carry and validate every Core
-  field; child-workflow commands still have no semantic protocol record, so
-  the adapter never fabricates a child command or silently drops it.
+  `unsupported` error. Activity commands carry every exposed Core field, and
+  child-start commands carry the workflow identity and input payload. Options
+  not yet exposed by the OCaml runtime remain explicit Core defaults; the
+  adapter never fabricates a language-level option or silently drops a
+  non-default value.
 - Unknown or duplicate operation sequences are bridge defects. They fail the
   execution rather than being ignored, because ignoring them would make
   replay diverge from the history supplied by Core.

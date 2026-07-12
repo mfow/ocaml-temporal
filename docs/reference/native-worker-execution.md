@@ -74,11 +74,11 @@ already been accepted.
    run. The existing deterministic scheduler applies jobs in order and emits
    commands in creation order.
 6. `Native_execution` converts the command batch to a checked semantic
-   completion. Activity commands retain their complete Core fields and are
-   validated before submission. Child-workflow commands remain explicit
-   `unsupported` errors because the first semantic protocol has no child
-   command variant; no replacement command is fabricated for that unsupported
-   path.
+   completion. Activity commands retain their complete Core fields and child
+   starts retain their workflow identity and input payload before submission.
+   Core child options that the current OCaml runtime does not expose stay at
+   explicit defaults; child result resolution is not yet represented by the
+   activation protocol.
 7. The completion is submitted through the same supervisor. The run entry is
    removed only after the supervisor confirms completion retirement. Terminal
    commands remove the run; a cache-removal activation also removes it after
@@ -92,8 +92,7 @@ retires the native lease instead of silently ignoring it.
 ## Rejection and failures
 
 An activation that is valid JSON but cannot be represented by the current
-runtime (for example, a child-workflow command before its semantic protocol
-record exists) receives a typed `Fail_workflow` completion. `poll` returns
+runtime receives a typed `Fail_workflow` completion. `poll` returns
 `Ok (Rejected ...)` only after that completion has been accepted, and marks
 `lease_retired = true`. If the native completion operation fails, `poll` returns
 an error and leaves the run entry in place so the caller can retry or shut down

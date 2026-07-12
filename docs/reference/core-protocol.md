@@ -219,8 +219,13 @@ Other Core initialization fields outside this first slice are rejected as
 `unsupported`; they are never discarded silently.
 
 A completion is a closed object sent from OCaml to Rust. Its ordered commands
-cover scheduling and requesting cancellation of remote activities, starting
-and cancelling timers, and completing, failing, or cancelling the workflow.
+cover scheduling and requesting cancellation of remote activities, starting a
+child workflow with its workflow identity and input payload, starting and
+cancelling timers, and completing, failing, or cancelling the workflow. The
+child command deliberately omits namespace, task queue, timeout, policy,
+retry, header, memo, search-attribute, versioning, and priority fields because
+the current OCaml runtime does not expose them; Rust fills those Core fields
+with explicit defaults and rejects non-default values on reverse conversion.
 Scheduled activities require at least a schedule-to-close or start-to-close
 timeout. The completion schema records this as an `anyOf` constraint in
 addition to the per-field nullable types; runtime validation remains

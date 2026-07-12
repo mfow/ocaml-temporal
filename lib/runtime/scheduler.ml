@@ -48,6 +48,7 @@ let enqueue scheduler thunk =
 let owner scheduler =
   Future_store.make_owner ~id:scheduler.id ~enqueue:(enqueue scheduler)
     ~is_running:(fun () -> scheduler.running && scheduler.active)
+    ~callbacks_live:(fun () -> scheduler.running && scheduler.active)
     ~on_create:(fun () -> scheduler.pending <- scheduler.pending + 1)
     ~on_settled:(fun () -> scheduler.pending <- scheduler.pending - 1)
     ~register_teardown:(fun teardown ->
@@ -87,7 +88,12 @@ let handle scheduler thunk =
 (** Wraps root user code in the scheduler handler before enqueueing it. *)
 let spawn scheduler thunk =
   if not scheduler.active then invalid_arg "Temporal scheduler is shut down";
-  enqueue scheduler (fun () -> handle scheduler thunk)
+  (* A root thunk may already be queued when another running fiber shuts the
+     scheduler down. Keep the runnable in the queue until the owner drain
+     reaches it, so native future continuations queued alongside it can still
+     discontinue themselves and run their cleanup handlers. *)
+  enqueue scheduler (fun () ->
+      if scheduler.active then handle scheduler thunk else ())
 
 (** Runs queued work until the queue is empty, including fibers added by future
     completions during the run. An uncaught exception is reported before
@@ -104,7 +110,11 @@ let run scheduler =
       Future_store.with_current_owner_id (Some scheduler.id) (fun () ->
           while not (Queue.is_empty scheduler.queue) do
             let (Runnable (sequence, thunk)) = Queue.pop scheduler.queue in
-            scheduler.trace_rev <- sequence :: scheduler.trace_rev;
+            (* Once shutdown is requested, root thunks are inert but queued
+               future callbacks must still run their owner-aware cleanup path.
+               Do not record skipped work in the execution trace. *)
+            if scheduler.active then
+              scheduler.trace_rev <- sequence :: scheduler.trace_rev;
             (try thunk ()
              with Future_store.Scheduler_shutdown -> ()
              | exception_ ->

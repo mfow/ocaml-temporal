@@ -1,19 +1,24 @@
 (** Contains the scheduler operations used by a future. Futures queue all
     resumptions through these functions, so workflow fibers still resume one at
-    a time even when Rust reports several results concurrently. *)
+    a time even when Rust reports several results concurrently. The callback
+    liveness predicate also lets already-resolved outside-workflow futures
+    deliver combinator callbacks inline without making that inert owner valid
+    for workflow awaits. *)
 type owner = {
   id : int;
   enqueue : (unit -> unit) -> unit;
   is_running : unit -> bool;
+  callbacks_live : unit -> bool;
   on_create : unit -> unit;
   on_settled : unit -> unit;
   register_teardown : (unit -> unit) -> unit;
 }
 
 (** Collects the scheduler callbacks stored in each future. *)
-let make_owner ~id ~enqueue ~is_running ~on_create ~on_settled
+let make_owner ~id ~enqueue ~is_running ~callbacks_live ~on_create ~on_settled
     ~register_teardown =
-  { id; enqueue; is_running; on_create; on_settled; register_teardown }
+  { id; enqueue; is_running; callbacks_live; on_create; on_settled;
+    register_teardown }
 
 (** Gives the standard library [result] type a local name distinct from [state]. *)
 type ('value, 'error) result = ('value, 'error) Stdlib.result
@@ -118,7 +123,7 @@ let create ~owner ~outside_error =
         List.iter
           (fun continuation ->
             owner.enqueue (fun () ->
-                if owner.is_running () then
+                if owner.callbacks_live () then
                   Effect.Deep.continue continuation result
                 else
                   try Effect.Deep.discontinue continuation Scheduler_shutdown
@@ -127,7 +132,7 @@ let create ~owner ~outside_error =
         List.iter
           (fun observer ->
             owner.enqueue (fun () ->
-                if owner.is_running () then observer result))
+                if owner.callbacks_live () then observer result))
           (List.rev pending.observers);
         pending.waiters <- [];
         pending.observers <- []
@@ -138,7 +143,8 @@ let create ~owner ~outside_error =
     execution. It runs callbacks immediately and never allows [await] to pause. *)
 let inert_owner =
   make_owner ~id:(-1) ~enqueue:(fun thunk -> thunk ())
-    ~is_running:(fun () -> false) ~on_create:(fun () -> ())
+    ~is_running:(fun () -> false) ~callbacks_live:(fun () -> true)
+    ~on_create:(fun () -> ())
     ~on_settled:(fun () -> ()) ~register_teardown:(fun _ -> ())
 
 (** Creates an outside-workflow future and immediately gives it a result using
@@ -177,27 +183,33 @@ let add_waiter promise continuation =
   | Pending pending -> pending.waiters <- continuation :: pending.waiters
   | Ready result ->
       promise.owner.enqueue (fun () ->
-          if promise.owner.is_running () then
+          if promise.owner.callbacks_live () then
             Effect.Deep.continue continuation result
           else
             try Effect.Deep.discontinue continuation Scheduler_shutdown
             with Scheduler_shutdown -> ())
   | Closed ->
       promise.owner.enqueue (fun () ->
-          if promise.owner.is_running () then
+          if promise.owner.callbacks_live () then
             Effect.Deep.continue continuation (Error (promise.outside_error ()))
           else
             try Effect.Deep.discontinue continuation Scheduler_shutdown
             with Scheduler_shutdown -> ())
 
-(** Registers a callback used by [map], [map_error], and [both]. It always runs
-    through the workflow scheduler and never pauses a fiber itself. *)
+(** Registers a callback used by [map], [map_error], and [both]. It runs
+    through the workflow scheduler without pausing a fiber; callbacks queued
+    when the owner shuts down become no-ops because their derived futures have
+    already been closed. *)
 let observe promise observer =
   match promise.state with
   | Pending pending -> pending.observers <- observer :: pending.observers
-  | Ready result -> promise.owner.enqueue (fun () -> observer result)
+  | Ready result ->
+      promise.owner.enqueue (fun () ->
+          if promise.owner.callbacks_live () then observer result)
   | Closed ->
-      promise.owner.enqueue (fun () -> observer (Error (promise.outside_error ())))
+      promise.owner.enqueue (fun () ->
+          if promise.owner.callbacks_live () then
+            observer (Error (promise.outside_error ())))
 
 (** Waits for an arbitrary notification associated with [promise] without
     exposing an OCaml effect to higher layers. [register] receives a

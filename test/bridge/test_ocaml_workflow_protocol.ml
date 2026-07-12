@@ -46,6 +46,20 @@ let require_invalid_activation name =
 let check_string label expected actual =
   if not (String.equal expected actual) then failwith (label ^ " differed")
 
+(** Finds a short ASCII marker in encoded JSON without making the protocol
+    test depend on a particular JSON parser representation. The helper is only
+    used for checking the canonical policy spelling emitted by OCaml; semantic
+    equality is checked separately by decoding the complete document. *)
+let contains_substring ~needle value =
+  let needle_length = String.length needle in
+  let value_length = String.length value in
+  let rec search offset =
+    if offset + needle_length > value_length then false
+    else if String.equal (String.sub value offset needle_length) needle then true
+    else search (offset + 1)
+  in
+  search 0
+
 (** Verifies activation variants, ordering, and outgoing self-validation using
     the same fixtures as Rust. *)
 let test_valid_activations () =
@@ -113,6 +127,48 @@ let test_start_child_workflow_command () =
     encoded;
   if unwrap (Protocol.decode_completion encoded) <> completion then
     failwith "child command did not round-trip"
+
+(** Proves every child cancellation policy has a distinct, stable JSON spelling
+    and remains typed after decoding. This closes the gap where a serializer
+    and decoder could agree on one accidentally collapsed policy while the
+    Rust/Core bridge still expected four durable cancellation semantics. *)
+let test_all_child_cancellation_policies () =
+  let input : Protocol.payload =
+    { metadata = [ ("encoding", Bytes.of_string "binary/null") ]; data = Bytes.empty }
+  in
+  List.iter
+    (fun (cancellation_type, wire_name) ->
+      let completion : Protocol.completion =
+        {
+          run_id = "parent-run";
+          commands =
+            [
+              Start_child_workflow
+                {
+                  seq = 2L;
+                  workflow_id = "child/1";
+                  workflow_type = "child";
+                  input = [ input ];
+                  cancellation_type;
+                };
+            ];
+        }
+      in
+      let encoded = unwrap (Protocol.encode_completion completion) in
+      if
+        not
+          (contains_substring
+             ~needle:("\"cancellation_type\":\"" ^ wire_name ^ "\"")
+             encoded)
+      then failwith ("child policy was encoded with the wrong spelling: " ^ wire_name);
+      if unwrap (Protocol.decode_completion encoded) <> completion then
+        failwith ("child policy did not round-trip: " ^ wire_name))
+    [
+      (Child_try_cancel, "try_cancel");
+      (Child_wait_cancellation_completed, "wait_cancellation_completed");
+      (Child_abandon, "abandon");
+      (Child_wait_cancellation_requested, "wait_cancellation_requested");
+    ]
 
 (** Proves the OCaml decoder applies the same cancellation reason, policy, and
     child-identifier boundaries as the Rust decoder. NUL checks use JSON
@@ -631,6 +687,7 @@ let () =
   run "workflow activations" test_valid_activations;
   run "workflow completion" test_valid_completion;
   run "start child workflow command" test_start_child_workflow_command;
+  run "all child cancellation policies" test_all_child_cancellation_policies;
   run "child cancellation validation" test_child_cancellation_validation;
   run "continue-as-new command" test_continue_as_new_command;
   run "malformed workflow documents" test_invalid_documents;

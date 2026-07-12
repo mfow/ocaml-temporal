@@ -81,27 +81,32 @@ executable uses the private supervisor and C/Rust bridge to connect the
 official Core client, construct and namespace-validate a workflow/remote-
 activity worker, exercise invalid and repeated lifecycle transitions, and shut
 the graph down deterministically. It then waits for `smoke-worker` to publish
-readiness and runs `smoke-driver` as a one-shot test process. The driver starts
-six smoke workflows before waiting for any result. For the long-running
-workflow, it waits for the test-only marker activity to publish the current
-run token after the durable timer and marker commands are accepted together,
-then sends `Temporal.Client.cancel` for that exact handle. It checks four exact
-success payloads, one typed non-retryable workflow failure, and one typed
-`Cancelled` result for the same workflow/run pair. The parent/child and retry
-scenarios are part of the same driver and are also started before the first
-wait. After the driver exits, the Makefile stops the worker and requires its
-graceful-shutdown marker; the driver's successful `client_shutdown` phase
-provides the corresponding client teardown evidence.
+readiness and runs `smoke-driver` as a one-shot test process. The driver
+implementation starts six smoke workflows before waiting for any result. For
+the long-running workflow, it waits for the test-only marker activity to
+publish the current run token after the durable timer and marker commands are
+accepted together, then sends `Temporal.Client.cancel` for that exact handle.
+The local assertion checks four exact success payloads, one typed
+non-retryable workflow failure, and one typed `Cancelled` result for the same
+workflow/run pair. The parent/child and retry scenarios are part of the same
+driver and are also started before the first wait. The historical live evidence
+covers the five baseline assertions; the six-run cancellation assertion is
+implemented and locally covered, but is not live-verified because its attempted
+Actions run was cancelled. After the driver exits, the Makefile stops the
+worker and requires its graceful-shutdown marker; the driver's successful
+`client_shutdown` phase provides the corresponding client teardown evidence.
 
-This is a real workflow-result acceptance test, not only a lifecycle test. It
-includes one live parent/child success path, one server-managed activity retry,
-one non-retryable workflow-failure classification, and cancellation of an
-outstanding durable-timer execution. It does not yet establish child
+This is a real workflow-result acceptance fixture, not only a lifecycle test.
+It has live evidence for one parent/child success path, one server-managed
+activity retry, and one non-retryable workflow-failure classification. The
+cancellation implementation and local assertion are present, but do not yet
+establish live cancellation evidence. The fixture does not yet establish child
 start-failure/cancellation, activity timeout behavior, worker restart, replay,
 or cache eviction.
-On every pull request and push to `master`, GitHub Actions runs this target once
-in a standalone Ubuntu job labelled for OCaml 5.5. It is intentionally absent
-from the multi-version build matrix because starting a real database and
+The workflow configuration runs this target on pull requests and pushes to
+`master` in a standalone Ubuntu job labelled for OCaml 5.5; a queued or
+cancelled Actions run is not live acceptance evidence. It is intentionally
+absent from the multi-version build matrix because starting a real database and
 Temporal cluster once provides the same infrastructure evidence.
 
 Running `docker compose` directly from the repository root is unsupported. The

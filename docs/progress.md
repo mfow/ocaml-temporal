@@ -45,19 +45,18 @@ the long-lived worker are described separately. GitHub Actions run
 was cancelled, so the six-run cancellation scenario remains unverified against
 a live Temporal Server.
 
-## 2026-07-12: GitHub Actions pending-capacity limitation
+## 2026-07-12: GitHub Actions capacity observation
 
-Status: the observable CI state at this update is pending, not a pass or a
-failure. The PR #100 run
+Status: historical observation for PR #100; this entry does not claim a
+completed CI result. The PR #100 Actions attempt
 [`29194514765`](https://github.com/mfow/ocaml-temporal/actions/runs/29194514765)
-and the push run for merge commit `9baa00a`
+did not produce a completed result in the observed window, and its push run for
+merge commit `9baa00a`
 [`29194534789`](https://github.com/mfow/ocaml-temporal/actions/runs/29194534789)
-were queued with no conclusion. Repeated updates can also cancel superseded
-runs because `.github/workflows/build.yml` enables `cancel-in-progress`.
-GitHub did not expose a usable billing/quota result through the checked API,
-so this entry records only the observed pending state. Queued or cancelled
-runs must not be treated as live verification; the last successful live
-acceptance evidence remains run `29191260073` above.
+was later cancelled by workflow concurrency. Neither run is live acceptance
+evidence. Repeated updates can cancel superseded runs because
+`.github/workflows/build.yml` enables `cancel-in-progress`; the last successful
+live acceptance evidence remains run `29191260073` above.
 
 ## 2026-07-12: Exact-run client cancellation control path
 

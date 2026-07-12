@@ -50,21 +50,21 @@ opaque bytes and applications may choose another deterministic codec.
 | Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
 | Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current live command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, and drains retryable completions safely. |
-| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, and exact-run cancellation. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result. The live Compose gate starts six executions and asserts four exact successes, one deliberate non-retryable workflow failure, and one exact-run cancellation. |
+| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, and exact-run cancellation. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result. The historical live Compose evidence covers five baseline executions: four exact successes and one deliberate non-retryable workflow failure. The six-run cancellation assertion is implemented and locally covered, but is not live-verified because its attempted Actions run was cancelled. |
 | Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
 | Safety boundary | Rust/Core protobuf handling stays in Rust. OCaml/Rust JSON validation, copied payloads, one-owner lifecycle serialization, and idempotent cleanup are covered by focused tests. |
 
 ## What is deliberately still pending
 
-- The live two-public-OCaml-binary gate covers the initial success paths,
-  server-managed activity retry, parent/child completion, one typed
-  non-retryable workflow failure, and exact-run cancellation. It starts six
-  workflows through one OCaml driver, and a separate long-lived OCaml worker
-  returns their exact results or typed terminal outcomes. The cancellation
-  workflow remains on a long durable timer while the driver sends
-  `Temporal.Client.cancel`, then the driver waits on that same handle and
-  checks the `Cancelled` category and metadata. Restart, replay, and
-  cache-eviction scenarios remain separate acceptance work.
+- The two-public-OCaml-binary gate has historical live evidence for the initial
+  success paths, server-managed activity retry, parent/child completion, and
+  one typed non-retryable workflow failure. The current driver implementation
+  starts six workflows through one OCaml driver, and a separate long-lived
+  OCaml worker returns their exact results or typed terminal outcomes. Its
+  marker-guarded exact-run cancellation assertion is implemented and locally
+  covered, but is not live-verified: the attempted Actions run was cancelled
+  before producing a green result. Restart, replay, and cache-eviction
+  scenarios remain separate acceptance work.
 - Child-workflow commands can be authored and are translated by the semantic
   layer. The native worker now accepts a parent completion containing a child
   start, retains the parent future through the start acknowledgment, and
@@ -118,17 +118,20 @@ project. It waits for both SQL schemas and the Temporal frontend to be healthy,
 runs the OCaml supervisor lifecycle acceptance executable, starts a public
 OCaml worker, and runs a separate public OCaml driver. The worker is the
 long-lived process that registers and executes the workflows and mock activity.
-The driver is a one-shot OCaml test runner: it does not register a worker, but
-starts six smoke workflows, sends an exact-run cancellation request for the
-long-running one, waits for every exact terminal result, and exits nonzero if
-any expected result is not returned. Four workflows must complete with exact
-payloads (including the parent awaiting a timer-owning child), one must return
-a typed non-retryable workflow failure, and the cancelled workflow must return
-the typed `Cancelled` result for the same workflow/run handle. The Makefile then
-stops the worker and checks its graceful-shutdown marker. The target removes
-the PostgreSQL data volume before and after the run, so no database state is
-preserved between acceptance runs. Child start-failure/cancellation, restart,
-replay, and recovery coverage remain follow-up work.
+The driver is a one-shot OCaml test runner: it does not register a worker. Its
+current implementation starts six smoke workflows, sends an exact-run
+cancellation request for the long-running one, waits for every exact terminal
+result, and exits nonzero if any expected result is not returned. The historical
+live evidence covers the five baseline assertions: four workflows complete with
+exact payloads (including the parent awaiting a timer-owning child), and one
+returns a typed non-retryable workflow failure. The sixth, marker-guarded
+cancellation assertion is implemented and locally covered, but is not
+live-verified because its attempted Actions run was cancelled. The Makefile
+stops the worker and checks its graceful-shutdown marker when the target runs.
+The target removes the PostgreSQL data volume before and after the run, so no
+database state is preserved between acceptance runs. Child
+start-failure/cancellation, restart, replay, and recovery coverage remain
+follow-up work.
 
 For manual inspection, use `make temporal-start`, `make temporal-health`,
 `make temporal-status`, `make temporal-logs`, and `make temporal-clean`.

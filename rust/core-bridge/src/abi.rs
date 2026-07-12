@@ -785,7 +785,16 @@ impl Runtime {
                 return Err(protocol_failure(error));
             }
         };
-        retain_workflow_activation(&mut self.workflow_activations, semantic)?;
+        // Retain must not leave a leased ledger entry without a handoff
+        // document. On duplicate-lease retain failure, reject Core the same
+        // way conversion failures do.
+        if let Err(error) = retain_workflow_activation(&mut self.workflow_activations, semantic) {
+            self.reject_workflow_delivery_with_reason(
+                &activation.run_id,
+                "workflow activation lease was duplicated",
+            )?;
+            return Err(error);
+        }
         Ok(encoded.into_bytes())
     }
 

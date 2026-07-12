@@ -103,12 +103,16 @@ temporal-start:
 	$(TEMPORAL_COMPOSE) up --detach --wait postgresql temporal
 	$(MAKE) temporal-health
 
-# Starts the long-lived OCaml worker only after the database and Temporal
-# frontend are healthy. The worker health check is backed by an atomic marker
-# published after public Worker.create succeeds, not merely by process liveness.
+# Starts a fresh long-lived OCaml worker only after the database and Temporal
+# frontend are healthy. Force-recreating the container is part of the lifecycle
+# contract: readiness lives in the container's /tmp, so reusing a stopped
+# container could expose its previous marker before this process starts. The
+# worker also removes the marker before Worker.create as a second fail-closed
+# boundary. Its health check is backed by an atomic marker published after
+# public Worker.create succeeds, not merely by process liveness.
 temporal-start-worker:
 	@rm -f "$(SMOKE_WORKER_STOPPED_FILE)"
-	$(TEMPORAL_COMPOSE) up --detach --build --wait smoke-worker
+	$(TEMPORAL_COMPOSE) up --force-recreate --detach --build --wait smoke-worker
 
 # Runs the independent OCaml driver against the already-running worker. Using
 # `run --no-deps` avoids accidentally creating a second worker process and makes

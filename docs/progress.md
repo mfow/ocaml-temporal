@@ -14,6 +14,45 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Protocol, lifecycle, and two-binary acceptance contracts (#141–#152)
+
+Status: the merged documentation and acceptance-contract milestones are now
+present on `origin/master` at `c008c52`. The activity-protocol lifecycle and
+evidence records are [#141](https://github.com/mfow/ocaml-temporal/pull/141)
+(`cb2892c`), [#142](https://github.com/mfow/ocaml-temporal/pull/142)
+(`d1d45c2`), and [#143](https://github.com/mfow/ocaml-temporal/pull/143)
+(`ef3e171`); asynchronous completion, native worker ownership, and installed
+package boundaries are [#144](https://github.com/mfow/ocaml-temporal/pull/144)
+(`cfb760a`), [#145](https://github.com/mfow/ocaml-temporal/pull/145)
+(`9a6992a`), and [#146](https://github.com/mfow/ocaml-temporal/pull/146)
+(`127f3f6`). Native execution translation, dependency licensing, restart and
+replay evidence, and the separation of control from operation JSON are
+recorded by [#147](https://github.com/mfow/ocaml-temporal/pull/147)
+(`6e860b2`), [#148](https://github.com/mfow/ocaml-temporal/pull/148)
+(`b30f85f`), [#149](https://github.com/mfow/ocaml-temporal/pull/149)
+(`54cf1a9`), and [#150](https://github.com/mfow/ocaml-temporal/pull/150)
+(`3466ae9`). [#151](https://github.com/mfow/ocaml-temporal/pull/151)
+(`ef0ed69`) adds assertions that the acceptance harness has separate
+`smoke_driver` and `smoke_worker` OCaml binaries with distinct roles. [#152](https://github.com/mfow/ocaml-temporal/pull/152)
+(`c008c52`) documents the native worker execution-state invariants and adds
+regression coverage for them.
+
+Representative local verification on the merged tip passed: `git diff
+--check`, `sh scripts/check-format.sh`, `make test-quality-contract`,
+`make test-temporal-config`,
+`sh test/integration/temporal/scripts/test-restart-replay-contract.sh`, and
+`cargo test --manifest-path rust/Cargo.toml --locked --test protocol` (six
+protocol tests). The offline restart/replay contract reports
+`restart/replay contract: ok`.
+
+GitHub Actions for this series were observed queued or pending while the
+repository was affected by its Actions quota, so this entry does not treat
+those checks as passing evidence. The Docker Compose acceptance against a
+live Temporal Server and PostgreSQL was not run for this milestone, and no
+new live result is claimed. The historical five-execution live result in run
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+remains the latest successful two-binary acceptance evidence.
+
 ## 2026-07-13: Documentation evidence and navigation refresh (#129–#140)
 
 Status: documentation-only updates were merged in PRs [#129](https://github.com/mfow/ocaml-temporal/pull/129)

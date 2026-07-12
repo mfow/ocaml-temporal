@@ -14,6 +14,24 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Public client state, protocol evidence, and scheduler teardown (#159–#161)
+
+The merged tip is `02f4627`: [#159](https://github.com/mfow/ocaml-temporal/pull/159)
+(`980855f`) clarifies public client state and adds protocol coverage; [#160](https://github.com/mfow/ocaml-temporal/pull/160)
+(`d5606ad`) separates local protocol evidence from live Temporal evidence; and
+[#161](https://github.com/mfow/ocaml-temporal/pull/161) (`02f4627`) releases
+settled futures during scheduler teardown with a weak-reference regression test.
+
+PR #161 recorded this local verification: `DUNE_BUILD_DIR=/tmp/ocaml-temporal-dune-audit
+CARGO_TARGET_DIR=/tmp/ocaml-temporal-cargo-target opam exec -- dune runtest --root .
+test/runtime`, `sh scripts/check-format.sh`,
+`sh test/smoke/test_quality_contract.sh .`, and `git diff --check`. The
+repository's GitHub Actions checks remain queued while the Actions quota is
+exhausted, so this entry makes no CI-success claim. The historical
+five-execution live result in run
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+remains the latest successful two-binary acceptance evidence.
+
 ## 2026-07-13: Protocol, lifecycle, and two-binary acceptance contracts (#141–#152)
 
 Status: the merged documentation and acceptance-contract milestones are now

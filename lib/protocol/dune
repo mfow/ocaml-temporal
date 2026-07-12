@@ -1,4 +1,4 @@
 (library
  (name temporal_protocol)
- (public_name temporal-sdk.internal_protocol)
+ (package temporal-sdk)
  (libraries yojson))

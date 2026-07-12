@@ -1,7 +1,66 @@
 module Activation = Temporal_runtime.Activation
 module Bridge = Temporal_core_bridge.Native_bridge
-module Execution = Temporal_runtime.Execution
+module Raw_execution = Temporal_runtime.Execution
 module Observability = Temporal_base.Observability
+
+(** Copies public payloads into the base representation consumed by the private
+    execution fixture. This test observes logging around the low-level runtime,
+    so it performs the boundary conversion explicitly instead of relying on a
+    public/private record alias. *)
+let base_payload (payload : Temporal.Payload.t) : Temporal_base.Payload.t =
+  {
+    Temporal_base.Payload.metadata = List.map (fun (key, value) -> (key, value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
+(** Converts public structured errors for the private execution definition. *)
+let base_error (error : Temporal.Error.t) : Temporal_base.Error.t =
+  let view = Temporal.Error.view error in
+  Temporal_base.Error.make ~non_retryable:view.non_retryable
+    ~details:(List.map base_payload view.details) ~category:view.category
+    ~message:view.message ()
+
+(** Installs public codec callbacks into the private codec representation while
+    preserving each codec's own encoding metadata. *)
+let base_codec (codec : 'a Temporal.Codec.t) : 'a Temporal_base.Codec.t =
+  Temporal_base.Codec.of_payload
+    ~encode:(fun value ->
+      match Temporal.Codec.encode codec value with
+      | Ok payload -> Ok (base_payload payload)
+      | Error error -> Error (base_error error))
+    ~decode:(fun payload ->
+      let public_payload : Temporal.Payload.t =
+        {
+          Temporal.Payload.metadata =
+            List.map (fun (key, value) -> (key, value)) payload.metadata;
+          data = Bytes.copy payload.data;
+        }
+      in
+      match Temporal.Codec.decode codec public_payload with
+      | Ok value -> Ok value
+      | Error error -> Error (base_error error))
+
+(** Rebuilds an opaque public workflow as the private definition accepted by
+    [Raw_execution]. Public errors cross this boundary only as copied values. *)
+let base_workflow (definition : ('input, 'output) Temporal.Workflow.t) =
+  let implementation =
+    Option.map
+      (fun implementation input ->
+        Result.map_error base_error (implementation input))
+      (Temporal.Workflow.implementation definition)
+  in
+  Temporal_base.Definition.make ~name:(Temporal.Workflow.name definition)
+    ~input:(base_codec (Temporal.Workflow.input definition))
+    ~output:(base_codec (Temporal.Workflow.output definition)) ~implementation
+
+(** Keeps the logging fixture's execution calls concise while making the
+    private-runtime conversion visible to readers. *)
+module Execution = struct
+  include Raw_execution
+
+  let start ?task_queue definition input =
+    Raw_execution.start ?task_queue (base_workflow definition) input
+end
 
 (** One event captured without retaining its formatting closure. Tests inspect
     stable source, level, and tag contracts rather than exact prose. *)
@@ -103,7 +162,7 @@ let assert_not_in_events secret =
 (** Builds a string payload for the synthetic workflow fixture. *)
 let payload value =
   match Temporal.Codec.encode Temporal.Codec.string value with
-  | Ok payload -> payload
+  | Ok payload -> base_payload payload
   | Error error -> failwith (Temporal.Error.message error)
 
 (** Activity that keeps the workflow blocked after its first activation. *)

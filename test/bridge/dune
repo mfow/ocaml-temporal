@@ -1,23 +1,23 @@
 (test
  (name test_ocaml_bridge)
- (libraries temporal-sdk temporal-sdk.internal_core_bridge unix))
+ (libraries temporal-sdk temporal_core_bridge unix))
 
 (test
  (name test_ocaml_protocol)
  (deps
   (source_tree fixtures/protocol))
- (libraries temporal-sdk.internal_protocol))
+ (libraries temporal_protocol))
 
 (test
  (name test_ocaml_workflow_protocol)
  (deps
   (source_tree fixtures/workflow-protocol))
- (libraries temporal-sdk.internal_protocol))
+ (libraries temporal_protocol))
 
 (test
  (name test_ocaml_activity_protocol)
- (libraries temporal-sdk.internal_protocol))
+ (libraries temporal_protocol))
 
 (test
  (name test_ocaml_client_protocol)
- (libraries temporal-sdk.internal_protocol))
+ (libraries temporal_protocol))

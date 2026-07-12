@@ -1,11 +1,20 @@
 (library
  (name temporal)
  (public_name temporal-sdk)
- (private_modules backend native_worker)
+ (private_modules
+  activity_private
+  backend
+  codec_private
+  error_private
+  future_private
+  native_worker
+  payload_private
+  workflow_private)
  (libraries
-  temporal-sdk.internal_base
-  temporal-sdk.internal_core_bridge
-  temporal-sdk.internal_protocol
-  temporal-sdk.runtime
+  temporal_base
+  temporal_core_bridge
+  temporal_future_kernel
+  temporal_protocol
+  temporal_runtime
   temporal_sdk_supervisor
   threads))

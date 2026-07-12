@@ -1,8 +1,8 @@
 (library
  (name temporal_runtime)
- (public_name temporal-sdk.runtime)
+ (package temporal-sdk)
  (libraries
-  temporal-sdk.internal_base
-  temporal-sdk.internal_core_bridge
-  temporal-sdk.internal_protocol
+  temporal_base
+  temporal_core_bridge
+  temporal_protocol
   threads))

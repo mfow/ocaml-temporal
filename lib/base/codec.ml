@@ -32,10 +32,20 @@ let make ~encoding ~encode ~decode =
   in
   { encode_payload; decode_payload }
 
-(** Runs a codec's encode or decode function without exposing its private
-    record representation to callers. *)
+(** Runs a codec's encoding callback without exposing its private record
+    representation to callers, retaining payload ownership at the codec
+    boundary. *)
 let encode codec value = codec.encode_payload value
+
+(* Applies the codec's decoding callback to one payload. *)
 let decode codec payload = codec.decode_payload payload
+
+(** Installs already validated payload-level callbacks without adding an
+    encoding metadata entry. The public API uses this narrow bridge to turn an
+    opaque public codec into the representation consumed by worker adapters;
+    keeping it here avoids exposing the record representation. *)
+let of_payload ~encode ~decode =
+  { encode_payload = encode; decode_payload = decode }
 
 (** Checks every byte of a string with OCaml's UTF-8 decoder. Advancing by the
     length of each decoded character ensures invalid continuation bytes are not

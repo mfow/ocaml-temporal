@@ -47,6 +47,11 @@ val resolved :
 (** Returns the identity of the workflow scheduler that created the future. *)
 val owner_id : ('value, 'error) t -> int
 
+(** Queues [thunk] on the scheduler that owns [future]. The callback is never
+    run inline for an active workflow, which keeps completion ordering
+    deterministic. *)
+val enqueue : ('value, 'error) t -> (unit -> unit) -> unit
+
 (** Returns the result when ready. If called by the future's active workflow
     scheduler, pauses the current fiber until the result arrives. Otherwise,
     returns the error produced by [outside_error]. *)
@@ -59,6 +64,20 @@ val add_waiter :
   ('value, 'error) t ->
   (('value, 'error) result, unit) Effect.Deep.continuation ->
   unit
+
+(** Registers an observer that receives the future result through the owning
+    scheduler. Ready and closed futures are delivered using the same scheduler
+    queue, so callers never need to race a direct callback against completion.
+    Observers are internal and should not capture longer-lived resources. *)
+val observe :
+  ('value, 'error) t -> (('value, 'error) result -> unit) -> unit
+
+(** Suspends the current workflow fiber until [register] invokes its signal.
+    The signal is single-use; duplicate calls are ignored. This is a
+    scheduler-aware gate for internal combinators and never blocks an OS
+    thread. *)
+val await_gate :
+  ('value, 'error) t -> (((unit -> unit) -> unit) -> unit)
 
 (** Creates a future that transforms a successful result without waiting. *)
 val map : ('value -> 'mapped) -> ('value, 'error) t -> ('mapped, 'error) t

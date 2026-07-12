@@ -8,8 +8,11 @@ let outside_error () =
     retains the diagnostic for [peek] and [await]. *)
 let resolved result =
   match Temporal_runtime.Workflow_context_store.current () with
-  | Some context -> Temporal_runtime.Workflow_context_store.resolved context result
-  | None -> Temporal_runtime.Future_store.resolved ~outside_error result
+  | Some context ->
+      Future_private.of_internal
+        (Temporal_runtime.Workflow_context_store.resolved context
+           (Result.map_error Error_private.to_base result))
+  | None -> Future_private.resolved ~outside_error result
 
 (** Maximum UTF-8 byte length accepted by the strict bridge JSON protocol. The
     server's configurable identifier policy can be narrower, but no command may
@@ -37,17 +40,16 @@ let start ~id definition input =
   match validate_id id with
   | Error error -> resolved (Error error)
   | Ok () -> (
-      match Codec.encode (Temporal_base.Definition.input definition) input with
-      | Error error -> resolved (Error error)
+      match Codec_private.encode_base (Workflow.input definition) input with
+      | Error error -> resolved (Error (Error_private.of_base error))
       | Ok input -> (
           match Temporal_runtime.Workflow_context_store.current () with
-          | None ->
-              Temporal_runtime.Workflow_context_store.detached_error
-                ~message:"child workflow operation used outside a workflow"
+          | None -> resolved (Error (outside_error ()))
           | Some context ->
               Temporal_runtime.Workflow_context_store.start_child_workflow context
                 ~id ~name:(Workflow.name definition) ~input
-                ~decode:(Codec.decode (Temporal_base.Definition.output definition))))
+                ~decode:(Codec_private.decode_base (Workflow.output definition))
+              |> Future_private.of_internal))
 
 (** Implements the direct-style child call as start followed by an effect-backed
     wait. Expected child and codec failures remain explicit [result] values. *)

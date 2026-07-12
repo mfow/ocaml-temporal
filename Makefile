@@ -13,6 +13,11 @@ OCAML_VERSION ?= 5.2
 OCAML_IMAGE ?= ocaml/opam:debian-12-ocaml-$(OCAML_VERSION)
 HOST_UID ?= $(shell id -u)
 HOST_GID ?= $(shell id -g)
+# Leave Dune's worker count unchanged by default. A constrained Docker VM can
+# set `DUNE_JOBS=1` (or another small value) to avoid concurrent native linkers
+# exhausting its memory without changing the normal CI/default behavior.
+DUNE_JOBS ?=
+DUNE_BUILD_ARGS := $(if $(strip $(DUNE_JOBS)),-j $(DUNE_JOBS),)
 COMPOSE_RUN := OCAML_IMAGE=$(OCAML_IMAGE) $(COMPOSE) --progress quiet run --rm --build --user $(HOST_UID):$(HOST_GID) $(SERVICE)
 RUN := $(COMPOSE_RUN) opam exec --
 CARGO := $(COMPOSE_RUN) cargo
@@ -40,7 +45,7 @@ version-check:
 	esac
 
 build:
-	$(RUN) dune build
+	$(RUN) dune build $(DUNE_BUILD_ARGS)
 	$(CARGO) build --manifest-path $(CARGO_MANIFEST) --locked
 
 # Emits only the locked Cargo metadata document on stdout, allowing CI to pipe
@@ -177,7 +182,7 @@ test-runtime:
 	$(RUN) dune runtest test/runtime
 
 lint:
-	$(RUN) dune build
+	$(RUN) dune build $(DUNE_BUILD_ARGS)
 	$(COMPOSE_RUN) sh scripts/check-format.sh
 	$(MAKE) lint-rust
 
@@ -253,7 +258,7 @@ native-version-check:
 	fi
 
 native-build:
-	$(NATIVE_ENV) $(NATIVE_RUN) dune build @install
+	$(NATIVE_ENV) $(NATIVE_RUN) dune build @install $(DUNE_BUILD_ARGS)
 	$(NATIVE_ENV) cargo build --manifest-path $(CARGO_MANIFEST) --locked
 
 native-test: native-test-rust native-test-install test-quality-contract
@@ -266,7 +271,7 @@ native-test-install:
 	$(NATIVE_ENV) sh test/bridge/test_install.sh
 
 native-lint: native-lint-rust
-	$(NATIVE_ENV) $(NATIVE_RUN) dune build
+	$(NATIVE_ENV) $(NATIVE_RUN) dune build $(DUNE_BUILD_ARGS)
 	sh scripts/check-format.sh
 
 native-lint-rust:

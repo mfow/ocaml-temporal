@@ -1,13 +1,91 @@
 module Activation = Temporal_runtime.Activation
-module Execution = Temporal_runtime.Execution
+module Raw_execution = Temporal_runtime.Execution
 module Future_store = Temporal_runtime.Future_store
 module Scheduler = Temporal_runtime.Scheduler
 module Workflow_context_store = Temporal_runtime.Workflow_context_store
 
+(** Copies a public payload into the private representation expected by the
+    low-level execution fixture. The production adapter performs the same
+    conversion before invoking Core; keeping it explicit here prevents this
+    private-runtime test from relying on public type aliases. *)
+let base_payload (payload : Temporal.Payload.t) : Temporal_base.Payload.t =
+  {
+    Temporal_base.Payload.metadata = List.map (fun (key, value) -> (key, value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
+(** Copies a private payload back into the public representation for codec
+    callbacks used by the test adapter. *)
+let public_payload (payload : Temporal_base.Payload.t) : Temporal.Payload.t =
+  {
+    Temporal.Payload.metadata = List.map (fun (key, value) -> (key, value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
+(** Converts a public structured error into the base error type used by the
+    private execution module, including a fresh copy of every detail payload. *)
+let base_error (error : Temporal.Error.t) : Temporal_base.Error.t =
+  let view = Temporal.Error.view error in
+  Temporal_base.Error.make ~non_retryable:view.non_retryable
+    ~details:(List.map base_payload view.details) ~category:view.category
+    ~message:view.message ()
+
+(** Presents a private-runtime error through the public view helpers for
+    assertions. Activation and context-store APIs intentionally expose only
+    [Temporal_base.Error.t] to these tests; this copy keeps their checks from
+    depending on a public/private type alias. *)
+let public_error (error : Temporal_base.Error.t) : Temporal.Error.t =
+  let view = Temporal_base.Error.view error in
+  Temporal.Error.make ~non_retryable:view.non_retryable
+    ~details:(List.map public_payload view.details) ~category:view.category
+    ~message:view.message ()
+
+(** Returns the stable public category label for a private-runtime error. *)
+let public_error_kind error = Temporal.Error.kind (public_error error)
+
+(** Returns the public diagnostic message for a private-runtime error. *)
+let public_error_message error = Temporal.Error.message (public_error error)
+
+(** Adapts an opaque public codec to a base codec for this low-level test. The
+    payload-level constructor preserves value-dependent encoding metadata. *)
+let base_codec (codec : 'a Temporal.Codec.t) : 'a Temporal_base.Codec.t =
+  Temporal_base.Codec.of_payload
+    ~encode:(fun value ->
+      match Temporal.Codec.encode codec value with
+      | Ok payload -> Ok (base_payload payload)
+      | Error error -> Error (base_error error))
+    ~decode:(fun payload ->
+      match Temporal.Codec.decode codec (public_payload payload) with
+      | Ok value -> Ok value
+      | Error error -> Error (base_error error))
+
+(** Rebuilds a public workflow as the base definition accepted by the private
+    execution state machine. This is deliberately a test-only conversion: the
+    installed package exposes only the opaque public definition. *)
+let base_workflow (definition : ('input, 'output) Temporal.Workflow.t) =
+  let implementation =
+    Option.map
+      (fun implementation input ->
+        Result.map_error base_error (implementation input))
+      (Temporal.Workflow.implementation definition)
+  in
+  Temporal_base.Definition.make ~name:(Temporal.Workflow.name definition)
+    ~input:(base_codec (Temporal.Workflow.input definition))
+    ~output:(base_codec (Temporal.Workflow.output definition)) ~implementation
+
+(** Presents the private execution module with a test-friendly [start]
+    wrapper that performs the explicit public-to-base conversion above. *)
+module Execution = struct
+  include Raw_execution
+
+  let start ?task_queue definition input =
+    Raw_execution.start ?task_queue (base_workflow definition) input
+end
+
 (** Builds a string payload through the public codec for activation fixtures. *)
 let payload value =
   match Temporal.Codec.encode Temporal.Codec.string value with
-  | Ok payload -> payload
+  | Ok payload -> base_payload payload
   | Error error -> failwith (Temporal.Error.message error)
 
 (** Simulates Core's successful child-start acknowledgment. The run ID is an
@@ -159,7 +237,7 @@ let test_invalid_activity_options_do_not_schedule () =
   in
   let execution = Execution.start invalid_workflow () in
   match Execution.activate execution [ Activation.Start_workflow ] with
-  | [ Activation.Fail_workflow error ] when Temporal.Error.kind error = "defect" ->
+  | [ Activation.Fail_workflow error ] when public_error_kind error = "defect" ->
       ()
   | [ Activation.Schedule_activity _ ] ->
       failwith "invalid activity queue emitted a schedule command"
@@ -260,7 +338,7 @@ let test_bridge_defects () =
        [ Activation.Fire_timer { seq = 999L } ]
    with
   | [ Activation.Fail_workflow error ] ->
-      expect "bridge category" "bridge" (Temporal.Error.kind error)
+      expect "bridge category" "bridge" (public_error_kind error)
   | _ -> failwith "unknown timer did not fail the workflow");
   let duplicate = Execution.start greeting_workflow "Ada" in
   ignore (Execution.activate duplicate [ Activation.Start_workflow ]);
@@ -278,7 +356,7 @@ let test_bridge_defects () =
       ]
   with
   | [ Activation.Fail_workflow error ] ->
-      expect "duplicate category" "bridge" (Temporal.Error.kind error)
+      expect "duplicate category" "bridge" (public_error_kind error)
   | _ -> failwith "duplicate activity resolution was accepted"
 
 (** Workflow fixture proving that a zero-duration sleep emits no timer. *)
@@ -338,7 +416,7 @@ let test_zero_sleep_and_duration_validation () =
     [
       Activation.Complete_workflow
         (match Temporal.Codec.encode Temporal.Codec.unit () with
-        | Ok payload -> payload
+        | Ok payload -> base_payload payload
         | Error error -> failwith (Temporal.Error.message error));
     ]
     (Execution.activate execution [ Activation.Start_workflow ]);
@@ -364,7 +442,7 @@ let test_start_sleep () =
     [
       Activation.Complete_workflow
         (match Temporal.Codec.encode Temporal.Codec.unit () with
-        | Ok payload -> payload
+        | Ok payload -> base_payload payload
         | Error error -> failwith (Temporal.Error.message error));
     ]
     (Execution.activate zero [ Activation.Start_workflow ]);
@@ -387,7 +465,7 @@ let test_empty_all_uses_current_workflow_owner () =
     [
       Activation.Complete_workflow
         (match Temporal.Codec.encode Temporal.Codec.unit () with
-        | Ok payload -> payload
+        | Ok payload -> base_payload payload
         | Error error -> failwith (Temporal.Error.message error));
     ]
     (Execution.activate execution [ Activation.Fire_timer { seq = 1L } ])
@@ -484,14 +562,14 @@ let test_child_workflow_concurrency_and_decoding () =
             result =
               Ok
                 {
-                  Temporal.Payload.metadata = [ ("encoding", "binary/plain") ];
+                  Temporal_base.Payload.metadata = [ ("encoding", "binary/plain") ];
                   data = Bytes.of_string "wrong codec";
                 };
           };
       ]
   with
   | [ Activation.Fail_workflow error ] ->
-      expect "child output codec failure" "codec" (Temporal.Error.kind error)
+      expect "child output codec failure" "codec" (public_error_kind error)
   | _ -> failwith "invalid child output did not fail the parent"
 
 (** Codec fixture that rejects every input, used to prove encoding happens
@@ -554,9 +632,9 @@ let test_child_workflow_validation () =
   in
   (match Execution.activate (Execution.start empty_id ()) [ Activation.Start_workflow ] with
   | [ Activation.Fail_workflow error ] ->
-      expect "empty child ID kind" "defect" (Temporal.Error.kind error);
+      expect "empty child ID kind" "defect" (public_error_kind error);
       expect "empty child ID message" "child workflow id must not be empty"
-        (Temporal.Error.message error)
+        (public_error_message error)
   | _ -> failwith "empty child ID emitted a command or succeeded");
   let invalid_input =
     Temporal.Workflow.define ~name:"invalid_child_input"
@@ -572,7 +650,7 @@ let test_child_workflow_validation () =
    with
   | [ Activation.Fail_workflow error ] ->
       expect "child input codec failure" "input rejected"
-        (Temporal.Error.message error)
+        (public_error_message error)
   | _ -> failwith "invalid child input emitted a command or succeeded");
   match
     Temporal.Child_workflow.start ~id:"detached" greeting_child "Ada"
@@ -617,7 +695,7 @@ let test_child_workflow_failures_and_sequence_ownership () =
            { seq = 1L; result = Ok (payload "too early") } ]
    with
   | [ Activation.Fail_workflow error ] ->
-      expect "child resolved before start" "bridge" (Temporal.Error.kind error)
+      expect "child resolved before start" "bridge" (public_error_kind error)
   | _ -> failwith "child result was accepted before start acknowledgment");
   let failed_start = Execution.start child_parent_workflow "Ada" in
   ignore (Execution.activate failed_start [ Activation.Start_workflow ]);
@@ -634,11 +712,11 @@ let test_child_workflow_failures_and_sequence_ownership () =
    with
   | [ Activation.Fail_workflow error ] ->
       expect "child start failure" "child start rejected"
-        (Temporal.Error.message error)
+        (public_error_message error)
   | _ -> failwith "child start failure did not retire the pending child");
   let remote_failure = Execution.start child_parent_workflow "Ada" in
   ignore (Execution.activate remote_failure [ Activation.Start_workflow ]);
-  let child_error = Temporal.Error.defect ~message:"child failed" in
+  let child_error = base_error (Temporal.Error.defect ~message:"child failed") in
   (match
      Execution.activate remote_failure
        [
@@ -648,7 +726,7 @@ let test_child_workflow_failures_and_sequence_ownership () =
        ]
    with
   | [ Activation.Fail_workflow error ] ->
-      expect "remote child error" "child failed" (Temporal.Error.message error)
+      expect "remote child error" "child failed" (public_error_message error)
   | _ -> failwith "remote child failure was not propagated");
   let unknown = Execution.start child_parent_workflow "Ada" in
   ignore (Execution.activate unknown [ Activation.Start_workflow ]);
@@ -660,7 +738,7 @@ let test_child_workflow_failures_and_sequence_ownership () =
        ]
    with
   | [ Activation.Fail_workflow error ] ->
-      expect "unknown child sequence" "bridge" (Temporal.Error.kind error)
+      expect "unknown child sequence" "bridge" (public_error_kind error)
   | _ -> failwith "unknown child sequence was accepted");
   let duplicate = Execution.start concurrent_child_parent () in
   ignore (Execution.activate duplicate [ Activation.Start_workflow ]);
@@ -679,7 +757,7 @@ let test_child_workflow_failures_and_sequence_ownership () =
       ]
   with
   | [ Activation.Fail_workflow error ] ->
-      expect "duplicate child sequence" "bridge" (Temporal.Error.kind error)
+      expect "duplicate child sequence" "bridge" (public_error_kind error)
   | _ -> failwith "duplicate child resolution was accepted"
 
 (** Ensures a conflicting second start result cannot consume the child resolver.
@@ -709,7 +787,7 @@ let test_child_start_conflicting_result_keeps_future_pending () =
    with
   | Error error ->
       expect "conflicting child start kind" "bridge"
-        (Temporal.Error.kind error)
+        (public_error_kind error)
   | Ok () -> failwith "conflicting child start was accepted");
   (match Future_store.peek future with
   | None -> ()
@@ -724,7 +802,7 @@ let test_child_start_conflicting_result_keeps_future_pending () =
   | Some (Ok result) when Bytes.equal result.data (payload "Hello Ada").data ->
       Workflow_context_store.shutdown context
   | Some (Error error) ->
-      failwith ("terminal child result failed: " ^ Temporal.Error.message error)
+      failwith ("terminal child result failed: " ^ public_error_message error)
   | Some (Ok _) -> failwith "terminal child result payload was not preserved"
   | None -> failwith "terminal child result did not resolve the child future"
 
@@ -745,7 +823,7 @@ let test_child_resolution_rejections_preserve_lifecycle_state () =
        (Ok (payload "too early"))
    with
   | Error error ->
-      expect "terminal-before-start kind" "bridge" (Temporal.Error.kind error)
+      expect "terminal-before-start kind" "bridge" (public_error_kind error)
   | Ok () -> failwith "terminal-before-start was accepted");
   (match Future_store.peek future with
   | None -> ()
@@ -765,7 +843,7 @@ let test_child_resolution_rejections_preserve_lifecycle_state () =
        (Error conflicting_error)
    with
   | Error error ->
-      expect "duplicate start kind" "bridge" (Temporal.Error.kind error)
+      expect "duplicate start kind" "bridge" (public_error_kind error)
   | Ok () -> failwith "duplicate start acknowledgment was accepted");
   (match Future_store.peek future with
   | None -> ()
@@ -780,7 +858,7 @@ let test_child_resolution_rejections_preserve_lifecycle_state () =
   (match Future_store.peek future with
   | Some (Ok value) when Bytes.equal value.data result.data -> ()
   | Some (Error error) ->
-      failwith ("terminal result failed: " ^ Temporal.Error.message error)
+      failwith ("terminal result failed: " ^ public_error_message error)
   | Some (Ok _) -> failwith "terminal result was decoded differently"
   | None -> failwith "terminal result did not resolve the future");
   (match
@@ -788,13 +866,14 @@ let test_child_resolution_rejections_preserve_lifecycle_state () =
        (Ok (payload "overwritten"))
    with
   | Error error ->
-      expect "duplicate terminal kind" "bridge" (Temporal.Error.kind error)
+      expect "duplicate terminal kind" "bridge" (public_error_kind error)
   | Ok () -> failwith "duplicate terminal result was accepted");
   (match Future_store.peek future with
   | Some (Ok value) when Bytes.equal value.data result.data ->
       Workflow_context_store.shutdown context
   | Some (Error error) ->
-      failwith ("duplicate terminal changed the result: " ^ Temporal.Error.message error)
+      failwith
+        ("duplicate terminal changed the result: " ^ public_error_message error)
   | Some (Ok _) -> failwith "duplicate terminal overwrote the result"
   | None -> failwith "duplicate terminal removed the resolved result")
 

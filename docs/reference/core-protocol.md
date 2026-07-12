@@ -261,6 +261,38 @@ command may occur at most once and must be last.
 When acknowledging an eviction, the completion command list must be empty and
 the run ID must match the activation.
 
+### Continue-as-new
+
+The public OCaml operation `Temporal.Workflow.continue_as_new` emits this
+terminal command shape:
+
+```json
+{
+  "kind": "continue_as_new",
+  "workflow_type": "counter",
+  "input": [
+    {"data":{"data":"","encoding":"base64"},"metadata":{}}
+  ]
+}
+```
+
+`workflow_type` is a validated non-empty Temporal identifier. `input` keeps
+the successor's ordered argument payloads, even though the current public
+helper normally supplies one encoded workflow input. The command must be the
+only terminal command and must be the final command in the completion. Both
+the OCaml and Rust decoders reject missing or unknown fields, invalid
+identifiers, malformed payloads, and a terminal command followed by another
+command.
+
+Rust converts this record to Core's
+`ContinueAsNewWorkflowExecution`. The current semantic protocol intentionally
+does not expose a task queue, timeout, memo, headers, search attributes,
+retry policy, or versioning controls for this command. The Rust reverse
+conversion accepts only Core's explicit defaults for those fields and returns
+`core_unsupported` for a non-default value, preventing silent loss of workflow
+semantics. The successor run is not followed by the bridge or by
+`Temporal.Client.wait` automatically.
+
 Temporal identifiers must be nonempty but use the protocol's 65,536-byte text
 safety ceiling rather than an invented 255-byte server policy; the server's
 identifier policy is configurable. Application failure `type` is bounded text

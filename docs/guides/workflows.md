@@ -401,6 +401,36 @@ the parent lease rather than acknowledging an unsafe completion. Focused tests
 cover the complete lifecycle, but the live acceptance test still needs to
 exercise it against Temporal Server.
 
+### Continue a run with fresh history
+
+Use `Temporal.Workflow.continue_as_new` when the current execution should end
+and Temporal should start the same workflow type with a new input and a fresh
+history. The operation is terminal: it never returns to the current workflow
+fiber, so code after the call is unreachable. The input is encoded with the
+definition's codec before the command is emitted.
+
+```ocaml
+let process_batch batch =
+  if List.length batch >= 1_000 then
+    Temporal.Workflow.continue_as_new process_batch_workflow []
+  else
+    process_items batch
+```
+
+The successor input must be deterministic workflow data. A codec failure is a
+typed failure of the current run; it is not raised as an ordinary exception.
+Calling this function outside a running workflow is programmer misuse and is
+reported as `Invalid_argument`. The private completion protocol represents the
+operation as a terminal `continue_as_new` command with a workflow type and an
+ordered payload list. The bridge maps it to Temporal Core's
+`ContinueAsNewWorkflowExecution` command, fills only explicit Core defaults,
+and rejects unsupported non-default options instead of silently dropping them.
+
+`Temporal.Client.wait` treats the current run as terminal and returns its
+typed continued-as-new outcome with the successor execution reference; it does
+not follow the successor automatically. Live Compose coverage for this command
+is still pending.
+
 ## 7. Compose ordinary helpers
 
 Workflow starters and futures are ordinary values. Helpers can accept or return

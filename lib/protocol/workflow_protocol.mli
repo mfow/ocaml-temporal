@@ -238,6 +238,10 @@ type completion_command =
   | Cancel_timer of { seq : int64 }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
+  (** Ends this run and starts a successor run of [workflow_type] with the
+      supplied argument payloads. The current SDK emits one argument; the
+      list mirrors Core's repeated payload field for forward compatibility. *)
+  | Continue_as_new of { workflow_type : string; input : payload list }
   | Cancel_workflow_execution
 
 (** Successful completion of one activation. At most one terminal workflow

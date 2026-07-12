@@ -127,6 +127,19 @@ let allocate_sequence context =
     creation order before returning it. *)
 let emit context command = context.commands_rev <- command :: context.commands_rev
 
+(** Records a terminal command before aborting the current scheduler. The
+    command is therefore retained even though the calling continuation is not
+    resumed. *)
+let terminate context command =
+  emit context command;
+  Scheduler.abort_workflow ()
+
+(** Records the successor command before aborting the current scheduler. The
+    command must be visible even though the terminal effect never resumes its
+    caller. *)
+let continue_as_new context ~workflow_type ~input =
+  terminate context (Activation.Continue_as_new { workflow_type; input })
+
 (** Saves the future resolver before emitting the schedule command. This order
     ensures even an immediate synthetic result can find the pending activity. *)
 let schedule_activity context ~name ~input ?activity_id ?task_queue

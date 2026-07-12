@@ -71,4 +71,7 @@ type command =
   | Cancel_timer of { seq : int64 }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t
+  (** Ends this run and asks Temporal to start the same workflow type with a
+      fresh history and the supplied encoded input. *)
+  | Continue_as_new of { workflow_type : string; input : Temporal_base.Codec.payload }
   | Cancel_workflow_execution

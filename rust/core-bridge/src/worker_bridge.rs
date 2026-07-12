@@ -1103,11 +1103,9 @@ impl TaskLedger {
     /// force-failed to Core. Only unleased entries are removed so a concurrent
     /// legitimate lease cannot be erased by a confused identity.
     pub fn abandon_workflow_admission(&mut self, run_id: &str) {
-        match self.workflows.get(run_id) {
-            Some(false) => {
-                self.workflows.remove(run_id);
-            }
-            Some(true) | None => {}
+        // Only unleased admissions may be dropped; a true lease must survive.
+        if let Some(false) = self.workflows.get(run_id) {
+            self.workflows.remove(run_id);
         }
     }
 

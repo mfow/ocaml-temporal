@@ -14,6 +14,28 @@ implementation when a later entry documents that work as complete. The
 two-binary Temporal acceptance path remains pending unless an entry explicitly
 records a successful live run.
 
+## 2026-07-12: Native lifecycle retention regressions
+
+Status: focused OCaml and Rust lifecycle tests pass locally; the live Compose
+acceptance path remains separate.
+
+The lifecycle coverage is now split into focused test files. The native
+supervisor test checks repeated worker shutdown, client disconnect, and parent
+runtime shutdown without a Temporal Server. Separate workflow and activity
+adapter tests force a completion rejection during polling and another during a
+drain, then verify that the next drain acknowledges the original copied
+completion without rerunning user code. A separate Rust integration test
+disposes one runtime twice and waits for exactly one cleanup-counter increment.
+The existing private ABI regression also observes a dropped pending-start
+future after nonblocking cleanup, proving Tokio handles are joined rather than
+detached.
+
+Evidence: `CARGO_TARGET_DIR="$PWD/rust/target" dune runtest --root .
+test/runtime test/sdk_supervisor`, the three focused native OCaml executables,
+`cargo test --manifest-path rust/Cargo.toml --locked --package
+ocaml-temporal-core-bridge --test runtime_cleanup_idempotence`, and the ABI and
+runtime-cleanup integration tests all pass on the representative macOS host.
+
 ## 2026-07-12: Complete native activity command translation
 
 Status: focused runtime, worker-adapter, and native translation tests pass

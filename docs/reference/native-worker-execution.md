@@ -172,6 +172,14 @@ verify:
 - rejection of empty, NUL-containing, oversized, and non-UTF-8 worker queues
   before worker publication.
 
+`test/runtime/test_native_worker_lifecycle.ml` is a separate focused regression
+file for the shutdown-sensitive path. It rejects the same completion twice:
+the initial poll fails, the first drain fails, and the second drain succeeds.
+The workflow implementation runs once, the copied completion is submitted
+once, and the fake native lease remains present until that final acknowledgement.
+This is the contract that lets public worker shutdown retry a transient
+completion transport failure safely.
+
 The fake tests do not claim live Temporal compatibility. Focused supervisor and
 bridge tests cover readiness and lifecycle ownership; the Compose acceptance
 suite remains the gate for real Temporal Server behavior and for the remaining

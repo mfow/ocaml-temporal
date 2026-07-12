@@ -48,6 +48,7 @@ let enqueue scheduler thunk =
 let owner scheduler =
   Future_store.make_owner ~id:scheduler.id ~enqueue:(enqueue scheduler)
     ~is_running:(fun () -> scheduler.running && scheduler.active)
+    ~callbacks_live:(fun () -> scheduler.running && scheduler.active)
     ~on_create:(fun () -> scheduler.pending <- scheduler.pending + 1)
     ~on_settled:(fun () -> scheduler.pending <- scheduler.pending - 1)
     ~register_teardown:(fun teardown ->

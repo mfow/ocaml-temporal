@@ -115,7 +115,7 @@ or reached replay shutdown.
 | `Reject_replay_workflow` | Rust decoded the supplied document, confirmed that its semantic activation equals the retained activation, reported a bounded failure to Core, and retired that lease. | `PROTOCOL` (11) means the document is malformed, decodes to a different activation, or does not identify a retained lease. JSON formatting changes that preserve the same semantic activation are accepted. The original OCaml decode error remains the primary diagnostic. |
 | `Finish_replay_input` | The feeder sender was closed; already queued histories remain drainable. Repeating it is harmless. | There is no “history complete” claim here: `Finalize_replay` must still observe shutdown and an empty completion ledger. |
 | `Finalize_replay` | Input is closed, Core reported workflow-lane `Shutdown`, every activation was completed/rejected, and the native graph was joined and finalized. | `OUTSTANDING_TASKS` (9) is `ReplayNotDrained`; the worker remains owned and can be drained before retrying. `WORKER` (8) retains the graph when lane or Core finalization fails. |
-| `Dispose_replay` | The caller explicitly abandoned replay; queued/leased work was force-completed, lanes joined, and finalization succeeded. | `WORKER` (8) means the worker is still retained for another disposal attempt. Disposal is cleanup evidence only, never replay-success evidence. |
+| `Dispose_replay` | The caller explicitly abandoned replay; queued and leased activations were acknowledged with Core's shutdown-safe empty completion, the replay lane drained any follow-up eviction, and finalization succeeded. | `WORKER` (8) means the worker is still retained for another disposal attempt. Disposal is cleanup evidence only, never replay-success evidence. |
 
 There are two rejection paths after a poll. If the OCaml semantic decoder
 rejects Rust-produced bytes, `Protocol_adapter.workflow_poll_result` returns
@@ -152,16 +152,18 @@ history or completion debt remains, `finalize` returns a typed
 queued history from being cancelled while looking like a successful replay.
 
 When abandonment is intentional, `dispose` is the separate destructive path.
-It initiates Core shutdown, force-completes queued or leased work, joins the
-poll lane, and attempts terminal finalization twice. Each force-completed
-workflow identity is retired before its asynchronous Core failure is awaited;
-late duplicate workflow polls therefore cannot become new ledger entries in the
-snapshot/queue-drain window. It must never be used as replay success evidence.
-A poll-lane failure performs the same force-completion cleanup before returning
-the worker and typed error. If both terminal finalization attempts fail,
-`dispose` returns the worker and a `Finalization` error together; the caller
-must retry disposal or otherwise retain that owner. The bridge never silently
-drops the unfinalized native graph.
+It acknowledges queued or leased replay activations with Core's empty
+completion, initiates Core shutdown, and joins the workflow lane while
+draining any follow-up eviction activation. A replay eviction has no live
+workflow task to fail; sending the live-worker failure completion in this
+state can panic inside Core, while an empty completion is explicitly safe even
+when shutdown races the local workflow stream. The ledger removes every
+activation before its asynchronous acknowledgement, and the join loop handles
+identities published after that snapshot, so no replay completion debt is
+silently dropped. Disposal must never be used as replay success evidence. A
+poll-lane or finalization failure returns the retained worker and a typed error
+so the caller can retry; the bridge never silently drops the unfinalized native
+graph.
 
 ## Current evidence and limits
 
@@ -177,13 +179,23 @@ cover:
   valid history through the bounded feeder; and
 - rejection of finalization after the feeder is closed but before its queued
   history is drained, with explicit disposal of the retained worker; and
+- explicit disposal of a leased activation, including the follow-up eviction
+  Core emits after its empty replay completion; and
 - retention and reporting of a still-shared Core worker during disposal,
   reporting of a joined poll-lane failure, and successful retry after each
   retained owner is safe to release.
 
 The ABI-focused integration test in
 [`tests/replay_abi.rs`](../../rust/core-bridge/tests/replay_abi.rs) adds null
-handle, missing-worker, malformed-document, and idempotent-disposal coverage.
+handle, missing-worker, malformed-document, semantic lease matching, natural
+shutdown, and idempotent-disposal coverage.
+
+The leased-disposal regression protects the failure observed in the OCaml 5.2
+replay lifecycle CI: live-worker failure completion was sent after Core had
+already closed the workflow stream, triggering Core's
+“A non-empty completion was not processed” panic. Replay disposal now uses an
+empty acknowledgement and drains the eviction that follows it.
+
 The OCaml bridge test in
 [`test_ocaml_bridge.ml`](../../test/bridge/test_ocaml_bridge.ml) proves that
 sender-side canonical-payload validation rejects malformed replay input before

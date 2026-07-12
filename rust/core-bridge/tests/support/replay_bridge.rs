@@ -310,8 +310,8 @@ fn replay_worker_rejects_finalize_before_history_is_drained() {
         }
     ));
     // The retained worker remains usable for the explicit abandonment path;
-    // this path may force-fail the queued activation but still joins and
-    // finalizes all native resources.
+    // replay disposal acknowledges the queued activation with an empty Core
+    // completion, then joins and finalizes all native resources.
     dispose_or_panic(worker, &handle);
 }
 
@@ -357,7 +357,8 @@ fn replay_dispose_retains_worker_when_poll_lane_join_fails() {
         error,
         ReplayWorkerError::PollLane(PollLaneError::Core(_))
     ));
-    // `join_poll_lanes` consumed the aborted handle. A retry therefore has no
-    // detached producer left to race with finalization and can release Core.
+    // The replay-aware join consumed the aborted handle. A retry therefore
+    // has no detached producer left to race with finalization and can release
+    // Core.
     dispose_or_panic(worker, &handle);
 }

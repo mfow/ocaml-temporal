@@ -57,10 +57,17 @@ type 'output terminal_result =
     randomness, which keeps client construction straightforward in tests. *)
 let default_identity = "ocaml-temporal-client"
 
-(** Rejects empty strings and NUL bytes before they can enter a backend request. *)
+(** Rejects empty, oversized, or NUL-containing identifiers before they can
+    enter a backend request. The 65,536-byte bound is shared by the JSON
+    protocol and native bridge, so mock and native transports reject the same
+    malformed operation rather than diverging at their respective boundaries. *)
 let validate_name field value =
   if String.equal value "" then
     Error (Error.defect ~message:(field ^ " must not be empty"))
+  else if String.length value > 65_536 then
+    Error
+      (Error.defect
+         ~message:(field ^ " exceeds the protocol string safety limit"))
   else if String.contains value '\000' then
     Error (Error.defect ~message:(field ^ " must not contain NUL"))
   else Ok ()
@@ -87,11 +94,11 @@ let create ?(identity = default_identity) ~target_url ~namespace () =
               })
             (Backend.client_create config))
 
-(** Validates the optional Temporal idempotency key, durable workflow ID, and
-    task queue before encoding input or constructing a native request. Keeping
-    these checks here makes malformed caller input a typed result and prevents
-    it from crossing the supervisor boundary. *)
-let validate_start_fields ~request_id ~id ~task_queue =
+(** Validates the optional Temporal idempotency key, workflow type, durable
+    workflow ID, and task queue before encoding input or constructing a native
+    request. Keeping these checks here makes malformed caller input a typed
+    result and prevents it from crossing the supervisor boundary. *)
+let validate_start_fields ~request_id ~workflow_name ~id ~task_queue =
   let request_result =
     match request_id with
     | None -> Ok ()
@@ -100,9 +107,12 @@ let validate_start_fields ~request_id ~id ~task_queue =
   match request_result with
   | Error _ as error -> error
   | Ok () -> (
-      match validate_name "workflow id" id with
+      match validate_name "workflow type" workflow_name with
       | Error _ as error -> error
-      | Ok () -> validate_name "task queue" task_queue)
+      | Ok () -> (
+          match validate_name "workflow id" id with
+          | Error _ as error -> error
+          | Ok () -> validate_name "task queue" task_queue))
 
 (** Starts a workflow after encoding its typed input and checking the backend's
     response still refers to the request. The response check prevents an
@@ -112,7 +122,10 @@ let start client ?request_id ~workflow ~task_queue ~id ~input () =
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
   else
-    match validate_start_fields ~request_id ~id ~task_queue with
+    match
+      validate_start_fields ~request_id ~workflow_name:(Workflow.name workflow)
+        ~id ~task_queue
+    with
     | Error error -> Error error
     | Ok () -> (
         match Codec.encode (Workflow.input workflow) input with

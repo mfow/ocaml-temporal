@@ -81,6 +81,30 @@ fn draining_accepts_cancellation_for_an_existing_activity() {
     );
 }
 
+/// A dequeued activation that fails lease handoff must be removable from the
+/// ledger while still unleased so force-fail cleanup cannot leave phantom debt.
+#[test]
+fn abandon_admission_removes_only_unleased_entries() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    ledger.abandon_workflow_admission("run-1");
+    assert_eq!(ledger.outstanding_workflows(), 0);
+
+    assert_eq!(ledger.admit_workflow("run-2"), Ok(Admission::New));
+    assert_eq!(ledger.lease_workflow("run-2"), Ok(()));
+    ledger.abandon_workflow_admission("run-2");
+    assert_eq!(ledger.outstanding_workflows(), 1);
+    assert_eq!(ledger.complete_workflow("run-2"), Ok(()));
+
+    let token = b"activity-token";
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    ledger.abandon_activity_admission(token);
+    assert_eq!(ledger.outstanding_activities(), 0);
+}
+
 /// Empty task identities are rejected before they can become keys whose
 /// ownership or completion cannot be explained at the native boundary.
 #[test]

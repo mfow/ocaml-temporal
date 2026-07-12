@@ -751,12 +751,21 @@ impl Runtime {
 
     /// Takes one workflow activation from the Rust lane without waiting.
     fn try_poll_workflow(&mut self) -> Operation {
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle()
+            .clone();
         let worker = self.worker.as_mut().ok_or_else(|| Failure {
             status: STATUS_INVALID_STATE,
             message: "Temporal worker is not running".to_owned(),
         })?;
         let activation = worker
-            .try_take_workflow()
+            .try_take_workflow(&handle)
             .ok_or_else(not_ready)?
             .map_err(poll_lane_failure)?;
         let semantic = match workflow_protocol::activation_from_core(&activation) {
@@ -849,12 +858,21 @@ impl Runtime {
 
     /// Takes one remote activity task from its independent lane without waiting.
     fn try_poll_activity(&mut self) -> Operation {
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle()
+            .clone();
         let worker = self.worker.as_mut().ok_or_else(|| Failure {
             status: STATUS_INVALID_STATE,
             message: "Temporal worker is not running".to_owned(),
         })?;
         let task = worker
-            .try_take_activity()
+            .try_take_activity(&handle)
             .ok_or_else(not_ready)?
             .map_err(poll_lane_failure)?;
         let semantic = match activity_protocol::task_from_core(&task) {

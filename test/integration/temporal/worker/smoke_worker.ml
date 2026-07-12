@@ -24,16 +24,18 @@ let required_env name =
   | Some value when not (String.equal value "") -> Ok value
   | _ -> Error (Error.defect ~message:(name ^ " must not be empty"))
 
-(** Publishes a small readiness marker only after [Worker.create] has completed
-    successfully. The temporary file and rename make the health check observe
-    either the complete marker or no marker, never a partially written file. *)
-let publish_ready path =
+(** Writes a marker through a temporary file and atomic rename. The Compose
+    health and teardown checks therefore observe either the complete marker or
+    no marker, never a partially written file. The temporary name includes the
+    process ID so two accidental local workers do not write the same staging
+    file. *)
+let publish_marker path contents =
   let temporary = Printf.sprintf "%s.tmp.%d" path (Unix.getpid ()) in
   try
     let channel = open_out_bin temporary in
     Fun.protect
       ~finally:(fun () -> close_out_noerr channel)
-      (fun () -> output_string channel "worker-ready\n");
+      (fun () -> output_string channel contents);
     Sys.rename temporary path;
     Ok ()
   with exception_ ->
@@ -41,8 +43,19 @@ let publish_ready path =
     Error
       (Error.defect
          ~message:
-           (Printf.sprintf "cannot publish worker readiness marker %s: %s" path
+           (Printf.sprintf "cannot publish worker marker %s: %s" path
               (Printexc.to_string exception_)))
+
+(** Publishes readiness only after [Worker.create] has completed successfully.
+    This marker is consumed by the Compose health check and is deliberately
+    separate from the worker's human-readable phase logs. *)
+let publish_ready path = publish_marker path "worker-ready\n"
+
+(** Publishes the exact per-run shutdown marker after both public worker loops
+    have returned successfully. The Makefile removes this file before every
+    stop request, so an old container log or old marker cannot satisfy a new
+    teardown assertion. *)
+let publish_stopped path = publish_marker path "worker-stopped\n"
 
 (** Removes the readiness marker during every normal result path. Compose also
     removes the container on failure, but explicit cleanup prevents a local
@@ -128,6 +141,7 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* ready_file = required_env "SMOKE_WORKER_READY_FILE" in
+      let* stopped_file = required_env "SMOKE_WORKER_STOPPED_FILE" in
       let* cancellation_ready_file = Definitions.cancellation_ready_file () in
       (* Clear any marker left by a manually interrupted local run before the
          worker can advertise readiness. The driver performs the same cleanup
@@ -179,7 +193,16 @@ let run () =
               Error error
           | Ok () ->
               phase "worker_ready" "published";
-              run_with_signal_shutdown worker)
+              let result = run_with_signal_shutdown worker in
+              (match result with
+              | Error _ -> result
+              | Ok () ->
+                  let stopped_result = publish_stopped stopped_file in
+                  (match stopped_result with
+                  | Ok () -> phase "worker_stopped" "published"
+                  | Error error ->
+                      phase "worker_stopped" ("error:" ^ Error.kind error));
+                  stopped_result))
 
 (** Reports the final typed result and converts it to a process exit code. *)
 let () =

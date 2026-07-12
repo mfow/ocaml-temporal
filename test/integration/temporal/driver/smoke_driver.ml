@@ -1,8 +1,9 @@
-(** Driver process for the first two-OCaml-binary live acceptance test.
+(** Driver process for the two-OCaml-binary live acceptance test.
 
     This executable is a deliberately small, typed harness. It starts both
-    scenarios before waiting for either one, then checks the exact terminal
-    payloads returned by the public client API. Without
+    activity scenarios and the parent/child scenario before waiting for any of
+    them, then checks the exact terminal payloads returned by the public client
+    API. Without
     [TEMPORAL_TWO_BINARY_LIVE=1] the process exits with a distinct status
     instead of accidentally exercising the in-memory [mock://] backend and
     giving a false live-smoke signal. *)
@@ -155,7 +156,7 @@ let wait_workflow handle =
         ~duration_ms:(elapsed_ms started) ();
       result
 
-(** Runs the two-workflow scenario through only the public client surface. *)
+(** Runs every live smoke scenario through only the public client surface. *)
 let run () =
   match require_live_gate () with
   | Error error -> Error error
@@ -192,17 +193,27 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-timer-then-activity" ~input:"smoke"
         in
-        (* Both starts intentionally happen before the first wait.  This is
-           the assertion that the client can retain independent exact-run
-           handles while the worker services both executions. *)
+        let* parent_handle =
+          start_workflow client ~workflow:Definitions.parent_awaits_child
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-parent-awaits-child" ~input:"smoke"
+        in
+        (* All starts intentionally happen before the first wait. This proves
+           the client retains independent exact-run handles while the worker
+           services activity-only and parent/child workflow executions. *)
         let* fan_result = wait_workflow fan_handle in
         let* () =
           require_completed "smoke.fan_out" "SMOKE:LEFT|SMOKE:RIGHT"
             (Ok fan_result)
         in
         let* timer_result = wait_workflow timer_handle in
-        require_completed "smoke.timer_then_activity" "SMOKE:TIMER"
-          (Ok timer_result)
+        let* () =
+          require_completed "smoke.timer_then_activity" "SMOKE:TIMER"
+            (Ok timer_result)
+        in
+        let* parent_result = wait_workflow parent_handle in
+        require_completed "smoke.parent_awaits_child" "SMOKE:CHILD"
+          (Ok parent_result)
       in
       finish result
 

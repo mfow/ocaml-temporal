@@ -77,9 +77,9 @@ opaque bytes with encoding metadata.
 | Layer | Evidence today | Important limit |
 | --- | --- | --- |
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
-| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose success path | Live failure, cancellation, child-workflow, replay, and recovery scenarios remain untested |
-| Public native client | Typed start/wait protocol plus a real two-process Compose result assertion | Only the two smoke success outcomes are covered live |
-| Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests | The live Compose acceptance still needs to prove a parent awaiting a child against Temporal Server |
+| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose success path | Live failure, cancellation, child failure/cancellation, replay, and recovery scenarios remain untested |
+| Public native client | Typed start/wait protocol plus three real two-process Compose result assertions | Only the three smoke success outcomes are covered live |
+| Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests and one live parent/child success path | Child start failure, cancellation, retry, replay, and recovery remain untested live |
 | Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts exact results | The first gate is deliberately narrow and does not yet cover every terminal or recovery path |
 
 This distinction prevents a green local synthetic test from being read as a

@@ -1,17 +1,20 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** Verified in the Linux CI Temporal/PostgreSQL integration job for
-commit `d4456b7`. `make test-temporal-integration` completed the real Compose
-run: the driver asserted both terminal results and the worker/client shut down
-cleanly. The worker and driver remain guarded by `TEMPORAL_TWO_BINARY_LIVE=1`;
-only the dedicated Compose services set it.
+**Status:** The two original workflow/activity scenarios were verified in the
+Linux CI Temporal/PostgreSQL integration job for commit `d4456b7`.
+`make test-temporal-integration` completed that real Compose run: the driver
+asserted both terminal results and the worker/client shut down cleanly. This
+revision adds the parent/child scenario described below; it is considered live
+evidence only after the same CI job succeeds for this revision. The worker and
+driver remain guarded by `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated
+Compose services set it.
 
 `smoke-worker` publishes an atomic readiness marker after public
 `Temporal.Worker.create` succeeds. Compose waits for that health check before
-`smoke-driver` is run. The driver starts both workflows before waiting for
-either result, and the Makefile tears down the isolated project and volume on
-success or failure. This prevents a TCP check or a process that merely started
-from being reported as an SDK acceptance pass.
+`smoke-driver` is run. The driver starts all three top-level workflows before
+waiting for any result, and the Makefile tears down the isolated project and
+volume on success or failure. This prevents a TCP check or a process that
+merely started from being reported as an SDK acceptance pass.
 
 The public `Temporal.Client` and `Temporal.Worker` now route HTTP(S) calls
 through the private Rust/Core supervisor. The deterministic `mock://` backend
@@ -25,11 +28,16 @@ only sets an atomic flag. The 30-second worker stop grace period gives the
 bounded native waits time to leave their poll loop before the container is
 removed. This is test-process lifecycle code, not a second worker supervisor.
 
-The initial live requirements are now met: the fixture starts the two public
-binaries after Temporal/PostgreSQL readiness and asserts both terminal
-workflow results while the worker executes registered workflows and a mock
-activity against the live server. The intentionally broader follow-up
-requirements are listed in [Required assertions and failure evidence](#required-assertions-and-failure-evidence).
+The fixture starts the two public binaries after Temporal/PostgreSQL readiness
+and asserts terminal workflow results while the worker executes registered
+workflows and a mock activity against the live server. This revision adds a
+parent/child success case: the parent calls `Temporal.Child_workflow.execute`,
+the registered child waits on a short durable timer, and the driver asserts the
+parent's exact result. A passing `make test-temporal-integration` run is the
+evidence for that concrete happy path only; child start failures, cancellation,
+retries, replay, and worker recovery remain separate scenarios. The
+intentionally broader follow-up requirements are listed in [Required
+assertions and failure evidence](#required-assertions-and-failure-evidence).
 
 ## Purpose
 
@@ -152,12 +160,20 @@ registers these local definitions with the public SDK:
   starts and awaits a mock activity. Its result distinguishes this workflow
   from `smoke.fan_out` and proves timer resolution as well as workflow and
   activity task processing.
-* `smoke.mock_transform`: the OCaml mock activity implementation used by both
-  workflows. It has no network or wall-clock dependency and returns a value
-  wholly determined by its decoded input.
+* `smoke.child_after_timer`: a child workflow that awaits a short durable timer
+  and returns a deterministic result from its input. It owns the timer so the
+  parent/child success path exercises a timer activation for the child run.
+* `smoke.parent_awaits_child`: starts `smoke.child_after_timer` through
+  `Temporal.Child_workflow.execute` and awaits its terminal value. The child
+  identity is derived only from the parent input, so the command is stable on
+  replay.
+* `smoke.mock_transform`: the OCaml mock activity implementation used by the
+  two activity-oriented workflows. It has no network or wall-clock dependency
+  and returns a value wholly determined by its decoded input.
 
 The fixture implements this shape with the concrete `smoke.fan_out`,
-`smoke.timer_then_activity`, and `smoke.mock_transform` definitions followed
+`smoke.timer_then_activity`, `smoke.child_after_timer`,
+`smoke.parent_awaits_child`, and `smoke.mock_transform` definitions followed
 by a long-running public worker call:
 
 ```ocaml
@@ -165,7 +181,8 @@ let () =
   match
     Temporal.Worker.create
       ~task_queue:"ocaml-temporal-two-binary-smoke"
-      ~workflows:[ fan_out; timer_then_activity ]
+      ~workflows:
+        [ fan_out; timer_then_activity; child_after_timer; parent_awaits_child ]
       ~activities:[ mock_transform ]
       ()
   with
@@ -190,14 +207,15 @@ The driver is also a normal OCaml application, but it creates a client-only
 SDK instance and does **not** register a worker. It must:
 
 1. connect through `Temporal.Client` to the fixture namespace;
-2. start `smoke.fan_out` and `smoke.timer_then_activity` with distinct,
-   known workflow IDs before it waits for either one;
-3. retain the two public workflow handles returned by `start`;
+2. start `smoke.fan_out`, `smoke.timer_then_activity`, and
+   `smoke.parent_awaits_child` with distinct, known workflow IDs before it
+   waits for any of them;
+3. retain the three public workflow handles returned by `start`;
 4. wait for each handle's terminal result through the public client API; and
-5. decode and compare both results with their expected values, then exit zero
-   only if every assertion succeeded.
+5. decode and compare all three results with their expected values, then exit
+   zero only if every assertion succeeded.
 
-Starting both executions before the first wait is material. It demonstrates
+Starting all three executions before the first wait is material. It demonstrates
 that a client can hold independent workflow handles and that the worker can
 service separate workflow executions, rather than passing a single serial
 request through a readiness-only check. Workflow IDs are fixed, unique within
@@ -373,17 +391,20 @@ thread.
 
 The driver's successful exit establishes all of the following:
 
-1. each workflow start returned a nonempty run ID that the driver retained for
-   its corresponding exact-run wait; the recorded CI run showed distinct run
-   IDs for the two starts;
-2. both terminal waits matched the exact workflow ID and run ID returned by
+1. each top-level workflow start returned a nonempty run ID that the driver
+   retained for its corresponding exact-run wait; the driver starts three
+   distinct top-level runs before its first wait;
+2. all three terminal waits matched the exact workflow ID and run ID returned by
    their own starts;
 3. `smoke.fan_out` returned the ordered result requiring both mock activity
    completions;
 4. `smoke.timer_then_activity` returned its expected result after a durable
-   timer and its mock activity completion; and
-5. neither terminal response was a workflow failure, cancellation, timeout,
-   termination, continued-as-new outcome, codec failure, nor bridge failure.
+   timer and its mock activity completion;
+5. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
+   completed its own durable timer; and
+6. none of the three terminal responses was a workflow failure, cancellation,
+   timeout, termination, continued-as-new outcome, codec failure, nor bridge
+   failure.
 
 The driver logs no-payload phase records for starts, exact-run waits, terminal
 classes, and operation latency. The worker logs readiness and shutdown phases.
@@ -397,27 +418,27 @@ two-binary topology rather than adding a separate pseudo-worker test:
 
 * activity failure/retry and timeout;
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
-* child workflow start, start acknowledgment, completion, cancellation, and
-  start-failure handling through the worker;
+* child workflow start failure, cancellation, retry policy, and non-success
+  terminal handling through the worker;
 * worker restart, replay, sticky-cache eviction, and continued execution; and
 * cancellation and graceful shutdown while work is outstanding.
 
-Child-start commands and both child-resolution jobs now have a closed
-bilateral schema, Core conversion, and pure-OCaml lifecycle tests. The live
-acceptance still needs to route those jobs through the concrete supervisor and
-exercise them against Temporal Server before child workflows join this suite.
+Child-start commands and both child-resolution jobs have a closed bilateral
+schema, Core conversion, pure-OCaml lifecycle tests, and this one real-server
+parent/child success assertion. That assertion intentionally does not claim
+coverage of child failure, cancellation, retry, replay, or recovery behavior.
 
 ## Completion criteria for this design
 
-The initial vertical slice is verified in Linux CI because all of the following
-are true:
+The current vertical slice is verified in Linux CI only when all of the
+following are true:
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;
 * the worker's live Core poll/complete loops execute the registered OCaml
   workflow and mock activity code;
-* the driver starts both workflows through `temporal-sdk`, waits for both
-  results through `temporal-sdk`, and performs the listed assertions;
+* the driver starts all three top-level workflows through `temporal-sdk`, waits
+  for their results through `temporal-sdk`, and performs the listed assertions;
 * the fixture exits nonzero for a failed driver assertion, a workflow failure,
   a worker crash, or a cleanup timeout; and
 * the focused test plus the normal Makefile verification and dependency

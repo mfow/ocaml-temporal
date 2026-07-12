@@ -1,4 +1,4 @@
-(** Worker process for the first two-OCaml-binary live acceptance test.
+(** Worker process for the two-OCaml-binary live acceptance test.
 
     The worker registers the same shared workflow definitions as the driver and
     keeps the public native worker loop alive until graceful shutdown. The
@@ -135,6 +135,8 @@ let run () =
             [
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;
+              Worker.workflow Definitions.child_after_timer;
+              Worker.workflow Definitions.parent_awaits_child;
             ]
           ~activities:[ Worker.activity Definitions.mock_transform ]
           ()

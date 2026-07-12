@@ -107,10 +107,11 @@ uses the development container and an isolated official Python container.
 PostgreSQL containers under `test/integration/temporal/`, waits for both SQL
 schemas and the Temporal frontend to be healthy, runs the OCaml supervisor
 lifecycle acceptance executable, starts a public OCaml worker, and runs a
-separate public OCaml driver. The driver starts both smoke workflows before
-waiting, checks their exact terminal results, and removes the isolated test
-volume afterward. This is a real success-path worker acceptance test; broader
-failure, child-workflow, and recovery coverage remains follow-up work.
+separate public OCaml driver. The driver starts three smoke workflows before
+waiting, checks their exact terminal results, including a parent awaiting a
+timer-owning child workflow, and removes the isolated test volume afterward.
+This is a real success-path worker acceptance test; broader failure, child
+start-failure/cancellation, and recovery coverage remains follow-up work.
 
 For manual inspection, use `make temporal-start`, `make temporal-health`,
 `make temporal-status`, `make temporal-logs`, and `make temporal-clean`.

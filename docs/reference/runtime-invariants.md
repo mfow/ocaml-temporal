@@ -48,7 +48,8 @@ and bridge, read the [documentation guide](../README.md) first.
   operation, including `is_cancelled` and `check`, is owner-checked (including
   while the scheduler is paused between runs), so a foreign or stale handle
   returns a typed defect rather than racing mutable state. Normal workflow
-  teardown closes any still-pending signal and its callbacks.
+  teardown closes any still-pending signal and its callbacks. Repeating
+  cancellation is idempotent and emits no Temporal command.
 - Combining futures from different executions returns a ready typed defect
   owned by the leading input rather than raising an operational exception.
 - User callback exceptions are contained and reported as scheduler defects.
@@ -81,6 +82,10 @@ and bridge, read the [documentation guide](../README.md) first.
 - Zero-duration sleep emits no timer.
 - Positive sleep emits one timer and resumes only for its exact sequence.
 - A workflow emits at most one terminal command.
+- Continue-as-new is terminal: once its command is emitted, later jobs from
+  the same activation (including timers or cancellation requests) are rejected
+  or ignored according to their lifecycle state and cannot emit a follow-up
+  command.
 - Terminal command emission is retained while pending runtime state is torn
   down immediately.
 - Malformed bridge jobs fail the execution with a non-retryable bridge error.
@@ -219,3 +224,15 @@ and bridge, read the [documentation guide](../README.md) first.
 - A handler that waits for native worker readiness uses the bounded bridge wait
   and returns to the mailbox between retries; it never performs an indefinite
   condition wait that could block the mailbox's reserved shutdown transition.
+
+## Recent regression evidence
+
+The lifecycle edge tests in `test/runtime/test_activation.ml` exercise the
+terminal continue-as-new rule, including later activations and cancellation
+remaining inert, and verify that cancelling a child after a failed start is a
+typed no-op. `test/runtime/test_scope.ml` verifies repeated scope cancellation
+does not emit a Temporal command. The bilateral Rust test
+`rust/core-bridge/tests/workflow_protocol.rs` rejects a continue-as-new
+completion that contains a follow-up timer, both during JSON encoding and Core
+conversion. These tests are local runtime/protocol evidence; they do not claim
+live Temporal Server coverage.

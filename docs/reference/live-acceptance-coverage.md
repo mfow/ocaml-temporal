@@ -39,10 +39,9 @@ failure. The second attempt must receive that detail through
 assertion, not a worker-local attempt counter. No live heartbeat run has been
 observed in this environment, so this scenario remains an implementation and
 local-contract milestone until a green Compose execution is available. The
-seventh workflow
-returns a deterministic `Workflow` error with `non_retryable=true`; the driver
-checks that typed terminal outcome instead of treating every workflow as a
-success. The historical five-execution evidence is CI run
+sixth workflow returns a deterministic `Workflow` error with
+`non_retryable=true`; the driver checks that typed terminal outcome instead of
+treating every workflow as a success. The historical five-execution evidence is CI run
 [`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
 for merge commit `a4eaccc8`; it verifies only those five baseline executions.
 The seven-run driver and marker-guarded cancellation are implemented and covered

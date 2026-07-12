@@ -436,7 +436,11 @@ terminal result and then races cancellation; shutdown must drain the ticket,
 join the still-running Tokio task, and release Core only after that task is
 gone. The ABI suite repeats disposal for an error diagnostic as well as a
 success value, proving that both result buffers share the same idempotent
-cleanup rule.
+cleanup rule. Its malformed-heartbeat regression then reuses the same result
+slot after a protocol error, proving that error cleanup cannot poison a later
+ABI call. The activity protocol ownership test drops the source JSON string
+after decoding and verifies that the task token and payload bytes remain
+owned by the decoded OCaml/Rust value rather than by borrowed input storage.
 
 The Dune rule asks `rustc --print=native-static-libs` for the exact native
 libraries required by the static archive and consumes the resulting ordered

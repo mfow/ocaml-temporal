@@ -138,9 +138,10 @@ This slice implements typed local activity dispatch, failure/cancellation
 completions, strict completion and heartbeat validation, transport retry, and
 public worker wiring. The native heartbeat path is covered by focused Rust and
 OCaml tests, including binary detail preservation, prior-attempt detail
-delivery, lease retention, and context invalidation. A live Temporal heartbeat
-scenario, asynchronous activity completion, and timeout/retry behavior still
-require dedicated acceptance scenarios.
+delivery, lease retention, copied context payloads, callback-exception
+classification, and context invalidation. A live Temporal heartbeat scenario,
+asynchronous activity completion, and timeout/retry behavior still require
+dedicated acceptance scenarios.
 
 The semantic wire shape already carries the full decoded Temporal activity
 context (headers, heartbeat details, timeouts, retry policy, priority, and

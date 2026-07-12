@@ -600,12 +600,14 @@ server. The integration target starts a fresh PostgreSQL and Temporal Server
 Compose project, checks the schemas and frontend, runs the OCaml-owned Core
 lifecycle executable, then runs a public worker and a separate public driver.
 The worker executes registered workflows and activities. The driver is a
-one-shot test runner, not a worker. Its current implementation starts six
-workflows and asserts four exact success payloads, one typed non-retryable
-failure, and one exact-run cancellation after observing a per-run marker
-activity. The historical live evidence covers the five baseline assertions;
-the six-run cancellation assertion is implemented and locally covered, but is
-not live-verified because its attempted Actions run was cancelled. The
+one-shot test runner, not a worker. Its current implementation starts seven
+workflows and asserts five exact success payloads (including the heartbeat-
+detail retry), one typed non-retryable failure, and one exact-run cancellation
+after observing a per-run marker activity. The historical live evidence covers
+the five baseline assertions (four successful workflows and one typed failure);
+the seven-run heartbeat/cancellation assertion is implemented and locally
+covered, but is not live-verified because its attempted Actions run was
+cancelled. The
 implementation scope and evidence boundary are described in the
 [acceptance design](../reference/two-ocaml-binary-e2e-acceptance.md).
 

@@ -17,7 +17,9 @@
  * same OCaml value. Copying this C structure remains forbidden. */
 typedef struct owned_response {
   ocaml_temporal_core_result result;
-  int live;
+  /* Atomic so explicit free and GC finalization cannot race a double free if
+   * the same response value is observed from more than one Domain. */
+  atomic_int live;
 } owned_response;
 
 /* OCaml custom block owning the sole native runtime pointer for one SDK
@@ -49,9 +51,11 @@ static owned_runtime *Runtime_val(value runtime) {
 
 /* Release Rust allocations exactly once and poison further field access. */
 static void release_response(owned_response *response) {
-  if (response->live) {
+  int expected = 1;
+  if (atomic_compare_exchange_strong_explicit(
+          &response->live, &expected, 0, memory_order_acq_rel,
+          memory_order_acquire)) {
     (void)ocaml_temporal_core_v1_result_free(&response->result);
-    response->live = 0;
   }
 }
 
@@ -107,7 +111,7 @@ static value alloc_response(void) {
   response = caml_alloc_custom(&response_operations, sizeof(owned_response), 0, 1);
   owned = Response_val(response);
   memset(owned, 0, sizeof(*owned));
-  owned->live = 1;
+  atomic_init(&owned->live, 1);
   CAMLreturn(response);
 }
 
@@ -176,7 +180,7 @@ static value invoke_runtime(value runtime, runtime_operation operation) {
 /* Reject use-after-free deterministically at the private binding boundary. */
 static owned_response *require_live(value response) {
   owned_response *owned = Response_val(response);
-  if (!owned->live) {
+  if (atomic_load_explicit(&owned->live, memory_order_acquire) == 0) {
     caml_invalid_argument("Temporal native response has already been freed");
   }
   return owned;

@@ -299,6 +299,10 @@ fn preserves_realistic_first_workflow_activation() {
             seconds: 1_720_000_000,
             nanos: 123,
         }),
+        // Temporal Server emits an explicit zero first-task backoff for an
+        // ordinary non-cron start. The bridge accepts this canonical default
+        // but does not expose it as workflow metadata.
+        cron_schedule_to_schedule_interval: Some(prost_wkt_types::Duration::default()),
         priority: Some(temporalio_protos::temporal::api::common::v1::Priority {
             priority_key: 2,
             fairness_key: "tenant-a".to_owned(),
@@ -349,6 +353,25 @@ fn preserves_realistic_first_workflow_activation() {
     assert_eq!(
         workflow_protocol::decode_activation(&json).unwrap(),
         semantic
+    );
+
+    // A non-zero first-task backoff carries scheduling semantics and must not
+    // be silently discarded while this protocol slice has no representation
+    // for it.
+    let mut unsupported_backoff = core.clone();
+    let Some(Variant::InitializeWorkflow(initialize)) =
+        unsupported_backoff.jobs[0].variant.as_mut()
+    else {
+        panic!("realistic activation must contain initialization");
+    };
+    initialize.cron_schedule_to_schedule_interval = Some(prost_wkt_types::Duration {
+        seconds: 1,
+        nanos: 0,
+    });
+    let error = workflow_protocol::activation_from_core(&unsupported_backoff).unwrap_err();
+    assert_eq!(
+        error.code,
+        workflow_protocol::CoreConversionErrorCode::Unsupported
     );
 
     let mut unknown_suggestion = core;

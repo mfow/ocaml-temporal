@@ -1400,7 +1400,15 @@ fn eviction_reason_from_core(value: i32) -> Result<EvictionReason, CoreConversio
     )
 }
 
-/// Checks that initialize fields omitted from this first slice are all defaulted.
+/// Checks that initialize fields omitted from this first slice are either
+/// defaulted or carry only a documented Core compatibility default.
+///
+/// Temporal Core maps the server's `first_workflow_task_backoff` field to
+/// `cron_schedule_to_schedule_interval`. The Temporal server serializes a
+/// normal, non-cron start with an explicit zero duration in that field. Zero
+/// has no scheduling meaning and therefore does not need a public semantic
+/// representation; every non-zero value remains rejected so a cron delay or
+/// another start-time delay cannot be silently discarded.
 fn validate_initialize_subset(
     value: &core_activation::InitializeWorkflow,
 ) -> Result<(), CoreConversionError> {
@@ -1411,7 +1419,10 @@ fn validate_initialize_subset(
         || value.retry_policy.is_some()
         || !value.cron_schedule.is_empty()
         || value.workflow_execution_expiration_time.is_some()
-        || value.cron_schedule_to_schedule_interval.is_some()
+        || value
+            .cron_schedule_to_schedule_interval
+            .as_ref()
+            .is_some_and(|duration| duration.seconds != 0 || duration.nanos != 0)
         || value.memo.is_some()
         || value.search_attributes.is_some()
     {

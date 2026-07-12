@@ -44,6 +44,14 @@ accepted only at their documented default; a non-default value returns a typed
 [protocol reference](core-protocol.md), machine-readable schemas, and
 [ADR 0006](../decisions/0006-first-workflow-semantic-protocol.md).
 
+There is one normal-start compatibility default in the initializer: Temporal
+Core maps the server's `first_workflow_task_backoff` to
+`cron_schedule_to_schedule_interval`, and Temporal Server sends an explicit
+zero duration for an ordinary non-cron start. The bridge accepts exactly that
+zero value because it carries no scheduling meaning. A non-zero duration (or a
+cron schedule) remains `Unsupported` until the semantic protocol models the
+delay explicitly.
+
 After protocol decoding, the private pure-OCaml
 [`Native_execution`](native-execution-translation.md) adapter translates jobs
 into the deterministic execution kernel and translates its commands back into

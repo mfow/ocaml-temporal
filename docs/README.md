@@ -87,8 +87,8 @@ opaque bytes with encoding metadata.
 | Layer | Evidence today | Important limit |
 | --- | --- | --- |
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
-| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose path covering four successes, one typed workflow failure, and one exact-run cancellation | Child failure/cancellation, replay, and recovery scenarios remain untested live |
-| Public native client | Typed start/wait/cancel protocol plus six real two-process Compose terminal assertions | Continued-as-new and other client commands remain untested live |
+| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose path with historical evidence for four successes and one typed workflow failure. The six-run exact-run cancellation assertion is implemented and locally covered, but is not live-verified because its attempted Actions run was cancelled. | Child failure/cancellation, replay, and recovery scenarios remain untested live |
+| Public native client | Typed start/wait/cancel protocol. The historical live evidence is the five-run baseline; the sixth exact-run cancellation assertion is implemented and locally covered, but is not live-verified. | Continued-as-new and other client commands remain untested live |
 | Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests and one live parent/child success path | Child start failure, cancellation, retry, replay, and recovery remain untested live |
 | Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts exact results | The first gate is deliberately narrow and does not yet cover every terminal or recovery path |
 

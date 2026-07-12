@@ -20,14 +20,20 @@ server response into the normalized JSON document described by
 The adapter must preserve the original event IDs and order, omit payload bytes,
 and reject duplicate or unknown JSON fields before invoking the validator.
 
-The document contains only the workflow ID, the exact run ID returned by
-`Client.start`, and a bounded list of event IDs and event type names. It is a
-projection, not a replacement for Temporal history: event attributes are
-intentionally excluded because the acceptance test only needs ordering and
-identity at this synchronization boundary. Event IDs and
-`history_length` are canonical decimal strings rather than JSON numbers. This
-avoids the precision loss that JavaScript-style JSON parsers introduce for
-Temporal's signed 64-bit values.
+The normalized history document contains only the workflow ID, the exact run ID
+returned by `Client.start`, and a bounded list of event IDs and event type
+names. It is a projection, not a replacement for Temporal history: event
+attributes are intentionally excluded because the acceptance test only needs
+ordering and identity at this synchronization boundary. Event IDs are
+canonical decimal strings rather than JSON numbers. This avoids the precision
+loss that JavaScript-style JSON parsers introduce for Temporal's signed 64-bit
+values.
+
+The separate worker diagnostics document (`diagnostics.json`) carries each
+generation's `history_length`, also as a canonical decimal string. Its shape is
+defined by
+[`restart-replay-diagnostics.schema.json`](../schemas/acceptance/restart-replay-diagnostics.schema.json),
+not by the normalized history schema.
 
 ## Validation stages
 

@@ -18,10 +18,16 @@ type ('input, 'output) contextual_implementation =
     local, context-aware, or remote-only. Keeping the mode explicit prevents a
     command-only reference from being invoked as though it owned worker code. *)
 type ('input, 'output) t = {
+  (* Stable Temporal activity type name used by registration and schedule
+     commands; construction validates that it is bridge-safe. *)
   name : string;
+  (* Codec used to decode arguments delivered to this activity. *)
   input : 'input Codec.t;
+  (* Codec used to encode successful activity results. *)
   output : 'output Codec.t;
+  (* Plain local callback, absent for contextual and remote definitions. *)
   implementation : ('input, 'output) implementation option;
+  (* Context-aware local callback, absent for plain and remote definitions. *)
   contextual_implementation :
     ('input, 'output) contextual_implementation option;
 }
@@ -147,8 +153,11 @@ end
     variant keeps the deterministic mapping to Temporal Core explicit and
     avoids exposing the private runtime constructors in the public API. *)
 type cancellation_type =
+  (* Ask Core to request cancellation and resolve the parent when possible. *)
   | Try_cancel
+  (* Keep the parent future pending until Core confirms cancellation completed. *)
   | Wait_cancellation_completed
+  (* Resolve the parent without requesting cancellation of the activity. *)
   | Abandon
 
 (* Converts the public cancellation policy to the private runtime variant at
@@ -165,11 +174,17 @@ module Retry_policy = struct
       re-parsing a decimal value during every command while ensuring that
       replay sees precisely the bits selected by the caller. *)
   type t = {
+    (* Delay before the first retry attempt, represented exactly in ms. *)
     initial_interval : Duration.t;
+    (* Finite multiplier applied to each retry delay. *)
     backoff_coefficient : float;
+    (* Canonical unsigned IEEE-754 bits used by the JSON bridge. *)
     backoff_coefficient_bits : string;
+    (* Upper bound applied to computed retry delays. *)
     maximum_interval : Duration.t;
+    (* Maximum attempt count; zero means that Temporal imposes no limit. *)
     maximum_attempts : int;
+    (* Error type names that should fail without another attempt. *)
     non_retryable_error_types : string list;
   }
 
@@ -368,6 +383,8 @@ let start ?activity_id ?task_queue ?schedule_to_close_timeout
                   let heartbeat_timeout =
                     Option.map Duration.to_ms heartbeat_timeout
                   in
+                  (* All optional durations are now exact integer milliseconds;
+                     the runtime owns default timeout insertion and validation. *)
                   let retry_policy =
                     Option.map runtime_retry_policy retry_policy
                   in

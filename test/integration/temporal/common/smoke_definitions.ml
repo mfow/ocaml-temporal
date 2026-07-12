@@ -127,3 +127,17 @@ let non_retryable_failure =
       Error
         (Temporal.Error.make ~non_retryable:true ~category:`Workflow
            ~message:"intentional terminal workflow failure" ()))
+
+(** Keeps a workflow execution open on a durable timer until the driver asks
+    Temporal to cancel its exact run. The long interval is intentional: the
+    workflow must still be outstanding when [Temporal.Client.cancel] returns,
+    while the body remains replay-safe because it uses no wall clock, random
+    value, I/O, or process-global state. Cancellation is converted by the
+    native worker into a terminal [Cancel_workflow_execution] command before
+    the timer fires. *)
+let long_running_cancellation =
+  Temporal.Workflow.define ~name:"smoke.long_running_cancellation"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match Temporal.Workflow.sleep (Temporal.Duration.of_ms 30_000L) with
+      | Error error -> Error error
+      | Ok () -> Ok (String.uppercase_ascii (seed ^ ":finished")))

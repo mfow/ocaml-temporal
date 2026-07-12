@@ -1,9 +1,9 @@
 (** Driver process for the two-OCaml-binary live acceptance test.
 
     This executable is a deliberately small, typed harness. It starts the
-    fan-out, timer, retry, parent/child, and typed-failure scenarios before
-    waiting for any of them, then checks the exact terminal outcomes returned
-    by the public client API. Without
+    fan-out, timer, retry, parent/child, typed-failure, and long-running
+    cancellation scenarios before waiting for any of them, then checks the
+    exact terminal outcomes returned by the public client API. Without
     [TEMPORAL_TWO_BINARY_LIVE=1] the process exits with a distinct status
     instead of accidentally exercising the in-memory [mock://] backend and
     giving a false live-smoke signal. *)
@@ -145,6 +145,58 @@ let require_non_retryable_failure operation expected_message = function
                 (terminal_kind outcome)))
   | Error error -> Error error
 
+(** Requires the exact run to report Temporal's cancellation category after a
+    successful cancellation acknowledgement. The assertion deliberately checks
+    public metadata rather than Core's full failure-info text: category,
+    retryability, and the stable message are the contract callers can safely
+    branch on. *)
+let require_cancelled operation = function
+  | Ok (Client.Cancelled error) ->
+      let view = Error.view error in
+      if
+        view.category = `Cancelled
+        && not view.non_retryable
+        && String.equal view.message "workflow execution was cancelled"
+      then Ok ()
+      else
+        Error
+          (Error.defect
+             ~message:
+               (Printf.sprintf
+                  "%s returned unexpected cancellation metadata (kind=%s, non_retryable=%b)"
+                  operation (Error.kind error) view.non_retryable))
+  | Ok outcome ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "%s returned terminal outcome %s" operation
+                (terminal_kind outcome)))
+  | Error error -> Error error
+
+(** Sends an exact-run cancellation request and records only its acknowledgement
+    metadata. A successful result means Temporal accepted the control request;
+    the caller must still wait on the same handle to observe the terminal
+    cancellation. *)
+let cancel_workflow handle =
+  let operation = "cancel:" ^ Client.workflow_id handle in
+  let started = Unix.gettimeofday () in
+  phase ~operation ~status:"begin" ~workflow_id:(Client.workflow_id handle)
+    ~run_id:(Client.run_id handle) ();
+  match
+    Client.cancel ~request_id:"two-binary-cancel-long-running-1"
+      ~reason:"live acceptance requested cancellation" handle
+  with
+  | Ok () ->
+      phase ~operation ~status:"acknowledged"
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Ok ()
+  | Error error ->
+      phase ~operation ~status:("error:" ^ Error.kind error)
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Error error
+
 (** Starts one workflow and records the server-issued run identity only after
     the typed client has accepted it. *)
 let start_workflow client ~workflow ~task_queue ~id ~input =
@@ -235,10 +287,16 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-non-retryable-failure" ~input:"smoke"
         in
-        (* All starts intentionally happen before the first wait. This proves
-           the client retains independent exact-run handles while the worker
-           services activity-only, retrying, parent/child, and failing workflow
-           executions. *)
+        let* cancellation_handle =
+          start_workflow client ~workflow:Definitions.long_running_cancellation
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-long-running-cancellation" ~input:"smoke"
+        in
+        (* All six starts intentionally happen before the first wait. The
+           cancellation request is sent immediately, while the long timer keeps
+           that exact execution outstanding; this proves that acknowledgement
+           and terminal cancellation are separate client operations. *)
+        let* () = cancel_workflow cancellation_handle in
         let* fan_result = wait_workflow fan_handle in
         let* () =
           require_completed "smoke.fan_out" "SMOKE:LEFT|SMOKE:RIGHT"
@@ -260,8 +318,13 @@ let run () =
             (Ok parent_result)
         in
         let* failure_result = wait_workflow failure_handle in
-        require_non_retryable_failure "smoke.non_retryable_failure"
-          "intentional terminal workflow failure" (Ok failure_result)
+        let* () =
+          require_non_retryable_failure "smoke.non_retryable_failure"
+            "intentional terminal workflow failure" (Ok failure_result)
+        in
+        let* cancellation_result = wait_workflow cancellation_handle in
+        require_cancelled "smoke.long_running_cancellation"
+          (Ok cancellation_result)
       in
       finish result
 

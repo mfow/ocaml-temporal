@@ -139,6 +139,7 @@ let run () =
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
               Worker.workflow Definitions.non_retryable_failure;
+              Worker.workflow Definitions.long_running_cancellation;
             ]
           ~activities:
             [

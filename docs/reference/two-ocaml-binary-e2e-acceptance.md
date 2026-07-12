@@ -16,9 +16,12 @@ driver remain guarded by
 `smoke-driver` is run. Each acceptance run starts after `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts all five top-level workflows before
-waiting for any result. Four must complete with exact payloads and one must
-return a typed non-retryable workflow failure. This prevents a TCP check or a
+later acceptance run. The driver starts all six top-level workflows before
+waiting for any result. It acknowledges cancellation for
+`two-binary-long-running-cancellation` before the first wait. Four must
+complete with exact payloads, one must return a typed non-retryable workflow
+failure, and the cancelled execution must return typed `Cancelled` metadata
+when the driver waits on that same exact handle. This prevents a TCP check or a
 process that merely started from being reported as an SDK acceptance pass.
 
 The public `Temporal.Client` and `Temporal.Worker` now route HTTP(S) calls
@@ -41,8 +44,11 @@ the registered child waits on a short durable timer, and the driver asserts the
 parent's exact result. It also runs `smoke.activity_retry`: the first
 `smoke.retry_once` attempt returns a retryable activity error and the second
 returns `SMOKE:ATTEMPT:2`, which the driver compares as an exact terminal
-payload. A passing `make test-temporal-integration` run is the evidence for
-these concrete happy paths only; child start failures, cancellation, retry
+payload. The driver also starts `smoke.long_running_cancellation`, sends an
+exact-run cancellation request before waiting for any result, and requires the
+same handle to return a typed `Cancelled` error. A passing
+`make test-temporal-integration` run is the evidence for these concrete happy
+paths and cancellation path only; child start failures, activity retry
 timeouts, replay, and worker recovery remain separate scenarios. The
 intentionally broader follow-up requirements are listed in [Required
 assertions and failure evidence](#required-assertions-and-failure-evidence).
@@ -86,6 +92,10 @@ sequenceDiagram
 
     D->>R1: Client.start
     R1->>S: StartWorkflowExecution
+    D->>R1: Client.cancel exact long-running handle
+    R1->>S: RequestCancelWorkflowExecution
+    S-->>R1: cancellation acknowledgement
+    R1-->>D: acknowledgement
     W->>R2: Worker.poll_workflow
     R2->>S: Core poll
     R2->>W: validated activation JSON
@@ -96,6 +106,9 @@ sequenceDiagram
     R2->>W: validated activity task JSON
     W->>R2: validated activity completion JSON
     R2->>S: Core completion
+    R2->>W: validated cancellation activation JSON
+    W->>R2: validated cancel-workflow completion JSON
+    R2->>S: Core cancellation completion
     D->>R1: Workflow_handle.await_result
     R1->>S: repeated bounded exact-run history waits
     R1->>D: typed terminal result
@@ -187,6 +200,10 @@ registers these local definitions with the public SDK:
   retryable error on its first call and includes the successful attempt number
   in its second result, giving the driver a direct assertion that Temporal
   performed the retry.
+* `smoke.long_running_cancellation`: waits on a deliberately long durable
+  timer. The driver cancels the exact run while that timer is outstanding and
+  later asserts the typed `Cancelled` category, `non_retryable=false`, and the
+  stable cancellation message.
 * `smoke.mock_transform`: the OCaml mock activity implementation used by the
   two activity-oriented workflows. It has no network or wall-clock dependency
   and returns a value wholly determined by its decoded input.
@@ -197,9 +214,9 @@ registers these local definitions with the public SDK:
 
 The fixture implements this shape with the concrete `smoke.fan_out`,
 `smoke.timer_then_activity`, `smoke.activity_retry`,
-`smoke.child_after_timer`, `smoke.parent_awaits_child`,
-`smoke.mock_transform`, and `smoke.retry_once` definitions followed
-by a long-running public worker call:
+`smoke.long_running_cancellation`, `smoke.child_after_timer`,
+`smoke.parent_awaits_child`, `smoke.mock_transform`, and `smoke.retry_once`
+definitions, all of which are registered by the long-lived public worker:
 
 ```ocaml
 let () =
@@ -237,23 +254,26 @@ The driver must:
 1. connect through `Temporal.Client` to the fixture namespace;
 2. start `smoke.fan_out`, `smoke.timer_then_activity`,
    `smoke.activity_retry`, `smoke.parent_awaits_child`, and
-   `smoke.non_retryable_failure` with distinct,
-   known workflow IDs before it waits for any of them;
-3. retain the five public workflow handles returned by `start`;
-4. wait for each handle's terminal result through the public client API; and
-5. decode and compare the four successful results, require the fifth result to
-   be a typed non-retryable workflow failure, then exit zero only if every
-   assertion succeeded.
+   `smoke.non_retryable_failure`, and `smoke.long_running_cancellation` with
+   distinct, known workflow IDs before it waits for any of them;
+3. retain the six public workflow handles returned by `start`;
+4. call `Temporal.Client.cancel` on the exact long-running handle and require
+   its positive acknowledgement before waiting for any terminal result;
+5. wait for each handle's terminal result through the public client API; and
+6. decode and compare the four successful results, require the fifth result to
+   be a typed non-retryable workflow failure, require the sixth result to be a
+   typed `Cancelled` outcome with expected metadata, then exit zero only if
+   every assertion succeeded.
 
-Starting all five executions before the first wait is material. It demonstrates
-that a client can hold independent workflow handles and that the worker can
-service separate workflow executions, rather than passing a single serial
-request through a readiness-only check. Workflow IDs are fixed and unique
-within the freshly created fixture database, and run IDs returned by `start`
-are retained for exact result waiting. Because the acceptance target recreates
-that database for every run, it does not depend on a retained volume or on
-test-run suffixes. Randomness in the driver is acceptable but randomness in a
-workflow is not.
+Starting all six executions before the first wait is material. It demonstrates
+that a client can hold independent workflow handles while a control request is
+issued for one exact run, and that the worker can service separate workflow
+executions rather than passing a single serial request through a readiness-only
+check. Workflow IDs are fixed and unique within the freshly created fixture
+database, and run IDs returned by `start` are retained for exact result and
+cancellation operations. Because the acceptance target recreates that database
+for every run, it does not depend on a retained volume or on test-run suffixes.
+Randomness in the driver is acceptable but randomness in a workflow is not.
 
 The driver returns a nonzero status for connection, start, terminal workflow,
 codec, timeout, or assertion failures. A workflow failure is an expected
@@ -422,30 +442,37 @@ thread.
 The driver's successful exit establishes all of the following:
 
 1. each top-level workflow start returned a nonempty run ID that the driver
-   retained for its corresponding exact-run wait; the driver starts five
+   retained for its corresponding exact-run wait; the driver starts six
    distinct top-level runs before its first wait;
-2. all five terminal waits matched the exact workflow ID and run ID returned by
+2. the cancellation request names the long-running workflow's exact retained
+   workflow ID and run ID, and Temporal acknowledges it before the driver waits;
+3. all six terminal waits matched the exact workflow ID and run ID returned by
    their own starts;
-3. `smoke.fan_out` returned the ordered result requiring both mock activity
+4. `smoke.fan_out` returned the ordered result requiring both mock activity
    completions;
-4. `smoke.timer_then_activity` returned its expected result after a durable
+5. `smoke.timer_then_activity` returned its expected result after a durable
    timer and its mock activity completion;
-5. `smoke.activity_retry` returned `SMOKE:ATTEMPT:2` only after its first
+6. `smoke.activity_retry` returned `SMOKE:ATTEMPT:2` only after its first
    activity attempt failed and Temporal scheduled the second attempt;
-6. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
+7. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
    completed its own durable timer; and
-7. the four success responses were not workflow failures, cancellations,
+8. the four success responses were not workflow failures, cancellations,
    timeouts, terminations, continued-as-new outcomes, codec failures, or
    bridge failures; and
-8. `smoke.non_retryable_failure` returned a `Workflow` error with
-   `non_retryable=true` and the stable intentional-failure message prefix.
+9. `smoke.non_retryable_failure` returned a `Workflow` error with
+   `non_retryable=true` and the stable intentional-failure message prefix; and
+10. `smoke.long_running_cancellation` returned a `Cancelled` error with
+    `non_retryable=false` and the stable message `workflow execution was
+    cancelled`.
 
-The driver logs no-payload phase records for starts, exact-run waits, terminal
-classes, and operation latency. The worker logs readiness and shutdown phases.
-The harness captures these records only for failure diagnosis; result
-assertions, not log text, are the success oracle. Per-activation/task
-identifiers and completion latency are a future observability enhancement and
-must remain payload-free if added.
+The driver logs no-payload phase records for starts, exact-run cancellation,
+exact-run waits, terminal classes, and operation latency. The Makefile requires
+the driver's `client_shutdown status=ok` marker, and after that stops the
+worker and requires `two-binary worker stopped cleanly`. The harness captures
+these records only for failure diagnosis; result assertions, not log text, are
+the workflow success oracle. Per-activation/task identifiers and completion
+latency are a future observability enhancement and must remain payload-free if
+added.
 
 The first live test is intentionally small. With this success path verified,
 extend the same two-binary topology rather than adding a separate pseudo-worker
@@ -457,7 +484,8 @@ test:
 * child workflow start failure, cancellation, retry policy, and non-success
   terminal handling through the worker;
 * worker restart, replay, sticky-cache eviction, and continued execution; and
-* cancellation and graceful shutdown while work is outstanding.
+* cancellation of child/activity work and graceful shutdown while multiple
+  executions are outstanding.
 
 Child-start commands and both child-resolution jobs have a closed bilateral
 schema, Core conversion, pure-OCaml lifecycle tests, and this one real-server
@@ -465,8 +493,8 @@ parent/child success assertion. The activity retry policy has the same
 separation: bilateral policy validation is synthetic, while CI run
 [`29187733405`](https://github.com/mfow/ocaml-temporal/actions/runs/29187733405)
 makes its attempt-2 result live evidence for one server-managed retry. Neither
-assertion claims coverage of child failure, cancellation, retry timeouts,
-replay, or recovery behavior.
+assertion claims coverage of child failure/cancellation, retry timeouts, replay,
+or recovery behavior.
 
 ## Completion criteria for this design
 
@@ -477,9 +505,10 @@ following are true:
 * it builds two separate OCaml executables that both link `temporal-sdk`;
 * the worker's live Core poll/complete loops execute the registered OCaml
   workflow and mock activity code;
-* the driver starts all five top-level workflows through `temporal-sdk`, waits
-  for their results through `temporal-sdk`, and performs the listed success and
-  typed-failure assertions;
+* the driver starts all six top-level workflows through `temporal-sdk`, sends
+  an exact-run cancellation request, waits for their results through
+  `temporal-sdk`, and performs the listed success, typed-failure, and
+  cancellation assertions;
 * the fixture exits nonzero for a failed driver assertion, a workflow failure,
   a worker crash, or a cleanup timeout; and
 * the focused test plus the normal Makefile verification and dependency

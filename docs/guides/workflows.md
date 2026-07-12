@@ -465,12 +465,13 @@ make test-temporal-integration
 ```
 
 The first two use deterministic test seams and do not require a running
-server. The integration target starts real PostgreSQL and Temporal Server,
-checks the schemas and frontend, runs the OCaml-owned Core lifecycle
-executable, then runs a public worker and a separate public driver. The driver
-starts three workflows and asserts their exact results, including one parent
-awaiting a timer-owning child, before the isolated Compose volume is cleaned.
-Its current live scope is described in the
+server. The integration target starts a fresh PostgreSQL and Temporal Server
+Compose project, checks the schemas and frontend, runs the OCaml-owned Core
+lifecycle executable, then runs a public worker and a separate public driver.
+The worker executes registered workflows and activities. The driver is a
+one-shot test runner, not a worker: it starts three workflows and asserts their
+exact results, including one parent awaiting a timer-owning child, before the
+PostgreSQL volume is removed. Its current live scope is described in the
 [acceptance design](../reference/two-ocaml-binary-e2e-acceptance.md).
 
 For the complete ownership and protocol rules, read the [runtime

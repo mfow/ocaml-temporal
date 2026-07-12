@@ -16,10 +16,11 @@ background threads.
 ABI version 1 uses only symbols beginning with `ocaml_temporal_core_v1_`.
 Before using the bridge, OCaml asks Rust which ABI version it implements and
 checks that it matches `OCAML_TEMPORAL_CORE_ABI_VERSION`. The bridge represents
-the Rust runtime, and will represent server connections and workers, with
-opaque handles. “Opaque” means OCaml can pass a handle back to Rust but cannot
-inspect the Rust object it refers to. A connection handle is only one internal
-part of the SDK; the public package is not merely a service client.
+the Rust runtime with one opaque handle. Client connection and worker state are
+subordinate Rust-owned state in that runtime; they are not separate handles
+passed through the C ABI. “Opaque” means OCaml can pass the runtime handle back
+to Rust but cannot inspect the Rust object it refers to. A connection is only
+one internal part of the SDK; the public package is not merely a service client.
 
 The canonical header is
 `rust/core-bridge/include/ocaml_temporal_core.h`. Both Rust and C compile-time
@@ -70,13 +71,13 @@ See the translation reference for the complete mapping table and test coverage.
 
 ## Native client start and exact-run wait
 
-The private Rust client adapter adds two JSON ABI operations:
-`ocaml_temporal_core_v1_client_start_workflow_json` and
-`ocaml_temporal_core_v1_client_wait_workflow_json`. They are deliberately
-lower-level than the public OCaml `Client` module. The adapter uses Core's raw
-`WorkflowService` trait because workflow type names and payloads are dynamic at
-the OCaml boundary; it does not instantiate Rust's statically typed workflow
-definitions.
+The private Rust client adapter exposes strict JSON operations for synchronous
+workflow starts, asynchronous start admission and bounded ticket
+polling/waiting, exact-run waits, and exact-run cancellation. The operations
+are deliberately lower-level than the public OCaml `Client` module. The
+adapter uses Core's raw `WorkflowService` trait because workflow type names and
+payloads are dynamic at the OCaml boundary; it does not instantiate Rust's
+statically typed workflow definitions.
 
 The start request contains the stable idempotency key `request_id`,
 `namespace`, `workflow_id`, `workflow_type`, `task_queue`, and an ordered
@@ -127,7 +128,7 @@ status text, endpoint details, task identifiers, and payload data cannot cross
 the Rust/C/OCaml boundary. This is intentionally a discard, not a redacted
 copy: the current logging policy does not expose those private diagnostics.
 
-All client identifiers are nonempty and NUL-free. The schemas state the
+All client-operation identifiers are nonempty and NUL-free. The schemas state the
 65,536-character necessary bound, while the bilateral runtime validators apply
 the authoritative 65,536-byte UTF-8 limit, reject duplicate members, and
 reparse encoded output. JSON Schema counts Unicode characters rather than
@@ -136,14 +137,17 @@ checks.
 
 ## Result and buffer ownership
 
-Every fallible operation accepts a writable result pointer and returns the same
-status stored in that result. Status zero is success. Nonzero statuses describe
-invalid arguments, ABI mismatch, a contained Rust panic, an invalid lifecycle
-transition, a worker failure, or a semantic protocol failure. Worker polling
-and exact-run client waits use the expected `NOT_READY` status. For a worker
-lane it means no task is queued; for a client wait it means the 100 ms history
-wait elapsed before a close event. In both cases the caller or a later
-orchestration loop can retry through the supervisor mailbox.
+Every fallible operation that returns a result document accepts a writable
+result pointer and returns the same status stored in that result. Runtime
+close/dispose and result disposal have no result document and return their
+status directly. Status zero is success. Nonzero statuses cover invalid
+arguments, ABI mismatch, a contained Rust panic, internal bridge failure,
+invalid lifecycle state, configuration, connection, worker, outstanding-task,
+not-ready, protocol, and already-started failures. Worker polling and exact-run
+client waits use the expected `NOT_READY` status. For a worker lane it means no
+task is queued; for a client wait it means the 100 ms history wait elapsed
+before a close event. In both cases the caller or a later orchestration loop
+can retry through the supervisor mailbox.
 `OUTSTANDING_TASKS` means shutdown cannot finalize until the language side
 completes leased work.
 
@@ -280,8 +284,10 @@ stable ABI.
 
 ## Stateful handle ownership
 
-The reserved runtime, client, and worker handles are opaque references to
-Rust-owned SDK state, not OS handles and not public OCaml values:
+The reserved runtime, client, and worker types are opaque references to
+Rust-owned SDK state, not OS handles and not public OCaml values. Only the
+runtime pointer crosses the current C ABI; client and worker state are fields
+within that Rust runtime:
 
 - a runtime owns Tokio and shared Core infrastructure;
 - a client owns one cluster connection and its authentication/configuration;
@@ -381,11 +387,12 @@ Shutdown first closes ledger admission and both readiness signals, then asks
 Core to wake both polls and joins the lane tasks. Existing ready and leased
 work remains completable while the worker drains. Core finalization is refused
 until the ledger is empty, and only then consumes the worker before client and
-runtime destruction. The
-garbage-collection fallback cannot obtain missing language completions; after
-waking and joining the lanes it force-drops an undrained worker on the dedicated
-cleanup thread. This preserves memory ownership and collector progress, while
-explicit supervisor shutdown remains the required graceful path.
+runtime destruction. The garbage-collection fallback cannot obtain missing
+language completions. On the dedicated cleanup thread it force-fails
+outstanding Core tasks, joins the poll lanes, and attempts normal finalization;
+it drops an undrained worker only if finalization still fails. This preserves
+memory ownership and collector progress, while explicit supervisor shutdown
+remains the required graceful path.
 
 ### Runtime destruction
 

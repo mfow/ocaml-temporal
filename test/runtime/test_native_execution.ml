@@ -459,13 +459,27 @@ let test_activity_command_translation_and_validation () =
             cancellation_type = Activation.Try_cancel;
             do_not_eagerly_execute = false;
           }));
-  (* Child workflows remain unsupported until the semantic protocol gains the
-     complete Core command record; retaining this assertion prevents an
-     accidental lossy conversion while activity support evolves. *)
-  expect_error_code "child command" "unsupported"
-    (Native_execution.command_to_protocol
-       (Activation.Start_child_workflow
-          { seq = 2L; id = "child/1"; name = "child"; input }));
+  begin match
+    unwrap "child command translation"
+      (Native_execution.command_to_protocol
+         (Activation.Start_child_workflow
+            { seq = 2L; id = "child/1"; name = "child"; input }))
+  with
+  | Protocol.Start_child_workflow
+      {
+        seq = 2L;
+        workflow_id = "child/1";
+        workflow_type = "child";
+        input = [ child_input ];
+      }
+    when child_input =
+      {
+        Protocol.metadata = [ ("encoding", Bytes.of_string "binary/null") ];
+        data = Bytes.empty;
+      } ->
+      ()
+  | _ -> failwith "child command fields were not preserved"
+  end;
   let invalid_metadata : Temporal.Payload.t =
     { metadata = [ ("encoding", "\255") ]; data = Bytes.empty }
   in

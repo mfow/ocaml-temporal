@@ -63,6 +63,31 @@ configured and default queues, UTF-8/identifier validation, payload copying,
 cancellation and eager flags, timeout validation, and activity lease
 retirement.
 
+## 2026-07-12: Native child-workflow start command translation
+
+Status: focused OCaml and Rust protocol/translation tests pass locally; child
+result resolution, native worker wiring, and live Compose acceptance remain
+follow-up work.
+
+The private bilateral completion protocol now has a closed
+`start_child_workflow` command. The OCaml runtime maps its deterministic
+sequence, child workflow ID and type, and copied input payload into that
+record. Rust validates the identifiers, emits Temporal Core's
+`StartChildWorkflowExecution` command for focused translation, and rejects
+non-default Core options that the current OCaml API does not expose instead of
+silently discarding them. The native worker gates this command before
+submission until child-resolution activations are decoded, so no partially
+supported live path can strand a parent lease. The JSON schema and
+both-language round-trip tests cover the semantic shape.
+
+The activation side still lacks Core's child-resolution job, so this milestone
+does not claim that a workflow can await a child result or that the live
+two-binary acceptance test exercises child completion.
+
+Evidence: `dune runtest --force test/bridge`, the focused native execution
+tests, and `cargo test --manifest-path rust/Cargo.toml --locked --test
+workflow_protocol` pass on the representative host toolchain.
+
 ## 2026-07-12: Wakeable native worker readiness seam
 
 Status: focused Rust readiness, C ABI, and OCaml private-wrapper tests are
@@ -104,8 +129,9 @@ typed workflow poll/complete operations. It registers heterogeneous executable
 workflow definitions by name, keeps one existential `Execution.t` per Temporal
 run ID, serializes calls with an OCaml mutex, applies validated activations in
 deterministic order, and removes runs only after the supervisor confirms lease
-retirement. Invalid initialization, unknown runs, unsupported child-workflow
-commands, and codec failures become typed non-retryable failure completions;
+retirement. Invalid initialization, unknown runs, child result-resolution jobs
+that are not yet represented, and codec failures become typed non-retryable
+failure completions;
 the adapter never fabricates missing Core fields or silently drops a lease. Its
 constructor also validates the implicit activity queue (including empty, NUL,
 oversized, and invalid UTF-8 values) before publishing any worker state, so a

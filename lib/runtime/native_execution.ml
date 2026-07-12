@@ -562,11 +562,10 @@ let command_to_protocol command =
       let* () = validate_sequence "$.command.seq" seq in
       let* () = validate_identifier "$.command.id" id in
       let* () = validate_identifier "$.command.name" name in
-      let _ = input in
-      Error
-        (unsupported "$.command"
-           "start_child_workflow is not represented by the current workflow \
-            protocol")
+      let* input = protocol_payload "$.command.input" input in
+      Ok
+        (Protocol.Start_child_workflow
+           { seq; workflow_id = id; workflow_type = name; input = [ input ] })
   | Activation.Request_cancel_activity { seq } ->
       let* () = validate_sequence "$.command.seq" seq in
       Ok (Protocol.Request_cancel_activity { seq })

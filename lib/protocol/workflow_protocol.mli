@@ -173,6 +173,16 @@ type completion_command =
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
+  (** Starts a child workflow. The ordered payload list mirrors Temporal Core's
+      repeated input field; the current activation runtime emits one payload
+      and later revisions can add explicit child options without changing the
+      command's identity fields. *)
+  | Start_child_workflow of {
+      seq : int64;
+      workflow_id : string;
+      workflow_type : string;
+      input : payload list;
+    }
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; start_to_fire_timeout : duration }
   | Cancel_timer of { seq : int64 }

@@ -59,6 +59,37 @@ let test_valid_completion () =
   check_string "completion" expected (unwrap (Protocol.encode_completion value));
   ignore (unwrap (Protocol.decode_completion expected))
 
+(** Proves the child-workflow start command uses the same canonical payload
+    representation as activities while retaining its workflow identity. *)
+let test_start_child_workflow_command () =
+  let input : Protocol.payload =
+    {
+      metadata = [ ("encoding", Bytes.of_string "binary/null") ];
+      data = Bytes.empty;
+    }
+  in
+  let completion : Protocol.completion =
+    {
+      run_id = "parent-run";
+      commands =
+        [
+          Start_child_workflow
+            {
+              seq = 2L;
+              workflow_id = "child/1";
+              workflow_type = "child";
+              input = [ input ];
+            };
+        ];
+    }
+  in
+  let encoded = unwrap (Protocol.encode_completion completion) in
+  check_string "child command"
+    {|{"commands":[{"input":[{"data":{"data":"","encoding":"base64"},"metadata":{"encoding":{"data":"YmluYXJ5L251bGw=","encoding":"base64"}}}],"kind":"start_child_workflow","seq":2,"workflow_id":"child/1","workflow_type":"child"}],"run_id":"parent-run"}|}
+    encoded;
+  if unwrap (Protocol.decode_completion encoded) <> completion then
+    failwith "child command did not round-trip"
+
 (** Proves closed nested objects, numeric bounds, canonical binary data, and
     workflow semantic invariants are rejected identically by both languages. *)
 let test_invalid_documents () =
@@ -370,6 +401,7 @@ let run name test =
 let () =
   run "workflow activations" test_valid_activations;
   run "workflow completion" test_valid_completion;
+  run "start child workflow command" test_start_child_workflow_command;
   run "malformed workflow documents" test_invalid_documents;
   run "large nested payload" test_large_nested_payload;
   run "metadata key canonicalization" test_metadata_key_canonicalization;

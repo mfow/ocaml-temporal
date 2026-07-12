@@ -203,6 +203,10 @@ let run () =
               Worker.workflow Definitions.activity_heartbeat_retry;
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
+              Worker.workflow Definitions.child_non_retryable_failure;
+              Worker.workflow Definitions.parent_awaits_failed_child;
+              Worker.workflow Definitions.child_long_running;
+              Worker.workflow Definitions.parent_cancels_child;
               Worker.workflow Definitions.non_retryable_failure;
               Worker.workflow Definitions.long_running_cancellation;
             ]

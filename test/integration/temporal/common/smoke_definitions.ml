@@ -296,6 +296,77 @@ let parent_awaits_child =
         ~id:("two-binary-parent-child-" ^ seed)
         child_after_timer seed)
 
+(** A child workflow that fails with a deterministic, non-retryable workflow
+    error. Keeping the failure in the child (rather than failing the parent
+    directly) lets the acceptance driver observe the public child-workflow
+    error category and verify that the parent future is resolved exactly once. *)
+let child_non_retryable_failure =
+  Temporal.Workflow.define ~name:"smoke.child_non_retryable_failure"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun _seed ->
+      Error
+        (Temporal.Error.make ~non_retryable:true ~category:`Workflow
+           ~message:"intentional child workflow failure" ()))
+
+(** Propagates the terminal failure from [child_non_retryable_failure] through
+    the public direct-style child helper. The parent has no recovery branch on
+    purpose: a top-level [Client.Failed] result proves that Core translated the
+    child failure into the parent workflow's terminal outcome. *)
+let parent_awaits_failed_child =
+  Temporal.Workflow.define ~name:"smoke.parent_awaits_failed_child"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      Temporal.Child_workflow.execute
+        ~id:("two-binary-parent-failed-child-" ^ seed)
+        child_non_retryable_failure seed)
+
+(** Keeps a child execution outstanding until its parent requests cancellation.
+    The long timer prevents a broken cancellation command from being hidden by
+    natural completion, while the body remains replay-safe because it only
+    uses a durable Temporal timer and its input. *)
+let child_long_running =
+  Temporal.Workflow.define ~name:"smoke.child_long_running"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match Temporal.Workflow.sleep (Temporal.Duration.of_ms 30_000L) with
+      | Error error -> Error error
+      | Ok () -> Ok (String.uppercase_ascii (seed ^ ":child-finished")))
+
+(** Starts [child_long_running], requests cancellation through the opaque child
+    handle, and waits for the typed cancellation result. This deliberately
+    uses [Wait_cancellation_requested] so the parent cannot report success
+    until Core has delivered the child's cancellation acknowledgement. The
+    exact marker returned on success keeps the driver assertion independent of
+    Core's verbose failure diagnostic. *)
+let parent_cancels_child =
+  Temporal.Workflow.define ~name:"smoke.parent_cancels_child"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      let handle =
+        Temporal.Child_workflow.start_handle
+          ~cancellation_type:
+            Temporal.Child_workflow.Wait_cancellation_requested
+          ~id:("two-binary-parent-cancel-child-" ^ seed)
+          child_long_running seed
+      in
+      match
+        Temporal.Child_workflow.cancel ~reason:"acceptance child cancelled"
+          handle
+      with
+      | Error error -> Error error
+      | Ok () -> (
+          match Temporal.Future.await (Temporal.Child_workflow.future handle) with
+          | Ok _ ->
+              Error
+                (Temporal.Error.defect
+                   ~message:"cancelled child unexpectedly completed")
+          | Error error ->
+              let view = Temporal.Error.view error in
+              if view.category = `Cancelled then Ok "SMOKE:CHILD:CANCELLED"
+              else
+                Error
+                  (Temporal.Error.defect
+                     ~message:
+                       (Printf.sprintf
+                          "expected child cancellation, received %s"
+                          (Temporal.Error.kind error)))))
+
 (** Deliberately fails the workflow with a typed, non-retryable application
     error. The failure is deterministic and does not inspect its input, so a
     replay observes the same terminal command. The live driver checks the

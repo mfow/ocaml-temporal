@@ -7,19 +7,21 @@ for merge commit `a4eaccc8`. The retry workflow uses an explicit activity retry
 policy: its worker activity fails once, Temporal delivers a second attempt,
 and the driver asserts the exact attempt-2 result. The retry-policy constructor
 and bilateral JSON/Core conversion remain synthetic evidence; the CI run is
-the live evidence for this one server-managed retry delivery. The sixth
+the live evidence for this one server-managed retry delivery. The eighth
 top-level workflow also returns a typed non-retryable `Workflow` failure. The
 heartbeat-detail retry workflow is implemented and locally contract-checked,
-but it has no live evidence yet. The seven-run exact-run cancellation and
-heartbeat paths are implemented and covered by local acceptance checks, but
+but it has no live evidence yet. The nine-run exact-run cancellation, child
+failure/cancellation, and heartbeat paths are implemented and covered by local
+acceptance checks, but
 they are not live-verified yet: the attempted [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
 was cancelled before producing a green result. The worker and driver remain
 guarded by `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services
 set it.
 
-The current implementation starts all seven top-level workflows before waiting
+The current implementation starts all nine top-level workflows before waiting
 for any result, and its local assertion target requires five exact successes,
-one typed non-retryable failure, and one exact-run cancellation. Only the five
+one propagated child failure, one child-cancellation marker, one typed
+non-retryable failure, and one exact-run cancellation. Only the five
 baseline executions are currently backed by live CI evidence; the heartbeat and
 cancellation assertions remain local-only until a green live run verifies them.
 
@@ -33,13 +35,15 @@ atomic readiness marker. Compose waits for that health check before
 `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts all seven top-level workflows before
+later acceptance run. The driver starts all nine top-level workflows before
 waiting for any result. The cancellation scenario waits for the
 `smoke.cancellation_ready` activity marker after the long-running workflow has
 issued its durable-timer and marker commands in one activation, then
 acknowledges cancellation for `two-binary-long-running-cancellation` before
 the first terminal wait. Five must complete with exact payloads, one must
-return a typed non-retryable workflow failure, and the cancelled execution
+propagate a typed child failure, one must return `SMOKE:CHILD:CANCELLED` after
+child cancellation, one must return a typed non-retryable workflow failure,
+and the cancelled execution
 must return typed `Cancelled` metadata when the driver waits on that same exact
 handle. The heartbeat scenario records a progress detail with a 500 ms timeout,
 returns a retryable activity error, and requires the second attempt to receive
@@ -64,7 +68,10 @@ and asserts terminal workflow results while the worker executes registered
 workflows and mock activities against the live server. This revision adds a
 parent/child success case: the parent calls `Temporal.Child_workflow.execute`,
 the registered child waits on a short durable timer, and the driver asserts the
-parent's exact result. It also runs `smoke.activity_retry`: the first
+parent's exact result. It also runs a child-failure parent that propagates a
+deterministic non-retryable child error, and a child-cancellation parent that
+uses `Child_workflow.start_handle` and `Wait_cancellation_requested` before
+returning `SMOKE:CHILD:CANCELLED`. It also runs `smoke.activity_retry`: the first
 `smoke.retry_once` attempt returns a retryable activity error and the second
 returns `SMOKE:ATTEMPT:2`, which the driver compares as an exact terminal
 payload. It also runs `smoke.activity_heartbeat_retry`: the first
@@ -77,7 +84,7 @@ stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
 for its `smoke.cancellation_ready` marker activity (with eager execution
 disabled), sends an exact-run cancellation request, and requires the same
 handle to return a typed `Cancelled` error. The cancellation implementation and
-local assertions are ready, but this seven-run path remains without green live CI
+local assertions are ready, but this nine-run path remains without green live CI
 evidence because the attempted [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
 was cancelled. Heartbeat-timeout-triggered retries, child start failures,
 activity asynchronous completion, replay, and worker recovery remain separate
@@ -238,6 +245,16 @@ registers these local definitions with the public SDK:
   `Temporal.Child_workflow.execute` and awaits its terminal value. The child
   identity is derived only from the parent input, so the command is stable on
   replay.
+* `smoke.parent_awaits_failed_child`: starts
+  `smoke.child_non_retryable_failure` through the same direct-style helper and
+  intentionally propagates the child's non-retryable terminal error. The
+  driver checks the public `Child_workflow` error category and retryability,
+  not Core's verbose failure-info text.
+* `smoke.parent_cancels_child`: retains a child handle, requests cancellation
+  with `Wait_cancellation_requested`, and awaits the child future. It returns
+  `SMOKE:CHILD:CANCELLED` only after the typed cancellation result arrives;
+  the child itself waits on a long durable timer so natural completion cannot
+  satisfy the assertion.
 * `smoke.activity_retry`: schedules `smoke.retry_once` with a two-attempt
   `Temporal.Activity.Retry_policy`. The worker activity deliberately returns a
   retryable error on its first call and includes the successful attempt number
@@ -258,6 +275,8 @@ registers these local definitions with the public SDK:
 The fixture implements this shape with the concrete `smoke.fan_out`,
 `smoke.timer_then_activity`, `smoke.activity_retry`,
 `smoke.child_after_timer`, `smoke.parent_awaits_child`,
+`smoke.child_non_retryable_failure`, `smoke.parent_awaits_failed_child`,
+`smoke.child_long_running`, `smoke.parent_cancels_child`,
 `smoke.non_retryable_failure`, `smoke.long_running_cancellation`,
 `smoke.mock_transform`, `smoke.retry_once`, and `smoke.cancellation_ready`
 definitions, all of which are registered by the long-lived public worker:
@@ -270,7 +289,9 @@ let () =
       ~workflows:
         [ fan_out; timer_then_activity; activity_retry;
           activity_heartbeat_retry; child_after_timer; parent_awaits_child;
-          non_retryable_failure; long_running_cancellation ]
+          child_non_retryable_failure; parent_awaits_failed_child;
+          child_long_running; parent_cancels_child; non_retryable_failure;
+          long_running_cancellation ]
       ~activities:
         [ mock_transform; retry_once_activity; heartbeat_retry_activity;
           cancellation_ready_activity ]
@@ -301,19 +322,21 @@ The driver must:
 1. connect through `Temporal.Client` to the fixture namespace;
 2. start `smoke.fan_out`, `smoke.timer_then_activity`,
    `smoke.activity_retry`, `smoke.activity_heartbeat_retry`,
-   `smoke.parent_awaits_child`, `smoke.non_retryable_failure`, and
+   `smoke.parent_awaits_child`, `smoke.parent_awaits_failed_child`,
+   `smoke.parent_cancels_child`, `smoke.non_retryable_failure`, and
    `smoke.long_running_cancellation` with distinct, known workflow IDs before
    it waits for any of them;
-3. retain the seven public workflow handles returned by `start`;
+3. retain the nine public workflow handles returned by `start`;
 4. call `Temporal.Client.cancel` on the exact long-running handle and require
    its positive acknowledgement before waiting for any terminal result;
 5. wait for each handle's terminal result through the public client API; and
-6. decode and compare the five successful results, require the sixth result to
-   be a typed non-retryable workflow failure, require the seventh result to be
-   a typed `Cancelled` outcome with expected metadata, then exit zero only if
-   every assertion succeeded.
+6. decode and compare the five successful results, require the child-failure
+   result to be a typed non-retryable child-workflow failure, require the
+   child-cancellation result to equal `SMOKE:CHILD:CANCELLED`, require the
+   typed non-retryable workflow failure and exact-run `Cancelled` outcome with
+   expected metadata, then exit zero only if every assertion succeeded.
 
-Starting all seven executions before the first wait is material. It demonstrates
+Starting all nine executions before the first wait is material. It demonstrates
 that a client can hold independent workflow handles while a control request is
 issued for one exact run, and that the worker can service separate workflow
 executions rather than passing a single serial request through a readiness-only
@@ -377,7 +400,7 @@ continued-as-new execution (including the successor run ID), or a bridge
 transport failure. An exact-run wait does not silently follow
 continued-as-new: it returns that typed successor outcome so callers can
 explicitly decide whether to await the new run. The public OCaml API keeps the
-seven workflow results as typed workflow-result outcomes and reserves bridge transport
+the nine workflow results as typed workflow-result outcomes and reserves bridge transport
 failure for `Error`.
 
 The worker operations use `request`/terminal `response` or `error` envelopes
@@ -492,18 +515,18 @@ thread.
 ## Required assertions and failure evidence
 
 The current driver's successful exit is intended to establish all of the
-following locally; a green live run is still required before the seven-run
+following locally; a green live run is still required before the nine-run
 claims become live evidence:
 
 1. each top-level workflow start returned a nonempty run ID that the driver
-   retained for its corresponding exact-run wait; the driver starts seven
+   retained for its corresponding exact-run wait; the driver starts nine
    distinct top-level runs before its first wait;
 2. the driver observes the atomically published
    `SMOKE_CANCELLATION_READY_FILE` marker containing the current run token,
    proving the timer and marker commands were accepted before cancellation;
 3. the cancellation request names the long-running workflow's exact retained
    workflow ID and run ID, and Temporal acknowledges it before the driver waits;
-4. all seven terminal waits matched the exact workflow ID and run ID returned by
+4. all nine terminal waits matched the exact workflow ID and run ID returned by
    their own starts;
 5. `smoke.fan_out` returned the ordered result requiring both mock activity
    completions;
@@ -515,13 +538,17 @@ claims become live evidence:
    500 ms heartbeat timeout, then returned `SMOKE:HEARTBEAT:RETRIED:SMOKE` only
    after the retrying attempt received that detail and timeout;
 9. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
-   completed its own durable timer; and
-10. the five success responses were not workflow failures, cancellations,
+   completed its own durable timer;
+10. `smoke.parent_awaits_failed_child` returned a non-retryable
+    `Child_workflow` failure with the stable child-failure diagnostic prefix;
+11. `smoke.parent_cancels_child` returned `SMOKE:CHILD:CANCELLED` only after
+    Core resolved the child cancellation;
+12. the five success responses were not workflow failures, cancellations,
    timeouts, terminations, continued-as-new outcomes, codec failures, or
    bridge failures; and
-11. `smoke.non_retryable_failure` returned a `Workflow` error with
+13. `smoke.non_retryable_failure` returned a `Workflow` error with
    `non_retryable=true` and the stable intentional-failure message prefix; and
-12. `smoke.long_running_cancellation` returned a `Cancelled` error with
+14. `smoke.long_running_cancellation` returned a `Cancelled` error with
    `non_retryable=false` and the stable message `workflow execution was
     cancelled`.
 
@@ -557,21 +584,23 @@ parent/child success assertion. The activity retry policy has the same
 separation: bilateral policy validation is synthetic, while CI run
 [`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
 makes its attempt-2 result live evidence for one server-managed retry. Neither
-assertion claims coverage of child failure/cancellation, retry timeouts, replay,
-or recovery behavior.
+the child-failure nor child-cancellation assertion has live evidence. Both are
+implemented and locally contract-checked, but neither has live Temporal Server coverage
+until a green Compose run verifies the expanded fixture. None of these
+assertions claims coverage of retry timeouts, replay, or recovery behavior.
 
 ## Completion criteria for this design
 
 The full current acceptance contract will be verified in Linux CI only when all
 of the following are true. The historical live result verifies the five
-baseline executions; the seven-run heartbeat/cancellation assertion remains local-only
+baseline executions; the nine-run heartbeat, child-lifecycle, and cancellation assertion remains local-only
 until a run satisfies this complete contract:
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;
 * the worker's live Core poll/complete loops execute the registered OCaml
   workflow and mock activity code;
-* the driver starts all seven top-level workflows through `temporal-sdk`, sends
+* the driver starts all nine top-level workflows through `temporal-sdk`, sends
   an exact-run cancellation request, waits for their results through
   `temporal-sdk`, and performs the listed success, typed-failure, and
   cancellation assertions;

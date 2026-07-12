@@ -134,6 +134,22 @@ require_source_text "$driver" 'SMOKE:HEARTBEAT:RETRIED:SMOKE'
 require_source_text "$worker" 'Worker.workflow Definitions.activity_heartbeat_retry'
 require_source_text "$worker" 'Worker.activity Definitions.heartbeat_retry_activity'
 
+# Child failure and cancellation are intentionally separate parent workflows.
+# The source contract keeps both cases in the two-binary fixture without
+# pretending that a Docker-backed Temporal run has been observed locally.
+require_source_text "$definitions" 'let child_non_retryable_failure ='
+require_source_text "$definitions" 'let parent_awaits_failed_child ='
+require_source_text "$definitions" 'let child_long_running ='
+require_source_text "$definitions" 'let parent_cancels_child ='
+require_source_text "$definitions" 'Child_workflow.Wait_cancellation_requested'
+require_source_text "$definitions" 'Temporal.Child_workflow.cancel ~reason:'
+require_source_text "$driver" 'two-binary-parent-awaits-failed-child'
+require_source_text "$driver" 'two-binary-parent-cancels-child'
+require_source_text "$driver" 'require_non_retryable_child_failure'
+require_source_text "$driver" 'SMOKE:CHILD:CANCELLED'
+require_source_text "$worker" 'Worker.workflow Definitions.parent_awaits_failed_child'
+require_source_text "$worker" 'Worker.workflow Definitions.parent_cancels_child'
+
 makefile="$root/Makefile"
 if ! grep -F 'temporal workflow describe' "$makefile" >/dev/null; then
   echo "failure diagnostics must use the official Temporal CLI workflow describe command" >&2

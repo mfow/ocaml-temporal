@@ -1,10 +1,11 @@
 (** Driver process for the two-OCaml-binary live acceptance test.
 
     This executable is a deliberately small, typed harness. It starts the
-    fan-out, timer, ordinary-retry, heartbeat-detail/retry, parent/child,
-    typed-failure, and long-running cancellation scenarios before waiting for
-    any of them, then checks the exact terminal outcomes returned by the public
-    client API. Without
+    fan-out, timer, ordinary-retry, heartbeat-detail/retry, parent/child
+    success, parent/child failure, parent/child cancellation, typed-failure,
+    and long-running cancellation scenarios before waiting for any of them,
+    then checks the exact terminal outcomes returned by the public client API.
+    Without
     [TEMPORAL_TWO_BINARY_LIVE=1] the process exits with a distinct status
     instead of accidentally exercising the in-memory [mock://] backend and
     giving a false live-smoke signal. *)
@@ -209,6 +210,34 @@ let require_non_retryable_failure operation expected_message = function
                 (terminal_kind outcome)))
   | Error error -> Error error
 
+(** Requires a parent workflow to fail because its child returned a terminal,
+    non-retryable error. Core decorates the message with child identity and
+    failure-info details, so the assertion checks the stable public category,
+    retryability flag, and diagnostic prefix rather than matching those
+    implementation details byte-for-byte. *)
+let require_non_retryable_child_failure operation = function
+  | Ok (Client.Failed error) ->
+      let view = Error.view error in
+      if
+        view.category = `Child_workflow
+        && view.non_retryable
+        && String.starts_with ~prefix:"child workflow failed" view.message
+      then Ok ()
+      else
+        Error
+          (Error.defect
+             ~message:
+               (Printf.sprintf
+                  "%s returned unexpected child failure metadata (kind=%s, non_retryable=%b)"
+                  operation (Error.kind error) view.non_retryable))
+  | Ok outcome ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "%s returned terminal outcome %s" operation
+                (terminal_kind outcome)))
+  | Error error -> Error error
+
 (** Requires the exact run to report Temporal's cancellation category after a
     successful cancellation acknowledgement. The assertion deliberately checks
     public metadata rather than Core's full failure-info text: category,
@@ -361,6 +390,16 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-parent-awaits-child" ~input:"smoke"
         in
+        let* failed_child_handle =
+          start_workflow client ~workflow:Definitions.parent_awaits_failed_child
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-parent-awaits-failed-child" ~input:"smoke"
+        in
+        let* cancelled_child_handle =
+          start_workflow client ~workflow:Definitions.parent_cancels_child
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-parent-cancels-child" ~input:"smoke"
+        in
         let* failure_handle =
           start_workflow client ~workflow:Definitions.non_retryable_failure
             ~task_queue:Definitions.task_queue
@@ -371,13 +410,16 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-long-running-cancellation" ~input:cancellation_token
         in
-        (* All seven starts intentionally happen before the first wait. The
+        (* All nine starts intentionally happen before the first wait. The
            cancellation workflow's marker activity proves that its timer and
            marker commands were accepted in one activation before this exact
            run is cancelled; the timer keeps the execution outstanding. The
            heartbeat workflow is also already outstanding here, so its retry
            runs concurrently with the other live server work instead of being
-           mistaken for a sequential local callback. *)
+           mistaken for a sequential local callback. The two child-focused
+           parents are likewise started before any wait: one propagates a
+           terminal child failure and the other waits for Core's child
+           cancellation acknowledgement. *)
         let* () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token
         in
@@ -406,6 +448,16 @@ let run () =
         let* () =
           require_completed "smoke.parent_awaits_child" "SMOKE:CHILD"
             (Ok parent_result)
+        in
+        let* failed_child_result = wait_workflow failed_child_handle in
+        let* () =
+          require_non_retryable_child_failure
+            "smoke.parent_awaits_failed_child" (Ok failed_child_result)
+        in
+        let* cancelled_child_result = wait_workflow cancelled_child_handle in
+        let* () =
+          require_completed "smoke.parent_cancels_child" "SMOKE:CHILD:CANCELLED"
+            (Ok cancelled_child_result)
         in
         let* failure_result = wait_workflow failure_handle in
         let* () =

@@ -17,9 +17,9 @@ claims.
 - **Planned — later expansion** means a real-server assertion belongs in the
   existing two-binary Compose fixture after the success path is broadened.
 
-The initial live gate passed in Linux CI for commit `d4456b7`, covering the
-fan-out and timer/activity cases. The current driver starts seven workflows
-before it waits for any result: `smoke.fan_out`,
+The initial live gate passed in Linux CI for commit `d4456b7`, covering two
+workflows: the fan-out and timer/activity cases. The current driver starts
+seven workflows before it waits for any result: `smoke.fan_out`,
 `smoke.timer_then_activity`, `smoke.activity_retry`,
 `smoke.activity_heartbeat_retry`,
 `smoke.parent_awaits_child`, `smoke.non_retryable_failure`, and
@@ -41,10 +41,13 @@ observed in this environment, so this scenario remains an implementation and
 local-contract milestone until a green Compose execution is available. The
 sixth workflow returns a deterministic `Workflow` error with
 `non_retryable=true`; the driver checks that typed terminal outcome instead of
-treating every workflow as a success. The historical five-execution evidence is CI run
-[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
-for merge commit `a4eaccc8`; it verifies only those five baseline executions.
-The seven-run driver and marker-guarded cancellation are implemented and covered
+treating every workflow as a success. The historical five-execution evidence is
+CI run [`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+for merge commit `a4eaccc8`; it verifies exactly these five baseline workflows:
+`smoke.fan_out`, `smoke.timer_then_activity`, `smoke.activity_retry`,
+`smoke.parent_awaits_child`, and `smoke.non_retryable_failure`. The current
+seven-run driver adds `smoke.activity_heartbeat_retry` and the marker-guarded
+`smoke.long_running_cancellation`; those additions are implemented and covered
 by local acceptance checks, but they are not live-verified yet: the attempted
 [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
 was cancelled before producing a green result. The local driver waits for a
@@ -113,8 +116,8 @@ make test-temporal-integration # real PostgreSQL/Temporal + two OCaml binaries
 a real Temporal Server. It owns the fixture lifecycle, starts the independent
 worker and one-shot assertion driver, and prints useful failure logs. The
 historical live result covers the retry attempt marker and typed non-retryable
-failure; the current seven-run cancellation and heartbeat assertions are local-only until a
-green live run verifies it. The target cleans the Compose project and
-PostgreSQL volume. A green `make verify` alone is not live workflow evidence,
-and the green two-binary gate must not be generalized to unlisted terminal,
+failure; the current seven-run cancellation and heartbeat assertions are
+local-only until a green live run verifies them. The target cleans the Compose
+project and PostgreSQL volume. A green `make verify` alone is not live workflow
+evidence, and the green two-binary gate must not be generalized to unlisted terminal,
 child failure/cancellation, retry timeout, or recovery scenarios.

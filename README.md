@@ -49,7 +49,7 @@ opaque bytes and applications may choose another deterministic codec.
 | --- | --- |
 | Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
-| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current live command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, and drains retryable completions safely. |
+| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current live command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, and drains retryable completions safely. Context-aware activity heartbeats are implemented and focused-tested through the same serialized supervisor path, but have not yet been verified against a live Temporal Server. |
 | Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, and exact-run cancellation. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result. The historical live Compose evidence covers five baseline executions: four exact successes and one deliberate non-retryable workflow failure. The six-run cancellation assertion is implemented and locally covered, but is not live-verified because its attempted Actions run was cancelled. |
 | Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
 | Safety boundary | Rust/Core protobuf handling stays in Rust. OCaml/Rust JSON validation, copied payloads, one-owner lifecycle serialization, and idempotent cleanup are covered by focused tests. |
@@ -73,8 +73,11 @@ opaque bytes and applications may choose another deterministic codec.
   Compose acceptance now proves one successful parent/child path against
   Temporal Server. Child failure, cancellation, and recovery remain follow-up
   scenarios.
-- Signals, queries, updates, continue-as-new, versioning, local activities,
-  Nexus, and the remaining cross-SDK parity surface are roadmap work.
+- Signals, queries, updates, versioning, local activities, Nexus, and the
+  remaining cross-SDK parity surface are roadmap work. Continue-as-new is
+  implemented and locally tested at the workflow/native bridge boundary, but
+  still needs live Temporal Server acceptance. Context-aware activity
+  heartbeats have the same implemented-but-not-live status.
 - The public API, native protocol, and Temporal Core pin remain experimental
   and may change before a stable release.
 

@@ -319,6 +319,7 @@ validators before an operation changes native or workflow state.
 | `worker.complete_workflow` | OCaml to Rust | acknowledgement | Validates the existing semantic completion JSON, converts it to Core protobuf, and completes the activation. |
 | `worker.poll_activity` | OCaml to Rust | one semantic activity task or a terminal shutdown indication | Calls Core's activity-task poll and converts task token, identity, headers, input payloads, attempt, and deadlines to JSON. |
 | `worker.complete_activity` | OCaml to Rust | acknowledgement | Validates an OCaml activity result/failure/cancellation and completes exactly the supplied task token. |
+| `worker.record_activity_heartbeat` | OCaml to Rust | acknowledgement | Validates copied heartbeat details and records progress for exactly the supplied leased activity task without completing or retiring its lease. |
 | `worker.initiate_shutdown` | OCaml to Rust | acknowledgement | Stops admission and asks Core to begin graceful worker shutdown. |
 
 The current activation/completion schema defines the workflow-side semantic
@@ -330,9 +331,12 @@ poll/completion loop. They represent only the information an OCaml activity
 runner needs; raw `ActivityTask` protobuf bytes, raw pointers, and Core errors
 are forbidden outside Rust. The first acceptance test uses the task token,
 activity type, workflow/run identifiers, attempt, input payloads, and
-completion variants needed for its mock activity. Future heartbeat,
-local-activity, and asynchronous-completion fields can be added as separate
-closed changes.
+completion variants needed for its mock activity. The heartbeat document and
+`worker.record_activity_heartbeat` operation are now implemented with strict
+bilateral validation and focused native tests, but the current live fixture
+does not yet invoke them. Live heartbeat, timeout, and retry behavior remains
+an acceptance follow-up. Local-activity and asynchronous-completion fields
+can be added as separate closed changes.
 
 `client.start_workflow` accepts workflow type, workflow ID, task queue, and
 typed input payloads. It returns the server-issued run ID. `client.wait_workflow_result`
@@ -502,8 +506,8 @@ The first live test is intentionally small. With this success path verified,
 extend the same two-binary topology rather than adding a separate pseudo-worker
 test:
 
-* activity retry timeout, activity-level non-retryable classification, and
-  heartbeat;
+* live activity heartbeat, timeout, and retry behavior, plus activity-level
+  non-retryable classification;
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
 * child workflow start failure, cancellation, retry policy, and non-success
   terminal handling through the worker;

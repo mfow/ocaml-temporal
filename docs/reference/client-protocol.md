@@ -125,6 +125,16 @@ and outcome schemas are
 and
 [`client-start-outcome.schema.json`](../schemas/bridge/client-start-outcome.schema.json).
 
+The runtime owns the ticket's receiver, validated request, and Tokio task
+until one terminal read retires the ticket. If a caller abandons the ticket,
+shutdown drains the ticket registry, aborts every remaining task, and joins
+each handle before the client or Core runtime is released. A task that has
+already placed a result in its receiver is still joined exactly once; the
+queued result is then dropped with the receiver rather than being delivered to
+an absent caller. This is the cancellation boundary for asynchronous starts:
+Rust tasks never call OCaml, and no task is detached while it retains a Core
+connection clone.
+
 ## Wait for one exact run
 
 The wait request contains exactly the three identity fields:

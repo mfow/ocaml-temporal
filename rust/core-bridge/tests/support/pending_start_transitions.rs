@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::task::Poll;
 
 use temporalio_client::callback_based::CallbackBasedGrpcService;
@@ -128,6 +128,48 @@ impl Drop for AbortProbe {
     }
 }
 
+/// Future which publishes a terminal result and then remains alive until the
+/// owner-side cancellation path aborts and joins it. Keeping the send and the
+/// pending state in one future makes the completion/shutdown race deterministic
+/// without relying on a wall-clock sleep.
+struct ResultThenPendingProbe {
+    sender: Option<
+        Sender<
+            std::result::Result<
+                client_protocol::StartWorkflowResponse,
+                client_protocol::ClientOperationError,
+            >,
+        >,
+    >,
+    published: Arc<AtomicUsize>,
+    dropped: Arc<AtomicUsize>,
+}
+
+impl Future for ResultThenPendingProbe {
+    type Output = ();
+
+    /// Send exactly one terminal result, then deliberately remain pending so
+    /// shutdown must cancel and join the task rather than merely observe its
+    /// channel message and detach its connection clone.
+    fn poll(mut self: Pin<&mut Self>, _context: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        if let Some(sender) = self.sender.take() {
+            sender
+                .send(Ok(response()))
+                .expect("synthetic receiver remains retained by the pending ticket");
+            self.published.fetch_add(1, Ordering::Release);
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for ResultThenPendingProbe {
+    /// Count cancellation after publication so the test proves the Tokio task
+    /// was joined even though its caller-side result was already available.
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::Release);
+    }
+}
+
 /// A non-blocking read reports `NOT_READY` without removing or consuming the
 /// ticket, allowing the supervisor to retry the same operation later.
 #[test]
@@ -248,6 +290,39 @@ fn explicit_abort_joins_and_drains_pending_tasks() {
     assert!(returned_handles.is_empty());
     assert!(runtime.pending_starts.is_empty());
     assert_eq!(dropped.load(Ordering::Acquire), 2);
+
+    assert_eq!(runtime.close(true), STATUS_OK);
+}
+
+/// A terminal response can race with shutdown after it has been published but
+/// before its task exits. The owner must drain the ticket registry, cancel and
+/// join that still-running task, and then release Core without double ownership
+/// of either the response channel or the task handle.
+#[test]
+fn abort_joins_task_after_terminal_response_is_published() {
+    let mut runtime = runtime();
+    let published = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let (sender, receiver) = channel();
+    let handle = runtime
+        .core
+        .as_ref()
+        .expect("runtime owns Core")
+        .tokio_handle();
+    let task = handle.spawn(ResultThenPendingProbe {
+        sender: Some(sender),
+        published: Arc::clone(&published),
+        dropped: Arc::clone(&dropped),
+    });
+    insert_pending(&mut runtime, "ticket-published", receiver, task);
+
+    while published.load(Ordering::Acquire) == 0 {
+        std::hint::spin_loop();
+    }
+    let returned_handles = runtime.abort_pending_starts(true);
+    assert!(returned_handles.is_empty());
+    assert!(runtime.pending_starts.is_empty());
+    assert_eq!(dropped.load(Ordering::Acquire), 1);
 
     assert_eq!(runtime.close(true), STATUS_OK);
 }

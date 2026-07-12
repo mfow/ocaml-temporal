@@ -224,6 +224,29 @@ let test_terminal_call_closes_a_full_mailbox_atomically () =
   expect "terminal FIFO result" (Ok [ 1; 2 ]) (Mailbox.await terminal);
   expect "terminal call joined cleanly" (Ok ()) (Mailbox.join mailbox)
 
+(** An admitted terminal reply remains owned by the queue even when its caller
+    abandons the pending capability. The owner must still execute that request,
+    settle its private reply cell, and reach [Stopped] so [join] cannot wait on
+    a caller which no longer exists. *)
+let test_abandoned_terminal_reply_does_not_strand_join () =
+  let entered = create_gate () in
+  let release = create_gate () in
+  let mailbox = Mailbox.create ~capacity:1 ~handler:(create_handler ()) in
+  expect "active hold admitted" (Ok ())
+    (Mailbox.post mailbox (Hold (1, entered, release)));
+  await_gate entered;
+  expect "ordinary tail filled" (Ok ()) (Mailbox.post mailbox (Add 2));
+  (* Dropping the only caller-side reference is intentional. The queue owns
+     the reply until the owner settles it, so this test never awaits the pending
+     capability. *)
+  ignore
+    (Result.get_ok
+       (Mailbox.submit_and_close mailbox (Raise "abandoned defect")));
+  Gc.full_major ();
+  open_gate release;
+  expect_handler_failure "abandoned terminal failure is retained" "abandoned defect"
+    (Mailbox.join mailbox)
+
 (** Verifies that an unexpected handler exception reaches the active caller,
     causes deterministic terminal shutdown, and is also reported by [join]. *)
 let test_handler_failure () =
@@ -305,6 +328,7 @@ let () =
   test_close_drains_and_rejects ();
   test_close_releases_blocked_producer ();
   test_terminal_call_closes_a_full_mailbox_atomically ();
+  test_abandoned_terminal_reply_does_not_strand_join ();
   test_handler_failure ();
   test_handler_failure_releases_waiters ();
   test_handler_failure_releases_blocked_producer ();

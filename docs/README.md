@@ -39,6 +39,9 @@ The remaining reference documents are useful when changing one subsystem:
 - [Live acceptance coverage](reference/live-acceptance-coverage.md) separates
   synthetic evidence, the current real-server lifecycle smoke, and planned
   two-binary workflow assertions.
+- [Feature coverage and implementation status](reference/feature-coverage.md)
+  gives the short status reference and distinguishes live evidence, mock-only
+  tests, native bridge support awaiting live exercise, and deferred features.
 - [Quality and security gates](reference/quality-gates.md) documents pinned
   scanners and the checks run locally and in CI.
 - [Installed package boundary](reference/package-boundary.md) documents which

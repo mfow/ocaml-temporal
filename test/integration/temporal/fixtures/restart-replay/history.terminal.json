@@ -1,0 +1,22 @@
+{
+  "workflow_id": "two-binary-worker-restart-replay",
+  "run_id": "11111111-1111-4111-8111-111111111111",
+  "events": [
+    {"event_id": "1", "type": "WorkflowExecutionStarted"},
+    {"event_id": "2", "type": "WorkflowTaskScheduled"},
+    {"event_id": "3", "type": "WorkflowTaskStarted"},
+    {"event_id": "4", "type": "WorkflowTaskCompleted"},
+    {"event_id": "5", "type": "TimerStarted"},
+    {"event_id": "6", "type": "TimerFired"},
+    {"event_id": "7", "type": "WorkflowTaskScheduled"},
+    {"event_id": "8", "type": "WorkflowTaskStarted"},
+    {"event_id": "9", "type": "WorkflowTaskCompleted"},
+    {"event_id": "10", "type": "ActivityTaskScheduled"},
+    {"event_id": "11", "type": "ActivityTaskStarted"},
+    {"event_id": "12", "type": "ActivityTaskCompleted"},
+    {"event_id": "13", "type": "WorkflowTaskScheduled"},
+    {"event_id": "14", "type": "WorkflowTaskStarted"},
+    {"event_id": "15", "type": "WorkflowTaskCompleted"},
+    {"event_id": "16", "type": "WorkflowExecutionCompleted"}
+  ]
+}

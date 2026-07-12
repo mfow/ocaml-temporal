@@ -46,6 +46,9 @@ The remaining reference documents are useful when changing one subsystem:
   specifies the next controlled worker-replacement scenario, its exact
   assertions, diagnostic evidence, and fresh-volume cleanup rules. It is a
   design document, not live verification.
+- [Internal replay worker bridge](reference/replay-bridge.md) documents the
+  bounded Rust history feeder, strict JSON/base64 format, Core ownership, and
+  the local evidence for the first replay-plumbing slice.
 - [Worker restart/replay diagnostic contract](reference/worker-restart-replay-diagnostics.md)
   defines the payload-free normalized history and generation/replay records
   used by the offline contract gate before the live controller exists.

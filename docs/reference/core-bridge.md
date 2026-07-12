@@ -69,6 +69,42 @@ terminal result only after that start acknowledgment. No field is silently
 dropped.
 See the translation reference for the complete mapping table and test coverage.
 
+## Private replay worker plumbing
+
+`rust/core-bridge/src/replay_bridge.rs` contains the first bounded replay slice.
+It is Rust-internal and is not a public C symbol or an OCaml workflow API. A
+caller supplies one strict JSON document per recorded history; Rust decodes
+the canonical base64 `History` protobuf, validates it with Core's
+`HistoryInfo`, and constructs `HistoryForReplay`. Temporal Core then owns the
+replay state machine and produces the same workflow activations it would
+produce while replaying server history.
+
+The document shape is defined by
+[`replay-history.schema.json`](../schemas/bridge/replay-history.schema.json)
+and explained in the [replay bridge reference](replay-bridge.md). Runtime
+validation is stricter than the schema: duplicate and unknown members,
+non-canonical base64, oversized values, malformed protobuf, and histories that
+violate Core event invariants are rejected before the feeder sees them.
+
+`ReplayWorker` owns a Core workflow-only worker and a one-slot
+`HistoryFeeder`. The one-slot bound preserves FIFO ordering and applies
+backpressure instead of accumulating histories in an unbounded native queue.
+Dropping the feeder closes input. A normal finalization is allowed only after
+the caller has completed every activation and observed the workflow lane's
+natural `Shutdown`; this avoids cancelling a queued history while reporting
+success. If that precondition is not met, the typed error retains the worker
+for another drain attempt. The explicit `dispose` path is destructive: it
+initiates shutdown, force-completes unfinished work, joins the lane, and
+attempts Core finalization. The replay path owns no OCaml pointer or callback
+and starts no activity poller. Its focused Rust tests are kept in
+`rust/core-bridge/tests/support/replay_bridge.rs` so production and test code
+remain separate.
+
+This plumbing is unit-tested native evidence only. The public C/OCaml replay
+operation and the two-generation Docker Compose restart test remain deferred;
+the latter must prove the exact run, replay marker, terminal result, and fresh
+PostgreSQL-volume cleanup before replay is called live-supported.
+
 ## Native client start and exact-run wait
 
 The private Rust client adapter exposes strict JSON operations for synchronous

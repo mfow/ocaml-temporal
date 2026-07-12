@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/replay-history.schema.json",
+  "title": "Internal replay history document",
+  "description": "Strict JSON envelope used by the private Rust replay feeder. The history body is a canonical padded standard-base64 encoding of Temporal Core's History protobuf. Runtime validation additionally enforces the decoded byte limit and Core history invariants.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["workflow_id", "history"],
+  "properties": {
+    "workflow_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "description": "UTF-8 workflow identifier attached to the history because Temporal History does not contain it. The Rust validator applies the authoritative byte limit and rejects NUL bytes."
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encoding", "data"],
+      "properties": {
+        "encoding": {
+          "const": "base64"
+        },
+        "data": {
+          "type": "string",
+          "description": "Padded standard-base64 text. The Rust validator decodes it, limits the resulting bytes to 128 MiB, and compares it with a canonical re-encoding."
+        }
+      }
+    }
+  }
+}

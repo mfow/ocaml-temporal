@@ -211,8 +211,9 @@ let resolve_activity context ~seq result =
       resolve result;
       Ok ()
 
-(** Removes a child resolver before invoking it, so an immediate duplicate job
-    is rejected without risking a second future resolution. *)
+(** Records the start acknowledgment or removes the child resolver on a start
+    failure. Once a run ID is recorded, every later start result is rejected so
+    a conflicting acknowledgment cannot complete or discard the child future. *)
 let resolve_child_workflow_start context ~seq result =
   match Hashtbl.find_opt context.child_workflows seq with
   | None ->
@@ -222,7 +223,7 @@ let resolve_child_workflow_start context ~seq result =
               "unknown or duplicate child workflow start sequence %Ld" seq))
   | Some state -> (
       match (state.start_run_id, result) with
-      | Some _, Ok _ ->
+      | Some _, _ ->
           Error
             (bridge_error
                (Printf.sprintf

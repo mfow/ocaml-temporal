@@ -1,5 +1,8 @@
 module Activation = Temporal_runtime.Activation
 module Execution = Temporal_runtime.Execution
+module Future_store = Temporal_runtime.Future_store
+module Scheduler = Temporal_runtime.Scheduler
+module Workflow_context_store = Temporal_runtime.Workflow_context_store
 
 (** Builds a string payload through the public codec for activation fixtures. *)
 let payload value =
@@ -679,6 +682,52 @@ let test_child_workflow_failures_and_sequence_ownership () =
       expect "duplicate child sequence" "bridge" (Temporal.Error.kind error)
   | _ -> failwith "duplicate child resolution was accepted"
 
+(** Ensures a conflicting second start result cannot consume the child resolver.
+    The context must report a bridge error, leave the future pending, and still
+    accept the legitimate terminal result that follows. *)
+let test_child_start_conflicting_result_keeps_future_pending () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let future =
+    Workflow_context_store.start_child_workflow context ~id:"child-id"
+      ~name:"child-workflow" ~input:(payload "Ada")
+      ~decode:(fun value -> Ok value)
+  in
+  (match
+     Workflow_context_store.resolve_child_workflow_start context ~seq:1L
+       (Ok "child-run")
+   with
+  | Ok () -> ()
+  | Error _ -> failwith "initial child start acknowledgment was rejected");
+  let conflicting_error =
+    Temporal_base.Error.make ~non_retryable:true ~category:`Child_workflow
+      ~message:"conflicting child start" ()
+  in
+  (match
+     Workflow_context_store.resolve_child_workflow_start context ~seq:1L
+       (Error conflicting_error)
+   with
+  | Error error ->
+      expect "conflicting child start kind" "bridge"
+        (Temporal.Error.kind error)
+  | Ok () -> failwith "conflicting child start was accepted");
+  (match Future_store.peek future with
+  | None -> ()
+  | Some _ -> failwith "conflicting child start resolved the child future");
+  (match
+     Workflow_context_store.resolve_child_workflow context ~seq:1L
+       (Ok (payload "Hello Ada"))
+   with
+  | Ok () -> ()
+  | Error _ -> failwith "valid terminal child result was rejected after conflict");
+  match Future_store.peek future with
+  | Some (Ok result) when Bytes.equal result.data (payload "Hello Ada").data ->
+      Workflow_context_store.shutdown context
+  | Some (Error error) ->
+      failwith ("terminal child result failed: " ^ Temporal.Error.message error)
+  | Some (Ok _) -> failwith "terminal child result payload was not preserved"
+  | None -> failwith "terminal child result did not resolve the child future"
+
 (** Verifies cancellation emits once and cache removal releases blocked state
     without producing a workflow command. *)
 let test_cancel_and_evict () =
@@ -709,4 +758,5 @@ let () =
   test_child_workflow_validation ();
   test_child_workflow_id_boundary ();
   test_child_workflow_failures_and_sequence_ownership ();
+  test_child_start_conflicting_result_keeps_future_pending ();
   test_cancel_and_evict ()

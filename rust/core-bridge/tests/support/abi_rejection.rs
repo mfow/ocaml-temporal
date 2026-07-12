@@ -243,4 +243,10 @@ fn conversion_failure_classifies_cancel_without_start_completion_debt() {
         "local activity tasks must fail semantic conversion"
     );
     assert!(activity_task_owns_completion_debt(&unrepresentable_start));
+
+    let missing_variant = CoreActivityTask {
+        task_token: vec![0, 1, 2],
+        variant: None,
+    };
+    assert!(activity_task_owns_completion_debt(&missing_variant));
 }

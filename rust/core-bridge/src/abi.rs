@@ -1181,12 +1181,14 @@ impl Runtime {
 }
 
 /// Reports whether a Core activity task owns the single completion debt for
-/// its opaque token. Cancellation notifications are deliberately excluded:
-/// they share the Start lease and must never be failed as a second completion.
+/// its opaque token. Only an explicit cancellation notification is excluded:
+/// it shares the Start lease and must never be failed as a second completion.
+/// Missing or future variants fail closed as owning the debt so an unexpected
+/// Core shape cannot leave an outstanding task stranded during shutdown.
 fn activity_task_owns_completion_debt(task: &CoreActivityTask) -> bool {
-    matches!(
+    !matches!(
         task.variant.as_ref(),
-        Some(activity_task::activity_task::Variant::Start(_))
+        Some(activity_task::activity_task::Variant::Cancel(_))
     )
 }
 

@@ -42,11 +42,12 @@ native task ledger. Rust leases a Core task before handing it to a poll lane,
 and the protocol adapter on the owner Domain strictly decodes and validates
 the returned JSON before constructing a typed activation. If Rust cannot
 convert or encode a task before that hand-off, it generates a Core failure and
-retires the exact lease. If OCaml rejects the exact bytes after hand-off, the
-private rejection operation revalidates those bytes against Rust's retained
-activation and retires that same lease. The worker adapter sees only typed
-activations; it propagates those lower-layer errors and never pretends that a
-completion was submitted.
+retires the exact lease. If OCaml rejects a hand-off after it has crossed the
+boundary, the private rejection operation decodes the submitted document and
+checks semantic equality with Rust's retained activation before retiring that
+same lease; JSON formatting is not part of the identity check. The worker
+adapter sees only typed activations; it propagates those lower-layer errors and
+never pretends that a completion was submitted.
 
 The adapter owns only OCaml values:
 

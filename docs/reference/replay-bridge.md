@@ -91,6 +91,42 @@ pointer, or future is retained by the feeder. This keeps replay communication
 on the same single-owner mailbox path as live worker operations while allowing
 Rust/Tokio to run Core's internal tasks concurrently.
 
+### Validation, rejection, and status semantics
+
+The sender-side OCaml check and the Rust check intentionally have different
+responsibilities. OCaml validates the complete JSON tree, the closed
+`workflow_id`/`history` shape, canonical base64, and the decoded payload-size
+limit before it makes the C call. Rust repeats those checks from the copied
+bytes, then performs the protobuf decode and Core `HistoryInfo` validation.
+The OCaml check is therefore an early rejection and allocation guard; it is
+not a substitute for the Rust/Core invariant gate.
+
+The private C status names below are exposed in OCaml as
+`Temporal_core_bridge.Native_bridge.status`. A successful `wait` is only a
+wake signal: the caller must poll again to learn whether the lane became ready
+or reached replay shutdown.
+
+| Operation | Success means | Expected failure and owner action |
+| --- | --- | --- |
+| `Feed_replay_history` | The history entered the one-slot feeder. A full slot applies backpressure; the C stub releases the OCaml runtime lock while the Rust future waits. | `PROTOCOL` (11) means the document or Core history is invalid and no history was admitted. `INVALID_STATE` (5) means the feeder is closed or the worker is absent; do not retry the same input after `Finish_replay_input`. |
+| `Try_poll_replay_workflow` | One activation was copied into OCaml and one completion lease was retained. | `NOT_READY` (10) means the queue was empty and no lease exists. If OCaml cannot decode successful bytes, it passes the original byte string to `Reject_replay_workflow`; it never invents a run ID. |
+| `Wait_replay_workflow` | The lane either has work or has reached natural shutdown; it does not consume an activation. | `NOT_READY` (10) is the bounded 100 ms timeout and means “service the mailbox, then retry”. `INVALID_STATE` (5) means no replay worker exists. |
+| `Complete_replay_workflow` | Core accepted the completion for the exact leased run. The OCaml lease is removed only after that success. | `PROTOCOL` (11) covers malformed JSON or a completion for a different run. A Core/lane failure is `WORKER` (8); use disposal/cleanup rather than silently dropping the retained native graph. |
+| `Reject_replay_workflow` | Rust decoded the supplied document, confirmed that its semantic activation equals the retained activation, reported a bounded failure to Core, and retired that lease. | `PROTOCOL` (11) means the document is malformed, decodes to a different activation, or does not identify a retained lease. JSON formatting changes that preserve the same semantic activation are accepted. The original OCaml decode error remains the primary diagnostic. |
+| `Finish_replay_input` | The feeder sender was closed; already queued histories remain drainable. Repeating it is harmless. | There is no “history complete” claim here: `Finalize_replay` must still observe shutdown and an empty completion ledger. |
+| `Finalize_replay` | Input is closed, Core reported workflow-lane `Shutdown`, every activation was completed/rejected, and the native graph was joined and finalized. | `OUTSTANDING_TASKS` (9) is `ReplayNotDrained`; the worker remains owned and can be drained before retrying. `WORKER` (8) retains the graph when lane or Core finalization fails. |
+| `Dispose_replay` | The caller explicitly abandoned replay; queued/leased work was force-completed, lanes joined, and finalization succeeded. | `WORKER` (8) means the worker is still retained for another disposal attempt. Disposal is cleanup evidence only, never replay-success evidence. |
+
+There are two rejection paths after a poll. If the OCaml semantic decoder
+rejects Rust-produced bytes, `Protocol_adapter.workflow_poll_result` returns
+the original byte string to the private rejection operation. Rust decodes that
+document and compares the resulting semantic activation with the retained
+lease; it does not compare JSON whitespace or member ordering. If Rust itself
+cannot convert a Core activation into the semantic model, no JSON is exposed
+to OCaml; Rust rejects that leased run directly with a constant reason. Both
+paths retire the native obligation without echoing workflow-controlled bytes in
+an error or log.
+
 ## Ownership and shutdown
 
 `ReplayWorker` owns two values:

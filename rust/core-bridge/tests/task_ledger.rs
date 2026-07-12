@@ -81,6 +81,27 @@ fn draining_accepts_cancellation_for_an_existing_activity() {
     );
 }
 
+/// Dispose cleanup must be able to harvest every outstanding identity once so
+/// force-fail completions cannot miss a leased or unleased residual entry.
+#[test]
+fn take_all_outstanding_drains_workflow_and_activity_debt() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+    let token = b"activity-token";
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    let (workflows, activities) = ledger.take_all_outstanding();
+    assert_eq!(workflows, vec!["run-1".to_owned()]);
+    assert_eq!(activities, vec![token.to_vec()]);
+    assert_eq!(ledger.outstanding(), 0);
+    assert!(ledger.can_finalize() == false); // still Open, not Draining
+    ledger.begin_draining();
+    assert!(ledger.can_finalize());
+}
+
 /// A dequeued activation that fails lease handoff must be removable from the
 /// ledger while still unleased so force-fail cleanup cannot leave phantom debt.
 #[test]

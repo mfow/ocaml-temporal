@@ -7,6 +7,10 @@ type t
     means there is no runnable or pending work. *)
 type status = Complete | Failed of exn | Blocked
 
+(** Internal non-local control flow used by a terminal workflow operation. The
+    scheduler consumes it without treating it as an application defect. *)
+type _ Effect.t += Abort_workflow : 'value Effect.t
+
 (** Creates an empty active scheduler with an identity distinct from every
     other scheduler in this process. *)
 val create : unit -> t
@@ -35,3 +39,7 @@ val trace : t -> int list
 (** Permanently closes the scheduler and releases pending futures, paused
     fibers, and queued functions. Calling it more than once is safe. *)
 val shutdown : t -> unit
+
+(** Performs the private terminal control effect. The polymorphic result gives
+    public terminal helpers a natural non-returning type. *)
+val abort_workflow : unit -> 'value

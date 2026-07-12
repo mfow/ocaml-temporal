@@ -742,6 +742,10 @@ let command_to_protocol command =
   | Activation.Fail_workflow error ->
       let* failure = protocol_failure "$.command.failure" error in
       Ok (Protocol.Fail_workflow { failure })
+  | Activation.Continue_as_new { workflow_type; input } ->
+      let* () = validate_identifier "$.command.workflow_type" workflow_type in
+      let* input = protocol_payload "$.command.input" input in
+      Ok (Protocol.Continue_as_new { workflow_type; input = [ input ] })
   | Activation.Cancel_workflow_execution ->
       Ok Protocol.Cancel_workflow_execution
 

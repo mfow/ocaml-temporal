@@ -384,6 +384,21 @@ let test_command_order_and_validation () =
     (Native_execution.command_to_protocol
        (Activation.Cancel_timer { seq = 4_294_967_296L }))
 
+  ;
+  let continue_input = runtime_unit_payload () in
+  let continue_completion =
+    unwrap "continue-as-new command conversion"
+      (Native_execution.completion_of_commands ~run_id:"run-native-translation"
+         [
+           Activation.Continue_as_new
+             { workflow_type = "native"; input = continue_input };
+         ])
+  in
+  match continue_completion.commands with
+  | [ Protocol.Continue_as_new { workflow_type = "native"; input = [ _ ] } ] ->
+      ()
+  | _ -> failwith "continue-as-new command was not translated as terminal"
+
 (** Activity commands retain every Core-required field through translation, and
     malformed timeout/identity options fail before a completion is returned. *)
 let test_activity_command_translation_and_validation () =

@@ -143,6 +143,67 @@ fn converts_start_child_workflow_command() {
     );
 }
 
+/// Proves continue-as-new retains its workflow identity and arguments while
+/// rejecting Core options that the deliberately small semantic protocol does
+/// not expose yet.
+#[test]
+fn converts_continue_as_new_command() {
+    let input = workflow_protocol::Payload {
+        metadata: [("encoding".to_owned(), b"binary/null".to_vec())].into(),
+        data: Vec::new(),
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "current-run".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::ContinueAsNew {
+            workflow_type: "counter".to_owned(),
+            input: vec![input],
+        }],
+    };
+    let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+    assert!(encoded.contains("\"kind\":\"continue_as_new\""));
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        completion
+    );
+
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("continue-as-new completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::ContinueAsNewWorkflowExecution(command)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("continue-as-new must map to Core's continue-as-new variant");
+    };
+    assert_eq!(command.workflow_type, "counter");
+    assert_eq!(command.arguments.len(), 1);
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+
+    let mut unsupported = core;
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        unsupported.status.as_mut()
+    else {
+        panic!("continue-as-new completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::ContinueAsNewWorkflowExecution(command)) =
+        success.commands[0].variant.as_mut()
+    else {
+        panic!("continue-as-new must map to Core's continue-as-new variant");
+    };
+    command.task_queue = "other".to_owned();
+    assert_eq!(
+        workflow_protocol::completion_from_core(&unsupported)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::Unsupported
+    );
+}
+
 /// Proves semantic exactness and range rules independently of JSON structure.
 #[test]
 fn rejects_malformed_workflow_documents() {

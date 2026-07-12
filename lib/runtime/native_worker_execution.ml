@@ -284,6 +284,7 @@ let is_terminal completion =
     (function
       | Protocol.Complete_workflow _
       | Protocol.Fail_workflow _
+      | Protocol.Continue_as_new _
       | Protocol.Cancel_workflow_execution -> true
       | Protocol.Schedule_activity _
       | Protocol.Start_child_workflow _
@@ -430,6 +431,9 @@ module Make (Supervisor : SUPERVISOR) = struct
           Protocol.Complete_workflow { result = Option.map copy_payload result }
       | Protocol.Fail_workflow { failure } ->
           Protocol.Fail_workflow { failure = copy_failure failure }
+      | Protocol.Continue_as_new command ->
+          Protocol.Continue_as_new
+            { command with input = List.map copy_payload command.input }
       | Protocol.Start_child_workflow command ->
           Protocol.Start_child_workflow
             { command with input = List.map copy_payload command.input }

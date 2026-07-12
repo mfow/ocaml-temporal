@@ -218,8 +218,17 @@ let validate_optional_identifier field = function
 let outside_error () =
   Error.defect ~message:"activity operation used outside a workflow"
 
-(** Builds a ready public future for validation failures and detached calls. *)
-let resolved result = Future_private.resolved ~outside_error result
+(** Builds a ready public future for validation failures and detached calls.
+    Inside a workflow the current scheduler owns the future so combinators
+    such as [Future.both] report the real defect instead of a cross-execution
+    ownership error from an inert owner id. *)
+let resolved result =
+  match Temporal_runtime.Workflow_context_store.current () with
+  | Some context ->
+      Future_private.of_internal
+        (Temporal_runtime.Workflow_context_store.resolved context
+           (Result.map_error Error_private.to_base result))
+  | None -> Future_private.resolved ~outside_error result
 
 (** Schedules an activity after encoding input and validating all command
     options. The native runtime receives a base payload; its result decoder is

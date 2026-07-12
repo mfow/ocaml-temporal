@@ -61,7 +61,8 @@ let promise scheduler ~outside_error =
 
 (** Handles the private [Await] effect by saving the paused workflow fiber on
     its future. Effects not owned by this scheduler continue to an outer
-    handler. *)
+    handler. The Domain-local owner id is published by [run] for the whole
+    drain so resumed fibers still see the correct owner after an await. *)
 let handle scheduler thunk =
   Effect.Deep.match_with thunk ()
     {
@@ -90,7 +91,9 @@ let spawn scheduler thunk =
 
 (** Runs queued work until the queue is empty, including fibers added by future
     completions during the run. An uncaught exception is reported before
-    [Blocked] or [Complete]. *)
+    [Blocked] or [Complete]. Publishes this scheduler as the Domain-local owner
+    for the entire drain so [Future_store.await] accepts parking only on this
+    execution's futures, including after a fiber resumes from a prior await. *)
 let run scheduler =
   if not scheduler.active then invalid_arg "Temporal scheduler is shut down";
   if scheduler.running then invalid_arg "Temporal scheduler is already running";
@@ -98,17 +101,19 @@ let run scheduler =
   Fun.protect
     ~finally:(fun () -> scheduler.running <- false)
     (fun () ->
-      while not (Queue.is_empty scheduler.queue) do
-        let (Runnable (sequence, thunk)) = Queue.pop scheduler.queue in
-        scheduler.trace_rev <- sequence :: scheduler.trace_rev;
-        (try thunk ()
-         with Future_store.Scheduler_shutdown -> ()
-         | exception_ -> scheduler.failures <- exception_ :: scheduler.failures)
-      done;
-      match List.rev scheduler.failures with
-      | failure :: _ -> Failed failure
-      | [] when scheduler.pending > 0 -> Blocked
-      | [] -> Complete)
+      Future_store.with_current_owner_id (Some scheduler.id) (fun () ->
+          while not (Queue.is_empty scheduler.queue) do
+            let (Runnable (sequence, thunk)) = Queue.pop scheduler.queue in
+            scheduler.trace_rev <- sequence :: scheduler.trace_rev;
+            (try thunk ()
+             with Future_store.Scheduler_shutdown -> ()
+             | exception_ ->
+                 scheduler.failures <- exception_ :: scheduler.failures)
+          done;
+          match List.rev scheduler.failures with
+          | failure :: _ -> Failed failure
+          | [] when scheduler.pending > 0 -> Blocked
+          | [] -> Complete))
 
 (** Stable string adapter used by smoke tests and future diagnostics. *)
 let run_label scheduler =

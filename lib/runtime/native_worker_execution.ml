@@ -108,11 +108,23 @@ type registered_definition =
       registered_definition
 
 (** Bounds diagnostics that may contain application codec messages before they
-    enter Logs or a Temporal failure. The suffix makes truncation explicit. *)
+    enter Logs or a Temporal failure. Invalid UTF-8 is replaced because protocol
+    string fields are strict UTF-8; truncation never splits a multibyte code
+    unit, matching the activity adapter. *)
 let bounded_message value =
   let maximum = 1_024 in
-  if String.length value <= maximum then value
-  else String.sub value 0 (maximum - 3) ^ "..."
+  let fallback = "invalid workflow diagnostic" in
+  if not (Temporal_base.Codec.valid_utf_8 value) then fallback
+  else if String.length value <= maximum then value
+  else
+    let rec prefix length =
+      if length <= 0 then fallback
+      else
+        let candidate = String.sub value 0 length in
+        if Temporal_base.Codec.valid_utf_8 candidate then candidate ^ "..."
+        else prefix (length - 1)
+    in
+    prefix (maximum - 3)
 
 (** Bounds arbitrary source classifications before they reach the stable
     adapter error view. *)
@@ -581,12 +593,18 @@ module Make (Supervisor : SUPERVISOR) = struct
       | Accepted -> accepted_pending adapter pending
       | Rejected_by_supervisor error -> Error error
       | Raised_by_supervisor exception_ ->
-          (* Preserve the historical cleanup contract for a binding exception:
-             remove this uncertain ordinary completion before the outer guard
-             submits one explicit failure completion. If that fallback also
-             fails, [retire_with_failure] records its own retryable lease. *)
-          adapter.pending <- Run_map.remove pending.run_id adapter.pending;
-          raise exception_
+          (* Eviction acknowledgements must stay empty completions. Removing
+             them and re-raising lets the outer guard submit Fail_workflow,
+             which is invalid for an eviction lease. Keep the empty pending
+             entry for retry, matching [finish_pending]. *)
+          (match pending.result with
+          | Pending_completed { evicted = true; _ } ->
+              Error (completion_exception_error exception_)
+          | Pending_completed _ | Pending_rejected _ ->
+              (* Ordinary completions: preserve the historical cleanup contract
+                 so the outer guard can submit one explicit failure completion. *)
+              adapter.pending <- Run_map.remove pending.run_id adapter.pending;
+              raise exception_)
     end
 
   (** A cache-eviction activation is acknowledged with a successful empty

@@ -107,13 +107,29 @@ let start_workflow execution =
         match Temporal_base.Definition.implementation execution.definition with
         | None -> fail execution (bridge_error "remote workflow has no implementation")
         | Some implementation ->
-            begin match implementation execution.input with
+            begin match
+              try implementation execution.input with
+              | exn ->
+                  Error
+                    (Temporal_base.Error.defect
+                       ~message:
+                         ("workflow implementation raised: "
+                         ^ Printexc.to_string exn))
+            with
             | Error error -> fail execution error
             | Ok output ->
                 begin match
-                  Temporal_base.Codec.encode
-                    (Temporal_base.Definition.output execution.definition)
-                    output
+                  try
+                    Temporal_base.Codec.encode
+                      (Temporal_base.Definition.output execution.definition)
+                      output
+                  with
+                  | exn ->
+                      Error
+                        (Temporal_base.Error.defect
+                           ~message:
+                             ("workflow result encoder raised: "
+                             ^ Printexc.to_string exn))
                 with
                 | Error error -> fail execution error
                 | Ok payload ->

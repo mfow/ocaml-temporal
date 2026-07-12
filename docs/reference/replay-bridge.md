@@ -85,10 +85,13 @@ queued history from being cancelled while looking like a successful replay.
 
 When abandonment is intentional, `dispose` is the separate destructive path.
 It initiates Core shutdown, force-completes queued or leased work, joins the
-poll lane, and attempts terminal finalization. It must never be used as replay
-success evidence. A poll-lane failure performs the same force-completion
-cleanup before returning the worker and typed error, so the owner can retry or
-dispose without dropping an unfinalized native graph.
+poll lane, and attempts terminal finalization twice. It must never be used as
+replay success evidence. A poll-lane failure performs the same
+force-completion cleanup before returning the worker and typed error. If both
+terminal finalization attempts fail, `dispose` returns the worker and a
+`Finalization` error together; the caller must retry disposal or otherwise
+retain that owner. The bridge never silently drops the unfinalized native
+graph.
 
 ## Current evidence and limits
 
@@ -102,8 +105,11 @@ cover:
 - construction and clean shutdown without a Temporal client; and
 - admission, activation completion, natural shutdown, and finalization of one
   valid history through the bounded feeder; and
-- rejection of direct feed/close/finalize before the activation is drained,
-  with explicit disposal of the retained worker.
+- rejection of finalization after the feeder is closed but before its queued
+  history is drained, with explicit disposal of the retained worker; and
+- retention and reporting of a still-shared Core worker during disposal,
+  reporting of a joined poll-lane failure, and successful retry after each
+  retained owner is safe to release.
 
 This is **unit-tested native plumbing**, not proof that an OCaml workflow
 replays successfully against a real server. The public C ABI and OCaml

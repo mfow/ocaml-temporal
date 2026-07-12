@@ -958,6 +958,25 @@ impl PollLanes {
             )),
         }
     }
+
+    /// Retains a second Core worker owner for replay disposal tests.
+    ///
+    /// This test-only hook keeps the worker field private to the bridge while
+    /// allowing the replay module to model a competing in-flight owner.
+    #[cfg(test)]
+    pub(crate) fn retain_worker_for_test(&self) -> Arc<Worker> {
+        Arc::clone(&self.worker)
+    }
+
+    /// Aborts the workflow poll task for deterministic replay join-failure
+    /// coverage. Production callers always use the Core shutdown path instead.
+    #[cfg(test)]
+    pub(crate) fn abort_workflow_lane_for_test(&mut self) {
+        self.workflow_lane
+            .as_ref()
+            .expect("poll lanes must own a workflow task")
+            .abort();
+    }
 }
 
 /// Polls workflow activations serially and records ownership before enqueueing.

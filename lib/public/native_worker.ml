@@ -160,7 +160,9 @@ let register_activity definition = Activity_adapter.register definition
 let default_build_id = "ocaml-temporal"
 let default_max_cached_workflows = 1_000
 let default_max_outstanding_workflow_tasks = 1_000
-let default_max_concurrent_workflow_task_polls = 1
+(* Temporal Core requires at least two workflow-task pollers when workflow
+   caching is enabled; the bridge validates the same invariant on both sides. *)
+let default_max_concurrent_workflow_task_polls = 2
 let default_graceful_shutdown_timeout_ms = 30_000L
 let supervisor_capacity = 32
 

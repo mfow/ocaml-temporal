@@ -2,7 +2,12 @@ TEMPORAL_FIXTURE_DIR := $(CURDIR)/test/integration/temporal
 TEMPORAL_COMPOSE_FILE := $(TEMPORAL_FIXTURE_DIR)/compose.yaml
 TEMPORAL_COMPOSE_PROJECT ?= ocaml-temporal-integration
 COMPOSE := docker compose --project-directory "$(TEMPORAL_FIXTURE_DIR)" --file "$(TEMPORAL_COMPOSE_FILE)" --project-name "$(TEMPORAL_COMPOSE_PROJECT)"
-TEMPORAL_COMPOSE := $(COMPOSE) --profile temporal
+# Compose services bind-mount the repository. Propagate the invoking user's
+# numeric identity, selected OCaml image, and bounded driver timeout so every
+# service shares Dune's lock/build ownership and overrides behave predictably.
+TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) SMOKE_DRIVER_TIMEOUT_SECONDS=$(TEMPORAL_DRIVER_TIMEOUT_SECONDS) $(COMPOSE) --profile temporal
+TEMPORAL_DRIVER_TIMEOUT_SECONDS ?= 120
+SMOKE_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.smoke-driver.log
 SERVICE ?= dev
 OCAML_VERSION ?= 5.2
 OCAML_IMAGE ?= ocaml/opam:debian-12-ocaml-$(OCAML_VERSION)
@@ -31,7 +36,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-core-lifecycle-integration test-temporal-integration temporal-start temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke test-temporal-two-binary test-temporal-integration temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -83,6 +88,42 @@ temporal-start:
 	$(TEMPORAL_COMPOSE) up --detach --wait postgresql temporal
 	$(MAKE) temporal-health
 
+# Starts the long-lived OCaml worker only after the database and Temporal
+# frontend are healthy. The worker health check is backed by an atomic marker
+# published after public Worker.create succeeds, not merely by process liveness.
+temporal-start-worker:
+	$(TEMPORAL_COMPOSE) up --detach --build --wait smoke-worker
+
+# Runs the independent OCaml driver against the already-running worker. Using
+# `run --no-deps` avoids accidentally creating a second worker process and makes
+# the driver's exit status the acceptance test's authoritative result. The
+# bounded timeout turns a lost native request into a normal nonzero child exit
+# instead of allowing CI to wait for the job's global timeout. Capturing the
+# one-off container output in a host file lets the failure trap print driver
+# phases even though `--rm` removes the container before Compose logs can see it.
+temporal-run-driver:
+	@set -eu; \
+	rm -f "$(SMOKE_DRIVER_LOG_FILE)"; \
+	status=0; \
+	$(TEMPORAL_COMPOSE) run --rm --no-deps smoke-driver >"$(SMOKE_DRIVER_LOG_FILE)" 2>&1 || status=$$?; \
+	cat "$(SMOKE_DRIVER_LOG_FILE)"; \
+	if [ "$$status" -ne 0 ]; then $(MAKE) temporal-inspect-smoke || true; $(MAKE) temporal-logs || true; fi; \
+	exit "$$status"
+
+# Performs a failure-only metadata check for the two known workflow IDs. The
+# admin-tools output contains execution status/run identity but no history or
+# payloads, which distinguishes a start, worker-dispatch, and terminal-wait
+# failure without expanding the acceptance test's privacy surface. A missing
+# workflow is expected when the driver stalled before its first start, so every
+# query is best effort and cannot mask the original exit status.
+temporal-inspect-smoke:
+	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity; do \
+		echo "--- Temporal metadata for $$workflow_id ---"; \
+		$(TEMPORAL_COMPOSE) run --rm --no-deps temporal-admin-tools \
+			temporal workflow describe --workflow-id "$$workflow_id" \
+			--namespace temporal-sdk-test || true; \
+	done
+
 temporal-health:
 	$(TEMPORAL_COMPOSE) exec -T postgresql pg_isready -U temporal -d postgres
 	$(TEMPORAL_COMPOSE) exec -T postgresql psql -v ON_ERROR_STOP=1 -U temporal -d temporal -tAc 'SELECT 1 FROM schema_version LIMIT 1'
@@ -93,13 +134,18 @@ temporal-status:
 	$(TEMPORAL_COMPOSE) ps
 
 temporal-logs:
-	$(TEMPORAL_COMPOSE) logs --no-color --tail 200 postgresql temporal-schema temporal
+	$(TEMPORAL_COMPOSE) logs --no-color --tail 200 postgresql temporal-schema temporal smoke-worker
+	@if [ -f "$(SMOKE_DRIVER_LOG_FILE)" ]; then \
+		echo '--- smoke-driver one-off output ---'; \
+		tail -n 200 "$(SMOKE_DRIVER_LOG_FILE)"; \
+	fi
 
 temporal-stop:
 	$(TEMPORAL_COMPOSE) down --remove-orphans
 
 temporal-clean:
 	$(TEMPORAL_COMPOSE) down --volumes --remove-orphans
+	@rm -f "$(SMOKE_DRIVER_LOG_FILE)"
 
 test-temporal-integration: test-temporal-config
 	@set -eu; \
@@ -119,7 +165,14 @@ test-temporal-integration: test-temporal-config
 	trap 'exit 143' TERM; \
 	$(MAKE) temporal-start; \
 	$(MAKE) temporal-health; \
-	$(MAKE) test-core-lifecycle-integration
+	$(MAKE) test-core-lifecycle-integration; \
+	$(MAKE) temporal-start-worker; \
+	$(MAKE) temporal-run-driver
+
+# Explicit name for callers that want to discover the two-process acceptance
+# without reading the broader integration target. It shares the same isolated
+# lifecycle and therefore cannot leave a second Temporal stack behind.
+test-temporal-two-binary: test-temporal-integration
 
 test-unit:
 	$(RUN) dune runtest test/unit test/smoke

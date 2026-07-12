@@ -32,9 +32,30 @@ require_text 'temporal-postgres-data:'
 require_text 'temporal-network:'
 require_text 'pg_isready'
 require_text 'nc -z localhost 7233'
+require_text 'smoke-worker:'
+require_text 'smoke-driver:'
+require_text 'TEMPORAL_TWO_BINARY_LIVE: "1"'
+require_text 'smoke_worker.exe'
+require_text 'smoke_driver.exe'
+require_text '--build-dir=/workspace/_build/smoke-worker'
+require_text '--build-dir=/workspace/_build/smoke-driver'
+require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "120"'
+require_text '--kill-after=10s'
+require_text 'user: 1000:1000'
+if ! grep -F 'user: "${HOST_UID:-1000}:${HOST_GID:-1000}"' "$compose_file" >/dev/null; then
+  echo "smoke services must inherit the invoking host UID/GID" >&2
+  exit 1
+fi
+require_text 'SMOKE_WORKER_READY_FILE'
+require_text 'test -s /tmp/ocaml-temporal-two-binary-worker.ready'
+require_text 'stop_grace_period: 30s'
 
 makefile="$root/Makefile"
-for target in temporal-start temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-integration; do
+if ! grep -F 'temporal workflow describe' "$makefile" >/dev/null; then
+  echo "failure diagnostics must use the official Temporal CLI workflow describe command" >&2
+  exit 1
+fi
+for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-two-binary test-temporal-integration; do
   if ! grep -E "^${target}:" "$makefile" >/dev/null; then
     echo "Makefile does not define required target: $target" >&2
     exit 1
@@ -43,6 +64,11 @@ done
 
 if ! grep -F 'schema_version' "$makefile" >/dev/null; then
   echo "temporal-health must verify the initialized Temporal SQL schema" >&2
+  exit 1
+fi
+
+if ! grep -F 'OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID)' "$makefile" >/dev/null; then
+  echo "Temporal Compose commands must propagate the OCaml image and host UID/GID" >&2
   exit 1
 fi
 

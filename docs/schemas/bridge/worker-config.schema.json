@@ -22,5 +22,19 @@
     "max_outstanding_workflow_tasks": { "type": "integer", "minimum": 1, "maximum": 1000000 },
     "max_concurrent_workflow_task_polls": { "type": "integer", "minimum": 1, "maximum": 1000000 },
     "graceful_shutdown_timeout_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "max_cached_workflows": { "minimum": 1 }
+        }
+      },
+      "then": {
+        "properties": {
+          "max_concurrent_workflow_task_polls": { "minimum": 2 }
+        }
+      }
+    }
+  ]
 }

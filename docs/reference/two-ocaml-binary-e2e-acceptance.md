@@ -1,33 +1,39 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The source-level driver and worker scaffold now exists under
-`test/integration/temporal/{common,driver,worker}`. It proves that both
-executables can be compiled against the same public `temporal-sdk` package,
-but it is not a live test yet. The binaries refuse to run unless
-`TEMPORAL_TWO_BINARY_LIVE=1` is set, and no Compose service enables that flag.
+**Status:** The Compose topology and Makefile lifecycle are now wired for a
+live run, but this change is not considered a passing acceptance test until
+`make test-temporal-integration` has completed successfully against the real
+Temporal/PostgreSQL services. The worker and driver remain guarded by
+`TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
+
+`smoke-worker` publishes an atomic readiness marker after public
+`Temporal.Worker.create` succeeds. Compose waits for that health check before
+`smoke-driver` is run. The driver starts both workflows before waiting for
+either result, and the Makefile tears down the isolated project and volume on
+success or failure. This prevents a TCP check or a process that merely started
+from being reported as an SDK acceptance pass.
 
 The public `Temporal.Client` and `Temporal.Worker` now route HTTP(S) calls
 through the private Rust/Core supervisor. The deterministic `mock://` backend
 remains available for unit tests. The worker's native poll, bounded readiness,
-completion, and typed registration loop is covered by focused tests, but the
-scaffold is not a live test yet: no Compose service enables
-`TEMPORAL_TWO_BINARY_LIVE=1`, and the current Compose target exercises only the
-lower-level lifecycle executable.
+completion, and typed registration loop is covered by focused tests; the
+Compose acceptance is the next verification layer against a real server.
 
-The remaining blockers are concrete rather than environmental:
+During teardown, the worker's small test-process control Domain translates
+Compose's SIGTERM into `Temporal.Worker.shutdown`; the signal handler itself
+only sets an atomic flag. The 30-second worker stop grace period gives the
+bounded native waits time to leave their poll loop before the container is
+removed. This is test-process lifecycle code, not a second worker supervisor.
 
-1. enable the two public binaries as separate Compose services only after
-   Temporal/PostgreSQL readiness is proven;
-2. make the driver assert both terminal workflow results while the worker
-   executes the registered workflow and mock activity against the live server;
-   and
-3. retain explicit typed rejection for child-workflow commands until their
-   complete Core fields and replay behavior are implemented.
+The remaining live verification requirements are concrete:
 
-Until those services and assertions are complete, CI should continue running
-the existing Core-client/worker lifecycle smoke and compile the scaffold with
-the ordinary OCaml build. It must not promote the scaffold to a live
-acceptance target.
+1. start the two public binaries as separate Compose services after
+   Temporal/PostgreSQL readiness is proven; and
+2. assert both terminal workflow results while the worker executes the
+   registered workflow and mock activity against the live server.
+
+Until a real `make test-temporal-integration` run passes, this document does
+not describe the acceptance as complete.
 
 ## Purpose
 
@@ -105,12 +111,17 @@ test/integration/temporal/
     └── smoke_driver.ml
 ```
 
-The Compose services are `postgres`, `temporal`, `smoke-worker`, and
+The Compose services are `postgresql`, `temporal`, `smoke-worker`, and
 `smoke-driver`. `smoke-worker` and `smoke-driver` use the same development
 image and repository checkout, but execute different Dune binaries. This
 proves that the public library can be linked into more than one OCaml-owned
 binary; it does not imply that an application must share a Rust runtime across
-processes.
+processes. Each process uses its own absolute Dune build directory
+(`/workspace/_build/smoke-worker` or `/workspace/_build/smoke-driver`). Dune
+keeps a build-directory lock for the lifetime of `dune exec`; separate
+directories are therefore required while the worker is running, otherwise the
+driver's build can wait forever on the worker's lock before its OCaml code
+starts.
 
 The worker health check may become healthy only after it has connected,
 validated its worker, registered its OCaml definitions, and started both
@@ -120,10 +131,12 @@ signal is the driver's exit status after its result assertions. It must not be
 replaced by a schema migration, namespace registration, TCP check, or a
 `temporal operator cluster health` check.
 
-`make temporal-test` (or the focused successor to that target) owns the
-fixture lifecycle: create its isolated Compose project, wait for the driver's
-terminal exit status, collect the worker and driver logs on failure, then tear
-the project down. Native Windows and macOS jobs do not run this Linux Compose
+`make test-temporal-integration` owns the fixture lifecycle: create its
+isolated Compose project, run the low-level lifecycle check, wait for the
+worker health marker, wait for the driver's terminal exit status, collect the
+worker logs on failure, then tear the project down. The explicit alias
+`make test-temporal-two-binary` is provided for callers that want the focused
+acceptance name. Native Windows and macOS jobs do not run this Linux Compose
 acceptance test.
 
 ## The two OCaml programs

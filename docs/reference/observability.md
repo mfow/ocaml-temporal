@@ -11,29 +11,43 @@ Source names are stable filtering identifiers:
 
 | Source | Purpose |
 |---|---|
-| `temporal.sdk.lifecycle` | Native SDK runtime initialization and shutdown |
+| `temporal.sdk.lifecycle` | Native runtime, worker adapter, and worker lifecycle events |
 | `temporal.sdk.bridge` | Calls through the private OCaml/C/Rust bridge |
 | `temporal.sdk.workflow` | Workflow execution and activation processing |
 
+The workflow source is reserved for deterministic local workflow execution and
+activation records. Native worker and adapter poll, completion, rejection, and
+run/shutdown records currently use the lifecycle source; filter that source
+when diagnosing worker operation.
+
 Current events use these levels:
 
-- `Debug` records verbose bridge calls, activation processing, counts, and
-  latency.
-- `Info` records important runtime and workflow lifecycle transitions.
+- `Debug` records bridge operation completions, expected not-ready states,
+  workflow execution and activation processing, and worker/adapter
+  poll/completion detail. `temporal.duration_ms` is currently attached to
+  bridge-operation completion and local workflow activation records.
+- `Info` records runtime initialization/closure, workflow lifecycle
+  transitions, and worker run/shutdown transitions.
 - `Warning` records recoverable abnormal conditions, such as work delivered to
-  an execution after cache eviction or a worker shutdown that still has leased
-  tasks to finish.
-- `Error` records bridge and workflow failures.
+  an execution after cache eviction, a rejected workflow/activity task or
+  activation completion, or a worker shutdown that still has leased tasks to
+  finish.
+- `Error` records failed bridge operations and workflow failures.
 
-An empty non-blocking worker poll lane, an exact-run client wait whose 100 ms
-interval elapsed, or an asynchronous start-ticket poll/wait that is still
-pending is reported at `Debug` as `not ready`; each is an expected scheduling
-state rather than a failure. Protocol, lifecycle, configuration, and native
-bridge failures remain `Error` records. This level split keeps a healthy worker
-or waiting client from producing error-volume logs while retaining actionable
-diagnostics for conditions that require intervention. These level assignments
-describe the SDK's current reporting callsites; applications may use the
-generic `Observability.report` helper for additional application events.
+At the bridge boundary, an empty non-blocking worker poll lane, an exact-run
+client wait whose bounded 100 ms interval elapsed, or an asynchronous
+start-ticket poll/wait that is still pending returns the typed `Not_ready`
+status and emits a `Debug` bridge record with
+`temporal.bridge_status=not_ready`. The public worker adapters also emit
+`Debug` lifecycle records named `workflow_poll_not_ready` and
+`activity_poll_not_ready` when they map an empty lane to normal `Not_ready`
+progress. These are expected scheduling states, not failures; protocol,
+lifecycle, configuration, and native bridge failures remain `Error` records.
+This level split keeps a healthy worker or waiting client from producing
+error-volume logs while retaining actionable diagnostics for conditions that
+require intervention. These level assignments describe the SDK's current
+reporting callsites; applications may use the generic `Observability.report`
+helper for additional application events.
 
 The SDK never logs at `App`, which is reserved for the application.
 
@@ -53,10 +67,12 @@ Reporters receive typed structural tags independently from message prose:
 
 Latency is measured around the local OCaml operation with the portable Unix
 wall clock, expressed as fractional milliseconds, and clamped to zero if the
-clock moves backwards. It is diagnostic metadata only: workflow code never
-uses it to choose commands or results. Future modules should reuse the source
-and tag definitions in `Temporal_base.Observability` instead of inventing
-near-duplicate names.
+clock moves backwards. The SDK currently attaches this tag to bridge-operation
+completion and local workflow activation records; worker and adapter lifecycle
+records do not currently carry latency tags. It is diagnostic metadata only:
+workflow code never uses it to choose commands or results. Future modules
+should reuse the source and tag definitions in `Temporal_base.Observability`
+instead of inventing near-duplicate names.
 
 The shared tag constructor normalizes negative counts to zero. Negative,
 `NaN`, and infinite durations also become zero. This defensive boundary keeps
@@ -110,9 +126,10 @@ commands to the activation being reported.
 ## Verification
 
 `test/observability/test_logging.ml` installs an in-memory reporter and checks
-the contract structurally: source names and severity levels remain stable,
-bridge and activation records carry finite non-negative latency tags, and
-neither raw byte payloads nor request JSON appear in message text or rendered
-tags. It also verifies that a reporter exception cannot change a bridge result
-or workflow command batch. Run it with `dune exec ./test/observability/test_logging.exe`
-or use the broader Makefile test target.
+the contract structurally: exact source and tag names, representative
+bridge/workflow severity assignments, finite non-negative latency tags on
+bridge and activation records, and the absence of raw byte payloads or request
+JSON in message text and rendered tags. It also verifies that a reporter
+exception cannot change a bridge result or workflow command batch. Run it with
+`dune exec ./test/observability/test_logging.exe` or use the broader Makefile
+test target.

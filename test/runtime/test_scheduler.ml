@@ -301,6 +301,26 @@ let test_shutdown_discontinues_queued_ready_continuations () =
   if not !cleaned then
     failwith "queued ready continuation was dropped without discontinue"
 
+(** Every waiter parked on a future must be discontinued when its scheduler
+    shuts down. This guards the terminal invariant that no captured workflow
+    continuation remains stranded when a pending future is closed. *)
+let test_shutdown_discontinues_all_pending_continuations () =
+  let scheduler = Scheduler.create () in
+  let future, _resolve = promise scheduler ~outside_error in
+  let cleanup_count = ref 0 in
+  let spawn_waiter () =
+    Scheduler.spawn scheduler (fun () ->
+        Fun.protect
+          ~finally:(fun () -> incr cleanup_count)
+          (fun () -> ignore (Temporal.Future.await future)))
+  in
+  spawn_waiter ();
+  spawn_waiter ();
+  spawn_waiter ();
+  expect "multiple cleanup setup" "blocked" (Scheduler.run_label scheduler);
+  Scheduler.shutdown scheduler;
+  expect "all pending cleanup count" 3 !cleanup_count
+
 (** A shutdown requested by one running thunk must not execute a later root
     thunk that was already admitted. The owner still drains the queue so
     future continuations can discontinue themselves instead of being dropped. *)
@@ -402,6 +422,7 @@ let () =
   test_both_observes_sibling_after_error ();
   test_shutdown_closes_pending_continuations ();
   test_shutdown_discontinues_queued_ready_continuations ();
+  test_shutdown_discontinues_all_pending_continuations ();
   test_shutdown_skips_queued_root_thunks ();
   test_shutdown_skips_queued_observers ();
   test_shutdown_skips_public_derived_callbacks ();

@@ -59,8 +59,8 @@ if ! grep -F 'schema_version' "$makefile" >/dev/null; then
   exit 1
 fi
 
-if ! grep -F 'HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID)' "$makefile" >/dev/null; then
-  echo "Temporal Compose commands must propagate host UID/GID for bind-mounted builds" >&2
+if ! grep -F 'OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID)' "$makefile" >/dev/null; then
+  echo "Temporal Compose commands must propagate the OCaml image and host UID/GID" >&2
   exit 1
 fi
 

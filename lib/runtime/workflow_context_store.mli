@@ -63,8 +63,10 @@ val schedule_activity :
 (** Assigns a private correlation sequence, records how to decode the child
     result, emits a command containing the application-supplied durable [id],
     and returns the child result future together with a cancellation operation.
-    The operation is valid only while this context is current; it emits at
-    most one cancellation command and leaves Core to resolve the future. *)
+    The default policy is [Child_try_cancel], so cancellation requests the
+    child unless a caller explicitly chooses [Child_abandon]. The operation is
+    valid only while this context is current; it emits at most one cancellation
+    command and leaves Core to resolve the future. *)
 val start_child_workflow :
   t ->
   id:string ->

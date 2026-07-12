@@ -15,8 +15,10 @@ type 'output handle
 
 (** Starts a child workflow and retains a handle that can cancel it. The
     command is emitted immediately; [future] remains pending until Core reports
-    a start or terminal result. Invalid input and detached calls return ready
-    failed handles, so no command or sequence number is created. *)
+    a start or terminal result. The default [Try_cancel] policy asks Core to
+    cancel the child when [cancel] is called; choose [Abandon] explicitly when
+    the child should keep running. Invalid input and detached calls return
+    ready failed handles, so no command or sequence number is created. *)
 val start_handle :
   ?cancellation_type:cancellation_type ->
   id:string ->
@@ -41,7 +43,7 @@ val cancel :
     cross the strict bridge boundary. Invalid identity or input encoding returns
     a ready failed future without emitting a command or consuming a sequence.
     Starting several operations before awaiting them lets Temporal run them
-    concurrently. *)
+    concurrently. The default cancellation policy is [Try_cancel]. *)
 val start :
   ?cancellation_type:cancellation_type ->
   id:string ->
@@ -51,7 +53,8 @@ val start :
 
 (** Starts a child workflow and waits for its result. This is equivalent to
     [Future.await (start ~id definition input)]. Child, codec, cancellation,
-    and bridge failures are returned as structured values. *)
+    and bridge failures are returned as structured values. The default
+    cancellation policy is [Try_cancel]. *)
 val execute :
   ?cancellation_type:cancellation_type ->
   id:string ->

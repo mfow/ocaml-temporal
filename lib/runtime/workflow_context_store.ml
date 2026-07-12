@@ -201,7 +201,7 @@ let bridge_error message =
     application-owned durable identity; the private [seq] only correlates Core
     completion jobs with this in-memory execution. *)
 let start_child_workflow context ~id ~name ~input
-    ?(cancellation_type = Activation.Child_abandon) ~decode () =
+    ?(cancellation_type = Activation.Child_try_cancel) ~decode () =
   let seq = allocate_sequence context in
   (* Keep this bit in the handle closure rather than in the pending table so a
      repeated cancel remains idempotent even after Core has removed the child

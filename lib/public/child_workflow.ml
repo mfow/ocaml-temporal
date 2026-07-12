@@ -5,7 +5,9 @@ let outside_error () =
 
 (** Controls when Core reports a parent future after cancellation has been
     requested. The policy travels with the start command so Core can handle a
-    cancel-before-start race without language-layer guessing. *)
+    cancel-before-start race without language-layer guessing. Handles default
+    to [Try_cancel], so calling [cancel] requests cancellation of the child;
+    [Abandon] remains available when deliberately detaching the child. *)
 type cancellation_type =
   | Try_cancel
   | Wait_cancellation_completed
@@ -87,7 +89,7 @@ let failed_handle error =
 (** Validates durable identity and encodes input before allocating a private
     sequence number. Consequently invalid requests cannot change command order
     or appear in replay history. *)
-let start_handle ?(cancellation_type = Abandon) ~id definition input =
+let start_handle ?(cancellation_type = Try_cancel) ~id definition input =
   match validate_id id with
   | Error error -> failed_handle error
   | Ok () -> (

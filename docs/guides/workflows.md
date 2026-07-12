@@ -385,8 +385,11 @@ raise for an expected Temporal failure. The `Try_cancel` policy asks Core to
 request cancellation and report the child result promptly. Use
 `Wait_cancellation_completed` or `Wait_cancellation_requested` when the parent
 must remain pending until Core observes that stage, or `Abandon` when no child
-request should be sent. The reason is validated before it becomes a durable
-command, and the handle cannot be forged for another child sequence.
+request should be sent. `Try_cancel` is the default for `start_handle`, `start`,
+and `execute`, so an ordinary `cancel` call requests cancellation; select
+`Abandon` explicitly when the child should keep running. The reason is
+validated before it becomes a durable command, and the handle cannot be forged
+for another child sequence.
 
 The definitions and calls above compile, and the synthetic runtime tests cover
 child scheduling and deterministic future resolution. The native protocol and

@@ -1,8 +1,12 @@
 # Worker restart and replay acceptance design
 
-**Status: design only.** This document describes the next real-Temporal
-acceptance scenario. It does not claim that worker restart, replay, or sticky
-cache behavior has been verified yet. The existing
+**Status: bounded native replay plumbing implemented; live restart acceptance
+design only.** The private Rust bridge now validates and feeds one history at
+a time into a workflow-only Temporal Core replay worker. This document still
+describes the next real-Temporal acceptance scenario: it does not claim that
+worker restart, replay, or sticky-cache behavior has been verified yet. The
+bridge format and ownership rules are documented in the [internal replay
+bridge reference](replay-bridge.md). The existing
 [`make test-temporal-integration`](../../Makefile) gate remains the source of
 the current live evidence; this design must be implemented and pass in CI
 before the coverage matrix is changed.

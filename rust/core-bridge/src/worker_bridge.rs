@@ -400,6 +400,29 @@ pub struct PollLanes {
 impl PollLanes {
     /// Starts the sole workflow poll and sole remote-activity poll loops.
     pub fn start(worker: Worker, handle: &tokio::runtime::Handle) -> Self {
+        Self::start_with_activity_lane(worker, handle, true)
+    }
+
+    /// Starts only the workflow poll loop for a replay worker.
+    ///
+    /// Core replay workers deliberately disable remote activities. Keeping the
+    /// activity lane absent, rather than starting a poll that immediately
+    /// returns `ShutDown`, makes that invariant explicit and prevents a replay
+    /// owner from accidentally treating an unavailable activity lane as a
+    /// worker failure. The shared ledger and readiness machinery remain the
+    /// same as the live-worker path.
+    pub fn start_workflow_only(worker: Worker, handle: &tokio::runtime::Handle) -> Self {
+        Self::start_with_activity_lane(worker, handle, false)
+    }
+
+    /// Builds the guarded lanes shared by live and workflow-only replay
+    /// workers. The boolean is internal to construction so the public methods
+    /// cannot create a partially configured lane graph.
+    fn start_with_activity_lane(
+        worker: Worker,
+        handle: &tokio::runtime::Handle,
+        start_activity_lane: bool,
+    ) -> Self {
         let worker = Arc::new(worker);
         let ledger = Arc::new(Mutex::new(TaskLedger::new()));
         // Core's configured outstanding-task permits provide the actual queue
@@ -417,12 +440,20 @@ impl PollLanes {
             workflow_sender,
             Arc::clone(&workflow_signal),
         ));
-        let activity_lane = handle.spawn(run_activity_lane(
-            Arc::clone(&worker),
-            Arc::clone(&ledger),
-            activity_sender,
-            Arc::clone(&activity_signal),
-        ));
+        let activity_lane = if start_activity_lane {
+            Some(handle.spawn(run_activity_lane(
+                Arc::clone(&worker),
+                Arc::clone(&ledger),
+                activity_sender,
+                Arc::clone(&activity_signal),
+            )))
+        } else {
+            // No producer exists for this lane in workflow-only mode. Mark it
+            // closed before publication so a defensive wait cannot sleep on a
+            // condition that replay can never satisfy.
+            activity_signal.close();
+            None
+        };
         Self {
             worker,
             ledger,
@@ -431,7 +462,7 @@ impl PollLanes {
             workflow_signal,
             activity_signal,
             workflow_lane: Some(workflow_lane),
-            activity_lane: Some(activity_lane),
+            activity_lane,
             shutdown_started: false,
         }
     }
@@ -568,6 +599,28 @@ impl PollLanes {
         self.shutdown_started = true;
     }
 
+    /// Records a shutdown that Core initiated itself, without sending a second
+    /// shutdown signal into the worker.
+    ///
+    /// Replay workers cancel their own Core shutdown token after the history
+    /// stream ends. The bridge still needs its ledger's `Draining` phase before
+    /// the shared finalizer can consume the worker, but calling
+    /// [`Self::initiate_shutdown`] before joining would risk cancelling a
+    /// history that had not reached Core yet. This method is therefore reserved
+    /// for an already-observed terminal lane and changes only bridge ledger
+    /// state. It deliberately leaves `shutdown_started` false so an explicit
+    /// later disposal can still send Core's cancellation signal if a join or
+    /// finalization error makes that necessary.
+    pub fn mark_natural_shutdown(&mut self) {
+        if self.shutdown_started {
+            return;
+        }
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_draining();
+    }
+
     /// Waits for the next workflow-lane message without holding the OCaml lock.
     pub fn wait_workflow(&self) -> ReadinessWait {
         self.workflow_signal.wait()
@@ -625,6 +678,21 @@ impl PollLanes {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .can_finalize()
+    }
+
+    /// Reports whether any workflow or activity completion debt remains.
+    ///
+    /// Replay reaches Core's terminal shutdown before the bridge marks its
+    /// ledger as `Draining`, so replay finalization needs this count-only view
+    /// to validate ownership without prematurely initiating shutdown. Live
+    /// disposal should continue to use [`Self::can_finalize`], which also
+    /// requires the explicit draining phase.
+    pub fn has_outstanding_tasks(&self) -> bool {
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .outstanding()
+            != 0
     }
 
     /// Best-effort Core completion for every task still owned by this worker.

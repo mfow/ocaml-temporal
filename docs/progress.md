@@ -14,6 +14,26 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Bounded native replay worker plumbing
+
+The private Rust bridge now accepts a closed replay-history JSON document,
+validates duplicate/unknown fields, canonical base64, payload bounds, and
+Temporal Core history invariants, then feeds validated histories through a
+one-slot `HistoryFeeder` into a workflow-only Core replay worker. Finalization
+now requires the feeder to be closed, every activation to be completed, and
+the workflow lane's natural `Shutdown` to be observed; it does not cancel
+queued history. An explicit destructive `dispose` path owns force-completion
+for abandoned work, and a poll-lane error retains the owner after best-effort
+ledger cleanup. The replay worker owns no OCaml pointer or callback. Focused
+Rust tests cover round trips, rejection paths, construction, clean shutdown,
+one-history admission/completion, and the typed precondition for
+feed/close/finalize before draining. The document format is specified by
+[`docs/reference/replay-bridge.md`](reference/replay-bridge.md) and its JSON
+Schema. This is unit-tested native plumbing only: the public OCaml replay
+operation and live two-generation restart/replay Compose acceptance remain
+planned. Local Rust tests passed; queued GitHub Actions are not treated as
+evidence for this milestone.
+
 ## 2026-07-13: Retained activity completion worker-loop resilience
 
 The native activity adapter now carries an explicit retryability classification

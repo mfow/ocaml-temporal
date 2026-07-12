@@ -556,18 +556,32 @@ impl PollLanes {
     }
 
     /// Waits until both guarded poll futures have observed Core shutdown.
+    ///
+    /// Both join handles are always awaited, even when the first lane reports a
+    /// failure.  A failed workflow lane must not leave the activity lane
+    /// producing tasks while dispose or a retrying shutdown path assumes that
+    /// every producer has stopped.
     pub async fn join_poll_lanes(&mut self) -> Result<(), PollLaneError> {
-        if let Some(workflow_lane) = self.workflow_lane.take() {
-            workflow_lane.await.map_err(|error| {
-                PollLaneError::Core(format!("workflow poll lane failed: {error}"))
-            })?;
+        let mut first_error = None;
+        if let Some(workflow_lane) = self.workflow_lane.take()
+            && let Err(error) = workflow_lane.await
+        {
+            first_error = Some(PollLaneError::Core(format!(
+                "workflow poll lane failed: {error}"
+            )));
         }
-        if let Some(activity_lane) = self.activity_lane.take() {
-            activity_lane.await.map_err(|error| {
-                PollLaneError::Core(format!("activity poll lane failed: {error}"))
-            })?;
+        if let Some(activity_lane) = self.activity_lane.take()
+            && let Err(error) = activity_lane.await
+        {
+            // Preserve the first failure for the caller while still waiting
+            // for the second lane to stop publishing messages.
+            if first_error.is_none() {
+                first_error = Some(PollLaneError::Core(format!(
+                    "activity poll lane failed: {error}"
+                )));
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Reports whether every task admitted before shutdown has completed.
@@ -583,8 +597,10 @@ impl PollLanes {
     /// Used by runtime dispose/free when OCaml cannot finish leased work. The
     /// method drains ready queues, force-fails each undelivered task, then
     /// force-fails every remaining ledger entry so [`Self::finalize`] is not
-    /// blocked by outstanding completion debt. Errors from Core are ignored:
-    /// dispose must still release the process graph.
+    /// blocked by outstanding completion debt. Dispose calls it once before
+    /// joining the poll lanes and once after both joins, because a poll already
+    /// in flight can publish a task between those two points. Errors from Core
+    /// are ignored: dispose must still release the process graph.
     pub async fn force_complete_outstanding_for_dispose(&mut self) {
         use std::collections::HashSet;
 
@@ -1119,7 +1135,13 @@ impl TaskLedger {
     }
 
     /// Records a task returned by a Core poll already in flight at shutdown.
-    fn admit_polled_workflow(&mut self, run_id: &str) -> Result<Admission, AdmitError> {
+    ///
+    /// Unlike [`Self::admit_workflow`], this intentionally bypasses the open
+    /// phase check: a poll that began before shutdown may still complete after
+    /// the ledger has entered draining. The dispose path's post-join pass must
+    /// be able to harvest that late identity.
+    #[doc(hidden)]
+    pub fn admit_polled_workflow(&mut self, run_id: &str) -> Result<Admission, AdmitError> {
         self.record_workflow(run_id)
     }
 
@@ -1154,7 +1176,12 @@ impl TaskLedger {
     }
 
     /// Records an activity returned by a Core poll already in flight at shutdown.
-    fn admit_polled_activity(
+    ///
+    /// The poll lane may admit both a start and its cancellation while draining;
+    /// the final dispose pass retires any resulting identity after the lane has
+    /// stopped publishing messages.
+    #[doc(hidden)]
+    pub fn admit_polled_activity(
         &mut self,
         task_token: &[u8],
         kind: ActivityAdmission,

@@ -152,6 +152,43 @@ fn take_all_outstanding_drains_workflow_and_activity_debt() {
     assert!(ledger.can_finalize());
 }
 
+/// A poll already in Core can finish after the first dispose drain has emptied
+/// the ledger. The second drain, performed after both poll lanes join, must
+/// still harvest that late identity rather than leaving completion debt behind.
+#[test]
+fn post_join_dispose_pass_harvests_late_poll_admissions() {
+    let mut ledger = TaskLedger::new();
+    let initial_token = b"initial-activity-token";
+    assert_eq!(ledger.admit_workflow("initial-run"), Ok(Admission::New));
+    assert_eq!(
+        ledger.admit_activity(initial_token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    ledger.begin_draining();
+
+    // This models the first force-complete pass, which runs before the poll
+    // lanes join so Core can observe shutdown without waiting for OCaml.
+    let (initial_workflows, initial_activities) = ledger.take_all_outstanding();
+    assert_eq!(initial_workflows, vec!["initial-run".to_owned()]);
+    assert_eq!(initial_activities, vec![initial_token.to_vec()]);
+
+    // A Core poll that was already in flight bypasses the draining admission
+    // check. The post-join pass must collect both task shapes once producers
+    // are known to have stopped.
+    assert_eq!(ledger.admit_polled_workflow("late-run"), Ok(Admission::New));
+    let late_token = b"late-activity-token";
+    assert_eq!(
+        ledger.admit_polled_activity(late_token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+
+    let (late_workflows, late_activities) = ledger.take_all_outstanding();
+    assert_eq!(late_workflows, vec!["late-run".to_owned()]);
+    assert_eq!(late_activities, vec![late_token.to_vec()]);
+    assert_eq!(ledger.outstanding(), 0);
+    assert!(ledger.can_finalize());
+}
+
 /// A second lease for the same identity is rejected rather than silently
 /// overwriting ownership.
 #[test]

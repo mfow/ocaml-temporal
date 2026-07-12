@@ -56,11 +56,7 @@ fn activity_admission_rejection_message(reason: &'static str) -> String {
 /// outstanding workflow task that blocks further polling and graceful
 /// finalization. Admission failures therefore complete through Core here
 /// before the poll lane surfaces a diagnostic error.
-async fn force_fail_undeliverable_workflow(
-    worker: &Worker,
-    run_id: &str,
-    reason: &'static str,
-) {
+async fn force_fail_undeliverable_workflow(worker: &Worker, run_id: &str, reason: &'static str) {
     let completion = WorkflowActivationCompletion::fail(
         run_id,
         workflow_admission_rejection_message(reason).into(),
@@ -76,7 +72,11 @@ async fn force_fail_undeliverable_workflow(
 /// Used only for undeliverable *start* (or malformed) tasks that would
 /// otherwise leave a Core completion debt. Pure cancel notifications that do
 /// not create a new ledger obligation are not completed here.
-async fn force_fail_undeliverable_activity(worker: &Worker, task_token: &[u8], reason: &'static str) {
+async fn force_fail_undeliverable_activity(
+    worker: &Worker,
+    task_token: &[u8],
+    reason: &'static str,
+) {
     let completion = ActivityTaskCompletion {
         task_token: task_token.to_vec(),
         result: Some(ActivityExecutionResult::fail(

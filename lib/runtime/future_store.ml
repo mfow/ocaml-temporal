@@ -54,6 +54,20 @@ type ('left, 'right) race = Left of 'left | Right of 'right
 type _ Effect.t +=
   | Await : ('value, 'error) t -> ('value, 'error) result Effect.t
 
+(** Domain-local id of the scheduler fiber currently running on this Domain.
+    [await] requires this to match the future's owner so a fiber cannot park on
+    another workflow's pending future merely because that other scheduler is
+    running somewhere else. *)
+let current_owner_id_key = Domain.DLS.new_key (fun () -> (None : int option))
+
+(** Publishes or clears the active owner id for the duration of one fiber. *)
+let with_current_owner_id id action =
+  let previous = Domain.DLS.get current_owner_id_key in
+  Domain.DLS.set current_owner_id_key id;
+  Fun.protect
+    ~finally:(fun () -> Domain.DLS.set current_owner_id_key previous)
+    action
+
 (** Internal exception used only to release a paused fiber during shutdown. It
     is caught inside this module and never becomes a workflow error. *)
 exception Scheduler_shutdown
@@ -135,15 +149,20 @@ let owner_id promise = promise.owner.id
     execution ordering as native future completions. *)
 let enqueue promise thunk = promise.owner.enqueue thunk
 
-(** Returns a ready result, or pauses only when called from the active scheduler
-    that owns this future. *)
+(** Returns a ready result, or pauses only when called from the active fiber of
+    the scheduler that owns this future. [is_running] alone is insufficient:
+    another Domain may be running a different scheduler whose [is_running] is
+    true while this Domain is not that owner. *)
 let await promise =
   match promise.state with
   | Ready result -> result
   | Closed -> Error (promise.outside_error ())
-  | Pending _ ->
-      if promise.owner.is_running () then Effect.perform (Await promise)
-      else Error (promise.outside_error ())
+  | Pending _ -> (
+      match Domain.DLS.get current_owner_id_key with
+      | Some id
+        when id = promise.owner.id && promise.owner.is_running () ->
+          Effect.perform (Await promise)
+      | Some _ | None -> Error (promise.outside_error ()))
 
 (** Saves a paused fiber on a pending future. If the result or shutdown happened
     first, queues the fiber immediately with the appropriate result. *)

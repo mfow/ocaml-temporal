@@ -52,6 +52,11 @@ val resolved :
 (** Returns the identity of the workflow scheduler that created the future. *)
 val owner_id : ('value, 'error) t -> int
 
+(** Runs [action] with [id] published as the Domain-local current scheduler
+    owner. The scheduler installs this around each fiber so [await] can reject
+    foreign-owner futures even when another scheduler is running elsewhere. *)
+val with_current_owner_id : int option -> (unit -> 'a) -> 'a
+
 (** Queues [thunk] on the scheduler that owns [future]. The callback is never
     run inline for an active workflow, which keeps completion ordering
     deterministic. *)

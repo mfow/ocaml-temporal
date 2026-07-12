@@ -174,6 +174,12 @@ built-in codecs are:
 - `Temporal.Codec.option codec`, which uses the nested codec for `Some` and
   `binary/null` for `None`.
 
+Payload metadata is object-like on the Temporal wire, so each metadata name
+must occur at most once. The public and private codecs reject duplicate names
+with a typed codec error before invoking application conversion code; this
+keeps manually constructed payloads subject to the same invariant as payloads
+received through the strict bridge protocol.
+
 JSON here is a payload choice, not the private OCaml/Rust bridge protocol and
 not the format sent to Temporal Server. The bridge's Rust side converts its
 strict semantic JSON records to Temporal Core protobuf; see the [protocol
@@ -394,7 +400,31 @@ let start_review document =
 
 The ID is durable Temporal identity. It must be non-empty, valid UTF-8, free of
 NUL bytes, and within the bridge's bounded length. `Child_workflow.execute`
-starts and waits in one call.
+starts and waits in one call. Child retries are configured with the same
+validated policy type used by activities; Temporal Core owns the retry state
+machine, so replay does not run an OCaml retry loop:
+
+```ocaml
+let retry_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 1_000L)
+    ~backoff_coefficient:2.0
+    ~maximum_interval:(Temporal.Duration.of_ms 5_000L)
+    ~maximum_attempts:3 ()
+
+let run_review document =
+  match retry_policy with
+  | Error error -> Error error
+  | Ok retry_policy ->
+      Temporal.Child_workflow.execute ~retry_policy
+        ~id:"document-review" review document
+```
+
+The policy's intervals are exact durations and its coefficient is carried as
+lossless IEEE-754 bits through the private JSON protocol. Omitting
+`~retry_policy` emits `null`, which selects Core's default child policy. The
+current focused tests verify command construction and the bilateral Core
+conversion; the live Compose fixture has not yet exercised a child retry.
 
 When a workflow needs to keep the child operation alongside other work, retain
 the opaque handle returned by `start_handle`:
@@ -425,12 +455,15 @@ for another child sequence.
 
 The definitions and calls above compile, and the synthetic runtime tests cover
 child scheduling and deterministic future resolution. The native protocol and
-worker adapter now also carry the child-start acknowledgment and terminal
+worker adapter also carry the child-start acknowledgment and terminal
 resolution required to resume the parent. The adapter rejects final-before-
 start, duplicate, and unknown sequences as typed bridge failures, preserving
 the parent lease rather than acknowledging an unsafe completion. Focused tests
-cover the complete lifecycle, but the live acceptance test still needs to
-exercise it against Temporal Server.
+cover the complete lifecycle. The live Compose fixture covers the parent/child
+success path: the parent calls `Child_workflow.execute`, the registered child
+waits on a durable timer, and the driver asserts the parent's exact result.
+That happy path does not claim live coverage for child start failure,
+cancellation, retries, replay, or recovery.
 
 ### Continue a run with fresh history
 

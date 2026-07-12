@@ -49,8 +49,8 @@ opaque bytes and applications may choose another deterministic codec.
 | --- | --- |
 | Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
-| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current live command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, and drains retryable completions safely. Context-aware activity heartbeats are implemented and focused-tested through the same serialized supervisor path, but have not yet been verified against a live Temporal Server. |
-| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, and exact-run cancellation. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result. The historical live Compose evidence covers five baseline executions: four exact successes and one deliberate non-retryable workflow failure. The six-run cancellation assertion is implemented and locally covered, but is not live-verified because its attempted Actions run was cancelled. |
+| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, and drains retryable completions safely. Focused tests cover this path; the live Compose evidence is limited to the baseline success/failure scenarios described below. Context-aware activity heartbeats are implemented and focused-tested through the same serialized supervisor path, but have not yet been verified against a live Temporal Server. |
+| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, and exact-run cancellation. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result. The historical live Compose evidence covers five baseline executions: four exact successes and one deliberate non-retryable workflow failure. The seven-run cancellation and heartbeat assertions are implemented and locally covered, but are not live-verified because their attempted Actions run was cancelled. |
 | Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
 | Safety boundary | Rust/Core protobuf handling stays in Rust. OCaml/Rust JSON validation, copied payloads, one-owner lifecycle serialization, and idempotent cleanup are covered by focused tests. |
 
@@ -59,12 +59,13 @@ opaque bytes and applications may choose another deterministic codec.
 - The two-public-OCaml-binary gate has historical live evidence for the initial
   success paths, server-managed activity retry, parent/child completion, and
   one typed non-retryable workflow failure. The current driver implementation
-  starts six workflows through one OCaml driver, and a separate long-lived
+  starts seven workflows through one OCaml driver, and a separate long-lived
   OCaml worker returns their exact results or typed terminal outcomes. Its
-  marker-guarded exact-run cancellation assertion is implemented and locally
-  covered, but is not live-verified: the attempted Actions run was cancelled
-  before producing a green result. Restart, replay, and cache-eviction
-  scenarios remain separate acceptance work.
+  marker-guarded exact-run cancellation and heartbeat-detail retry assertions
+  are implemented and locally covered, but are not live-verified: the
+  attempted Actions run was cancelled before producing a green result.
+  Restart, replay, and cache-eviction scenarios remain separate acceptance
+  work.
 - Child-workflow commands can be authored and are translated by the semantic
   layer. The native worker now accepts a parent completion containing a child
   start, retains the parent future through the start acknowledgment, and
@@ -105,7 +106,9 @@ pass `OCAML_VERSION`, for example `make verify OCAML_VERSION=5.5`. CI runs the
 verification matrix for OCaml 5.2, 5.3, 5.4, and 5.5 on Linux amd64 and arm64,
 and builds the OCaml-to-Rust link natively on Windows x64 and macOS ARM64 with
 OCaml 5.5. The standalone license audit is run once per CI change, not once
-per matrix cell. `make quality` is the exception to the Docker-only toolchain
+per matrix cell. These entries describe configured jobs, not evidence that a
+particular Actions run has completed; runs may remain queued while the
+repository quota is exhausted. `make quality` is the exception to the Docker-only toolchain
 path: it expects the pinned `cargo-deny`, `cargo-machete`, and `typos` binaries
 on the host (CI installs their checksum-verified versions). The license audit
 uses the development container and an isolated official Python container.
@@ -122,14 +125,14 @@ runs the OCaml supervisor lifecycle acceptance executable, starts a public
 OCaml worker, and runs a separate public OCaml driver. The worker is the
 long-lived process that registers and executes the workflows and mock activity.
 The driver is a one-shot OCaml test runner: it does not register a worker. Its
-current implementation starts six smoke workflows, sends an exact-run
+current implementation starts seven smoke workflows, sends an exact-run
 cancellation request for the long-running one, waits for every exact terminal
 result, and exits nonzero if any expected result is not returned. The historical
 live evidence covers the five baseline assertions: four workflows complete with
 exact payloads (including the parent awaiting a timer-owning child), and one
-returns a typed non-retryable workflow failure. The sixth, marker-guarded
-cancellation assertion is implemented and locally covered, but is not
-live-verified because its attempted Actions run was cancelled. The Makefile
+returns a typed non-retryable workflow failure. The heartbeat-detail retry and
+marker-guarded cancellation assertions are implemented and locally covered,
+but are not live-verified because their attempted Actions run was cancelled. The Makefile
 stops the worker and checks its graceful-shutdown marker when the target runs.
 The target removes the PostgreSQL data volume before and after the run, so no
 database state is preserved between acceptance runs. Child

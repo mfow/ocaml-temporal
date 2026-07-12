@@ -196,6 +196,7 @@ let native_status_name = function
   | Bridge.Not_ready -> "not_ready"
   | Bridge.Protocol -> "protocol"
   | Bridge.Already_started -> "already_started"
+  | Bridge.Retryable -> "retryable"
   | Bridge.Unknown code -> Printf.sprintf "unknown(%d)" code
 
 (** Converts a supervisor failure to the public bridge/defect vocabulary.

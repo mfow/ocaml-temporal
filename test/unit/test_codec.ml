@@ -52,6 +52,42 @@ let () =
   assert
     (Result.is_error
        (Temporal.Codec.decode Temporal.Codec.string trailing_json));
+  let duplicate_metadata : Temporal.Payload.t =
+    {
+      metadata = [ ("encoding", "json/plain"); ("trace", "one"); ("trace", "two") ];
+      data = Bytes.of_string "\"value\"";
+    }
+  in
+  assert
+    (Result.is_error
+       (Temporal.Codec.decode Temporal.Codec.string duplicate_metadata));
+  let duplicate_encoding : Temporal.Payload.t =
+    {
+      metadata = [ ("encoding", "json/plain"); ("encoding", "json/plain") ];
+      data = Bytes.of_string "\"value\"";
+    }
+  in
+  assert
+    (Result.is_error
+       (Temporal.Codec.decode Temporal.Codec.string duplicate_encoding));
+  let decoder_called = ref false in
+  let guarded_codec =
+    Temporal.Codec.make ~encoding:"test/duplicate-guard"
+      ~encode:(fun value -> Ok (Bytes.of_string value))
+      ~decode:(fun data ->
+        decoder_called := true;
+        Ok (Bytes.to_string data))
+  in
+  let duplicate_guarded : Temporal.Payload.t =
+    {
+      metadata =
+        [ ("encoding", "test/duplicate-guard");
+          ("encoding", "test/duplicate-guard") ];
+      data = Bytes.of_string "value";
+    }
+  in
+  assert (Result.is_error (Temporal.Codec.decode guarded_codec duplicate_guarded));
+  assert (not !decoder_called);
   let invalid_utf_8 = String.make 1 (Char.chr 0xff) in
   assert
     (Result.is_error
@@ -64,5 +100,12 @@ let () =
   let none_payload = unwrap (Temporal.Codec.encode optional None) in
   assert (List.assoc "encoding" none_payload.metadata = "binary/null");
   assert (Temporal.Codec.decode optional none_payload = Ok None);
+  let duplicate_null : Temporal.Payload.t =
+    {
+      metadata = [ ("encoding", "binary/null"); ("encoding", "binary/null") ];
+      data = Bytes.empty;
+    }
+  in
+  assert (Result.is_error (Temporal.Codec.decode optional duplicate_null));
   let some_payload = unwrap (Temporal.Codec.encode optional (Some "value")) in
   assert (Temporal.Codec.decode optional some_payload = Ok (Some "value"))

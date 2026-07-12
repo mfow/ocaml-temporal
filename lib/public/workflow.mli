@@ -9,7 +9,12 @@ type ('input, 'output) implementation =
     optionally the OCaml function that implements it. *)
 type ('input, 'output) t
 
-(** Creates a workflow definition implemented by this OCaml worker. *)
+(** Creates a workflow definition implemented by this OCaml worker. [name] is
+    validated immediately; it must be non-empty, valid UTF-8, NUL-free, and no
+    more than 65,536 bytes because it crosses the native protocol into
+    Temporal history. Violations raise [Invalid_argument] as construction
+    defects. The implementation must remain deterministic and return expected
+    failures as [Error.t] values. *)
 val define :
   name:string ->
   input:'input Codec.t ->
@@ -17,9 +22,11 @@ val define :
   ('input, 'output) implementation ->
   ('input, 'output) t
 
-(** Creates a typed reference to a workflow implemented by another worker. Use
-    it with [Child_workflow.start] or [Child_workflow.execute] when invoking the
-    workflow as a child. *)
+(** Creates a typed reference to a workflow implemented by another worker. [name]
+    has the same non-empty, valid UTF-8, NUL-free, 65,536-byte contract as
+    [define]. Use the reference with [Child_workflow.start] or
+    [Child_workflow.execute] when invoking the workflow as a child. It has no
+    local implementation and cannot be registered as executable worker code. *)
 val remote :
   name:string ->
   input:'input Codec.t ->
@@ -45,12 +52,15 @@ val implementation :
 
 (** Starts a durable Temporal timer and returns immediately. Starting several
     timers before awaiting one emits them in call order. A zero duration returns
-    a ready future without recording a timer. *)
+    a ready future without recording a timer. Outside workflow execution the
+    returned future is ready with a typed defect rather than touching global
+    time or creating an unowned timer. *)
 val start_sleep : Duration.t -> (unit, Error.t) Future.t
 
 (** Starts a durable Temporal timer and waits until it fires. This is equivalent
     to [Future.await (start_sleep duration)]. A zero duration returns
-    immediately without recording a timer. *)
+    immediately without recording a timer; outside workflow execution it
+    returns a typed defect. *)
 val sleep : Duration.t -> (unit, Error.t) result
 
 (** Ends the current run and starts a new run of [definition] with [input].

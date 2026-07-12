@@ -14,6 +14,218 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Bounded native replay worker plumbing
+
+The private Rust bridge now accepts a closed replay-history JSON document,
+validates duplicate/unknown fields, canonical base64, payload bounds, and
+Temporal Core history invariants, then feeds validated histories through a
+one-slot `HistoryFeeder` into a workflow-only Core replay worker. Finalization
+now requires the feeder to be closed, every activation to be completed, and
+the workflow lane's natural `Shutdown` to be observed; it does not cancel
+queued history. An explicit destructive `dispose` path owns force-completion
+for abandoned work, and any terminal poll-lane failure retains the owner and
+the typed error after best-effort ledger cleanup. Disposal retries Core's
+terminal finalization once and reports the second failure rather than dropping
+the still-owned native graph, so a caller can release a competing owner and
+retry safely. The replay worker owns no OCaml pointer or callback. Focused
+Rust tests cover round trips, rejection paths, construction, clean shutdown,
+one-history admission/completion, the typed precondition for
+finalize after feeder close but before draining, and retained-owner disposal
+recovery for both shared-Core and poll-lane failures. The document format is
+specified by
+[`docs/reference/replay-bridge.md`](reference/replay-bridge.md) and its JSON
+Schema. This is unit-tested native plumbing only: the public OCaml replay
+operation and live two-generation restart/replay Compose acceptance remain
+planned. Local Rust tests passed; queued GitHub Actions are not treated as
+evidence for this milestone.
+
+## 2026-07-13: Retained activity completion worker-loop resilience
+
+The native activity adapter now carries an explicit retryability classification
+from the supervisor for completion rejections and separately classifies private
+transient completion exceptions. Only the explicit bilateral `Retryable` status
+is eligible for a completion retry in production. Generic `Connection` and
+`Not_ready` statuses are fail-closed because this Core revision may already have
+consumed the lease; protocol, configuration, worker-state, and supervisor-defect
+failures remain fatal. A new private
+`Temporal_runtime.Native_worker_loop` applies a bounded activity-lane readiness
+wait before retrying a retained completion, then allows the next activity task
+to run without invoking the original OCaml implementation again. The wait is
+performed by the blocking worker Domain through the existing native readiness
+operation, so workflow effect schedulers and adapter mutexes are not blocked.
+
+Focused local regressions cover one transient rejection followed by completion
+acceptance and a subsequent task, a permanent protocol error that stops the
+loop, and a specifically classified transient completion exception. The
+runtime suite and focused native build pass locally; GitHub Actions remains
+queued under the repository quota, so this entry makes no CI-success claim.
+
+## 2026-07-13: Per-run worker shutdown evidence
+
+The two-binary Compose teardown now removes a per-run marker before stopping
+the worker and accepts shutdown only after the current worker publishes the
+exact `worker-stopped` value. This avoids a false positive caused by
+`docker compose logs`, whose aggregate output can retain a successful marker
+line from an earlier container instance. The marker writer uses the same
+temporary-file-and-rename rule as readiness publication, and a Docker-free
+contract test seeds a stale log before proving that validation fails until the
+current marker exists. Local validation passed with `dash -n`, the Compose
+configuration contract, the worker-stop contract, and the restart/replay
+contract; GitHub Actions is treated as pending infrastructure evidence rather
+than a local correctness signal.
+
+## 2026-07-13: Readiness-marker stale-state protection
+
+The two-binary worker now removes its configured readiness marker immediately
+after validating the marker environment and before `Worker.create` begins. Its
+finalizer still removes the marker after normal shutdown and runtime errors.
+This prevents a reused or interrupted Compose container from satisfying the
+health check with a previous run's `worker-ready` file while the current
+worker is still starting or has failed. The Docker-free readiness contract
+seeds that stale marker and checks the source ordering, while the Compose
+configuration contract requires the Makefile target. GitHub Actions may remain
+queued because of repository quota; this milestone records local verification
+only and makes no CI-success claim.
+
+## 2026-07-13: Readiness lifecycle ordering and container recreation
+
+The worker now clears its readiness marker immediately after validating the
+readiness path, before later marker-environment validation can fail. The
+Docker-free contract models a missing cancellation-marker setting and checks
+that ordering. `temporal-start-worker` also force-recreates the Compose worker
+container: readiness is stored in that container's `/tmp`, so reusing a stopped
+container could otherwise satisfy `--wait` before the new process starts.
+Local shell, Compose-model, formatting, native-build, and stale-marker runtime
+checks provide the evidence for this milestone; queued Actions are not treated
+as a result.
+
+## 2026-07-13: Acceptance validator and client-boundary hardening (#164–#165)
+
+The merged tip is `1fa679c`: [#164](https://github.com/mfow/ocaml-temporal/pull/164)
+(`4724830`) preserves configurable `JQ_BIN` paths containing spaces and adds
+a regression invocation; [#165](https://github.com/mfow/ocaml-temporal/pull/165)
+(`1fa679c`) validates client protocol identifier sizes consistently and adds
+boundary tests.
+
+Focused local verification includes
+`make test-temporal-worker-restart-contract`,
+`HOST_UID=501 HOST_GID=20 make test-temporal-config`,
+`make test-temporal-config`, `sh scripts/check-format.sh`,
+`make test-quality-contract`, and `git diff --check`. GitHub Actions remain
+queued while the repository quota is exhausted, so this entry makes no
+CI-success claim and adds no new live Temporal evidence. The historical
+five-execution live result in run
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+remains the latest successful two-binary acceptance evidence.
+
+## 2026-07-13: Public client state, protocol evidence, and scheduler teardown (#159–#161)
+
+The merged tip is `02f4627`: [#159](https://github.com/mfow/ocaml-temporal/pull/159)
+(`980855f`) clarifies public client state and adds protocol coverage; [#160](https://github.com/mfow/ocaml-temporal/pull/160)
+(`d5606ad`) separates local protocol evidence from live Temporal evidence; and
+[#161](https://github.com/mfow/ocaml-temporal/pull/161) (`02f4627`) releases
+settled futures during scheduler teardown with a weak-reference regression test.
+
+PR #161 recorded this local verification: `DUNE_BUILD_DIR=/tmp/ocaml-temporal-dune-audit
+CARGO_TARGET_DIR=/tmp/ocaml-temporal-cargo-target opam exec -- dune runtest --root .
+test/runtime`, `sh scripts/check-format.sh`,
+`sh test/smoke/test_quality_contract.sh .`, and `git diff --check`. The
+repository's GitHub Actions checks remain queued while the Actions quota is
+exhausted, so this entry makes no CI-success claim. The historical
+five-execution live result in run
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+remains the latest successful two-binary acceptance evidence.
+
+## 2026-07-13: Protocol, lifecycle, and two-binary acceptance contracts (#141–#152)
+
+Status: the merged documentation and acceptance-contract milestones are now
+present on `origin/master` at `c008c52`. The activity-protocol lifecycle and
+evidence records are [#141](https://github.com/mfow/ocaml-temporal/pull/141)
+(`cb2892c`), [#142](https://github.com/mfow/ocaml-temporal/pull/142)
+(`d1d45c2`), and [#143](https://github.com/mfow/ocaml-temporal/pull/143)
+(`ef3e171`); asynchronous completion, native worker ownership, and installed
+package boundaries are [#144](https://github.com/mfow/ocaml-temporal/pull/144)
+(`cfb760a`), [#145](https://github.com/mfow/ocaml-temporal/pull/145)
+(`9a6992a`), and [#146](https://github.com/mfow/ocaml-temporal/pull/146)
+(`127f3f6`). Native execution translation, dependency licensing, restart and
+replay evidence, and the separation of control from operation JSON are
+recorded by [#147](https://github.com/mfow/ocaml-temporal/pull/147)
+(`6e860b2`), [#148](https://github.com/mfow/ocaml-temporal/pull/148)
+(`b30f85f`), [#149](https://github.com/mfow/ocaml-temporal/pull/149)
+(`54cf1a9`), and [#150](https://github.com/mfow/ocaml-temporal/pull/150)
+(`3466ae9`). [#151](https://github.com/mfow/ocaml-temporal/pull/151)
+(`ef0ed69`) adds assertions that the acceptance harness has separate
+`smoke_driver` and `smoke_worker` OCaml binaries with distinct roles. [#152](https://github.com/mfow/ocaml-temporal/pull/152)
+(`c008c52`) documents the native worker execution-state invariants and adds
+regression coverage for them.
+
+Representative local verification on the merged tip passed: `git diff
+--check`, `sh scripts/check-format.sh`, `make test-quality-contract`,
+`make test-temporal-config`,
+`sh test/integration/temporal/scripts/test-restart-replay-contract.sh`, and
+`cargo test --manifest-path rust/Cargo.toml --locked --test protocol` (six
+protocol tests). The offline restart/replay contract reports
+`restart/replay contract: ok`.
+
+GitHub Actions for this series were observed queued or pending while the
+repository was affected by its Actions quota, so this entry does not treat
+those checks as passing evidence. The Docker Compose acceptance against a
+live Temporal Server and PostgreSQL was not run for this milestone, and no
+new live result is claimed. The historical five-execution live result in run
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+remains the latest successful two-binary acceptance evidence.
+
+## 2026-07-13: Documentation evidence and navigation refresh (#129–#140)
+
+Status: documentation-only updates were merged in PRs [#129](https://github.com/mfow/ocaml-temporal/pull/129)
+(`d37f863`), [#130](https://github.com/mfow/ocaml-temporal/pull/130)
+(`857862b`), and [#131](https://github.com/mfow/ocaml-temporal/pull/131)
+(`404a7c5`) for runtime invariants, merged lifecycle evidence, and feature
+coverage; [#132](https://github.com/mfow/ocaml-temporal/pull/132)
+(`1dfc13e`), [#133](https://github.com/mfow/ocaml-temporal/pull/133)
+(`515f723`), and [#135](https://github.com/mfow/ocaml-temporal/pull/135)
+(`a656f92`) for the two-binary acceptance boundary, queued-CI fallback, and
+live-acceptance evidence; [#134](https://github.com/mfow/ocaml-temporal/pull/134)
+(`229b548`), [#137](https://github.com/mfow/ocaml-temporal/pull/137)
+(`97924c7`), and [#138](https://github.com/mfow/ocaml-temporal/pull/138)
+(`65b6441`) for native activity, client protocol, and Core-bridge contracts;
+and [#136](https://github.com/mfow/ocaml-temporal/pull/136)
+(`b487eaf`), [#139](https://github.com/mfow/ocaml-temporal/pull/139)
+(`6709fce`), and [#140](https://github.com/mfow/ocaml-temporal/pull/140)
+(`9104f3d`) for observability, workflow guidance, and documentation
+navigation.
+
+These changes clarify the current implementation and evidence boundaries but
+do not add runtime behavior or new live Temporal results. Applicable local
+format, quality-contract, configuration, and focused documentation checks were
+used for the documentation PRs; host-only `make quality` remains dependent on
+the pinned scanner binaries being installed. GitHub Actions checks may remain
+queued because of the repository quota and are not treated as passing evidence.
+The historical five-execution live result in run
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+remains the latest successful two-binary acceptance evidence; the expanded
+heartbeat and exact-run cancellation assertions remain locally covered but not
+live-verified.
+
+## 2026-07-13: Scope, child-lifecycle, and ABI cancellation-validation coverage
+
+Status: locally verified on the merged `origin/master` tip with focused OCaml,
+Rust, and ABI tests. The work was merged in [PR #125](https://github.com/mfow/ocaml-temporal/pull/125)
+as `8e56c24`, [PR #126](https://github.com/mfow/ocaml-temporal/pull/126) as
+`43beafb`, and [PR #127](https://github.com/mfow/ocaml-temporal/pull/127) as
+`55d758c`. This entry makes no claim about a live Temporal Server run or
+GitHub Actions success.
+
+Scope operations now reject cancellation, status, checks, and awaits issued
+from a scheduler that did not create the scope, without mutating the owner's
+state. Native child-lifecycle tests cover terminal-before-start rejection,
+duplicate start acknowledgements, duplicate terminal resolutions while an
+unrelated parent timer remains pending, and retryable child-failure
+classification. Bilateral protocol tests round-trip all four child-cancellation
+policies. The client ABI test confirms malformed cancellation JSON is rejected
+before lifecycle-state lookup, preventing invalid input from being reported as
+an unrelated connection or state error.
+
 ## 2026-07-13: Activity-context lifetime regression coverage
 
 Status: locally verified in the native activity execution tests; no live
@@ -362,14 +574,15 @@ acceptance were follow-up work at this commit.
 
 The private bilateral completion protocol now has a closed
 `start_child_workflow` command. The OCaml runtime maps its deterministic
-sequence, child workflow ID and type, and copied input payload into that
-record. Rust validates the identifiers, emits Temporal Core's
-`StartChildWorkflowExecution` command for focused translation, and rejects
-non-default Core options that the current OCaml API does not expose instead of
-silently discarding them. The native worker gates this command before
-submission until child-resolution activations are decoded, so no partially
-supported live path can strand a parent lease. The JSON schema and
-both-language round-trip tests cover the semantic shape.
+sequence, child workflow ID and type, copied input payload, and optional
+validated retry policy into that record. Rust validates the identifiers and
+policy, emits Temporal Core's `StartChildWorkflowExecution` command for
+focused translation, and rejects non-default Core options that the current
+OCaml API does not expose instead of silently discarding them. The native
+worker gates this command before submission until child-resolution activations
+are decoded, so no partially supported live path can strand a parent lease.
+The JSON schema and both-language round-trip tests cover the semantic shape;
+the live acceptance suite still has no child-retry scenario.
 
 At that commit the activation side still lacked Core's child-resolution job,
 so the milestone did not claim that a workflow could await a child result.
@@ -1474,3 +1687,55 @@ Evidence: `dune runtest test/bridge/`, the focused OCaml unit/runtime retry
 policy executables, and `cargo test -p ocaml-temporal-core-bridge --test
 workflow_retry_policy` pass on the representative host. Existing workflow
 protocol Rust tests also pass after the required nullable field was added.
+
+## 2026-07-13: Fail-closed activity completion retry boundary
+
+Status: focused OCaml and Rust bridge/policy tests are verified locally;
+GitHub Actions results are not used as a blocker while the hosted queue is
+quota-limited.
+
+The worker loop now has a distinct retry-pending callback and a bounded native
+backoff operation. A retained activity completion cannot spin merely because
+an unrelated activity is ready: the supervisor owner Domain applies a fixed
+10 ms delay while the C stub releases the OCaml runtime lock. The scheduler
+tests distinguish that callback from ordinary readiness and keep permanent
+protocol failures fatal.
+
+The production adapter no longer treats generic `Connection` or `Not_ready`
+statuses as safe completion retries. The pinned Temporal Core completion API
+consumes/removes the activity task before internally logging and suppressing
+network errors, so the bridge cannot prove that a second submission would be
+safe. A reserved bilateral `Retryable` status is mapped through Rust, C, and
+OCaml for a future Core-aware completion path that can prove the lease remains
+pending; until then the OCaml policy fails closed. Shutdown reopens the worker
+only for an explicitly retryable activity drain. Workflow drains and permanent
+activity errors invoke `Native.shutdown`/`runtime_close` before becoming
+terminal, so any outstanding native leases are force-retired while the
+original adapter error remains the caller's result. A returned native `Error`
+is still release-complete by contract and permits the OCaml adapter maps to be
+discarded. If native shutdown raises before returning, the maps remain
+retained, a terminal-cleanup-pending flag schedules a detached retry, and the
+worker finalizer remains a last-resort path. A same-Domain shutdown admission
+defect is kept retryable because it has not started teardown; the public wrapper
+reopens admission so another Domain can retry after the active run loop exits.
+
+The ownership and retry rationale is recorded in
+[the native-worker reference](reference/native-worker-execution.md) and the
+[runtime invariants](reference/runtime-invariants.md). Local evidence includes
+the focused OCaml worker-loop/policy suites, Rust ABI status mapping and null
+runtime tests, and these representative checks (with build directories outside
+the repository so concurrent worktrees do not share generated files):
+
+```text
+DUNE_BUILD_DIR=/private/tmp/ocaml-temporal-dune-completion-resilience \
+CARGO_TARGET_DIR=/private/tmp/ocaml-temporal-cargo-completion-resilience \
+opam exec -- dune runtest --root .
+CARGO_TARGET_DIR=/private/tmp/ocaml-temporal-cargo-completion-resilience \
+cargo test --manifest-path rust/Cargo.toml -p ocaml-temporal-core-bridge
+CARGO_TARGET_DIR=/private/tmp/ocaml-temporal-cargo-completion-resilience \
+cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+The live Temporal Compose scenario remains deferred because it requires a
+running Temporal service and is intentionally not substituted by unit tests.

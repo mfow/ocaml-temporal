@@ -20,11 +20,11 @@ fn workflow_run_ids_are_unique_and_completion_is_exact() {
     assert_eq!(ledger.outstanding_workflows(), 0);
 }
 
-/// Remote activity cancellation reuses the original task token and therefore
-/// updates an existing admission instead of creating a second completion owed
-/// to Core.
+/// A cancellation admitted before the owner leases the start reuses the
+/// original task token and therefore still creates only one completion
+/// obligation.
 #[test]
-fn activity_cancellation_reuses_the_existing_token() {
+fn cancellation_before_start_lease_reuses_one_completion_debt() {
     let mut ledger = TaskLedger::new();
     let token = b"opaque-task-token";
 
@@ -37,7 +37,67 @@ fn activity_cancellation_reuses_the_existing_token() {
         Ok(Admission::ExistingCancellation)
     );
     assert_eq!(ledger.outstanding_activities(), 1);
+    assert_eq!(
+        ledger.handoff_activity(token, ActivityAdmission::Cancel),
+        Ok(())
+    );
     assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(ledger.complete_activity(token), Ok(()));
+    assert_eq!(ledger.outstanding_activities(), 0);
+}
+
+/// A cancellation queued after the owner completes its start is stale. Its
+/// token no longer exists, so the handoff rejects it without creating a second
+/// completion debt.
+#[test]
+fn cancellation_after_start_completion_has_no_second_completion_debt() {
+    let mut ledger = TaskLedger::new();
+    let token = b"opaque-task-token";
+
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::ExistingCancellation)
+    );
+    assert_eq!(ledger.complete_activity(token), Ok(()));
+    assert_eq!(ledger.outstanding_activities(), 0);
+    assert_eq!(
+        ledger.handoff_activity(token, ActivityAdmission::Cancel),
+        Err(CompleteError::UnknownActivity)
+    );
+    assert_eq!(ledger.outstanding_activities(), 0);
+}
+
+/// A cancellation observed while the start is still leased is delivered to the
+/// owner without acquiring a second lease. The start remains the sole
+/// completion owner until it ends.
+#[test]
+fn cancellation_during_start_lease_is_delivered_without_second_debt() {
+    let mut ledger = TaskLedger::new();
+    let token = b"opaque-task-token";
+
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::ExistingCancellation)
+    );
+    assert_eq!(
+        ledger.handoff_activity(token, ActivityAdmission::Cancel),
+        Ok(())
+    );
+    assert_eq!(
+        ledger.lease_activity(token),
+        Err(CompleteError::AlreadyLeased)
+    );
+    assert_eq!(ledger.outstanding_activities(), 1);
     assert_eq!(ledger.complete_activity(token), Ok(()));
     assert_eq!(ledger.outstanding_activities(), 0);
 }
@@ -74,6 +134,10 @@ fn draining_accepts_cancellation_for_an_existing_activity() {
         ledger.admit_activity(token, ActivityAdmission::Cancel),
         Ok(Admission::ExistingCancellation)
     );
+    assert_eq!(
+        ledger.handoff_activity(token, ActivityAdmission::Cancel),
+        Ok(())
+    );
     assert!(
         ledger
             .admit_activity(b"new", ActivityAdmission::Start)
@@ -99,6 +163,43 @@ fn take_all_outstanding_drains_workflow_and_activity_debt() {
     assert_eq!(ledger.outstanding(), 0);
     assert!(!ledger.can_finalize()); // still Open, not Draining
     ledger.begin_draining();
+    assert!(ledger.can_finalize());
+}
+
+/// A poll already in Core can finish after the first dispose drain has emptied
+/// the ledger. The second drain, performed after both poll lanes join, must
+/// still harvest that late identity rather than leaving completion debt behind.
+#[test]
+fn post_join_dispose_pass_harvests_late_poll_admissions() {
+    let mut ledger = TaskLedger::new();
+    let initial_token = b"initial-activity-token";
+    assert_eq!(ledger.admit_workflow("initial-run"), Ok(Admission::New));
+    assert_eq!(
+        ledger.admit_activity(initial_token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    ledger.begin_draining();
+
+    // This models the first force-complete pass, which runs before the poll
+    // lanes join so Core can observe shutdown without waiting for OCaml.
+    let (initial_workflows, initial_activities) = ledger.take_all_outstanding();
+    assert_eq!(initial_workflows, vec!["initial-run".to_owned()]);
+    assert_eq!(initial_activities, vec![initial_token.to_vec()]);
+
+    // A Core poll that was already in flight bypasses the draining admission
+    // check. The post-join pass must collect both task shapes once producers
+    // are known to have stopped.
+    assert_eq!(ledger.admit_polled_workflow("late-run"), Ok(Admission::New));
+    let late_token = b"late-activity-token";
+    assert_eq!(
+        ledger.admit_polled_activity(late_token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+
+    let (late_workflows, late_activities) = ledger.take_all_outstanding();
+    assert_eq!(late_workflows, vec!["late-run".to_owned()]);
+    assert_eq!(late_activities, vec![late_token.to_vec()]);
+    assert_eq!(ledger.outstanding(), 0);
     assert!(ledger.can_finalize());
 }
 

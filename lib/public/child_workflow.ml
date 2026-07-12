@@ -18,7 +18,10 @@ type cancellation_type =
     that may target its private sequence. The record is hidden by the public
     interface so callers cannot forge a sequence number. *)
 type 'output handle = {
+  (* Future resolved by Core for the child start and terminal outcome. *)
   future : ('output, Error.t) Future.t;
+  (* Owner-checked operation that emits at most one cancellation command for
+     this child and preserves the caller's reason for replay diagnostics. *)
   cancel : reason:string -> (unit, Error.t) result;
 }
 
@@ -89,7 +92,8 @@ let failed_handle error =
 (** Validates durable identity and encodes input before allocating a private
     sequence number. Consequently invalid requests cannot change command order
     or appear in replay history. *)
-let start_handle ?(cancellation_type = Try_cancel) ~id definition input =
+let start_handle ?(cancellation_type = Try_cancel) ?retry_policy ~id definition
+    input =
   match validate_id id with
   | Error error -> failed_handle error
   | Ok () -> (
@@ -102,6 +106,7 @@ let start_handle ?(cancellation_type = Try_cancel) ~id definition input =
               let future, cancel =
                 Temporal_runtime.Workflow_context_store.start_child_workflow
                   context ~id ~name:(Workflow.name definition) ~input
+                  ?retry_policy:(Option.map Retry_policy_private.to_runtime retry_policy)
                   ~cancellation_type:(runtime_cancellation_type cancellation_type)
                   ~decode:(Codec_private.decode_base (Workflow.output definition)) ()
               in
@@ -125,10 +130,11 @@ let cancel ?(reason = "cancelled by workflow") handle = handle.cancel ~reason
 
 (** Starts a child workflow and returns only its future. Callers that need to
     cancel explicitly should retain the handle returned by [start_handle]. *)
-let start ?cancellation_type ~id definition input =
-  future (start_handle ?cancellation_type ~id definition input)
+let start ?cancellation_type ?retry_policy ~id definition input =
+  future
+    (start_handle ?cancellation_type ?retry_policy ~id definition input)
 
 (** Implements the direct-style child call as start followed by an effect-backed
     wait. Expected child and codec failures remain explicit [result] values. *)
-let execute ?cancellation_type ~id definition input =
-  Future.await (start ?cancellation_type ~id definition input)
+let execute ?cancellation_type ?retry_policy ~id definition input =
+  Future.await (start ?cancellation_type ?retry_policy ~id definition input)

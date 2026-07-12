@@ -13,6 +13,7 @@ type status =
   | Not_ready
   | Protocol
   | Already_started
+  | Retryable
   | Unknown of int
 
 (** Error copied into the OCaml heap. Once returned, it contains no pointer to
@@ -141,6 +142,11 @@ val worker_try_poll_activity : runtime -> (bytes, error) result
 (** Waits for remote-activity readiness without consuming a task. It has the
     same bounded lock-release semantics as [worker_wait_workflow]. *)
 val worker_wait_activity : runtime -> (unit, error) result
+
+(** Applies the fixed native delay used only after an explicit retryable
+    activity-completion transport outcome. *)
+val worker_wait_activity_completion_retry_backoff :
+  runtime -> (unit, error) result
 
 (** Validates and completes one previously leased remote activity task. The
     opaque task token in the JSON must match the poll result exactly. *)

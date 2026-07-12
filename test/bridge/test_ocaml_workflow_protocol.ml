@@ -46,6 +46,20 @@ let require_invalid_activation name =
 let check_string label expected actual =
   if not (String.equal expected actual) then failwith (label ^ " differed")
 
+(** Finds a short ASCII marker in encoded JSON without making the protocol
+    test depend on a particular JSON parser representation. The helper is only
+    used for checking the canonical policy spelling emitted by OCaml; semantic
+    equality is checked separately by decoding the complete document. *)
+let contains_substring ~needle value =
+  let needle_length = String.length needle in
+  let value_length = String.length value in
+  let rec search offset =
+    if offset + needle_length > value_length then false
+    else if String.equal (String.sub value offset needle_length) needle then true
+    else search (offset + 1)
+  in
+  search 0
+
 (** Verifies activation variants, ordering, and outgoing self-validation using
     the same fixtures as Rust. *)
 let test_valid_activations () =
@@ -102,6 +116,7 @@ let test_start_child_workflow_command () =
               workflow_id = "child/1";
               workflow_type = "child";
               input = [ input ];
+              retry_policy = None;
               cancellation_type = Child_try_cancel;
             };
         ];
@@ -109,10 +124,53 @@ let test_start_child_workflow_command () =
   in
   let encoded = unwrap (Protocol.encode_completion completion) in
   check_string "child command"
-    {|{"commands":[{"cancellation_type":"try_cancel","input":[{"data":{"data":"","encoding":"base64"},"metadata":{"encoding":{"data":"YmluYXJ5L251bGw=","encoding":"base64"}}}],"kind":"start_child_workflow","seq":2,"workflow_id":"child/1","workflow_type":"child"}],"run_id":"parent-run"}|}
+    {|{"commands":[{"cancellation_type":"try_cancel","input":[{"data":{"data":"","encoding":"base64"},"metadata":{"encoding":{"data":"YmluYXJ5L251bGw=","encoding":"base64"}}}],"kind":"start_child_workflow","retry_policy":null,"seq":2,"workflow_id":"child/1","workflow_type":"child"}],"run_id":"parent-run"}|}
     encoded;
   if unwrap (Protocol.decode_completion encoded) <> completion then
     failwith "child command did not round-trip"
+
+(** Proves every child cancellation policy has a distinct, stable JSON spelling
+    and remains typed after decoding. This closes the gap where a serializer
+    and decoder could agree on one accidentally collapsed policy while the
+    Rust/Core bridge still expected four durable cancellation semantics. *)
+let test_all_child_cancellation_policies () =
+  let input : Protocol.payload =
+    { metadata = [ ("encoding", Bytes.of_string "binary/null") ]; data = Bytes.empty }
+  in
+  List.iter
+    (fun (cancellation_type, wire_name) ->
+      let completion : Protocol.completion =
+        {
+          run_id = "parent-run";
+          commands =
+            [
+              Start_child_workflow
+                {
+                  seq = 2L;
+                  workflow_id = "child/1";
+                  workflow_type = "child";
+                  input = [ input ];
+                  retry_policy = None;
+                  cancellation_type;
+                };
+            ];
+        }
+      in
+      let encoded = unwrap (Protocol.encode_completion completion) in
+      if
+        not
+          (contains_substring
+             ~needle:("\"cancellation_type\":\"" ^ wire_name ^ "\"")
+             encoded)
+      then failwith ("child policy was encoded with the wrong spelling: " ^ wire_name);
+      if unwrap (Protocol.decode_completion encoded) <> completion then
+        failwith ("child policy did not round-trip: " ^ wire_name))
+    [
+      (Child_try_cancel, "try_cancel");
+      (Child_wait_cancellation_completed, "wait_cancellation_completed");
+      (Child_abandon, "abandon");
+      (Child_wait_cancellation_requested, "wait_cancellation_requested");
+    ]
 
 (** Proves the OCaml decoder applies the same cancellation reason, policy, and
     child-identifier boundaries as the Rust decoder. NUL checks use JSON
@@ -158,6 +216,7 @@ let test_child_cancellation_validation () =
                   ("workflow_id", `String workflow_id);
                   ("workflow_type", `String workflow_type);
                   ("input", `List []);
+                  ("retry_policy", `Null);
                   ("cancellation_type", `String "try_cancel");
                 ];
             ] );
@@ -182,6 +241,7 @@ let test_child_cancellation_validation () =
               workflow_id = invalid_utf8;
               workflow_type = "child";
               input = [];
+              retry_policy = None;
               cancellation_type = Child_try_cancel;
             };
         ];
@@ -190,7 +250,7 @@ let test_child_cancellation_validation () =
   require_error (Protocol.encode_completion completion);
   require_error
     (Protocol.decode_completion
-       {|{"run_id":"parent-run","commands":[{"kind":"start_child_workflow","seq":7,"workflow_id":"child","workflow_type":"child","input":[],"cancellation_type":"unknown"}]}|})
+       {|{"run_id":"parent-run","commands":[{"kind":"start_child_workflow","seq":7,"workflow_id":"child","workflow_type":"child","input":[],"retry_policy":null,"cancellation_type":"unknown"}]}|})
 
 (** Proves a continue-as-new command is terminal, retains the target workflow
     identity and carries its encoded input through the bilateral JSON shape. *)
@@ -323,6 +383,27 @@ let test_metadata_key_canonicalization () =
   let z = find "\"z-key\"" in
   if a >= z then failwith "metadata keys were not normalized lexicographically";
   ignore (unwrap (Protocol.decode_completion encoded))
+
+(** Proves the typed protocol encoder rejects duplicate metadata names before
+    constructing a JSON object. The public codec performs the same validation
+    earlier, while this test protects the bridge-facing representation used by
+    client and worker command encoders. *)
+let test_duplicate_metadata_rejected () =
+  let payload : Protocol.payload =
+    {
+      metadata =
+        [ ("encoding", Bytes.of_string "json/plain");
+          ("encoding", Bytes.of_string "json/plain") ];
+      data = Bytes.of_string "value";
+    }
+  in
+  let completion : Protocol.completion =
+    {
+      run_id = "run-duplicate-metadata";
+      commands = [ Complete_workflow { result = Some payload } ];
+    }
+  in
+  require_error (Protocol.encode_completion completion)
 
 (** Proves configurable Temporal identifiers are not constrained by an
     invented server-default limit while the protocol safety ceiling remains
@@ -631,11 +712,13 @@ let () =
   run "workflow activations" test_valid_activations;
   run "workflow completion" test_valid_completion;
   run "start child workflow command" test_start_child_workflow_command;
+  run "all child cancellation policies" test_all_child_cancellation_policies;
   run "child cancellation validation" test_child_cancellation_validation;
   run "continue-as-new command" test_continue_as_new_command;
   run "malformed workflow documents" test_invalid_documents;
   run "large nested payload" test_large_nested_payload;
   run "metadata key canonicalization" test_metadata_key_canonicalization;
+  run "duplicate metadata rejected" test_duplicate_metadata_rejected;
   run "identifier safety limit" test_identifier_safety_limit;
   run "activation cross-field invariants" test_activation_cross_field_invariants;
   run "large activation job batch" test_large_activation_job_batch;

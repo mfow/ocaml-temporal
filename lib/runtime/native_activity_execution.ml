@@ -31,9 +31,16 @@ module type SUPERVISOR = sig
   val record_activity_heartbeat : t -> Protocol.heartbeat -> (unit, error) result
   val error_code : error -> string
   val error_message : error -> string
+  val error_is_retryable : error -> bool
+  val exception_is_retryable : exn -> bool
 end
 
-type error_view = { code : string; path : string; message : string }
+type error_view = {
+  code : string;
+  path : string;
+  message : string;
+  retryable : bool;
+}
 (** Stable diagnostics never contain payload bytes or opaque task-token data. *)
 
 (** Public registration is existential so definitions with unrelated OCaml
@@ -74,6 +81,8 @@ type registered_definition =
     uses a token as a string, so embedded NUL bytes and non-UTF-8 bytes remain
     unchanged. *)
 module Token_map = Map.Make (struct
+  (* Keeping the key as [bytes] prevents accidental text decoding of the
+     opaque token, while [Bytes.compare] gives the retry map a stable order. *)
   type t = bytes
 
   let compare = Bytes.compare
@@ -108,6 +117,8 @@ let bounded_text ~fallback value =
   if not (Codec.valid_utf_8 value) then fallback
   else if String.length value <= maximum then value
   else
+    (* Start from the maximum useful prefix and back off until the cut lands
+       on a UTF-8 boundary; diagnostics must remain valid protocol strings. *)
     let rec prefix length =
       if length <= 0 then fallback
       else
@@ -120,26 +131,28 @@ let bounded_text ~fallback value =
 let bounded_code value = bounded_text ~fallback:"native_activity_error" value
 
 (** Constructs one immutable privacy-safe diagnostic. *)
-let make_error ?(path = "$") code message : error_view =
+let make_error ?(path = "$") ?(retryable = false) code message : error_view =
   {
     code = bounded_code code;
     path;
     message = bounded_text ~fallback:"invalid activity diagnostic" message;
+    retryable;
   }
 
 (** Converts an unexpected OCaml exception into a typed boundary diagnostic.
     Exceptions are still defects; catching them here prevents a user activity
     from unwinding past the lease and leaving native Core without a response. *)
-let exception_error ?(path = "$") exception_ =
+let exception_error ?(path = "$") ?(retryable = false) exception_ =
   let message =
     try Printexc.to_string exception_ with _ -> "unprintable OCaml exception"
   in
-  make_error ~path "ocaml_exception" message
+  make_error ~path ~retryable "ocaml_exception" message
 
 (** Converts a supervisor error without trusting its diagnostic accessors to be
     exception-free. This guard keeps lifecycle failures on the typed path. *)
-let supervisor_error ?(path = "$") ~error_code ~error_message source_error =
-  try make_error ~path (error_code source_error) (error_message source_error)
+let supervisor_error ?(path = "$") ?(retryable = false) ~error_code
+    ~error_message source_error =
+  try make_error ~path ~retryable (error_code source_error) (error_message source_error)
   with exception_ -> exception_error ~path exception_
 
 (** Converts the protocol's private diagnostic into this adapter's stable
@@ -203,6 +216,8 @@ let cancellation_failure reason : Protocol.failure =
     replacement decoding. Body and metadata bytes are copied so a task can be
     retained safely after the supervisor releases its source buffer. *)
 let runtime_payload path (payload : Protocol.payload) =
+  (* Accumulate backwards for linear construction, then reverse once so the
+     caller observes metadata in the same order as the protocol task. *)
   let rec metadata_loop reversed = function
     | [] -> Ok (List.rev reversed)
     | (key, bytes) :: rest ->
@@ -230,6 +245,8 @@ let runtime_payload path (payload : Protocol.payload) =
 (** Converts a runtime payload into the binary-safe protocol representation,
     validating metadata before copying it across the ownership boundary. *)
 let protocol_payload path (payload : Temporal_base.Codec.payload) =
+  (* Use the same order-preserving construction as [runtime_payload], but turn
+     validated strings back into freshly owned byte buffers. *)
   let rec metadata_loop reversed = function
     | [] -> Ok (List.rev reversed)
     | (key, value) :: rest ->
@@ -269,6 +286,8 @@ let runtime_duration path (duration : Protocol.duration) =
       (make_error ~path:(path ^ ".nanoseconds") "unsupported"
          "sub-millisecond durations are not representable by the runtime")
   else
+    (* Compute the largest representable whole-millisecond value before
+       multiplying seconds, avoiding an overflowing intermediate Int64. *)
     let milliseconds_per_second = 1_000L in
     let milliseconds = Int64.of_int (duration.nanoseconds / 1_000_000) in
     let maximum_seconds = Int64.div Int64.max_int milliseconds_per_second in
@@ -293,6 +312,8 @@ let runtime_duration path (duration : Protocol.duration) =
     every body. The indexed path makes malformed metadata diagnosable without
     exposing the payload bytes themselves. *)
 let runtime_payloads path payloads =
+  (* The index is part of the diagnostic path; the reversed accumulator keeps
+     traversal tail-recursive while [List.rev] restores input order. *)
   let rec loop index reversed = function
     | [] -> Ok (List.rev reversed)
     | payload :: rest ->
@@ -311,6 +332,9 @@ let runtime_payloads path payloads =
 let failure_of_application_error (diagnostic : error_view)
     (error : Base_error.t) : (Protocol.failure, error_view) result =
   let view = Base_error.view error in
+  (* Validate and copy every detail in order. A failed conversion aborts before
+     any completion is submitted, so a malformed detail cannot retire a lease
+     with a partially constructed application failure. *)
   let rec details_loop reversed = function
     | [] -> Ok (List.rev reversed)
     | payload :: rest ->
@@ -415,22 +439,44 @@ let validate_completion completion =
 
 (** Converts a supervisor completion exception to a stable diagnostic without
     revealing the opaque token or native exception object. *)
-let completion_exception_error exception_ =
-  make_error ~path:"$.completion" "completion_failed"
+let completion_exception_error ?(retryable = false) exception_ =
+  make_error ~path:"$.completion" ~retryable "completion_failed"
     (Printf.sprintf "supervisor completion raised: %s"
        (exception_error exception_).message)
 
 module Make (Supervisor : SUPERVISOR) = struct
+  (** State owned by one activity adapter. Definitions never change after
+      construction; [leases] contains only copied completions whose opaque
+      task-token acknowledgements are still uncertain. Every field is accessed
+      while [mutex] is held, including calls into the supervisor. *)
   type adapter_state = {
+    (* The owner-confined native supervisor handle. It is borrowed for each
+       serialized operation and never retained by a user activity. *)
     supervisor : Supervisor.t;
+    (* Immutable existential definitions keyed by Temporal activity type. *)
     definitions : registered_definition Name_map.t;
+    (* Owned completion leases keyed by copied binary task token. Entries remain
+       until the exact completion is acknowledged successfully. *)
     mutable leases : lease Token_map.t;
+    (* Serializes registry updates, completion retries, and source operations. *)
     mutex : Mutex.t;
   }
-  (** Mutable state is intentionally small: immutable definitions plus one map
-      of completions whose task-token leases have not yet been acknowledged. *)
 
+  (** The public worker handle is the mutex-confined state above. *)
   type t = adapter_state
+
+  (** A malformed test double or future supervisor must not be able to turn a
+      diagnostic-classifier exception into an unbounded retry loop. Treat a
+      classifier defect as permanent; only an explicit [true] classification
+      can authorize retained-completion retry. *)
+  let source_error_is_retryable source_error =
+    try Supervisor.error_is_retryable source_error with _ -> false
+
+  (** Exception classification is equally conservative: arbitrary exceptions
+      are owner-domain defects unless the supervisor explicitly marks one as a
+      transient completion transport failure. *)
+  let completion_exception_is_retryable exception_ =
+    try Supervisor.exception_is_retryable exception_ with _ -> false
 
   (** Builds the context passed to one activity attempt. Heartbeats go back
       through the same typed supervisor mailbox as polling and completion; the
@@ -439,7 +485,12 @@ module Make (Supervisor : SUPERVISOR) = struct
       returns, so retaining one in user code cannot submit progress for a later
       attempt. *)
   let activity_context adapter ~token ~details ~heartbeat_timeout =
+    (* The callback remains valid only for this lease. It copies the token and
+       every detail before crossing to the supervisor, so a caller cannot
+       mutate a heartbeat after submission. *)
     let heartbeat payloads =
+      (* Convert public payloads with indexed paths while preserving their
+         order; conversion errors never reach the native callback. *)
       let rec convert index reversed = function
         | [] -> Ok (List.rev reversed)
         | payload :: rest ->
@@ -467,6 +518,7 @@ module Make (Supervisor : SUPERVISOR) = struct
             | Error source_error ->
                 let source =
                   supervisor_error ~path:"$.heartbeat"
+                    ~retryable:(source_error_is_retryable source_error)
                     ~error_code:Supervisor.error_code
                     ~error_message:Supervisor.error_message source_error
                 in
@@ -487,8 +539,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     in
     Activity_context.create ~heartbeat ~details ~heartbeat_timeout
 
-  (** Creates the registry without contacting native Core or invoking user code.
-  *)
+  (** Creates the registry without contacting native Core or invoking user code. *)
   let create ~supervisor ~activities =
     match build_definitions activities with
     | Error error -> Error error
@@ -513,11 +564,13 @@ module Make (Supervisor : SUPERVISOR) = struct
           | Error source_error ->
               let source =
                 supervisor_error ~path:"$.completion"
+                  ~retryable:(source_error_is_retryable source_error)
                   ~error_code:Supervisor.error_code
                   ~error_message:Supervisor.error_message source_error
               in
               Rejected_by_supervisor
-                (make_error ~path:"$.completion" "completion_failed"
+                (make_error ~path:"$.completion" ~retryable:source.retryable
+                   "completion_failed"
                    (Printf.sprintf "supervisor rejected completion (%s): %s"
                       source.code source.message))
         with exception_ -> Raised_by_supervisor exception_)
@@ -541,7 +594,10 @@ module Make (Supervisor : SUPERVISOR) = struct
     match attempt_completion adapter.supervisor lease.completion with
     | Rejected_by_supervisor error -> Error error
     | Raised_by_supervisor exception_ ->
-        Error (completion_exception_error exception_)
+        let retryable =
+          completion_exception_is_retryable exception_
+        in
+        Error (completion_exception_error ~retryable exception_)
     | Accepted ->
         adapter.leases <- Token_map.remove lease.token adapter.leases;
         begin match lease.accepted_result with
@@ -561,8 +617,10 @@ module Make (Supervisor : SUPERVISOR) = struct
         end
 
   (** Creates, records, and submits one completion. Recording precedes the
-      native call so every failed transport has an exact retryable completion.
-  *)
+      native call so the worker's explicit retry policy can inspect an exact
+      retained completion; only a [Retryable] source classification may
+      authorize resubmission, while generic transport failures remain
+      fail-closed. *)
   let enqueue_and_finish adapter ~token ~activity_type ~completion
       ~accepted_result =
     let (completion : Protocol.completion) = completion in
@@ -593,6 +651,8 @@ module Make (Supervisor : SUPERVISOR) = struct
   (** Executes one start-task implementation under a final exception guard. *)
   let process_start adapter token (start : Protocol.activity_start) =
     let activity_type = Some start.activity_type in
+    (* Keep all local dispatch and codec failures on the completion path. The
+       outer guard catches defects so even an exception retires this lease. *)
     let process () =
       match find_definition adapter.definitions start.activity_type with
       | Error error -> reject_task adapter ~token ~activity_type error
@@ -709,6 +769,8 @@ module Make (Supervisor : SUPERVISOR) = struct
     Fun.protect
       ~finally:(fun () -> Mutex.unlock adapter.mutex)
       (fun () ->
+        (* Retry the smallest token first for deterministic shutdown behavior;
+           stop at the first failure and retain that lease for the next drain. *)
         let rec loop () =
           match Token_map.min_binding_opt adapter.leases with
           | None -> Ok ()
@@ -718,6 +780,16 @@ module Make (Supervisor : SUPERVISOR) = struct
               | Error error -> Error error)
         in
         loop ())
+
+  (** Drops copied activity completions after terminal native cleanup. The Rust
+      runtime has already force-retired its leases, so retaining or retrying
+      these tokens could duplicate a completion. The mutex keeps discard
+      ordered with any final adapter operation. *)
+  let discard adapter =
+    Mutex.lock adapter.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock adapter.mutex)
+      (fun () -> adapter.leases <- Token_map.empty)
 
   (** Serializes pending-completion retry, native polling, implementation
       execution, and completion submission. The mutex covers the complete
@@ -741,6 +813,7 @@ module Make (Supervisor : SUPERVISOR) = struct
             | Error source_error ->
                 Error
                   (supervisor_error ~path:"$.poll"
+                     ~retryable:(source_error_is_retryable source_error)
                      ~error_code:Supervisor.error_code
                      ~error_message:Supervisor.error_message source_error)
             | Ok None ->

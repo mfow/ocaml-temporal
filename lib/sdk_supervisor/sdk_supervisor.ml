@@ -336,6 +336,7 @@ module Protocol_adapter = struct
       | Not_ready -> "not_ready"
       | Protocol -> "protocol"
       | Already_started -> "already_started"
+      | Retryable -> "retryable"
       | Unknown code -> Printf.sprintf "unknown(%d)" code
     in
     {
@@ -635,6 +636,7 @@ module Native_backend = struct
     | Try_poll_activity :
         Temporal_protocol.Activity_protocol.task option operation
     | Wait_activity : unit operation
+    | Wait_activity_completion_retry_backoff : unit operation
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
     | Record_activity_heartbeat :
@@ -703,6 +705,8 @@ module Native_backend = struct
           ~reject:(Bridge.worker_reject_activity_json runtime)
           (Bridge.worker_try_poll_activity runtime)
     | Wait_activity -> Bridge.worker_wait_activity runtime
+    | Wait_activity_completion_retry_backoff ->
+        Bridge.worker_wait_activity_completion_retry_backoff runtime
     | Complete_activity completion ->
         Result.bind
           (Protocol_adapter.encode_activity_completion completion)
@@ -769,6 +773,7 @@ module Native = struct
     | Try_poll_activity :
         Temporal_protocol.Activity_protocol.task option operation
     | Wait_activity : unit operation
+    | Wait_activity_completion_retry_backoff : unit operation
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
     | Record_activity_heartbeat :

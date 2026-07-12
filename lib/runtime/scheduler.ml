@@ -7,7 +7,14 @@ type runnable = Runnable of int * (unit -> unit)
 type _ Effect.t += Abort_workflow : 'value Effect.t
 
 (** State for one workflow scheduler. [pending] counts futures without results,
-    and [teardowns] stores the cleanup function for each of those futures. *)
+    and [teardowns] stores one removable cleanup token for each pending future.
+    Settling a future removes its token so completed values are not retained by
+    a long-lived workflow scheduler. *)
+type teardown_token = {
+  mutable removed : bool;
+  action : unit -> unit;
+}
+
 type t = {
   id : int;
   queue : runnable Queue.t;
@@ -17,7 +24,7 @@ type t = {
   mutable pending : int;
   mutable failures : exn list;
   mutable trace_rev : int list;
-  mutable teardowns : (unit -> unit) list;
+  mutable teardowns : teardown_token list;
   mutable abort_requested : bool;
 }
 
@@ -58,7 +65,16 @@ let owner scheduler =
     ~on_create:(fun () -> scheduler.pending <- scheduler.pending + 1)
     ~on_settled:(fun () -> scheduler.pending <- scheduler.pending - 1)
     ~register_teardown:(fun teardown ->
-      scheduler.teardowns <- teardown :: scheduler.teardowns)
+      let token = { removed = false; action = teardown } in
+      scheduler.teardowns <- token :: scheduler.teardowns;
+      (* Physical identity is safe here because every registration allocates a
+         fresh token. The linear scan keeps shutdown order explicit while
+         releasing the completed future's closure immediately. *)
+      fun () ->
+        if not token.removed then (
+          token.removed <- true;
+          scheduler.teardowns <-
+            List.filter (fun current -> current != token) scheduler.teardowns))
 
 (** Rejects new future allocation after shutdown, when no continuation could be
     safely resumed. *)
@@ -159,7 +175,12 @@ let trace scheduler = List.rev scheduler.trace_rev
 let shutdown scheduler =
   if scheduler.active then (
     scheduler.active <- false;
-    List.iter (fun teardown -> teardown ()) (List.rev scheduler.teardowns);
+    List.iter
+      (fun token ->
+        if not token.removed then (
+          token.removed <- true;
+          token.action ()))
+      (List.rev scheduler.teardowns);
     scheduler.teardowns <- [];
     if not scheduler.running then
       while not (Queue.is_empty scheduler.queue) do

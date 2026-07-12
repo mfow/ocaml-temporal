@@ -23,9 +23,14 @@ one typed non-retryable failure, and one exact-run cancellation. Only the five
 baseline executions are currently backed by live CI evidence; the heartbeat and
 cancellation assertions remain local-only until a green live run verifies them.
 
-`smoke-worker` publishes an atomic readiness marker after public
-`Temporal.Worker.create` succeeds. Compose waits for that health check before
-`smoke-driver` is run. Each acceptance run starts after `temporal-clean` has
+`temporal-start-worker` force-recreates the worker container before waiting, so
+the readiness marker in the container's `/tmp` cannot be inherited from a
+stopped container. `smoke-worker` then removes any prior readiness marker after
+validating its readiness path and before later marker validation or public
+`Temporal.Worker.create` begins. Once creation succeeds it publishes a new
+atomic readiness marker. Compose waits for that health check before
+`smoke-driver` is run. Each acceptance run starts after
+`temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
 later acceptance run. The driver starts all seven top-level workflows before
@@ -54,10 +59,9 @@ only sets an atomic flag. The 30-second worker stop grace period gives the
 bounded native waits time to leave their poll loop before the container is
 removed. This is test-process lifecycle code, not a second worker supervisor.
 
-The fixture implementation is designed to start the two public binaries after
-Temporal/PostgreSQL readiness and assert terminal workflow results while the
-worker executes registered workflows and a mock activity against the live
-server. This revision adds a
+The fixture starts the two public binaries after Temporal/PostgreSQL readiness
+and asserts terminal workflow results while the worker executes registered
+workflows and mock activities against the live server. This revision adds a
 parent/child success case: the parent calls `Temporal.Child_workflow.execute`,
 the registered child waits on a short durable timer, and the driver asserts the
 parent's exact result. It also runs `smoke.activity_retry`: the first
@@ -153,8 +157,8 @@ All assets specific to this acceptance test belong below
 `test/integration/temporal/`; the repository root keeps only Makefile entry
 points. In particular, the Compose fixture belongs at
 `test/integration/temporal/compose.yaml`, together with its Temporal Server
-configuration and helper scripts. The eventual OCaml executables and their
-Dune definitions should live under that same test subtree, for example:
+configuration and helper scripts. The OCaml executables and their Dune
+definitions live under that same test subtree:
 
 ```text
 test/integration/temporal/
@@ -172,12 +176,15 @@ test/integration/temporal/
     └── smoke_driver.ml
 ```
 
-The Compose services are `postgresql`, `temporal`, `smoke-worker`, and
-`smoke-driver`. `smoke-worker` and `smoke-driver` use the same development
-image and repository checkout, but execute different Dune binaries. This
-proves that the public library can be linked into more than one OCaml-owned
-binary; it does not imply that an application must share a Rust runtime across
-processes. Each process uses its own absolute Dune build directory
+The acceptance topology includes `postgresql`, `temporal`, `smoke-worker`,
+and `smoke-driver`. Compose also defines `temporal-schema` and
+`temporal-admin-tools` for database initialization and diagnostics, plus the
+shared `dev` image template. `smoke-worker` and `smoke-driver` use the same
+development image and repository checkout, but execute different Dune
+binaries. This proves that the public library can be linked into more than one
+OCaml-owned binary; it does not imply that an application must share a Rust
+runtime across processes. Each process uses its own absolute Dune build
+directory
 (`/workspace/_build/smoke-worker` or `/workspace/_build/smoke-driver`). Dune
 keeps a build-directory lock for the lifetime of `dune exec`; separate
 directories are therefore required while the worker is running, otherwise the
@@ -186,12 +193,19 @@ starts.
 
 The worker health check becomes healthy only after `Temporal.Worker.create`
 has connected, validated the native worker, and registered its OCaml
-definitions. It deliberately publishes readiness before `Worker.run` enters
-the long-lived poll loop, so Compose can launch the driver without treating a
-bare process or TCP listener as readiness. The final pass/fail signal remains
-the driver's exit status after its result assertions; it must not be replaced
-by a schema migration, namespace registration, TCP check, or a `temporal
-operator cluster health` check.
+definitions. Startup first removes the marker from any interrupted or reused
+container, then deliberately publishes readiness before `Worker.run` enters
+the long-lived poll loop, so the Makefile can wait for a semantic readiness
+marker rather than treating a bare process or TCP listener as readiness.
+`temporal-start-worker` waits for that health check, and the subsequent
+`temporal-run-driver` target deliberately uses `docker compose run --no-deps`;
+the explicit Makefile ordering therefore launches exactly one driver after the
+already-ready worker. The driver's exit status is authoritative for workflow
+assertions; the complete integration target additionally requires the driver's
+graceful client-shutdown marker and the current run's exact `worker-stopped`
+marker. None of these acceptance signals may be replaced by a schema
+migration, namespace
+registration, TCP check, or a `temporal operator cluster health` check.
 
 `make test-temporal-integration` owns the fixture lifecycle: create its
 isolated Compose project, run the low-level lifecycle check, wait for the
@@ -254,9 +268,12 @@ let () =
     Temporal.Worker.create
       ~task_queue:"ocaml-temporal-two-binary-smoke"
       ~workflows:
-        [ fan_out; timer_then_activity; activity_retry; child_after_timer;
-          parent_awaits_child; non_retryable_failure; long_running_cancellation ]
-      ~activities:[ mock_transform; retry_once_activity; cancellation_ready_activity ]
+        [ fan_out; timer_then_activity; activity_retry;
+          activity_heartbeat_retry; child_after_timer; parent_awaits_child;
+          non_retryable_failure; long_running_cancellation ]
+      ~activities:
+        [ mock_transform; retry_once_activity; heartbeat_retry_activity;
+          cancellation_ready_activity ]
       ()
   with
   | Error error -> report_and_exit error
@@ -511,11 +528,14 @@ claims become live evidence:
 The driver logs no-payload phase records for starts, exact-run cancellation,
 exact-run waits, terminal classes, and operation latency. The Makefile requires
 the driver's `client_shutdown status=ok` marker, and after that stops the
-worker and requires `two-binary worker stopped cleanly`. The harness captures
-these records only for failure diagnosis; result assertions, not log text, are
-the workflow success oracle. Per-activation/task identifiers and completion
-latency are a future observability enhancement and must remain payload-free if
-added.
+worker and requires the current run's exact `worker-stopped` marker. The
+`two-binary worker stopped cleanly` line remains useful human-readable
+diagnostic output, but aggregated Compose logs are not used as the teardown
+oracle because they can include output from an earlier container instance. The
+harness captures these records only for failure diagnosis; result assertions,
+not log text, are the workflow success oracle. Per-activation/task identifiers
+and completion latency are a future observability enhancement and must remain
+payload-free if added.
 
 The first live test is intentionally small. With this success path verified,
 extend the same two-binary topology rather than adding a separate pseudo-worker

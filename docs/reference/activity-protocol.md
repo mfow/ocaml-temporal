@@ -12,9 +12,12 @@ typed validation failures.
 Rust sends one `task` after Core has leased a remote activity attempt. The task
 contains an opaque binary `task_token` and either a complete start context or a
 cancellation update. The native OCaml activity adapter retains the token and
-copies it unchanged into exactly one `completion`. The adapter never interprets
-token bytes. Rust's outstanding-task ledger remains responsible for proving
-that a completion names a currently leased attempt.
+copies it unchanged into a terminal completion obligation. If native transport
+rejects that completion, the adapter retries the same copied value without
+invoking the activity implementation again. This keeps the opaque correlation
+value and the user-side execution aligned while Rust's outstanding-task ledger
+decides whether the lease can be retired. The adapter never interprets token
+bytes.
 
 Start context retains the scheduling workflow identity, activity identity,
 headers, ordered arguments, heartbeat details, timestamps, timeouts, one-based
@@ -57,8 +60,9 @@ integer width.
 
 ## Validation contract
 
-`decode_task`, `decode_completion`, and `decode_heartbeat` first pass the complete document through
-the duplicate-aware, bounded JSON foundation. Every nested object is closed:
+`decode_task`, `decode_completion`, and `decode_heartbeat` first pass the
+complete document through the duplicate-aware, bounded JSON foundation. Every
+nested object is closed:
 missing, unknown, and duplicate fields fail. Fields documented as nullable must
 still be present with either their value or JSON `null`.
 
@@ -75,6 +79,11 @@ Semantic validation then enforces:
   intervals, and bounded non-retryable failure-type strings; and
 - the same bounded recursive structured failure and payload semantics used by
   workflow activations and completions.
+
+The OCaml encoders reparse their own output through the corresponding strict
+decoders. The Rust bridge validates completion and heartbeat JSON again at the
+worker ABI, so a value accepted by one language still crosses a second
+validation boundary before reaching Core.
 
 ## Heartbeat document
 
@@ -97,13 +106,14 @@ shape is:
 
 The token must be the canonical padded base64 representation of the currently
 leased activity token. Details preserve their order and use the same binary
-payload representation as task inputs and completion outputs. Both endpoints
-reject unknown or duplicate object members, malformed base64, empty tokens,
-and payloads outside the shared size and metadata rules. The Rust bridge checks
-the token against its outstanding-task ledger before handing the heartbeat to
-Temporal Core; it does not retire the lease. A later completion or cancellation
-is still required, and only that terminal operation removes the token from the
-ledger.
+payload representation as task inputs and completion outputs. The OCaml and
+Rust validators reject unknown or duplicate object members, malformed base64,
+empty tokens, and payloads outside the shared size and metadata rules. The Rust
+bridge checks the token against its outstanding-task ledger before handing the
+heartbeat to Temporal Core; it does not retire the lease. The adapter must
+later submit a terminal completion, including a `Cancelled` result when it
+receives a cancellation task; only that terminal completion path removes the
+token from the ledger.
 
 The schema is [`activity-heartbeat.schema.json`](../schemas/bridge/activity-heartbeat.schema.json).
 The focused bilateral tests are
@@ -118,6 +128,37 @@ the produced JSON again. Invalid typed outgoing records therefore fail before
 they can cross the C/Rust boundary. `error_view` exposes only a stable code,
 path, and payload-safe message; source JSON, base64 data, token bytes, inputs,
 results, and failure details are never included.
+
+## Completion and cancellation
+
+`encode_completion` validates the token and the closed result union before
+emitting JSON. The Rust worker ABI decodes and validates that document again
+before calling Temporal Core. It first checks that the token is currently
+leased, then retires the ledger entry only after Core accepts the completion.
+If transport or Core rejects the call, the lease remains outstanding so the
+OCaml adapter can retry the same pending completion; it never reruns the user
+activity merely because submission failed.
+
+A task with `variant.kind = "cancel"` does not invoke user activity code. The
+adapter maps its stable reason to a `Cancelled` completion with the standard
+Temporal `Canceled` failure. The independent cancellation flags remain task
+metadata and are not copied into an application payload. A heartbeat is
+non-terminal and therefore cannot acknowledge cancellation or completion by
+itself.
+
+Cancellation is an update on the start task's token, not a second completion
+obligation. The Rust poll lane may enqueue that update while the owner Domain
+is handing off or completing the start. If the owner later sees
+`AlreadyLeased` (the start is still owned) or `UnknownActivity` (the start has
+already completed), it drops the stale cancellation without sending another
+completion. This mirrors Temporal Core's own orphan-cancellation handling and
+prevents a duplicate-token completion race; start-shaped delivery failures
+continue to use the normal force-failure path.
+
+`will_complete_async` remains a protocol and Core-conversion variant, but the
+current OCaml adapter neither emits it nor exposes a handle for a later
+completion. Current activities therefore return a terminal result
+synchronously; asynchronous completion remains a future capability.
 
 ## Schemas and tests
 

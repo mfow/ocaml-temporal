@@ -18,6 +18,27 @@ let expect_invalid_name make =
   | exception Invalid_argument _ -> ()
   | _ -> failwith "invalid definition name accepted"
 
+(** Builds a byte string that is not valid UTF-8 without introducing a NUL;
+    this exercises the protocol text validator rather than the older NUL check. *)
+let invalid_utf_8 = Bytes.to_string (Bytes.init 1 (fun _ -> Char.chr 0xff))
+
+(** Confirms public workflow and activity constructors enforce the complete
+    bridge identifier contract before a definition can be registered. *)
+let expect_name_boundary_rejection () =
+  let oversized = String.make 65_537 'x' in
+  expect_invalid_name (fun () ->
+      Temporal.Workflow.remote ~name:oversized ~input:Temporal.Codec.unit
+        ~output:Temporal.Codec.unit);
+  expect_invalid_name (fun () ->
+      Temporal.Activity.remote ~name:oversized ~input:Temporal.Codec.unit
+        ~output:Temporal.Codec.unit);
+  expect_invalid_name (fun () ->
+      Temporal.Workflow.remote ~name:invalid_utf_8 ~input:Temporal.Codec.unit
+        ~output:Temporal.Codec.unit);
+  expect_invalid_name (fun () ->
+      Temporal.Activity.remote ~name:invalid_utf_8 ~input:Temporal.Codec.unit
+        ~output:Temporal.Codec.unit)
+
 let () =
   assert (Temporal.Activity.name greeting = "greeting");
   assert (Temporal.Workflow.name greeting_workflow = "greeting_workflow");
@@ -27,6 +48,7 @@ let () =
   expect_invalid_name (fun () ->
       Temporal.Workflow.remote ~name:"bad\000name" ~input:Temporal.Codec.unit
         ~output:Temporal.Codec.unit);
+  expect_name_boundary_rejection ();
   assert (not (Temporal.Workflow_context.is_active ()));
   (match Temporal.Future.await (Temporal.Activity.start greeting "Ada") with
   | Error error -> assert (Temporal.Error.kind error = "defect")

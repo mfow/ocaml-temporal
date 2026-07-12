@@ -49,7 +49,11 @@ and bridge, read the [documentation guide](../README.md) first.
   while the scheduler is paused between runs), so a foreign or stale handle
   returns a typed defect rather than racing mutable state. Normal workflow
   teardown closes any still-pending signal and its callbacks. Repeating
-  cancellation is idempotent and emits no Temporal command.
+  cancellation is idempotent and emits no Temporal command. The owner check
+  compares the currently running scheduler with the scheduler that created
+  the scope, so a foreign scheduler cannot inspect or mutate the scope. A
+  rejected foreign operation leaves the owner able to query and cancel its
+  own scope, as covered by the cross-scheduler scope test.
 - Combining futures from different executions returns a ready typed defect
   owned by the leading input rather than raising an operational exception.
 - User callback exceptions are contained and reported as scheduler defects.
@@ -110,12 +114,26 @@ and bridge, read the [documentation guide](../README.md) first.
 - The private supervisor validates native poll bytes before returning typed
   workflow or activity values to another Domain. It canonically encodes and
   reparses typed completions before entering C.
+- A remote activity `Start` creates one Core completion debt. A `Cancel` poll
+  is an update to that same token: it is handed to the OCaml activity adapter
+  while the token remains tracked, but it never acquires a second completion
+  lease. Only a cancellation that arrives after the start has completed is
+  stale and may be discarded. This keeps cancellation delivery observable
+  without allowing duplicate-token completion races.
+- If a Core activity task cannot be converted or encoded before it reaches the
+  OCaml adapter, Rust fails only an unrepresentable `Start`, because that is
+  the task that owns the completion debt. An unrepresentable `Cancel` is
+  dropped as an update; failing it through the activity-completion API would
+  consume the still-needed Start lease.
 - If OCaml cannot decode a successful poll, it returns the exact untouched
   Rust document to the private rejection ABI. Rust requires full semantic
   equality with retained handoff state before retiring the lease; changed IDs,
   tokens, or content cannot consume real outstanding work. Rejection cleanup
-  removes ledger and semantic ownership together even when Core reports an
-  error, while the original OCaml protocol failure remains the primary result.
+  for a retained Start removes ledger and semantic ownership together even
+  when Core reports an error, while the original OCaml protocol failure
+  remains the primary result. A retained Cancel is different: it is only an
+  update to the Start's shared token, so rejecting that document removes the
+  one semantic update without retiring the Start's native completion debt.
 - Native `Not_ready` is represented as `Ok None`. ABI version 1 also exposes
   bounded `Wait_workflow` and `Wait_activity` readiness operations. Only the
   owner-Domain supervisor may invoke them; the C boundary releases the OCaml
@@ -126,6 +144,24 @@ and bridge, read the [documentation guide](../README.md) first.
 - Blocking FFI calls occur only while the OCaml runtime lock is released.
 - Worker readiness waits are bounded to 100 ms and return `Not_ready` on a
   quiet lane, so a supervisor handler cannot strand a queued shutdown request.
+- A retained activity completion may be retried only after the OCaml source
+  receives the explicit bridge `Retryable` status. The pinned Core completion
+  implementation removes the activity lease before suppressing generic network
+  failures, so `Connection`, `Not_ready`, and `Worker` never authorize a
+  second completion attempt. The dedicated retry backoff is a 10 ms native
+  timer with the OCaml runtime lock released; it is not a readiness signal.
+- Adapter shutdown reopens admission only for an explicitly retryable activity
+  drain. Workflow-drain errors and permanent activity errors invoke the
+  supervisor's `Native.shutdown`/`runtime_close` path before leaving the private
+  worker closed and the public wrapper terminal; runtime disposal force-retires
+  any remaining native leases. A returned native `Error` is still
+  release-complete by that contract, so OCaml adapter maps are discarded only
+  after the result is observed. If native shutdown raises before returning, the
+  maps remain retained, a terminal-cleanup-pending flag schedules a detached
+  retry, and the worker finalizer remains a last-resort path. A same-Domain
+  shutdown defect is different: it cannot acquire its own run mutex, but no
+  teardown has started, so it remains retryable for a later call from another
+  Domain.
 - Each Rust poll lane owns one mutex-protected pending count. Producers hold
   that mutex while publishing a queue message and its wake notification;
   the supervisor holds it while receiving and decrementing. A wake is never
@@ -133,6 +169,11 @@ and bridge, read the [documentation guide](../README.md) first.
 - Shutdown closes both readiness signals before waking Core polls, but queued
   messages always take precedence over terminal state and are drained before a
   readiness wait reports shutdown or a fatal lane error.
+- Dispose force-fails ledger debt and queued tasks before joining the Core poll
+  lanes so shutdown cannot wait for OCaml. Because a poll already in flight can
+  publish a task after that first drain, dispose joins both lanes and performs a
+  final no-producer drain before finalization; no task may remain only in a
+  ready queue or ledger at the point the worker graph is released.
 
 ## Native activation translation
 
@@ -177,6 +218,16 @@ and bridge, read the [documentation guide](../README.md) first.
   FIFO append and `Open` to `Closing` transition happen under the same mutex;
   it may temporarily raise the waiting queue to `capacity + 1`, and no later
   normal request can be admitted ahead of it.
+- Concurrent `submit_and_close` calls linearize at that same mutex. For an
+  open mailbox with no handler failure, exactly one contender appends the
+  terminal request and gets a pending reply; every other contender observes
+  `Closed`. If the admitted terminal handler fails before a later contender
+  reaches the mutex, that contender instead observes the terminal
+  `Handler_raised` failure. The winning request remains after work already
+  admitted, and normal posts submitted after the transition are rejected. The
+  regression test releases multiple producer Domains through a barrier before
+  the race and checks the single winner, losing results, late rejection, and
+  FIFO drain.
 - Queue and lifecycle state are data-race free. Every condition wait rechecks
   its protected predicate after waking.
 - Normal close rejects new work and drains all admitted work before the owner

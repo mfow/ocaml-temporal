@@ -15,18 +15,30 @@ type ('input, 'output) handle
     flow exceptions. The outer [result] of [wait] is reserved for bridge or
     payload transport errors. *)
 type 'output terminal_result =
+  (* The terminal payload decoded using the workflow definition's output codec. *)
   | Completed of 'output
+  (* Temporal reported a workflow failure as a terminal value. *)
   | Failed of Error.t
+  (* The exact run reached the cancellation state. *)
   | Cancelled of Error.t
+  (* The exact run was terminated by an operator or another client. *)
   | Terminated of Error.t
+  (* The exact run reached a Temporal timeout state. *)
   | Timed_out of Error.t
+  (* The run continued as new; the caller decides whether to wait on the
+     returned successor identity. *)
   | Continued_as_new of {
+      (* Durable workflow ID of the successor execution. *)
       workflow_id : string;
+      (* Server-issued run ID of the successor execution. *)
       run_id : string;
     }
 
 (** Connects to the configured Temporal endpoint. [target_url] is copied into
-    the private backend graph and [namespace] is required for every operation. *)
+    the private backend graph and [namespace] is required for every operation.
+    The namespace and optional identity must be non-empty, NUL-free, and no
+    more than 65,536 bytes; invalid configuration is returned as a typed
+    defect. *)
 val create :
   ?identity:string ->
   target_url:string ->
@@ -37,6 +49,12 @@ val create :
 (** Starts a typed workflow execution and returns the exact server run handle.
     Encoding happens before the backend receives the request, so codec errors
     cannot create a partial workflow history entry.
+
+    [task_queue], [id], the workflow type name retained by [workflow], and an
+    explicitly supplied [request_id] must be non-empty, NUL-free, and no more
+    than 65,536 bytes. Invalid fields return a typed defect before transport
+    selection, so the deterministic mock and the native JSON bridge enforce
+    the same request boundary.
 
     [request_id] is an optional caller-owned Temporal idempotency key. When a
     start result is uncertain, retry the same logical start with the same
@@ -65,7 +83,8 @@ val wait :
     workflow to stop. Call [wait handle] to observe [Cancelled]. [request_id]
     is the idempotency key for this logical control operation and should be
     supplied again if the caller retries after an uncertain transport error.
-    [reason] is operator context and may be empty. *)
+    Both [request_id] and [reason] are limited to 65,536 bytes and may not
+    contain NUL; [reason] may be empty. *)
 val cancel :
   ?request_id:string ->
   ?reason:string ->
@@ -79,5 +98,6 @@ val workflow_id : ('input, 'output) handle -> string
 val run_id : ('input, 'output) handle -> string
 
 (** Shuts down the client graph. Repeated calls are idempotent and return the
-    same successful result after resources have been released. *)
+    same cached result, including a terminal teardown error, after the first
+    shutdown request has consumed or invalidated the backend resources. *)
 val shutdown : t -> (unit, Error.t) result

@@ -2,9 +2,12 @@
 
 This document describes the private, pure-OCaml adapter between the checked
 workflow protocol and the deterministic workflow runtime. Workflow authors do
-not call it directly. The private native-worker adapter uses it after Rust has
-decoded a Core activation and before it submits the resulting completion back
-to Rust. The production supervisor owns the lifecycle and invokes this adapter
+not call it directly. Rust converts a Core activation into the checked JSON
+document, and the SDK supervisor decodes that document before the private
+native-worker adapter invokes this module. The adapter returns a checked
+completion; the worker then submits that completion through the supervisor.
+`Native_execution` itself owns no native handle and does not submit or retry
+anything. The production supervisor owns the lifecycle and invokes the worker
 through its typed operations.
 
 ## Where the adapter sits
@@ -20,15 +23,24 @@ The data flow is therefore:
 
 ```text
 Temporal Core
-    -> Rust protobuf conversion
+    -> Rust Core/protobuf conversion and semantic validation
     -> checked activation JSON
-    -> Workflow_protocol.decode_activation
+    -> Sdk_supervisor.Native.Protocol_adapter.decode_workflow_activation
     -> Native_execution.translate_activation
     -> Execution.activate
     -> Native_execution.completion_of_commands
     -> Workflow_protocol.encode_completion
     -> Rust protobuf conversion
 ```
+
+The Rust bridge canonical-encodes the converted activation before retaining its
+native lease. The OCaml supervisor decodes that JSON, and
+`translate_activation` canonical-encodes the typed value again before it
+changes it into runtime jobs. The second pass is intentional: programmatically
+constructed OCaml values receive the same closed-object, bounds, payload, and
+ordering checks as values received from Rust. Outgoing commands follow the
+same rule in reverse: `completion_of_commands` validates the complete command
+batch before the worker submits it.
 
 The adapter does not own a Rust handle, call the supervisor, wait on a lock, or
 perform I/O. Keeping it pure and below the supervisor makes the conversion
@@ -57,9 +69,9 @@ bridge failure rather than silently ignoring a Core event.
 | `Resolve_activity` with `Completed None` | `Resolve_activity` with the canonical null payload | The absence of a result remains distinguishable from an ordinary payload. |
 | `Resolve_activity` with `Completed (Some payload)` | `Resolve_activity` with a copied runtime payload | Metadata and body bytes are copied before workflow code can observe them. |
 | `Resolve_activity` with `Failed` or `Cancelled` | `Resolve_activity` with a typed `Temporal_base.Error.t` | Application/cancellation category, retryability, details, and a bounded diagnostic of structured failure information are retained. |
-| `Resolve_child_workflow_start` with `Succeeded` | `Resolve_child_workflow_start` with `Ok run_id` | The run ID advances the pending child lifecycle but deliberately does not resolve its future. |
-| `Resolve_child_workflow_start` with `Failed` or `Cancelled` | `Resolve_child_workflow_start` with `Error` | The pending child is retired immediately with a typed child-workflow or cancellation error, so a rejected start cannot remain pending forever. |
-| `Resolve_child_workflow` with `Completed` | `Resolve_child_workflow` with `Ok payload` | The terminal payload (including the canonical null payload) resolves the child only after a successful start acknowledgment. |
+| `Resolve_child_workflow_start` with `Succeeded` | `Resolve_child_workflow_start` with `Ok run_id` | The translation preserves the run ID; `Workflow_context_store` records it and deliberately does not resolve the child's future yet. |
+| `Resolve_child_workflow_start` with `Failed` or `Cancelled` | `Resolve_child_workflow_start` with `Error` | The translation produces a typed child-workflow or cancellation error; `Workflow_context_store` removes the pending child so a rejected start cannot remain suspended forever. |
+| `Resolve_child_workflow` with `Completed` | `Resolve_child_workflow` with `Ok payload` | The translation preserves the terminal payload (including canonical null); `Workflow_context_store` resolves the child only after a successful start acknowledgment. |
 | `Resolve_child_workflow` with `Failed` or `Cancelled` | `Resolve_child_workflow` with `Error` | Child failure identity, retry state, details, cancellation category, and the bounded recursive diagnostic are retained. |
 | `Fire_timer` | `Fire_timer` | The exact sequence is retained. |
 | `Cancel_workflow` | `Cancel_workflow` | The reason is retained in `translated_activation.cancellation_reason`. |
@@ -85,7 +97,7 @@ the complete result before returning it to the bridge.
 | --- | --- | --- |
 | `Request_cancel_activity` | `Request_cancel_activity` | The sequence is range-checked. |
 | `Schedule_activity` | `Schedule_activity` | Activity ID, type, task queue, argument payloads, timeout policies, optional retry policy, cancellation policy, and eager-execution flag are validated and copied. Defaults are applied by the workflow context before this boundary; the translator never invents them. |
-| `Start_child_workflow` | `Start_child_workflow` | The sequence, child workflow ID and type, one copied input payload, and explicit child-cancellation policy are retained. Namespace, task queue, timeout, retry, header, memo, search-attribute, versioning, and priority options remain Core defaults and non-default values are rejected on reverse conversion. |
+| `Start_child_workflow` | `Start_child_workflow` | The sequence, child workflow ID and type, one copied input payload, explicit child-cancellation policy, and optional retry policy are retained. Retry intervals and coefficient bits are validated before Core conversion. Namespace, task queue, workflow timeouts, close/reuse policies, cron, headers, memo, search attributes, versioning, and priority are not represented by the current OCaml command: Rust sends their Core defaults, and its reverse conversion rejects a non-default Core value instead of silently discarding it. |
 | `Cancel_child_workflow` | `Cancel_child_workflow` | The sequence and validated reason are copied into Core's `CancelChildWorkflowExecution` command. The policy from the matching start command determines whether Core reports immediately or waits for cancellation progress. |
 | `Start_timer` | `Start_timer` | Non-negative milliseconds are split into exact seconds and nanoseconds; no floating-point conversion is used. |
 | `Cancel_timer` | `Cancel_timer` | The sequence is range-checked. |
@@ -137,9 +149,9 @@ is a programmer configuration defect rather than an operational workflow failure
 These errors are a planned compatibility boundary, not a hidden drop path.
 Activity scheduling and child lifecycle translation are enabled because the
 runtime, protocol, and translator carry every field currently exposed by the
-OCaml API. Future child options remain explicit Core defaults until the public
-OCaml surface models them; a non-default Core value is still rejected rather
-than silently discarded.
+OCaml API, including child retry policy. Future child options remain explicit
+Core defaults until the public OCaml surface models them; a non-default Core
+value is still rejected rather than silently discarded.
 
 ## Error and ownership rules
 
@@ -165,12 +177,19 @@ not share those values between Domains and does not expose native pointers.
 ## Verification
 
 `test/runtime/test_native_execution.ml` covers metadata and job ordering,
-initialization retention, activity success/failure/cancellation, child
-start/terminal ordering and failure propagation, timers, eviction, terminal
-completion, duplicate/unknown sequences, payload validation, and explicit
-unsupported commands. These tests run entirely in OCaml. The public native
-worker now invokes this adapter through the owner-Domain supervisor. The live
-Compose gate exercises timer and activity success paths and includes one
-two-public-binary parent/child result path against Temporal Server. Child
-failure, cancellation, retry, replay, and recovery remain deferred scenario
-classes.
+initialization retention, activity success/failure conversion, child
+start/terminal success ordering and duplicate detection, timers, eviction,
+terminal completion, duplicate/unknown sequences, payload validation, and
+command-option validation. These tests exercise the pure translator without a
+Temporal Server. Worker lifecycle behavior is covered separately by
+`test/runtime/test_native_worker_execution.ml`, including lease retirement,
+workflow cancellation/eviction, child-start failure, terminal child failure,
+and retryability. Remote activity cancellation and heartbeat translation have
+their own adapter coverage in `test/runtime/test_native_activity_execution.ml`.
+
+The public native worker invokes this adapter through the owner-Domain
+supervisor. The live Compose gate exercises timer and activity success paths
+and includes one two-public-binary parent/child result path against Temporal
+Server. Child failure, cancellation, retry, replay, and recovery remain
+deferred live acceptance scenarios even though several of their local worker
+paths are already tested.

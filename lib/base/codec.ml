@@ -7,12 +7,32 @@ type 'a t = {
   decode_payload : payload -> ('a, Error.t) result;
 }
 
+(** Finds the optional encoding marker while enforcing the object semantics of
+    payload metadata. The base representation uses a list so unknown entries
+    survive translation, but the JSON wire representation still requires every
+    metadata name to be unique. *)
+let encoding_metadata metadata =
+  let seen = Hashtbl.create 16 in
+  let rec loop encoding = function
+    | [] -> Ok encoding
+    | (key, value) :: rest ->
+        if Hashtbl.mem seen key then
+          Error (Error.codec ~message:"payload metadata contains a duplicate key")
+        else (
+          Hashtbl.add seen key ();
+          loop
+            (if String.equal key "encoding" then Some value else encoding)
+            rest)
+  in
+  loop None metadata
+
 (** Builds a Temporal payload codec from two functions supplied by the caller:
     one that converts an OCaml value to bytes and one that converts bytes back
     to an OCaml value. On encode, it adds [("encoding", encoding)] to the
     payload metadata. On decode, it calls the byte decoder only when the
-    payload contains that exact encoding value; other metadata entries do not
-    affect decoding. *)
+    payload contains that exact encoding value; other unique metadata entries
+    do not affect decoding. Duplicate metadata names are rejected before the
+    callback runs, matching the strict bridge protocol. *)
 let make ~encoding ~encode ~decode =
   let encode_payload value =
     Result.map
@@ -20,15 +40,16 @@ let make ~encoding ~encode ~decode =
       (encode value)
   in
   let decode_payload payload =
-    match List.assoc_opt "encoding" payload.metadata with
-    | Some actual when String.equal actual encoding -> decode payload.data
-    | Some actual ->
+    match encoding_metadata payload.metadata with
+    | Error error -> Error error
+    | Ok (Some actual) when String.equal actual encoding -> decode payload.data
+    | Ok (Some actual) ->
         Error
           (Error.codec
              ~message:
                (Printf.sprintf "expected payload encoding %S, received %S"
                   encoding actual))
-    | None -> Error (Error.codec ~message:"payload has no encoding metadata")
+    | Ok None -> Error (Error.codec ~message:"payload has no encoding metadata")
   in
   { encode_payload; decode_payload }
 
@@ -107,9 +128,10 @@ let option codec =
       | Some value -> encode codec value);
     decode_payload =
       (fun payload ->
-        match List.assoc_opt "encoding" payload.metadata with
-        | Some "binary/null" when Bytes.length payload.data = 0 -> Ok None
-        | Some "binary/null" ->
+        match encoding_metadata payload.metadata with
+        | Error error -> Error error
+        | Ok (Some "binary/null") when Bytes.length payload.data = 0 -> Ok None
+        | Ok (Some "binary/null") ->
             Error (Error.codec ~message:"null payload must be empty")
-        | _ -> Result.map Option.some (decode codec payload));
+        | Ok _ -> Result.map Option.some (decode codec payload));
   }

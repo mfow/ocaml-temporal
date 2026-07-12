@@ -117,6 +117,9 @@ let bounded_message value =
   if not (Temporal_base.Codec.valid_utf_8 value) then fallback
   else if String.length value <= maximum then value
   else
+    (* Back off one byte at a time until the truncated prefix is valid UTF-8;
+       the protocol must never receive a diagnostic split in the middle of a
+       multibyte code point. *)
     let rec prefix length =
       if length <= 0 then fallback
       else
@@ -196,6 +199,9 @@ let failure_of_error (error : error_view) : Protocol.failure =
     than decoded with replacement characters. Both metadata and body bytes are
     copied before a workflow execution can retain them. *)
 let runtime_payload path (payload : Protocol.payload) =
+  (* Validate metadata in input order while accumulating it backwards; the
+     final reversal restores the protocol's declared ordering without a
+     quadratic append. *)
   let rec metadata_loop reversed = function
     | [] -> Ok (List.rev reversed)
     | (key, bytes) :: rest ->
@@ -243,6 +249,8 @@ let decode_input definition arguments =
     registration order-dependent. *)
 let initialization (activation : Protocol.activation) :
     (Native_execution.initialization option, error_view) result =
+  (* Track the first job index as well as the initialization value so a marker
+     that appears after any other job is rejected deterministically. *)
   let rec collect index found = function
     | [] -> (
         match found with
@@ -350,15 +358,32 @@ let find_definition definitions workflow_type =
     functor's abstract type, preserving both the source's abstract type and the
     invariant that all calls pass through the adapter mutex. *)
 module Make (Supervisor : SUPERVISOR) = struct
+  (** Mutable state owned by one adapter instance. [supervisor], [task_queue],
+      and [definitions] are immutable after construction; [runs] and
+      [pending] are changed only while [mutex] is held, so workflow execution
+      state cannot race with completion retries or shutdown draining. *)
   type adapter_state = {
+    (* The opaque source handle. Calls use the same owner-confined supervisor
+       that created this adapter and are made only while [mutex] is held. *)
     supervisor : Supervisor.t;
+    (* Validated default activity queue copied into each new execution context;
+       it is immutable for the lifetime of this worker. *)
     task_queue : string;
+    (* Existential workflow definitions, built and validated before the state
+       record is published. *)
     definitions : registered_definition Run_map.t;
+    (* Active workflow executions keyed by the exact Temporal run ID. A run is
+       removed only after a terminal or failure completion is acknowledged. *)
     mutable runs : run Run_map.t;
+    (* Owned copies of completions whose source acknowledgement failed. The
+       value remains here until the exact same completion is accepted. *)
     mutable pending : pending_completion Run_map.t;
+    (* Serializes all access to [runs], [pending], and the source operation so
+       another Domain cannot overtake an activation or retry a completion. *)
     mutex : Mutex.t;
   }
 
+  (** The public worker handle is the mutex-confined state above. *)
   type t = adapter_state
 
   (** Creates the immutable definition registry and an empty run registry.
@@ -421,6 +446,9 @@ module Make (Supervisor : SUPERVISOR) = struct
       this operation explicit makes the ownership boundary auditable without a
       JSON round trip or an alias to a workflow implementation's buffer. *)
   let copy_completion (completion : Protocol.completion) : Protocol.completion =
+    (* Commands without payload-bearing fields are returned unchanged; every
+       command that can retain mutable bytes is copied before it enters
+       [pending]. *)
     let copy_command = function
       | Protocol.Schedule_activity command ->
           Protocol.Schedule_activity
@@ -733,6 +761,9 @@ module Make (Supervisor : SUPERVISOR) = struct
     Fun.protect
       ~finally:(fun () -> Mutex.unlock adapter.mutex)
       (fun () ->
+        (* [min_binding_opt] gives retries a stable order. The loop stops on
+           the first source error, retaining that completion and every later
+           one for a subsequent drain attempt. *)
         let rec loop () =
           match Run_map.min_binding_opt adapter.pending with
           | None -> Ok ()
@@ -742,6 +773,24 @@ module Make (Supervisor : SUPERVISOR) = struct
               | Error error -> Error error)
         in
         loop ())
+
+  (** Discards OCaml-owned executions and retained completion bytes after the
+      native graph has been force-released by terminal worker shutdown. This
+      path never calls the supervisor: the Rust runtime has already retired its
+      leases, and retrying a copied completion would risk a duplicate. Each
+      execution is explicitly shut down so paused workflow continuations and
+      scheduler state do not wait for a later garbage collection cycle. *)
+  let discard adapter =
+    Mutex.lock adapter.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock adapter.mutex)
+      (fun () ->
+        Run_map.iter
+          (fun _ (Run { execution; _ }) ->
+            (try Execution.shutdown execution with _ -> ()))
+          adapter.runs;
+        adapter.runs <- Run_map.empty;
+        adapter.pending <- Run_map.empty)
 
   (** Serializes one poll/execute/complete transaction. A mutex is required in
       addition to supervisor serialization because the run map and scheduler
@@ -754,6 +803,9 @@ module Make (Supervisor : SUPERVISOR) = struct
         match Run_map.min_binding_opt adapter.pending with
         | Some (_, pending) -> finish_pending adapter pending
         | None ->
+            (* Convert exceptions from the source poll into a typed error
+               before inspecting the result, so the mutex is always released
+               by the surrounding [Fun.protect]. *)
             let polled =
               try Ok (Supervisor.try_poll_workflow adapter.supervisor)
               with exception_ -> Error (exception_error ~path:"$.poll" exception_)

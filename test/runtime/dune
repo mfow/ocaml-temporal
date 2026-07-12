@@ -4,6 +4,8 @@
   test_native_execution
   test_native_activity_execution
   test_native_activity_lifecycle
+  test_native_worker_loop
+  test_native_worker_policy
   test_native_worker_lifecycle
   test_native_worker_execution
   test_scheduler

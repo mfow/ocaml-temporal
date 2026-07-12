@@ -3,30 +3,53 @@
 (** The client state is intentionally opaque in the public interface. A single
     backend value owns all native resources for this SDK instance. *)
 type t = {
+  (* The backend owns the transport and native supervisor graph; no other
+     client field retains a native handle. *)
   backend : Backend.client;
+  (* Set before teardown begins so new operations fail without entering the
+     backend after the lifecycle transition has been admitted. *)
   closed : bool Atomic.t;
+  (* Serializes the first teardown with later callers that need the cached
+     result, while backend shutdown itself remains outside public state. *)
   shutdown_mutex : Mutex.t;
+  (* The first shutdown outcome is retained so every caller observes the same
+     terminal result, including a native teardown error. *)
   mutable shutdown_result : (unit, Error.t) result option;
 }
 
 (** A handle retains the definition codecs and exact execution identity. *)
 type ('input, 'output) handle = {
+  (* The owning client keeps the backend alive for all operations on this
+     handle; shutdown is still explicit and invalidates future calls. *)
   client : t;
+  (* The workflow definition supplies the output codec used by [wait] and the
+     name used when [start] builds the backend request. *)
   workflow : ('input, 'output) Workflow.t;
+  (* The durable ID selected by the caller and echoed by the start response. *)
   workflow_id : string;
+  (* The exact server run ID returned by Temporal; waits never follow a
+     continued-as-new successor implicitly. *)
   run_id : string;
 }
 
 (** Terminal outcomes mirror the backend while replacing payload bytes with the
     definition's typed output. *)
 type 'output terminal_result =
+  (* The terminal payload decoded with the workflow definition's output codec. *)
   | Completed of 'output
+  (* Temporal reported a workflow failure as a typed terminal value. *)
   | Failed of Error.t
+  (* The exact run accepted a cancellation request and reached cancellation. *)
   | Cancelled of Error.t
+  (* The exact run was terminated by an operator or another Temporal client. *)
   | Terminated of Error.t
+  (* The exact run reached a Temporal timeout terminal state. *)
   | Timed_out of Error.t
+  (* The run continued as a new execution; callers choose whether to follow it. *)
   | Continued_as_new of {
+      (* Durable workflow identity of the successor execution. *)
       workflow_id : string;
+      (* Server-issued run identity of the successor execution. *)
       run_id : string;
     }
 
@@ -34,10 +57,17 @@ type 'output terminal_result =
     randomness, which keeps client construction straightforward in tests. *)
 let default_identity = "ocaml-temporal-client"
 
-(** Rejects empty strings and NUL bytes before they can enter a backend request. *)
+(** Rejects empty, oversized, or NUL-containing identifiers before they can
+    enter a backend request. The 65,536-byte bound is shared by the JSON
+    protocol and native bridge, so mock and native transports reject the same
+    malformed operation rather than diverging at their respective boundaries. *)
 let validate_name field value =
   if String.equal value "" then
     Error (Error.defect ~message:(field ^ " must not be empty"))
+  else if String.length value > 65_536 then
+    Error
+      (Error.defect
+         ~message:(field ^ " exceeds the protocol string safety limit"))
   else if String.contains value '\000' then
     Error (Error.defect ~message:(field ^ " must not contain NUL"))
   else Ok ()
@@ -64,11 +94,11 @@ let create ?(identity = default_identity) ~target_url ~namespace () =
               })
             (Backend.client_create config))
 
-(** Validates the optional Temporal idempotency key, durable workflow ID, and
-    task queue before encoding input or constructing a native request. Keeping
-    these checks here makes malformed caller input a typed result and prevents
-    it from crossing the supervisor boundary. *)
-let validate_start_fields ~request_id ~id ~task_queue =
+(** Validates the optional Temporal idempotency key, workflow type, durable
+    workflow ID, and task queue before encoding input or constructing a native
+    request. Keeping these checks here makes malformed caller input a typed
+    result and prevents it from crossing the supervisor boundary. *)
+let validate_start_fields ~request_id ~workflow_name ~id ~task_queue =
   let request_result =
     match request_id with
     | None -> Ok ()
@@ -77,9 +107,12 @@ let validate_start_fields ~request_id ~id ~task_queue =
   match request_result with
   | Error _ as error -> error
   | Ok () -> (
-      match validate_name "workflow id" id with
+      match validate_name "workflow type" workflow_name with
       | Error _ as error -> error
-      | Ok () -> validate_name "task queue" task_queue)
+      | Ok () -> (
+          match validate_name "workflow id" id with
+          | Error _ as error -> error
+          | Ok () -> validate_name "task queue" task_queue))
 
 (** Starts a workflow after encoding its typed input and checking the backend's
     response still refers to the request. The response check prevents an
@@ -89,7 +122,10 @@ let start client ?request_id ~workflow ~task_queue ~id ~input () =
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
   else
-    match validate_start_fields ~request_id ~id ~task_queue with
+    match
+      validate_start_fields ~request_id ~workflow_name:(Workflow.name workflow)
+        ~id ~task_queue
+    with
     | Error error -> Error error
     | Ok () -> (
         match Codec.encode (Workflow.input workflow) input with
@@ -211,6 +247,8 @@ let run_id handle = handle.run_id
     invalidated, so the atomic state transition cannot hide a live resource. *)
 let shutdown client =
   Mutex.lock client.shutdown_mutex;
+  (* [Fun.protect] is the single release path so a concurrent caller cannot be
+     left waiting if backend teardown raises before it can return a result. *)
   Fun.protect
     ~finally:(fun () -> Mutex.unlock client.shutdown_mutex)
     (fun () ->

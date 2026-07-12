@@ -4,7 +4,7 @@ set -eu
 # This test deliberately inspects Compose's normalized model instead of the
 # source YAML. That catches invalid interpolation and dependency/profile
 # combinations before the much slower live integration smoke pulls images.
-root=${1:-$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)}
+root=${1:-$(CDPATH="" cd -- "$(dirname "$0")/../.." && pwd)}
 fixture="$root/test/integration/temporal"
 compose_file="$fixture/compose.yaml"
 rendered=$(mktemp)
@@ -41,8 +41,16 @@ require_text '--build-dir=/workspace/_build/smoke-worker'
 require_text '--build-dir=/workspace/_build/smoke-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "120"'
 require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready'
+require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
 require_text '--kill-after=10s'
-require_text 'user: 1000:1000'
+expected_uid=${HOST_UID:-1000}
+expected_gid=${HOST_GID:-1000}
+if ! grep -F -- "user: ${expected_uid}:${expected_gid}" "$rendered" >/dev/null \
+  && ! grep -F -- "user: \"${expected_uid}:${expected_gid}\"" "$rendered" >/dev/null; then
+  echo "normalized Compose model is missing the configured service user: \
+${expected_uid}:${expected_gid}" >&2
+  exit 1
+fi
 if ! grep -F 'user: "${HOST_UID:-1000}:${HOST_GID:-1000}"' "$compose_file" >/dev/null; then
   echo "smoke services must inherit the invoking host UID/GID" >&2
   exit 1
@@ -52,17 +60,18 @@ require_text 'test -s /tmp/ocaml-temporal-two-binary-worker.ready'
 require_text 'stop_grace_period: 30s'
 
 # The two-binary fixture must keep the heartbeat scenario in the shared
-# definitions module. These source-level assertions are intentionally small:
-# they catch an accidentally removed registration or driver assertion without
-# requiring Docker, Temporal Server, or a built native bridge. The actual
-# payload/detail and timeout semantics remain covered by the OCaml and Rust
-# protocol/runtime tests and by the live Compose job when its environment is
-# available.
+# definitions module and must preserve the two process roles. These
+# source-level assertions are intentionally small: they catch an accidentally
+# removed registration, client assertion, worker loop, or executable definition
+# without requiring Docker, Temporal Server, or a built native bridge. The
+# actual payload/detail and timeout semantics remain covered by the OCaml and
+# Rust protocol/runtime tests and by the live Compose job when its environment
+# is available.
 require_source_text() {
   path=$1
   needle=$2
   if ! grep -F -- "$needle" "$path" >/dev/null; then
-    echo "activity heartbeat acceptance source is missing: $needle ($path)" >&2
+    echo "two-binary acceptance source is missing: $needle ($path)" >&2
     exit 1
   fi
 }
@@ -70,6 +79,32 @@ require_source_text() {
 definitions="$fixture/common/smoke_definitions.ml"
 driver="$fixture/driver/smoke_driver.ml"
 worker="$fixture/worker/smoke_worker.ml"
+driver_dune="$fixture/driver/dune"
+worker_dune="$fixture/worker/dune"
+
+# The driver is an independent OCaml test client. It must use the public
+# client operations to start, cancel, and await exact workflow executions;
+# merely sharing workflow definitions or naming a second executable would not
+# prove that it exercises the server as a client process.
+require_source_text "$driver_dune" '(name smoke_driver)'
+require_source_text "$driver_dune" 'temporal_two_binary_smoke_common'
+require_source_text "$driver" 'module Client = Temporal.Client'
+require_source_text "$driver" 'Client.start client ~workflow'
+require_source_text "$driver" 'Client.cancel ~request_id:'
+require_source_text "$driver" 'Client.wait handle'
+
+# The worker is the separate implementation process. Its source must create
+# the public Worker, register the shared definitions, run the native loop, and
+# shut it down; a client-only executable cannot satisfy this contract.
+require_source_text "$worker_dune" '(name smoke_worker)'
+require_source_text "$worker_dune" 'temporal_two_binary_smoke_common'
+require_source_text "$worker" 'module Worker = Temporal.Worker'
+require_source_text "$worker" 'Worker.create ~target_url ~namespace'
+require_source_text "$worker" 'Worker.run worker'
+require_source_text "$worker" 'Worker.shutdown worker'
+require_source_text "$worker" 'let publish_stopped path'
+require_source_text "$worker" 'publish_stopped stopped_file'
+
 require_source_text "$definitions" 'Temporal.Activity.define_with_context ~name:"smoke.heartbeat_retry"'
 require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat_timeout'
 require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat context'
@@ -84,7 +119,11 @@ if ! grep -F 'temporal workflow describe' "$makefile" >/dev/null; then
   echo "failure diagnostics must use the official Temporal CLI workflow describe command" >&2
   exit 1
 fi
-for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-two-binary test-temporal-integration; do
+if ! grep -F 'up --force-recreate --detach --build --wait smoke-worker' "$makefile" >/dev/null; then
+  echo "worker startup must recreate the container before relying on its /tmp readiness marker" >&2
+  exit 1
+fi
+for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration; do
   if ! grep -E "^${target}:" "$makefile" >/dev/null; then
     echo "Makefile does not define required target: $target" >&2
     exit 1

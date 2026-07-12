@@ -26,6 +26,8 @@ let expect_error category = function
 let contains_substring source needle =
   let source_length = String.length source in
   let needle_length = String.length needle in
+  (* The bounded scan avoids depending on a newer String helper while making
+     the assertion stable across the supported OCaml versions. *)
   let rec search index =
     if index + needle_length > source_length then false
     else if String.sub source index needle_length = needle then true
@@ -78,6 +80,8 @@ let failing_workflow =
     ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
       Error (Temporal.Error.defect ~message:"synthetic workflow failure"))
 
+(** Activity counterpart to [failing_workflow], used to check that an activity
+    failure is acknowledged and does not stop later task dispatch. *)
 let failing_activity =
   Temporal.Activity.define ~name:"unit.failing-activity"
     ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
@@ -275,6 +279,31 @@ let test_client_validation_errors () =
     (Temporal.Client.cancel ~reason:"contains\000nul" handle);
   unwrap (Temporal.Client.shutdown client)
 
+(** Identifier limits are enforced before transport selection. This keeps the
+    deterministic mock honest about the native JSON bridge's 65,536-byte
+    bound, so an oversized workflow ID or cancellation request cannot pass
+    tests locally and fail only after switching to HTTP(S). Definition names
+    use the same bound at construction time and are covered by
+    [test_definition]. *)
+let test_client_identifier_size_validation () =
+  let oversized = String.make 65_537 'x' in
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  expect_error "defect"
+    (Temporal.Client.start client ~workflow:echo_workflow
+       ~task_queue:"unit-test" ~id:oversized ~input:"ignored" ());
+  let handle =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"bounded-cancel" ~input:"ignored" ())
+  in
+  expect_error "defect"
+    (Temporal.Client.cancel ~request_id:oversized handle);
+  unwrap (Temporal.Client.shutdown client)
+
 (** An HTTP-shaped endpoint is deliberately handed to the native configuration
     validator rather than the deterministic mock. The malformed host fails
     before a runtime or network connection is allocated, proving the public
@@ -301,6 +330,7 @@ let test_native_worker_configuration_boundary () =
        ~namespace:"unit-test" ~task_queue:"unit-test" ~workflows:[]
        ~activities:[] ())
 
+(** Runs all public worker and client regression assertions. *)
 let () =
   test_duplicate_workflows ();
   test_duplicate_activities ();
@@ -311,6 +341,7 @@ let () =
   test_exact_run_cancellation ();
   test_completed_mock_run_is_immutable ();
   test_client_validation_errors ();
+  test_client_identifier_size_validation ();
   test_native_client_configuration_boundary ();
   test_worker_validation_errors ();
   test_native_worker_configuration_boundary ()

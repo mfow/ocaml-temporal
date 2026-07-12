@@ -6,6 +6,13 @@ boundary, not an API that workflow authors need to construct. Rust owns the
 Temporal connection and protobuf types; OCaml owns the typed records and the
 decision about how a workflow result is exposed.
 
+The public `Temporal.Client` module does not expose these JSON documents,
+start tickets, or native status codes. On an HTTP(S) client, `start` returns a
+typed exact-run handle, `wait` hides the bounded polling loop and returns a
+typed terminal value, and `cancel` returns after Temporal acknowledges the
+request. The sections below describe the private steps that make those public
+operations safe.
+
 ## Why this protocol exists
 
 Temporal Core is Rust code and the final executable is an OCaml executable.
@@ -67,6 +74,12 @@ ID for that call. The resulting protocol request is created once and reused by
 the bounded ticket polls, so polling does not accidentally change the
 idempotency key. A request ID identifies one logical start and must not be
 reused for unrelated workflow starts.
+
+The direct `start_workflow_json` ABI can return the successful response shown
+above, but the public HTTP(S) client uses the asynchronous ticket path. It
+begins the request, waits for the ticket to become terminal, and converts the
+accepted execution into the typed handle; rejected and unknown outcomes become
+typed `Error.t` results. The ticket never leaves the private supervisor.
 
 On success Rust returns:
 
@@ -156,6 +169,9 @@ cannot accidentally target a continued-as-new successor or another execution
 with the same workflow ID. `request_id` is the Temporal idempotency key for the
 logical cancellation operation. If a transport timeout leaves the outcome
 uncertain, the caller should retry with the same request ID and exact handle.
+If the public `Temporal.Client.cancel` caller omits `request_id`, OCaml derives
+a deterministic ID from that handle's workflow ID and run ID, so repeated
+attempts for the same exact handle still identify one logical cancellation.
 The optional `reason` is copied as operator context and may be empty; it is
 bounded and NUL-free like all bridge strings.
 
@@ -181,6 +197,12 @@ and
 [`client-cancel-response.schema.json`](../schemas/bridge/client-cancel-response.schema.json).
 Both OCaml and Rust validate every field, reject unknown/duplicate members,
 and validate the positive acknowledgement before it crosses the FFI boundary.
+The exact-run cancellation path is covered by local mock, supervisor, OCaml
+bridge, and Rust protocol tests. The live driver contains the same scenario,
+but the available green live evidence covers the baseline start and wait paths;
+cancellation remains local-only until that scenario completes successfully
+against a real Temporal Server. See the [live acceptance coverage](live-acceptance-coverage.md)
+for the evidence boundary.
 
 ## Wait for one exact run
 
@@ -200,7 +222,15 @@ history long poll with the equivalent of `follow_runs = false`, bounded to
 `STATUS_NOT_READY` and no response object; the caller or a later orchestration
 loop can retry the same request through its mailbox. A timeout is therefore a
 pending observation, not a workflow failure. A terminal response always names
-the exact run requested:
+the exact run requested.
+
+The public `Temporal.Client.wait handle` performs that retry loop internally:
+it resubmits the same exact-run request after each bounded `NOT_READY` result
+and yields the calling Domain between attempts. Code using the private bridge
+directly may handle the status itself, but ordinary client callers receive only
+a terminal `Ok` value or an outer typed `Error.t`.
+
+For example, a terminal response has this shape:
 
 ```json
 {
@@ -269,6 +299,11 @@ code, JSON path, and safe message. Payload bytes and raw input documents never
 appear in that view. Public API conversion is a later layer; this private
 codec does not decide whether a workflow failure is retryable.
 
+At the public boundary, a bridge or codec problem is the outer `Error.t` from
+`Client.start`, `Client.wait`, or `Client.cancel`. A workflow that reached a
+Temporal terminal state instead remains inside the successful result: for
+example, `Client.wait` returns `Ok (Failed error)` or `Ok (Cancelled error)`.
+
 ## Validation and ownership checklist
 
 Both implementations validate their own outgoing representation and strictly
@@ -282,8 +317,12 @@ decode incoming data. In particular, they reject:
 - status or protocol error codes outside the documented vocabulary.
 
 The OCaml codec tests live in
-`test/bridge/test_ocaml_client_protocol.ml`; Rust tests live beside
-`rust/core-bridge/src/client_protocol.rs`. The machine-readable schemas are
+[`test/bridge/test_ocaml_client_protocol.ml`](../../test/bridge/test_ocaml_client_protocol.ml).
+Rust protocol unit tests live beside
+[`rust/core-bridge/src/client_protocol.rs`](../../rust/core-bridge/src/client_protocol.rs),
+and ABI-level client tests live in
+[`rust/core-bridge/tests/client_bridge.rs`](../../rust/core-bridge/tests/client_bridge.rs).
+The machine-readable schemas are
 normative documentation for the object shapes, while runtime checks remain
 authoritative for duplicate keys, byte limits, and cross-field invariants.
 
@@ -291,8 +330,10 @@ The current milestone wires these messages through private OCaml/C/Rust
 bindings and the single-owner supervisor. Public `Temporal.Client` uses this
 native path for `http://` and `https://` targets, including asynchronous start
 and exact-run wait. The deterministic `mock://` transport remains available
-only as a private unit-test seam. A live two-binary Compose gate now exercises
-native client starts and exact-run waits while a public worker polls and
-dispatches the first success scenarios. Its boundary and remaining cases are
-tracked in the
+only as a private unit-test seam. A historical green two-binary Compose run
+exercises native client starts and exact-run waits while a public worker polls
+and dispatches the first success scenarios. The current driver also contains
+heartbeat-detail retry and exact-run cancellation assertions, but those paths
+are locally covered rather than live evidence until a run completes
+successfully. The boundary and remaining cases are tracked in the
 [`two-OCaml-binary acceptance design`](two-ocaml-binary-e2e-acceptance.md).

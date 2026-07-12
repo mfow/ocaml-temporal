@@ -543,6 +543,7 @@ let test_activity_command_translation_and_validation () =
               id = "child/1";
               name = "child";
               input;
+              retry_policy = None;
               cancellation_type = Activation.Child_abandon;
             }))
   with
@@ -552,6 +553,7 @@ let test_activity_command_translation_and_validation () =
         workflow_id = "child/1";
         workflow_type = "child";
         input = [ child_input ];
+        retry_policy = None;
         cancellation_type = Protocol.Child_abandon;
       }
     when child_input =
@@ -582,7 +584,17 @@ let test_activity_command_translation_and_validation () =
   in
   expect_error_code "binary metadata" "invalid_message"
     (Native_execution.command_to_protocol
-       (Activation.Complete_workflow invalid_metadata))
+       (Activation.Complete_workflow invalid_metadata));
+  let duplicate_metadata : Temporal_base.Codec.payload =
+    {
+      Temporal_base.Payload.metadata =
+        [ ("encoding", "binary/plain"); ("encoding", "binary/plain") ];
+      data = Bytes.of_string "payload";
+    }
+  in
+  (match Temporal_base.Codec.decode Temporal_base.Codec.bytes duplicate_metadata with
+  | Error _ -> ()
+  | Ok _ -> failwith "base codec accepted duplicate payload metadata")
 
 (** Duplicate sequence numbers in one protocol activation are rejected before an
     execution can be mutated. *)

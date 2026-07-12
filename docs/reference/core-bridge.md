@@ -16,10 +16,11 @@ background threads.
 ABI version 1 uses only symbols beginning with `ocaml_temporal_core_v1_`.
 Before using the bridge, OCaml asks Rust which ABI version it implements and
 checks that it matches `OCAML_TEMPORAL_CORE_ABI_VERSION`. The bridge represents
-the Rust runtime, and will represent server connections and workers, with
-opaque handles. “Opaque” means OCaml can pass a handle back to Rust but cannot
-inspect the Rust object it refers to. A connection handle is only one internal
-part of the SDK; the public package is not merely a service client.
+the Rust runtime with one opaque handle. Client connection and worker state are
+subordinate Rust-owned state in that runtime; they are not separate handles
+passed through the C ABI. “Opaque” means OCaml can pass the runtime handle back
+to Rust but cannot inspect the Rust object it refers to. A connection is only
+one internal part of the SDK; the public package is not merely a service client.
 
 The canonical header is
 `rust/core-bridge/include/ocaml_temporal_core.h`. Both Rust and C compile-time
@@ -68,15 +69,54 @@ terminal result only after that start acknowledgment. No field is silently
 dropped.
 See the translation reference for the complete mapping table and test coverage.
 
+## Private replay worker plumbing
+
+`rust/core-bridge/src/replay_bridge.rs` contains the first bounded replay slice.
+It is Rust-internal and is not a public C symbol or an OCaml workflow API. A
+caller supplies one strict JSON document per recorded history; Rust decodes
+the canonical base64 `History` protobuf, validates it with Core's
+`HistoryInfo`, and constructs `HistoryForReplay`. Temporal Core then owns the
+replay state machine and produces the same workflow activations it would
+produce while replaying server history.
+
+The document shape is defined by
+[`replay-history.schema.json`](../schemas/bridge/replay-history.schema.json)
+and explained in the [replay bridge reference](replay-bridge.md). Runtime
+validation is stricter than the schema: duplicate and unknown members,
+non-canonical base64, oversized values, malformed protobuf, and histories that
+violate Core event invariants are rejected before the feeder sees them.
+
+`ReplayWorker` owns a Core workflow-only worker and a one-slot
+`HistoryFeeder`. The one-slot bound preserves FIFO ordering and applies
+backpressure instead of accumulating histories in an unbounded native queue.
+Dropping the feeder closes input. A normal finalization is allowed only after
+the caller has completed every activation and observed the workflow lane's
+natural `Shutdown`; this avoids cancelling a queued history while reporting
+success. If that precondition is not met, the typed error retains the worker
+for another drain attempt. The explicit `dispose` path is destructive: it
+initiates shutdown, force-completes unfinished work, joins the lane, and
+attempts Core finalization twice. If both terminal attempts fail, it returns
+the still-owned worker with a typed `Finalization` error so the caller can
+retry after releasing a competing owner; it never silently drops an
+unfinalized native graph. The replay path owns no OCaml pointer or callback
+and starts no activity poller. Its focused Rust tests are kept in
+`rust/core-bridge/tests/support/replay_bridge.rs` so production and test code
+remain separate.
+
+This plumbing is unit-tested native evidence only. The public C/OCaml replay
+operation and the two-generation Docker Compose restart test remain deferred;
+the latter must prove the exact run, replay marker, terminal result, and fresh
+PostgreSQL-volume cleanup before replay is called live-supported.
+
 ## Native client start and exact-run wait
 
-The private Rust client adapter adds two JSON ABI operations:
-`ocaml_temporal_core_v1_client_start_workflow_json` and
-`ocaml_temporal_core_v1_client_wait_workflow_json`. They are deliberately
-lower-level than the public OCaml `Client` module. The adapter uses Core's raw
-`WorkflowService` trait because workflow type names and payloads are dynamic at
-the OCaml boundary; it does not instantiate Rust's statically typed workflow
-definitions.
+The private Rust client adapter exposes strict JSON operations for synchronous
+workflow starts, asynchronous start admission and bounded ticket
+polling/waiting, exact-run waits, and exact-run cancellation. The operations
+are deliberately lower-level than the public OCaml `Client` module. The
+adapter uses Core's raw `WorkflowService` trait because workflow type names and
+payloads are dynamic at the OCaml boundary; it does not instantiate Rust's
+statically typed workflow definitions.
 
 The start request contains the stable idempotency key `request_id`,
 `namespace`, `workflow_id`, `workflow_type`, `task_queue`, and an ordered
@@ -127,7 +167,7 @@ status text, endpoint details, task identifiers, and payload data cannot cross
 the Rust/C/OCaml boundary. This is intentionally a discard, not a redacted
 copy: the current logging policy does not expose those private diagnostics.
 
-All client identifiers are nonempty and NUL-free. The schemas state the
+All client-operation identifiers are nonempty and NUL-free. The schemas state the
 65,536-character necessary bound, while the bilateral runtime validators apply
 the authoritative 65,536-byte UTF-8 limit, reject duplicate members, and
 reparse encoded output. JSON Schema counts Unicode characters rather than
@@ -136,14 +176,17 @@ checks.
 
 ## Result and buffer ownership
 
-Every fallible operation accepts a writable result pointer and returns the same
-status stored in that result. Status zero is success. Nonzero statuses describe
-invalid arguments, ABI mismatch, a contained Rust panic, an invalid lifecycle
-transition, a worker failure, or a semantic protocol failure. Worker polling
-and exact-run client waits use the expected `NOT_READY` status. For a worker
-lane it means no task is queued; for a client wait it means the 100 ms history
-wait elapsed before a close event. In both cases the caller or a later
-orchestration loop can retry through the supervisor mailbox.
+Every fallible operation that returns a result document accepts a writable
+result pointer and returns the same status stored in that result. Runtime
+close/dispose and result disposal have no result document and return their
+status directly. Status zero is success. Nonzero statuses cover invalid
+arguments, ABI mismatch, a contained Rust panic, internal bridge failure,
+invalid lifecycle state, configuration, connection, worker, outstanding-task,
+not-ready, protocol, and already-started failures. Worker polling and exact-run
+client waits use the expected `NOT_READY` status. For a worker lane it means no
+task is queued; for a client wait it means the 100 ms history wait elapsed
+before a close event. In both cases the caller or a later orchestration loop
+can retry through the supervisor mailbox.
 `OUTSTANDING_TASKS` means shutdown cannot finalize until the language side
 completes leased work.
 
@@ -224,12 +267,15 @@ again; callers never supply a guessed run ID or task token. A workflow document
 must equal the complete semantic activation retained at handoff. An activity
 document must equal one complete semantic task retained under its canonical
 opaque token; cancellation updates using the same token are retained alongside
-the earlier task rather than overwriting it. Those documents still represent
-one ledger obligation per token, so successful completion or rejection retires
-that obligation and clears every retained document for the token. Changed identity or content is a
-protocol failure and cannot retire the real lease. The malformed-byte case is
-defensive: successful Rust poll encoding cannot produce malformed JSON, but
-both language decoders and both rejection entry points still validate it.
+the earlier task rather than overwriting it. A rejected Start owns the one
+ledger obligation for that token, so its rejection reports a bridge failure to
+Core and clears every retained document for the token. A rejected Cancel is
+only a malformed or unsupported update; Rust drops that one retained document
+without touching the Start's native lease, allowing the original activity
+owner to complete normally. Changed identity or content is a protocol failure
+and cannot retire the real lease. The malformed-byte case is defensive:
+successful Rust poll encoding cannot produce malformed JSON, but both language
+decoders and both rejection entry points still validate it.
 
 `Sdk_supervisor.Native` is the private OCaml adapter for these ABI version 1
 operations. It exposes a typed GADT rather than raw JSON bytes:
@@ -280,8 +326,10 @@ stable ABI.
 
 ## Stateful handle ownership
 
-The reserved runtime, client, and worker handles are opaque references to
-Rust-owned SDK state, not OS handles and not public OCaml values:
+The reserved runtime, client, and worker types are opaque references to
+Rust-owned SDK state, not OS handles and not public OCaml values. Only the
+runtime pointer crosses the current C ABI; client and worker state are fields
+within that Rust runtime:
 
 - a runtime owns Tokio and shared Core infrastructure;
 - a client owns one cluster connection and its authentication/configuration;
@@ -363,29 +411,37 @@ There is one deliberate pre-handoff exception. If a leased Core value cannot
 be converted to the closed semantic JSON protocol, OCaml never receives its
 run ID or task token and therefore cannot complete it. Rust generates exactly
 one workflow-task or activity failure for Core and retires the inaccessible
-lease on every outcome. A rejected generated completion remains a fatal worker
-error, but it cannot also leave a fabricated language-side debt that blocks
-shutdown forever. Regression tests cover this rule independently for workflow
-and activity conversion failures.
+lease on every outcome. For an activity cancellation, however, the task is an
+update to a previously leased Start and does not own another completion debt;
+an unrepresentable cancellation is dropped without completing the shared
+token. A rejected generated completion remains a fatal worker error, but it
+cannot also leave a fabricated language-side debt that blocks shutdown
+forever. Regression tests cover this rule independently for workflow and
+activity conversion failures, including the cancellation classification.
 
 There is also a post-handoff decode-failure path for version or implementation
 drift between the two strict decoders. OCaml preserves its original protocol
 error, returns the exact Rust-produced bytes to the private rejection ABI, and
 never reflects those bytes in diagnostics. Rust accepts rejection only after
-full semantic equality with retained handoff state. It then generates the Core
-failure and retires both the ledger debt and retained semantic state even if
-Core reports that generated failure as unsuccessful. This prevents shutdown
-from waiting forever while keeping the original decode failure primary.
+full semantic equality with retained handoff state. For a Start, it then
+generates the Core failure and retires both the ledger debt and retained
+semantic state even if Core reports that generated failure as unsuccessful.
+For a Cancel update, it retires only that retained semantic state: the shared
+Start debt remains owned by the activity implementation. This prevents
+shutdown from waiting forever without turning a malformed cancellation into a
+spurious `UnknownActivity` completion failure, while keeping the original
+decode failure primary.
 
 Shutdown first closes ledger admission and both readiness signals, then asks
 Core to wake both polls and joins the lane tasks. Existing ready and leased
 work remains completable while the worker drains. Core finalization is refused
 until the ledger is empty, and only then consumes the worker before client and
-runtime destruction. The
-garbage-collection fallback cannot obtain missing language completions; after
-waking and joining the lanes it force-drops an undrained worker on the dedicated
-cleanup thread. This preserves memory ownership and collector progress, while
-explicit supervisor shutdown remains the required graceful path.
+runtime destruction. The garbage-collection fallback cannot obtain missing
+language completions. On the dedicated cleanup thread it force-fails
+outstanding Core tasks, joins the poll lanes, and attempts normal finalization;
+it drops an undrained worker only if finalization still fails. This preserves
+memory ownership and collector progress, while explicit supervisor shutdown
+remains the required graceful path.
 
 ### Runtime destruction
 

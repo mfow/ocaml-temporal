@@ -44,11 +44,31 @@ module type SUPERVISOR = sig
   val error_message : error -> string
   (** Stable diagnostic for a native failure. Implementations must not include
       payload bytes, credentials, opaque task tokens, or unbounded text. *)
+
+  val error_is_retryable : error -> bool
+  (** Classifies a native failure without inspecting free-form text. [true]
+      means the completion lease is still owned by this adapter and the caller
+      may retry the same completion after a bounded wait. Permanent, protocol,
+      configuration, and lifecycle failures must return [false]. *)
+
+  val exception_is_retryable : exn -> bool
+  (** Classifies an exception raised by the completion call. Production
+      supervisors should return [false] unless they define a private,
+      explicitly transient exception category; unexpected owner-domain defects
+      must remain fatal. *)
 end
 
-type error_view = { code : string; path : string; message : string }
+type error_view = {
+  code : string;
+  path : string;
+  message : string;
+  retryable : bool;
+}
 (** Privacy-safe diagnostic returned by the private adapter and suitable for
-    logging. Opaque task-token bytes never appear in this record. *)
+    logging. Opaque task-token bytes never appear in this record. [retryable]
+    is a source classification, not a request to rerun user code: it is only
+    used for a retained completion or another operation that has no leased
+    token yet. *)
 
 type registered_activity
 (** One heterogeneous, executable activity registration. The existential
@@ -94,12 +114,22 @@ module Make (Supervisor : SUPERVISOR) : sig
   (** Polls at most one task. A pending completion from an earlier native
       rejection is retried before polling a new task, so an activity is never
       executed twice merely because its completion transport was unavailable.
-      [Ok Not_ready] means the native poll had no ready task. *)
+      [Ok Not_ready] means the native poll had no ready task. A retryable
+      [Error] retains the exact completion and can be retried by the worker
+      loop; a non-retryable [Error] is fatal for this worker instance. *)
 
   (** Retries every retained completion while the adapter mutex is held. [Ok ()]
-      proves that no opaque activity lease remains in this adapter; [Error _]
-      leaves the exact completion retained so shutdown must remain retryable. *)
+      proves that no opaque activity lease remains in this adapter. [Error _]
+      leaves the exact completion retained. The caller must either retry it
+      after an explicitly safe transient classification or force-retire the
+      native graph and then call [discard] on a terminal path; it must never
+      silently drop the token while Rust still owns it. *)
   val drain : t -> (unit, error_view) result
+
+  (** Discards copied completion leases after terminal native cleanup. This is
+      irreversible and must be called only after the supervisor has
+      force-retired its native task-token leases; it never attempts a retry. *)
+  val discard : t -> unit
 end
 
 val register :

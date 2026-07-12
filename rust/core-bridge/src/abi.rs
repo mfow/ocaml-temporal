@@ -15,7 +15,10 @@ use std::sync::mpsc::{
 };
 use std::time::Duration;
 use temporalio_client::{Connection, ConnectionOptions};
-use temporalio_common::protos::coresdk::ActivityHeartbeat as CoreActivityHeartbeat;
+use temporalio_common::protos::coresdk::{
+    ActivityHeartbeat as CoreActivityHeartbeat,
+    activity_task::{self, ActivityTask as CoreActivityTask},
+};
 use temporalio_sdk_core::{
     CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, WorkerConfig,
     WorkerVersioningStrategy,
@@ -56,6 +59,13 @@ pub const STATUS_PROTOCOL: Status = 11;
 /// Temporal rejected a workflow start because the workflow ID is already in
 /// use; the error buffer contains a closed client-error JSON document.
 pub const STATUS_ALREADY_STARTED: Status = 12;
+/// An explicitly transient activity-completion transport failure.
+///
+/// This status is reserved for a Core/client implementation that can prove
+/// the completion was not consumed. The pinned Core revision currently
+/// suppresses those network outcomes, so the production bridge fails closed
+/// rather than emitting this status speculatively.
+pub const STATUS_RETRYABLE: Status = 13;
 
 /// Maximum accepted lifecycle configuration document size.
 const MAX_LIFECYCLE_CONFIG_BYTES: usize = 64 * 1024;
@@ -927,7 +937,7 @@ impl Runtime {
         let semantic = match activity_protocol::task_from_core(&task) {
             Ok(semantic) => semantic,
             Err(error) => {
-                self.reject_activity_delivery(&task.task_token)?;
+                self.reject_unrepresentable_activity(&task)?;
                 return Err(core_conversion_failure(error));
             }
         };
@@ -937,9 +947,27 @@ impl Runtime {
                 Ok(encoded.into_bytes())
             }
             Err(error) => {
-                self.reject_activity_delivery(&task.task_token)?;
+                self.reject_unrepresentable_activity(&task)?;
                 Err(protocol_failure(error))
             }
+        }
+    }
+
+    /// Rejects an activity task that cannot cross the semantic protocol.
+    ///
+    /// Core's Start variant owns the activity's single completion debt and
+    /// must be failed so an unrepresentable task cannot block shutdown. A
+    /// Cancel variant is only an update to that Start; it has no independent
+    /// completion to fail, so dropping a malformed update preserves the
+    /// in-flight Start lease for the activity implementation.
+    fn reject_unrepresentable_activity(
+        &self,
+        task: &CoreActivityTask,
+    ) -> std::result::Result<(), Failure> {
+        if activity_task_owns_completion_debt(task) {
+            self.reject_activity_delivery(&task.task_token)
+        } else {
+            Ok(())
         }
     }
 
@@ -964,6 +992,24 @@ impl Runtime {
             }),
             ReadinessWait::Error(error) => Err(poll_lane_failure(error)),
         }
+    }
+
+    /// Applies the fixed native backoff used only after an explicitly
+    /// retryable activity-completion outcome.
+    ///
+    /// The delay executes on the supervisor owner Domain and is called through
+    /// a C stub that releases the OCaml runtime lock. It therefore cannot block
+    /// a workflow effect scheduler, and its fixed duration keeps shutdown
+    /// admission bounded.
+    fn wait_activity_completion_retry_backoff(&self) -> Operation {
+        let Some(worker) = self.worker.as_ref() else {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal worker is not running".to_owned(),
+            });
+        };
+        worker.wait_activity_completion_retry_backoff();
+        Ok(Vec::new())
     }
 
     /// Fails and retires a workflow activation that was never exposed to OCaml.
@@ -1063,15 +1109,34 @@ impl Runtime {
         Ok(Vec::new())
     }
 
-    /// Revalidates Rust-produced task JSON and retires the exact opaque token
-    /// when OCaml cannot represent the task after lease handoff.
+    /// Revalidates Rust-produced task JSON and removes only the rejected
+    /// semantic handoff after OCaml cannot represent it.
+    ///
+    /// A start task owns the one Core completion debt for an activity token,
+    /// so rejecting that task must generate the bridge failure and retire the
+    /// native lease. A cancellation is only an update attached to the same
+    /// token. If its JSON cannot be decoded, dropping that one update must not
+    /// retire the start lease that another OCaml call still has to complete.
     fn reject_polled_activity(&mut self, input: &[u8]) -> Operation {
-        let task_token = activity_rejection_token(&self.activity_tasks, input)?;
-        // reject_activity_delivery retires the ledger even when Core rejects
-        // the generated failure. Clear semantic correlation on the same path.
-        let rejection = self.reject_activity_delivery(&task_token);
-        retire_activity_semantics(&mut self.activity_tasks, &task_token);
-        rejection?;
+        let rejection = activity_rejection_task(&self.activity_tasks, input)?;
+        let owns_completion_debt = matches!(
+            &rejection.task.variant,
+            activity_protocol::ActivityTaskVariant::Start(_)
+        );
+        // Only a Start represents an inaccessible leased Core completion. A
+        // Cancel has no independent completion to reject; removing just its
+        // retained document preserves the shared Start debt.
+        let native_rejection = if owns_completion_debt {
+            self.reject_activity_delivery(&rejection.task_token)
+        } else {
+            Ok(())
+        };
+        retire_activity_semantic(
+            &mut self.activity_tasks,
+            &rejection.task_token,
+            &rejection.task,
+        );
+        native_rejection?;
         Ok(Vec::new())
     }
 
@@ -1140,6 +1205,18 @@ impl Runtime {
     }
 }
 
+/// Reports whether a Core activity task owns the single completion debt for
+/// its opaque token. Only an explicit cancellation notification is excluded:
+/// it shares the Start lease and must never be failed as a second completion.
+/// Missing or future variants fail closed as owning the debt so an unexpected
+/// Core shape cannot leave an outstanding task stranded during shutdown.
+fn activity_task_owns_completion_debt(task: &CoreActivityTask) -> bool {
+    !matches!(
+        task.variant.as_ref(),
+        Some(activity_task::activity_task::Variant::Cancel(_))
+    )
+}
+
 /// Drops Core away from OCaml's collector and reports completion when asked.
 fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
     let Ok(message) = receiver.recv() else {
@@ -1198,6 +1275,12 @@ fn drop_runtime_graph(
         // lanes so dispose cannot block forever waiting for OCaml.
         handle.block_on(worker.force_complete_outstanding_for_dispose());
         let _ = handle.block_on(worker.join_poll_lanes());
+        // A poll that was already inside Core can return after the first drain
+        // and publish a new ready task before its lane exits.  The joins above
+        // establish that no producer remains; a final pass therefore closes
+        // the only window in which a late task could otherwise be dropped with
+        // an outstanding Core completion debt.
+        handle.block_on(worker.force_complete_outstanding_for_dispose());
         match handle.block_on(worker.finalize()) {
             Ok(()) => {}
             Err((worker, _)) => {
@@ -1215,6 +1298,7 @@ fn drop_runtime_graph(
 fn worker_bridge_failure(error: WorkerBridgeError) -> Failure {
     let status = match &error {
         WorkerBridgeError::OutstandingTasks(_) => STATUS_OUTSTANDING_TASKS,
+        WorkerBridgeError::RetryableActivityCompletion => STATUS_RETRYABLE,
         _ => STATUS_WORKER,
     };
     Failure {
@@ -1375,18 +1459,57 @@ fn retire_activity_semantics(
     pending.remove(task_token);
 }
 
-/// Extracts the canonical opaque activity token only when the complete task
-/// document matches one retained at a successful Rust-to-OCaml handoff.
-fn activity_rejection_token(
+/// Removes one exact semantic task document while preserving any other
+/// handoffs associated with the same opaque activity token.
+///
+/// A token can have one Start document and any number of Cancel updates. The
+/// Start's completion debt is retired only after its own completion or
+/// rejection; a malformed Cancel must not erase that document from the
+/// ownership ledger.
+fn retire_activity_semantic(
+    pending: &mut HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
+    task_token: &[u8],
+    task: &activity_protocol::ActivityTask,
+) {
+    let remove_token = if let Some(tasks) = pending.get_mut(task_token) {
+        if let Some(index) = tasks.iter().position(|candidate| candidate == task) {
+            tasks.remove(index);
+        }
+        tasks.is_empty()
+    } else {
+        false
+    };
+    if remove_token {
+        pending.remove(task_token);
+    }
+}
+
+/// Retained semantic task and its canonical opaque token for rejection.
+///
+/// Keeping both values avoids decoding the document twice and lets rejection
+/// distinguish a Start from a Cancel before it mutates the ownership ledger.
+struct ActivityRejection {
+    /// Canonical token used by the native worker's completion ledger.
+    task_token: Vec<u8>,
+    /// Exact retained task document that matched the rejected bytes.
+    task: activity_protocol::ActivityTask,
+}
+
+/// Extracts the retained semantic task only when the complete document
+/// matches one successful Rust-to-OCaml handoff under its canonical token.
+fn activity_rejection_task(
     pending: &HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
     input: &[u8],
-) -> std::result::Result<Vec<u8>, Failure> {
+) -> std::result::Result<ActivityRejection, Failure> {
     let text = decode_semantic_input(input)?;
     let semantic = activity_protocol::decode_task(text).map_err(protocol_failure)?;
     let task_token =
         activity_protocol::decode_token(&semantic.task_token).map_err(protocol_failure)?;
     match pending.get(&task_token) {
-        Some(tasks) if tasks.contains(&semantic) => Ok(task_token),
+        Some(tasks) if tasks.contains(&semantic) => Ok(ActivityRejection {
+            task_token,
+            task: semantic,
+        }),
         Some(_) => Err(Failure {
             status: STATUS_PROTOCOL,
             message: "activity rejection does not match a leased task".to_owned(),
@@ -1396,6 +1519,16 @@ fn activity_rejection_token(
             message: "activity rejection does not match a leased task token".to_owned(),
         }),
     }
+}
+
+/// Extracts the canonical opaque activity token only when the complete task
+/// document matches one retained at a successful Rust-to-OCaml handoff.
+#[cfg(test)]
+fn activity_rejection_token(
+    pending: &HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
+    input: &[u8],
+) -> std::result::Result<Vec<u8>, Failure> {
+    activity_rejection_task(pending, input).map(|rejection| rejection.task_token)
 }
 
 impl WorkerConfigInput {
@@ -2194,6 +2327,36 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_wait_activity(
     }
 }
 
+/// Apply the bounded native delay used before retrying an explicitly
+/// retryable activity completion.
+///
+/// The OCaml C stub invokes this operation with the runtime lock released. It
+/// is a timer on the dedicated supervisor owner Domain, not a workflow timer
+/// and not a readiness wait, so unrelated queued activity work cannot make a
+/// retry spin.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output` must
+/// satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_wait_activity_completion_retry_backoff(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_ref()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .wait_activity_completion_retry_backoff()
+        })
+    }
+}
+
 /// Validate and submit one remote activity completion JSON document.
 ///
 /// # Safety
@@ -2468,6 +2631,15 @@ pub fn test_runtime_cleanup_counts() -> (u64, u64) {
         RUNTIMES_CREATED.load(Ordering::Acquire),
         RUNTIMES_CLEANED.load(Ordering::Acquire),
     )
+}
+
+/// Returns the ABI category used for a worker error without exposing the
+/// mapping function itself as part of the C ABI. Integration tests use this
+/// helper to lock the bilateral retry classification to the explicit Rust
+/// variant rather than to diagnostic text.
+#[doc(hidden)]
+pub fn test_worker_bridge_status(error: WorkerBridgeError) -> Status {
+    worker_bridge_failure(error).status
 }
 
 #[cfg(test)]

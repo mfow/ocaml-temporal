@@ -203,10 +203,11 @@ let bridge_error message =
   Temporal_base.Error.make ~non_retryable:true ~category:`Bridge ~message ()
 
 (** Saves a child resolver before emitting its command. The explicit [id] is
-    application-owned durable identity; the private [seq] only correlates Core
-    completion jobs with this in-memory execution. *)
+    application-owned durable identity; an optional retry policy is copied
+    into the command for Core's durable retry state machine; the private [seq]
+    only correlates Core completion jobs with this in-memory execution. *)
 let start_child_workflow context ~id ~name ~input
-    ?(cancellation_type = Activation.Child_try_cancel) ~decode () =
+    ?retry_policy ?(cancellation_type = Activation.Child_try_cancel) ~decode () =
   let seq = allocate_sequence context in
   (* Keep this bit in the handle closure rather than in the pending table so a
     repeated cancel remains idempotent even after Core has removed the child
@@ -240,7 +241,7 @@ let start_child_workflow context ~id ~name ~input
     };
   emit context
     (Activation.Start_child_workflow
-       { seq; id; name; input; cancellation_type });
+       { seq; id; name; input; retry_policy; cancellation_type });
   let cancel ~reason =
     match current () with
     | Some current when current == context ->

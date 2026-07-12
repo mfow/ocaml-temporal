@@ -41,6 +41,7 @@ let require_bridge = function
         | Not_ready -> "not_ready"
         | Protocol -> "protocol"
         | Already_started -> "already_started"
+        | Retryable -> "retryable"
         | Unknown code -> Printf.sprintf "unknown(%d)" code
       in
       failwith (Printf.sprintf "%s: %s" status message)

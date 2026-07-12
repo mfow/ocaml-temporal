@@ -10,14 +10,18 @@ module Protocol = Temporal_protocol.Activity_protocol
 module Adapter = Temporal_runtime.Native_activity_execution
 
 (** A deterministic source error used by the fake supervisor. *)
-type source_error = { code : string; message : string }
+type source_error = { code : string; message : string; retryable : bool }
 
 (** Fake supervisor state. Tokens are kept as bytes so the test exercises the
     same binary-safe lease key used by the native worker. *)
 type fake_supervisor = {
+  (* Tasks waiting to be leased by the adapter. *)
   queue : Protocol.task Queue.t;
+  (* Binary tokens whose completions are still unacknowledged. *)
   leased : bytes list ref;
+  (* Completions accepted by the fake source. *)
   completions : Protocol.completion list ref;
+  (* Number of deliberate completion rejections remaining. *)
   completion_rejections : int ref;
 }
 
@@ -32,6 +36,7 @@ let fake_supervisor () =
 
 (** Removes one exact binary token from a lease list. *)
 let remove_token token tokens =
+  (* Remove one exact binary token while retaining the order of other leases. *)
   let rec loop reversed = function
     | [] -> (false, List.rev reversed)
     | current :: rest when Bytes.equal current token ->
@@ -63,6 +68,7 @@ module Fake_supervisor = struct
         {
           code = "temporarily_unavailable";
           message = "completion transport unavailable";
+          retryable = true;
         }
     end
     else
@@ -70,7 +76,12 @@ module Fake_supervisor = struct
         remove_token completion.task_token !(supervisor.leased)
       in
       if not found then
-        Error { code = "stale_lease"; message = "activity token is not leased" }
+        Error
+          {
+            code = "stale_lease";
+            message = "activity token is not leased";
+            retryable = false;
+          }
       else begin
         supervisor.leased := remaining;
         supervisor.completions := completion :: !(supervisor.completions);
@@ -88,6 +99,13 @@ module Fake_supervisor = struct
 
   (** Exposes the source diagnostic expected by the adapter signature. *)
   let error_message error = error.message
+
+  (** The lifecycle fake rejects only with the explicitly transient transport
+      category; stale-token errors remain fatal protocol failures. *)
+  let error_is_retryable error = error.retryable
+
+  (** This fake does not inject completion exceptions. *)
+  let exception_is_retryable _exception = false
 end
 
 module Worker = Adapter.Make (Fake_supervisor)
@@ -174,5 +192,30 @@ let test_drain_retry_preserves_completion () =
   if List.length !(supervisor.completions) <> 1 then
     failwith "activity completion was submitted more than once"
 
+(** Proves terminal disposal drops the copied activity token without attempting
+    another completion. The fake native lease is deliberately left outstanding
+    because force-retirement belongs to Rust; this test covers the adapter's
+    ordered half of the terminal cleanup contract. *)
+let test_discard_releases_pending_state () =
+  let supervisor = fake_supervisor () in
+  let calls = ref 0 in
+  let token = Bytes.of_string "discard-token" in
+  enqueue supervisor (start_task token);
+  supervisor.completion_rejections := 1;
+  let worker = worker supervisor calls in
+  expect_completion_error (Worker.poll worker);
+  if List.length !(supervisor.leased) <> 1 then
+    failwith "discard fixture did not retain an activity lease";
+  Worker.discard worker;
+  begin match Worker.drain worker with
+  | Ok () -> ()
+  | Error error -> failwith ("discard left a pending lease: " ^ error.message)
+  end;
+  if !calls <> 1 then failwith "discard reran the activity";
+  if !(supervisor.completions) <> [] then
+    failwith "discard attempted an activity completion"
+
 (** Runs the focused activity lifecycle regression. *)
-let () = test_drain_retry_preserves_completion ()
+let () =
+  test_drain_retry_preserves_completion ();
+  test_discard_releases_pending_state ()

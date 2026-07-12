@@ -38,11 +38,11 @@ type child_workflow_cancellation_type =
   | Child_abandon
   | Child_wait_cancellation_requested
 
-(** The validated retry policy attached to a scheduled remote activity.  The
-    runtime stores the backoff coefficient as its canonical unsigned IEEE-754
-    bit string so replay and the JSON bridge never depend on a decimal float
-    printer.  Durations remain exact millisecond counts until the semantic
-    protocol converts them to protobuf seconds and nanoseconds. *)
+(** The validated retry policy attached to an activity or child-workflow
+    command. The runtime stores the backoff coefficient as its canonical
+    unsigned IEEE-754 bit string so replay and the JSON bridge never depend on
+    a decimal float printer. Durations remain exact millisecond counts until
+    the semantic protocol converts them to protobuf seconds and nanoseconds. *)
 type retry_policy = {
   initial_interval : int64;
   backoff_coefficient_bits : string;
@@ -75,6 +75,7 @@ type command =
       id : string;
       name : string;
       input : Temporal_base.Codec.payload;
+      retry_policy : retry_policy option;
       cancellation_type : child_workflow_cancellation_type;
     }
   (** Requests cancellation of the child identified by the start command's

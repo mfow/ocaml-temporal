@@ -53,6 +53,7 @@ val schedule_activity :
   ?schedule_to_start_timeout:int64 ->
   ?start_to_close_timeout:int64 ->
   ?heartbeat_timeout:int64 ->
+  ?retry_policy:Activation.retry_policy ->
   ?cancellation_type:Activation.activity_cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   decode:(Temporal_base.Codec.payload -> ('output, Temporal_base.Error.t) result) ->

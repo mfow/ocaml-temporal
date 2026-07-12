@@ -1211,3 +1211,29 @@ workflow worker, and mock-activity containers. No live OCaml workflow path is
 claimed yet. Operational details and Kubernetes correspondence are documented
 in the [local stack reference](reference/local-temporal-stack.md) and
 [ADR 0005](decisions/0005-temporal-postgres-compose-stack.md).
+
+## 2026-07-12: Activity retry-policy command boundary
+
+Status: focused OCaml and Rust policy, protocol, and Core-conversion tests pass
+locally; live Temporal retry/failure scenarios remain deferred.
+
+The public activity API now exposes an immutable
+`Temporal.Activity.Retry_policy.t` constructor and accepts it through both
+`Activity.start` and `Activity.execute`. Construction validates exact
+millisecond intervals, a finite backoff coefficient at least 1.0, a signed
+32-bit attempt count (`0` means unlimited), and non-retryable error type
+names. Invalid configuration returns a typed defect instead of using exceptions
+as control flow.
+
+The private workflow completion protocol carries the coefficient as canonical
+unsigned decimal IEEE-754 bits rather than a JSON float. Both OCaml and Rust
+validate the closed retry object on decode and encode; `None` is serialized as
+the required JSON `null`, while an explicit policy remains distinguishable.
+Rust converts the validated representation to and from Temporal Core's retry
+policy without changing coefficient bits. The JSON Schema, runtime invariants,
+translation reference, and ADR document the ownership and replay rules.
+
+Evidence: `dune runtest test/bridge/`, the focused OCaml unit/runtime retry
+policy executables, and `cargo test -p ocaml-temporal-core-bridge --test
+workflow_retry_policy` pass on the representative host. Existing workflow
+protocol Rust tests also pass after the required nullable field was added.

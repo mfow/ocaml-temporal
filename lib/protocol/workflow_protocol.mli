@@ -196,6 +196,17 @@ type activity_cancellation_type =
   | Wait_cancellation_completed
   | Abandon
 
+(** A validated retry policy carried by a scheduled activity command.  The
+    backoff coefficient is kept as canonical unsigned IEEE-754 bits so JSON
+    transport cannot round or otherwise reinterpret a floating-point value. *)
+type retry_policy = {
+  initial_interval : duration;
+  backoff_coefficient_bits : string;
+  maximum_interval : duration;
+  maximum_attempts : int;
+  non_retryable_error_types : string list;
+}
+
 (** Supported workflow commands in scheduler emission order. *)
 type completion_command =
   | Schedule_activity of {
@@ -208,6 +219,7 @@ type completion_command =
       schedule_to_start_timeout : duration option;
       start_to_close_timeout : duration option;
       heartbeat_timeout : duration option;
+      retry_policy : retry_policy option;
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
@@ -252,6 +264,10 @@ val decode_completion : string -> (completion, error) result
 
 val encode_completion : completion -> (string, error) result
 (** Validates, normalizes, and semantically reparses an outgoing completion. *)
+
+val validate_retry_policy : retry_policy -> (unit, error) result
+(** Validates a programmatically constructed retry policy before a command
+    translator exposes it as a semantic protocol value. *)
 
 (** Private codec building blocks shared by the closed semantic protocol
     adapters. They are exposed only from the internal protocol library so each

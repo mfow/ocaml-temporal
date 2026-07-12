@@ -1,4 +1,4 @@
 (tests
  (names test_codec test_definition test_error test_workflow_authoring
-        test_client_worker)
+        test_client_worker test_activity_retry_policy)
  (libraries temporal-sdk))

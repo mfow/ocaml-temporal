@@ -61,6 +61,16 @@ and bridge, read the [documentation guide](../README.md) first.
   terminal result before start, duplicate acknowledgment, or unknown sequence
   is a non-retryable bridge defect; no event is silently dropped.
 - Activities, child workflows, and timers share one monotonic command sequence.
+- An activity retry policy is immutable once attached to a command. Its initial
+  interval is positive, its maximum interval is at least the initial interval,
+  its finite backoff coefficient is at least 1.0, and its maximum-attempt count
+  is between zero and Int32.max_int; zero means unlimited attempts. The
+  coefficient is serialized as canonical unsigned decimal IEEE-754 bits, not a
+  JSON float, so OCaml, Rust, Core, and replay retain the same value.
+- The schedule-activity object always contains a retry-policy member. JSON null
+  means no explicit policy; an object means the validated policy above.
+  Omission is malformed on both sides and cannot silently select a service
+  default.
 - Zero-duration sleep emits no timer.
 - Positive sleep emits one timer and resumes only for its exact sequence.
 - A workflow emits at most one terminal command.

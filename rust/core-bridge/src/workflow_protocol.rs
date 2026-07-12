@@ -440,6 +440,26 @@ pub enum ActivityCancellationType {
     Abandon,
 }
 
+/// Retry policy supplied with one scheduled activity.
+///
+/// The coefficient remains an unsigned decimal rendering of its IEEE-754
+/// bits. Keeping the bit pattern in the semantic protocol makes replay and
+/// the OCaml/Rust boundary independent of a language's float formatter.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetryPolicy {
+    /// Positive delay before the first retry.
+    pub initial_interval: Duration,
+    /// Canonical unsigned decimal representation of an `f64` bit pattern.
+    pub backoff_coefficient_bits: String,
+    /// Positive upper bound for a retry delay.
+    pub maximum_interval: Duration,
+    /// Maximum attempts, where zero means unlimited.
+    pub maximum_attempts: i32,
+    /// Application failure type names that must not be retried.
+    pub non_retryable_error_types: Vec<String>,
+}
+
 /// Supported deterministic command emitted by OCaml for Core.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -458,6 +478,8 @@ pub enum CompletionCommand {
         start_to_close_timeout: Option<Duration>,
         #[serde(deserialize_with = "required_nullable")]
         heartbeat_timeout: Option<Duration>,
+        #[serde(deserialize_with = "required_nullable")]
+        retry_policy: Option<RetryPolicy>,
         cancellation_type: ActivityCancellationType,
         do_not_eagerly_execute: bool,
     },
@@ -581,6 +603,97 @@ pub(crate) fn validate_time(
             path,
             "duration must not be negative",
         ));
+    }
+    Ok(())
+}
+
+/// Parses the canonical unsigned decimal used for exact floating-point bits.
+fn validate_uint64_decimal(value: &str, path: &str) -> Result<u64, ProtocolError> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+        return Err(ProtocolError::invalid(
+            path,
+            "value is not canonical unsigned 64-bit decimal",
+        ));
+    }
+    let parsed = value.parse::<u64>().map_err(|_| {
+        ProtocolError::invalid(path, "value is not canonical unsigned 64-bit decimal")
+    })?;
+    if parsed.to_string() != value {
+        return Err(ProtocolError::invalid(
+            path,
+            "value is not canonical unsigned 64-bit decimal",
+        ));
+    }
+    Ok(parsed)
+}
+
+/// Validates the retry policy constraints shared by the OCaml and Rust
+/// semantic layers before a command can reach Temporal Core.
+fn validate_retry_policy(value: &RetryPolicy, path: &str) -> Result<(), ProtocolError> {
+    validate_time(
+        value.initial_interval.seconds,
+        value.initial_interval.nanoseconds,
+        true,
+        &format!("{path}.initial_interval"),
+    )?;
+    validate_time(
+        value.maximum_interval.seconds,
+        value.maximum_interval.nanoseconds,
+        true,
+        &format!("{path}.maximum_interval"),
+    )?;
+    let initial_is_zero =
+        value.initial_interval.seconds == 0 && value.initial_interval.nanoseconds == 0;
+    if initial_is_zero {
+        return Err(ProtocolError::invalid(
+            format!("{path}.initial_interval"),
+            "duration must be positive",
+        ));
+    }
+    if (
+        value.maximum_interval.seconds,
+        value.maximum_interval.nanoseconds,
+    ) < (
+        value.initial_interval.seconds,
+        value.initial_interval.nanoseconds,
+    ) {
+        return Err(ProtocolError::invalid(
+            format!("{path}.maximum_interval"),
+            "maximum interval must be at least initial interval",
+        ));
+    }
+    let bits = validate_uint64_decimal(
+        &value.backoff_coefficient_bits,
+        &format!("{path}.backoff_coefficient_bits"),
+    )?;
+    let coefficient = f64::from_bits(bits);
+    if !coefficient.is_finite() {
+        return Err(ProtocolError::invalid(
+            format!("{path}.backoff_coefficient_bits"),
+            "backoff coefficient must be finite",
+        ));
+    }
+    if coefficient < 1.0 {
+        return Err(ProtocolError::invalid(
+            format!("{path}.backoff_coefficient_bits"),
+            "backoff coefficient must be at least 1.0",
+        ));
+    }
+    if value.maximum_attempts < 0 {
+        return Err(ProtocolError::invalid(
+            format!("{path}.maximum_attempts"),
+            "maximum attempts must not be negative",
+        ));
+    }
+    for (index, error_type) in value.non_retryable_error_types.iter().enumerate() {
+        let item_path = format!("{path}.non_retryable_error_types[{index}]");
+        bounded_text(error_type, &item_path)?;
+        if error_type.is_empty() || error_type.as_bytes().contains(&0) {
+            return Err(ProtocolError::invalid(
+                &item_path,
+                "error type must be non-empty and must not contain NUL",
+            ));
+        }
     }
     Ok(())
 }
@@ -858,6 +971,7 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                 schedule_to_start_timeout,
                 start_to_close_timeout,
                 heartbeat_timeout,
+                retry_policy,
                 ..
             } => {
                 identifier(activity_id, "$.commands.activity_id")?;
@@ -884,6 +998,9 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                         true,
                         "$.commands.timeout",
                     )?;
+                }
+                if let Some(retry_policy) = retry_policy {
+                    validate_retry_policy(retry_policy, "$.commands.retry_policy")?;
                 }
             }
             CompletionCommand::StartChildWorkflow {
@@ -1624,6 +1741,54 @@ pub(crate) fn duration_from_core(
     Ok(duration)
 }
 
+/// Converts a validated semantic retry policy into Temporal Core's protobuf
+/// policy without changing the coefficient's floating-point bits.
+fn retry_policy_to_core(
+    value: &RetryPolicy,
+) -> Result<api_common::RetryPolicy, CoreConversionError> {
+    validate_retry_policy(value, "$.commands.retry_policy")
+        .map_err(|_| invalid_core("retry policy violates semantic invariants"))?;
+    let coefficient_bits = value
+        .backoff_coefficient_bits
+        .parse::<u64>()
+        .map_err(|_| invalid_core("retry policy coefficient bits are not canonical"))?;
+    Ok(api_common::RetryPolicy {
+        initial_interval: Some(duration_to_core(value.initial_interval)),
+        backoff_coefficient: f64::from_bits(coefficient_bits),
+        maximum_interval: Some(duration_to_core(value.maximum_interval)),
+        maximum_attempts: value.maximum_attempts,
+        non_retryable_error_types: value.non_retryable_error_types.clone(),
+    })
+}
+
+/// Converts Core's effective retry policy back into the lossless semantic
+/// representation, rejecting missing required durations instead of guessing
+/// Core defaults on the OCaml side.
+fn retry_policy_from_core(
+    value: &api_common::RetryPolicy,
+) -> Result<RetryPolicy, CoreConversionError> {
+    let policy = RetryPolicy {
+        initial_interval: duration_from_core(
+            value
+                .initial_interval
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core retry policy initial interval is absent"))?,
+        )?,
+        backoff_coefficient_bits: value.backoff_coefficient.to_bits().to_string(),
+        maximum_interval: duration_from_core(
+            value
+                .maximum_interval
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core retry policy maximum interval is absent"))?,
+        )?,
+        maximum_attempts: value.maximum_attempts,
+        non_retryable_error_types: value.non_retryable_error_types.clone(),
+    };
+    validate_retry_policy(&policy, "$.commands.retry_policy")
+        .map_err(|_| invalid_core("Core retry policy violates semantic invariants"))?;
+    Ok(policy)
+}
+
 /// Maps an OCaml-facing cancellation choice to the pinned Core enum.
 fn cancellation_to_core(value: ActivityCancellationType) -> i32 {
     use core_commands::ActivityCancellationType as Core;
@@ -1662,6 +1827,7 @@ fn command_to_core(
             schedule_to_start_timeout,
             start_to_close_timeout,
             heartbeat_timeout,
+            retry_policy,
             cancellation_type,
             do_not_eagerly_execute,
         } => Variant::ScheduleActivity(core_commands::ScheduleActivity {
@@ -1678,7 +1844,10 @@ fn command_to_core(
             schedule_to_start_timeout: schedule_to_start_timeout.map(duration_to_core),
             start_to_close_timeout: start_to_close_timeout.map(duration_to_core),
             heartbeat_timeout: heartbeat_timeout.map(duration_to_core),
-            retry_policy: None,
+            retry_policy: retry_policy
+                .as_ref()
+                .map(retry_policy_to_core)
+                .transpose()?,
             cancellation_type: cancellation_to_core(*cancellation_type),
             do_not_eagerly_execute: *do_not_eagerly_execute,
             versioning_intent: 0,
@@ -1749,10 +1918,7 @@ fn command_from_core(
         .ok_or_else(|| invalid_core("Core command variant is absent"))?
     {
         Variant::ScheduleActivity(value) => {
-            if !value.headers.is_empty()
-                || value.retry_policy.is_some()
-                || value.versioning_intent != 0
-                || value.priority.is_some()
+            if !value.headers.is_empty() || value.versioning_intent != 0 || value.priority.is_some()
             {
                 return Err(unsupported(
                     "Core schedule activity options are not supported",
@@ -1787,6 +1953,11 @@ fn command_from_core(
                     .heartbeat_timeout
                     .as_ref()
                     .map(duration_from_core)
+                    .transpose()?,
+                retry_policy: value
+                    .retry_policy
+                    .as_ref()
+                    .map(retry_policy_from_core)
                     .transpose()?,
                 cancellation_type: cancellation_from_core(value.cancellation_type)?,
                 do_not_eagerly_execute: value.do_not_eagerly_execute,

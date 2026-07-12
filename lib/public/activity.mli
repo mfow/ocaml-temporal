@@ -47,6 +47,55 @@ type cancellation_type =
   | Wait_cancellation_completed
   | Abandon
 
+(** A deterministic retry policy for one scheduled activity.
+
+    [initial_interval] and [maximum_interval] are positive whole-millisecond
+    durations, with the maximum at least as large as the initial delay.
+    [backoff_coefficient] must be finite and at least [1.0].  A
+    [maximum_attempts] value of [0] means that Temporal imposes no attempt
+    count limit; positive values include the initial attempt.  The constructor
+    returns a typed defect instead of raising so callers can validate policy
+    configuration while assembling a workflow definition. *)
+module Retry_policy : sig
+  type t
+
+  (** Validates and constructs an immutable retry policy. *)
+  val make :
+    initial_interval:Duration.t ->
+    backoff_coefficient:float ->
+    maximum_interval:Duration.t ->
+    maximum_attempts:int ->
+    ?non_retryable_error_types:string list ->
+    unit ->
+    (t, Error.t) result
+
+  (** Alias for [make] for callers that prefer constructor terminology. *)
+  val create :
+    initial_interval:Duration.t ->
+    backoff_coefficient:float ->
+    maximum_interval:Duration.t ->
+    maximum_attempts:int ->
+    ?non_retryable_error_types:string list ->
+    unit ->
+    (t, Error.t) result
+
+  (** Returns the exact initial retry delay. *)
+  val initial_interval : t -> Duration.t
+
+  (** Returns the finite multiplier applied between retry attempts. *)
+  val backoff_coefficient : t -> float
+
+  (** Returns the cap applied to the retry delay. *)
+  val maximum_interval : t -> Duration.t
+
+  (** Returns the maximum number of attempts; [0] means unlimited. *)
+  val maximum_attempts : t -> int
+
+  (** Returns the immutable list of Temporal error type names that must not be
+      retried. *)
+  val non_retryable_error_types : t -> string list
+end
+
 (** Schedules the activity and returns immediately with a future for its
     result. Start several independent activities before awaiting them to let
     Temporal run them concurrently. Optional labels make the activity command
@@ -62,6 +111,7 @@ val start :
   ?schedule_to_start_timeout:Duration.t ->
   ?start_to_close_timeout:Duration.t ->
   ?heartbeat_timeout:Duration.t ->
+  ?retry_policy:Retry_policy.t ->
   ?cancellation_type:cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   ('input, 'output) t ->
@@ -77,6 +127,7 @@ val execute :
   ?schedule_to_start_timeout:Duration.t ->
   ?start_to_close_timeout:Duration.t ->
   ?heartbeat_timeout:Duration.t ->
+  ?retry_policy:Retry_policy.t ->
   ?cancellation_type:cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   ('input, 'output) t -> 'input -> ('output, Error.t) result

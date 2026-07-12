@@ -423,6 +423,96 @@ let test_required_nullable_fields () =
     (Protocol.decode_completion
        {|{"run_id":"run-required-null","commands":[{"kind":"schedule_activity","seq":0,"activity_id":"activity","activity_type":"activity","task_queue":"queue","arguments":[],"schedule_to_start_timeout":null,"start_to_close_timeout":null,"heartbeat_timeout":null,"cancellation_type":"try_cancel","do_not_eagerly_execute":false}]}|})
 
+(** Proves an explicit activity retry policy is represented with exact
+    durations and coefficient bits, while [None] remains an explicit JSON
+    null rather than being omitted or confused with a default policy. *)
+let test_activity_retry_policy () =
+  let policy : Protocol.retry_policy =
+    {
+      initial_interval = { seconds = 1L; nanoseconds = 0 };
+      backoff_coefficient_bits = "4609434218613702656";
+      maximum_interval = { seconds = 60L; nanoseconds = 0 };
+      maximum_attempts = 3;
+      non_retryable_error_types = [ "InvalidInput" ];
+    }
+  in
+  let schedule retry_policy : Protocol.completion_command =
+    Schedule_activity
+      {
+        seq = 1L;
+        activity_id = "activity-1";
+        activity_type = "example.activity";
+        task_queue = "activities";
+        arguments = [];
+        schedule_to_close_timeout = Some { seconds = 60L; nanoseconds = 0 };
+        schedule_to_start_timeout = None;
+        start_to_close_timeout = Some { seconds = 30L; nanoseconds = 0 };
+        heartbeat_timeout = None;
+        retry_policy;
+        cancellation_type = Try_cancel;
+        do_not_eagerly_execute = false;
+      }
+  in
+  let command = schedule (Some policy) in
+  let completion = { Protocol.run_id = "run-retry"; commands = [ command ] } in
+  let encoded = unwrap (Protocol.encode_completion completion) in
+  if not (String.contains encoded '"') then failwith "policy JSON was empty";
+  let retry_policy_json =
+    Yojson.Safe.Util.(
+      Yojson.Safe.from_string encoded |> member "commands" |> index 0
+      |> member "retry_policy")
+  in
+  if
+    not
+      (String.equal
+         (Yojson.Safe.to_string retry_policy_json)
+         (Yojson.Safe.to_string
+            (`Assoc
+              [
+                ("backoff_coefficient_bits", `String policy.backoff_coefficient_bits);
+                ( "initial_interval",
+                  `Assoc [ ("nanoseconds", `Int 0); ("seconds", `Int 1) ] );
+                ( "maximum_attempts",
+                  `Int policy.maximum_attempts );
+                ( "maximum_interval",
+                  `Assoc [ ("nanoseconds", `Int 0); ("seconds", `Int 60) ] );
+                ( "non_retryable_error_types",
+                  `List [ `String "InvalidInput" ] );
+              ])))
+  then failwith "retry policy JSON was not canonical"
+  else if unwrap (Protocol.decode_completion encoded) <> completion then
+    failwith "retry policy did not round-trip"
+  else
+    let no_policy =
+      { Protocol.run_id = "run-default"; commands = [ schedule None ] }
+    in
+    let no_policy_json = unwrap (Protocol.encode_completion no_policy) in
+    let no_retry_policy_json =
+      Yojson.Safe.Util.(
+        Yojson.Safe.from_string no_policy_json |> member "commands" |> index 0
+        |> member "retry_policy")
+    in
+    if not (String.equal (Yojson.Safe.to_string no_retry_policy_json) "null") then
+      failwith "omitted retry policy was not encoded as null";
+    require_error
+      (Protocol.encode_completion
+         { completion with
+           commands =
+             [ schedule
+                 (Some
+                    { policy with backoff_coefficient_bits = "0" }) ] })
+    ;
+    require_error
+      (Protocol.encode_completion
+         { completion with
+           commands =
+             [ schedule
+                 (Some
+                    {
+                      policy with
+                      backoff_coefficient_bits = "18446744073709551615";
+                    }) ] })
+
 (** Runs one test with a stable name suitable for CI logs. *)
 let run name test =
   try
@@ -446,4 +536,5 @@ let () =
   run "recursive failure depth" test_recursive_failure_depth;
   run "initialize header keys" test_initialize_header_keys;
   run "batched default Temporal payloads" test_batched_default_temporal_payloads;
-  run "required nullable fields" test_required_nullable_fields
+  run "required nullable fields" test_required_nullable_fields;
+  run "activity retry policy" test_activity_retry_policy

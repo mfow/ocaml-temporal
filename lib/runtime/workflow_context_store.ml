@@ -133,7 +133,18 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
   Hashtbl.add context.activities seq (fun result ->
       match result with
       | Error error -> resolve (Error error)
-      | Ok payload -> resolve (decode payload));
+      | Ok payload ->
+          (* User/codec decoders must not escape job processing half-applied.
+             Contain unexpected exceptions as structured defects. *)
+          (match decode payload with
+          | result -> resolve result
+          | exception exn ->
+              resolve
+                (Error
+                   (Temporal_base.Error.defect
+                      ~message:
+                        ("activity result decoder raised: "
+                        ^ Printexc.to_string exn)))));
   let activity_id =
     match activity_id with
     | Some value -> value
@@ -175,10 +186,20 @@ let start_child_workflow context ~id ~name ~input ~decode =
   let future, resolve = Scheduler.promise context.scheduler ~outside_error in
   Hashtbl.add context.child_workflows seq
     {
-      resolve = (fun result ->
-        match result with
-        | Error error -> resolve (Error error)
-        | Ok payload -> resolve (decode payload));
+      resolve =
+        (fun result ->
+          match result with
+          | Error error -> resolve (Error error)
+          | Ok payload -> (
+              match decode payload with
+              | result -> resolve result
+              | exception exn ->
+                  resolve
+                    (Error
+                       (Temporal_base.Error.defect
+                          ~message:
+                            ("child workflow result decoder raised: "
+                            ^ Printexc.to_string exn)))));
       start_run_id = None;
     };
   emit context (Activation.Start_child_workflow { seq; id; name; input });

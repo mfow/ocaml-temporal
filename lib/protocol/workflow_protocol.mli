@@ -205,9 +205,10 @@ type child_workflow_cancellation_type =
   | Child_abandon
   | Child_wait_cancellation_requested
 
-(** A validated retry policy carried by a scheduled activity command.  The
-    backoff coefficient is kept as canonical unsigned IEEE-754 bits so JSON
-    transport cannot round or otherwise reinterpret a floating-point value. *)
+(** A validated retry policy carried by a scheduled activity or child-workflow
+    command. The backoff coefficient is kept as canonical unsigned IEEE-754
+    bits so JSON transport cannot round or otherwise reinterpret a
+    floating-point value. *)
 type retry_policy = {
   initial_interval : duration;
   backoff_coefficient_bits : string;
@@ -233,14 +234,15 @@ type completion_command =
       do_not_eagerly_execute : bool;
     }
   (** Starts a child workflow. The ordered payload list mirrors Temporal Core's
-      repeated input field; the current activation runtime emits one payload
-      and later revisions can add explicit child options without changing the
-      command's identity fields. *)
+      repeated input field; the current activation runtime emits one payload.
+      [retry_policy] is optional because Core's default policy remains valid
+      when callers do not configure retries. *)
   | Start_child_workflow of {
       seq : int64;
       workflow_id : string;
       workflow_type : string;
       input : payload list;
+      retry_policy : retry_policy option;
       cancellation_type : child_workflow_cancellation_type;
     }
   (** Requests cancellation of a previously started child workflow.  [reason]

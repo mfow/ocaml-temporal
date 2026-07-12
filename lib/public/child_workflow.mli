@@ -17,10 +17,14 @@ type 'output handle
     command is emitted immediately; [future] remains pending until Core reports
     a start or terminal result. The default [Try_cancel] policy asks Core to
     cancel the child when [cancel] is called; choose [Abandon] explicitly when
-    the child should keep running. Invalid input and detached calls return
-    ready failed handles, so no command or sequence number is created. *)
+    the child should keep running. [retry_policy], when supplied, is handed to
+    Temporal Core so retryable child failures are retried by the durable state
+    machine rather than by replay-sensitive OCaml code. Invalid input and
+    detached calls return ready failed handles, so no command or sequence
+    number is created. *)
 val start_handle :
   ?cancellation_type:cancellation_type ->
+  ?retry_policy:Activity.Retry_policy.t ->
   id:string ->
   ('input, 'output) Workflow.t ->
   'input ->
@@ -45,9 +49,11 @@ val cancel :
     cross the strict bridge boundary. Invalid identity or input encoding returns
     a ready failed future without emitting a command or consuming a sequence.
     Starting several operations before awaiting them lets Temporal run them
-    concurrently. The default cancellation policy is [Try_cancel]. *)
+    concurrently. The default cancellation policy is [Try_cancel]. A supplied
+    [retry_policy] controls retries in Temporal Core. *)
 val start :
   ?cancellation_type:cancellation_type ->
+  ?retry_policy:Activity.Retry_policy.t ->
   id:string ->
   ('input, 'output) Workflow.t ->
   'input ->
@@ -55,10 +61,11 @@ val start :
 
 (** Starts a child workflow and waits for its result. This is equivalent to
     [Future.await (start ~id definition input)]. Child, codec, cancellation,
-    and bridge failures are returned as structured values. The default
+    retry, and bridge failures are returned as structured values. The default
     cancellation policy is [Try_cancel]. *)
 val execute :
   ?cancellation_type:cancellation_type ->
+  ?retry_policy:Activity.Retry_policy.t ->
   id:string ->
   ('input, 'output) Workflow.t ->
   'input ->

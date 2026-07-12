@@ -95,6 +95,7 @@ fn converts_start_child_workflow_command() {
             workflow_id: "child/1".to_owned(),
             workflow_type: "child".to_owned(),
             input: vec![input.clone()],
+            retry_policy: None,
             cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
         }],
     };
@@ -188,6 +189,7 @@ fn converts_all_child_cancellation_policies() {
                 workflow_id: "child/1".to_owned(),
                 workflow_type: "child".to_owned(),
                 input: vec![input.clone()],
+                retry_policy: None,
                 cancellation_type: policy,
             }],
         };
@@ -293,6 +295,7 @@ fn rejects_invalid_child_cancellation_commands() {
                 "workflow_id": workflow_id,
                 "workflow_type": workflow_type,
                 "input": [],
+                "retry_policy": null,
                 "cancellation_type": "try_cancel",
             }],
         });
@@ -308,6 +311,7 @@ fn rejects_invalid_child_cancellation_commands() {
             workflow_id: "child\0".to_owned(),
             workflow_type: "child".to_owned(),
             input: Vec::new(),
+            retry_policy: None,
             cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
         }],
     };
@@ -320,6 +324,7 @@ fn rejects_invalid_child_cancellation_commands() {
             "workflow_id": "child",
             "workflow_type": "child",
             "input": [],
+            "retry_policy": null,
             "cancellation_type": "unknown",
         }],
     });

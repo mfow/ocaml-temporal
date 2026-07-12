@@ -400,7 +400,31 @@ let start_review document =
 
 The ID is durable Temporal identity. It must be non-empty, valid UTF-8, free of
 NUL bytes, and within the bridge's bounded length. `Child_workflow.execute`
-starts and waits in one call.
+starts and waits in one call. Child retries are configured with the same
+validated policy type used by activities; Temporal Core owns the retry state
+machine, so replay does not run an OCaml retry loop:
+
+```ocaml
+let retry_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 1_000L)
+    ~backoff_coefficient:2.0
+    ~maximum_interval:(Temporal.Duration.of_ms 5_000L)
+    ~maximum_attempts:3 ()
+
+let run_review document =
+  match retry_policy with
+  | Error error -> Error error
+  | Ok retry_policy ->
+      Temporal.Child_workflow.execute ~retry_policy
+        ~id:"document-review" review document
+```
+
+The policy's intervals are exact durations and its coefficient is carried as
+lossless IEEE-754 bits through the private JSON protocol. Omitting
+`~retry_policy` emits `null`, which selects Core's default child policy. The
+current focused tests verify command construction and the bilateral Core
+conversion; the live Compose fixture has not yet exercised a child retry.
 
 When a workflow needs to keep the child operation alongside other work, retain
 the opaque handle returned by `start_handle`:

@@ -116,6 +116,7 @@ let test_start_child_workflow_command () =
               workflow_id = "child/1";
               workflow_type = "child";
               input = [ input ];
+              retry_policy = None;
               cancellation_type = Child_try_cancel;
             };
         ];
@@ -123,7 +124,7 @@ let test_start_child_workflow_command () =
   in
   let encoded = unwrap (Protocol.encode_completion completion) in
   check_string "child command"
-    {|{"commands":[{"cancellation_type":"try_cancel","input":[{"data":{"data":"","encoding":"base64"},"metadata":{"encoding":{"data":"YmluYXJ5L251bGw=","encoding":"base64"}}}],"kind":"start_child_workflow","seq":2,"workflow_id":"child/1","workflow_type":"child"}],"run_id":"parent-run"}|}
+    {|{"commands":[{"cancellation_type":"try_cancel","input":[{"data":{"data":"","encoding":"base64"},"metadata":{"encoding":{"data":"YmluYXJ5L251bGw=","encoding":"base64"}}}],"kind":"start_child_workflow","retry_policy":null,"seq":2,"workflow_id":"child/1","workflow_type":"child"}],"run_id":"parent-run"}|}
     encoded;
   if unwrap (Protocol.decode_completion encoded) <> completion then
     failwith "child command did not round-trip"
@@ -149,6 +150,7 @@ let test_all_child_cancellation_policies () =
                   workflow_id = "child/1";
                   workflow_type = "child";
                   input = [ input ];
+                  retry_policy = None;
                   cancellation_type;
                 };
             ];
@@ -214,6 +216,7 @@ let test_child_cancellation_validation () =
                   ("workflow_id", `String workflow_id);
                   ("workflow_type", `String workflow_type);
                   ("input", `List []);
+                  ("retry_policy", `Null);
                   ("cancellation_type", `String "try_cancel");
                 ];
             ] );
@@ -238,6 +241,7 @@ let test_child_cancellation_validation () =
               workflow_id = invalid_utf8;
               workflow_type = "child";
               input = [];
+              retry_policy = None;
               cancellation_type = Child_try_cancel;
             };
         ];
@@ -246,7 +250,7 @@ let test_child_cancellation_validation () =
   require_error (Protocol.encode_completion completion);
   require_error
     (Protocol.decode_completion
-       {|{"run_id":"parent-run","commands":[{"kind":"start_child_workflow","seq":7,"workflow_id":"child","workflow_type":"child","input":[],"cancellation_type":"unknown"}]}|})
+       {|{"run_id":"parent-run","commands":[{"kind":"start_child_workflow","seq":7,"workflow_id":"child","workflow_type":"child","input":[],"retry_policy":null,"cancellation_type":"unknown"}]}|})
 
 (** Proves a continue-as-new command is terminal, retains the target workflow
     identity and carries its encoded input through the bilateral JSON shape. *)

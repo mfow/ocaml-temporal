@@ -36,9 +36,10 @@ type child_workflow_cancellation_type =
   | Child_abandon
   | Child_wait_cancellation_requested
 
-(** A validated activity retry policy kept in exact, bridge-ready form.  The
-    coefficient is an unsigned decimal rendering of its IEEE-754 bits; the
-    other numeric fields retain their exact OCaml integer values. *)
+(** A validated retry policy for an activity or child-workflow command kept in
+    exact, bridge-ready form. The coefficient is an unsigned decimal
+    rendering of its IEEE-754 bits; the other numeric fields retain their
+    exact OCaml integer values. *)
 type retry_policy = {
   initial_interval : int64;
   backoff_coefficient_bits : string;
@@ -50,8 +51,8 @@ type retry_policy = {
 (** An instruction produced by workflow code for Temporal Core. Commands are
     returned in the order they were created because Temporal records that order
     in workflow history and expects replay to reproduce it. Activity timeout
-    values are exact non-negative milliseconds; [None] means that policy is not
-    supplied. *)
+    values and retry intervals are exact non-negative milliseconds; [None]
+    means that an optional timeout or retry policy is not supplied. *)
 type command =
   | Schedule_activity of {
       seq : int64;
@@ -72,6 +73,7 @@ type command =
       id : string;
       name : string;
       input : Temporal_base.Codec.payload;
+      retry_policy : retry_policy option;
       cancellation_type : child_workflow_cancellation_type;
     }
   (** Requests cancellation of a pending child workflow. *)

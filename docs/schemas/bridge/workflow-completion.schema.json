@@ -79,14 +79,15 @@
         },
         {
           "type": "object", "additionalProperties": false,
-          "required": ["kind", "seq", "workflow_id", "workflow_type", "input", "cancellation_type"],
-          "description": "Starts a child workflow. Namespace, task queue, timeouts, policies, retry settings, headers, memo, search attributes, versioning, and priority remain Core defaults until the OCaml API exposes them explicitly.",
+          "required": ["kind", "seq", "workflow_id", "workflow_type", "input", "retry_policy", "cancellation_type"],
+          "description": "Starts a child workflow. An optional retry policy is passed to Core; namespace, task queue, timeouts, close/reuse policies, cron, headers, memo, search attributes, versioning, and priority remain Core defaults until the OCaml API exposes them explicitly.",
           "properties": {
             "kind": {"const": "start_child_workflow"},
             "seq": {"$ref": "#/$defs/u32"},
             "workflow_id": {"$ref": "#/$defs/identifier"},
             "workflow_type": {"$ref": "#/$defs/identifier"},
             "input": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}},
+            "retry_policy": {"oneOf": [{"$ref": "#/$defs/retry_policy"}, {"type": "null"}]},
             "cancellation_type": {"enum": ["try_cancel", "wait_cancellation_completed", "abandon", "wait_cancellation_requested"]}
           }
         },

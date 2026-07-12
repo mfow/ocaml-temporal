@@ -543,6 +543,7 @@ let test_activity_command_translation_and_validation () =
               id = "child/1";
               name = "child";
               input;
+              retry_policy = None;
               cancellation_type = Activation.Child_abandon;
             }))
   with
@@ -552,6 +553,7 @@ let test_activity_command_translation_and_validation () =
         workflow_id = "child/1";
         workflow_type = "child";
         input = [ child_input ];
+        retry_policy = None;
         cancellation_type = Protocol.Child_abandon;
       }
     when child_input =

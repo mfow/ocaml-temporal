@@ -1,20 +1,22 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The two original workflow/activity scenarios were verified in the
-Linux CI Temporal/PostgreSQL integration job for commit `d4456b7`.
-`make test-temporal-integration` completed that real Compose run: the driver
-asserted both terminal results and the worker/client shut down cleanly. This
-revision adds the parent/child scenario described below; it is considered live
-evidence only after the same CI job succeeds for this revision. The worker and
-driver remain guarded by `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated
-Compose services set it.
+**Status:** The fan-out, timer/activity, and parent/child success scenarios
+were verified in the Linux CI Temporal/PostgreSQL integration job for the
+earlier revisions. This revision adds a fourth top-level workflow that uses an
+explicit activity retry policy: its worker activity fails once, Temporal
+delivers a second attempt, and the driver asserts the exact attempt-2 result.
+The retry-policy constructor and bilateral JSON/Core conversion remain
+synthetic evidence; a successful live integration job will be the evidence for
+server retry delivery. Until that job succeeds, the retry assertion is pending
+live CI verification. The worker and driver remain guarded by
+`TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
 
 `smoke-worker` publishes an atomic readiness marker after public
 `Temporal.Worker.create` succeeds. Compose waits for that health check before
 `smoke-driver` is run. Each acceptance run starts after `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts all three top-level workflows before
+later acceptance run. The driver starts all four top-level workflows before
 waiting for any result. This prevents a TCP check or a process that merely
 started from being reported as an SDK acceptance pass.
 
@@ -35,9 +37,12 @@ and asserts terminal workflow results while the worker executes registered
 workflows and a mock activity against the live server. This revision adds a
 parent/child success case: the parent calls `Temporal.Child_workflow.execute`,
 the registered child waits on a short durable timer, and the driver asserts the
-parent's exact result. A passing `make test-temporal-integration` run is the
-evidence for that concrete happy path only; child start failures, cancellation,
-retries, replay, and worker recovery remain separate scenarios. The
+parent's exact result. It also runs `smoke.activity_retry`: the first
+`smoke.retry_once` attempt returns a retryable activity error and the second
+returns `SMOKE:ATTEMPT:2`, which the driver compares as an exact terminal
+payload. A passing `make test-temporal-integration` run is the evidence for
+these concrete happy paths only; child start failures, cancellation, retry
+timeouts, replay, and worker recovery remain separate scenarios. The
 intentionally broader follow-up requirements are listed in [Required
 assertions and failure evidence](#required-assertions-and-failure-evidence).
 
@@ -176,13 +181,23 @@ registers these local definitions with the public SDK:
   `Temporal.Child_workflow.execute` and awaits its terminal value. The child
   identity is derived only from the parent input, so the command is stable on
   replay.
+* `smoke.activity_retry`: schedules `smoke.retry_once` with a two-attempt
+  `Temporal.Activity.Retry_policy`. The worker activity deliberately returns a
+  retryable error on its first call and includes the successful attempt number
+  in its second result, giving the driver a direct assertion that Temporal
+  performed the retry.
 * `smoke.mock_transform`: the OCaml mock activity implementation used by the
   two activity-oriented workflows. It has no network or wall-clock dependency
   and returns a value wholly determined by its decoded input.
+* `smoke.retry_once`: the test-only activity implementation used by
+  `smoke.activity_retry`. Its process-local attempt counter is intentionally
+  outside workflow code; a fresh worker process and fresh PostgreSQL stack are
+  created for each acceptance run.
 
 The fixture implements this shape with the concrete `smoke.fan_out`,
-`smoke.timer_then_activity`, `smoke.child_after_timer`,
-`smoke.parent_awaits_child`, and `smoke.mock_transform` definitions followed
+`smoke.timer_then_activity`, `smoke.activity_retry`,
+`smoke.child_after_timer`, `smoke.parent_awaits_child`,
+`smoke.mock_transform`, and `smoke.retry_once` definitions followed
 by a long-running public worker call:
 
 ```ocaml
@@ -191,8 +206,9 @@ let () =
     Temporal.Worker.create
       ~task_queue:"ocaml-temporal-two-binary-smoke"
       ~workflows:
-        [ fan_out; timer_then_activity; child_after_timer; parent_awaits_child ]
-      ~activities:[ mock_transform ]
+        [ fan_out; timer_then_activity; activity_retry; child_after_timer;
+          parent_awaits_child ]
+      ~activities:[ mock_transform; retry_once_activity ]
       ()
   with
   | Error error -> report_and_exit error
@@ -218,15 +234,15 @@ executable, `smoke-worker`, owns task polling and workflow/activity execution.
 The driver must:
 
 1. connect through `Temporal.Client` to the fixture namespace;
-2. start `smoke.fan_out`, `smoke.timer_then_activity`, and
-   `smoke.parent_awaits_child` with distinct, known workflow IDs before it
-   waits for any of them;
-3. retain the three public workflow handles returned by `start`;
+2. start `smoke.fan_out`, `smoke.timer_then_activity`,
+   `smoke.activity_retry`, and `smoke.parent_awaits_child` with distinct,
+   known workflow IDs before it waits for any of them;
+3. retain the four public workflow handles returned by `start`;
 4. wait for each handle's terminal result through the public client API; and
-5. decode and compare all three results with their expected values, then exit
+5. decode and compare all four results with their expected values, then exit
    zero only if every assertion succeeded.
 
-Starting all three executions before the first wait is material. It demonstrates
+Starting all four executions before the first wait is material. It demonstrates
 that a client can hold independent workflow handles and that the worker can
 service separate workflow executions, rather than passing a single serial
 request through a readiness-only check. Workflow IDs are fixed and unique
@@ -403,17 +419,19 @@ thread.
 The driver's successful exit establishes all of the following:
 
 1. each top-level workflow start returned a nonempty run ID that the driver
-   retained for its corresponding exact-run wait; the driver starts three
+   retained for its corresponding exact-run wait; the driver starts four
    distinct top-level runs before its first wait;
-2. all three terminal waits matched the exact workflow ID and run ID returned by
+2. all four terminal waits matched the exact workflow ID and run ID returned by
    their own starts;
 3. `smoke.fan_out` returned the ordered result requiring both mock activity
    completions;
 4. `smoke.timer_then_activity` returned its expected result after a durable
    timer and its mock activity completion;
-5. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
+5. `smoke.activity_retry` returned `SMOKE:ATTEMPT:2` only after its first
+   activity attempt failed and Temporal scheduled the second attempt;
+6. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
    completed its own durable timer; and
-6. none of the three terminal responses was a workflow failure, cancellation,
+7. none of the four terminal responses was a workflow failure, cancellation,
    timeout, termination, continued-as-new outcome, codec failure, nor bridge
    failure.
 
@@ -427,7 +445,7 @@ must remain payload-free if added.
 The first live test is intentionally small. Once it passes, extend the same
 two-binary topology rather than adding a separate pseudo-worker test:
 
-* activity failure/retry and timeout;
+* activity retry timeout, non-retryable classification, and heartbeat;
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
 * child workflow start failure, cancellation, retry policy, and non-success
   terminal handling through the worker;
@@ -436,8 +454,11 @@ two-binary topology rather than adding a separate pseudo-worker test:
 
 Child-start commands and both child-resolution jobs have a closed bilateral
 schema, Core conversion, pure-OCaml lifecycle tests, and this one real-server
-parent/child success assertion. That assertion intentionally does not claim
-coverage of child failure, cancellation, retry, replay, or recovery behavior.
+parent/child success assertion. The activity retry policy has the same
+separation: bilateral policy validation is synthetic, while a green CI job for
+this fixture will make its attempt-2 result live evidence for one
+server-managed retry. Neither assertion claims coverage of child failure,
+cancellation, retry, replay, or recovery behavior.
 
 ## Completion criteria for this design
 
@@ -448,7 +469,7 @@ following are true:
 * it builds two separate OCaml executables that both link `temporal-sdk`;
 * the worker's live Core poll/complete loops execute the registered OCaml
   workflow and mock activity code;
-* the driver starts all three top-level workflows through `temporal-sdk`, waits
+* the driver starts all four top-level workflows through `temporal-sdk`, waits
   for their results through `temporal-sdk`, and performs the listed assertions;
 * the fixture exits nonzero for a failed driver assertion, a workflow failure,
   a worker crash, or a cleanup timeout; and

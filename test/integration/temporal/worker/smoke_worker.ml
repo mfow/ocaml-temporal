@@ -135,10 +135,15 @@ let run () =
             [
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;
+              Worker.workflow Definitions.activity_retry;
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
             ]
-          ~activities:[ Worker.activity Definitions.mock_transform ]
+          ~activities:
+            [
+              Worker.activity Definitions.mock_transform;
+              Worker.activity Definitions.retry_once_activity;
+            ]
           ()
       in
       let* worker =

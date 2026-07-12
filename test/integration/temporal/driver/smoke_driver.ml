@@ -1,7 +1,7 @@
 (** Driver process for the two-OCaml-binary live acceptance test.
 
-    This executable is a deliberately small, typed harness. It starts both
-    activity scenarios and the parent/child scenario before waiting for any of
+    This executable is a deliberately small, typed harness. It starts the
+    fan-out, timer, retry, and parent/child scenarios before waiting for any of
     them, then checks the exact terminal payloads returned by the public client
     API. Without
     [TEMPORAL_TWO_BINARY_LIVE=1] the process exits with a distinct status
@@ -193,6 +193,11 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-timer-then-activity" ~input:"smoke"
         in
+        let* retry_handle =
+          start_workflow client ~workflow:Definitions.activity_retry
+            ~task_queue:Definitions.task_queue ~id:"two-binary-activity-retry"
+            ~input:"smoke"
+        in
         let* parent_handle =
           start_workflow client ~workflow:Definitions.parent_awaits_child
             ~task_queue:Definitions.task_queue
@@ -200,7 +205,8 @@ let run () =
         in
         (* All starts intentionally happen before the first wait. This proves
            the client retains independent exact-run handles while the worker
-           services activity-only and parent/child workflow executions. *)
+           services activity-only, retrying, and parent/child workflow
+           executions. *)
         let* fan_result = wait_workflow fan_handle in
         let* () =
           require_completed "smoke.fan_out" "SMOKE:LEFT|SMOKE:RIGHT"
@@ -210,6 +216,11 @@ let run () =
         let* () =
           require_completed "smoke.timer_then_activity" "SMOKE:TIMER"
             (Ok timer_result)
+        in
+        let* retry_result = wait_workflow retry_handle in
+        let* () =
+          require_completed "smoke.activity_retry" "SMOKE:ATTEMPT:2"
+            (Ok retry_result)
         in
         let* parent_result = wait_workflow parent_handle in
         require_completed "smoke.parent_awaits_child" "SMOKE:CHILD"

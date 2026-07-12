@@ -18,13 +18,22 @@ claims.
   existing two-binary Compose fixture after the success path is broadened.
 
 The initial live gate passed in Linux CI for commit `d4456b7`, covering the
-fan-out and timer/activity cases. This revision extends the same driver to
-start `smoke.fan_out`, `smoke.timer_then_activity`, and
+fan-out and timer/activity cases. The current driver starts
+`smoke.fan_out`, `smoke.timer_then_activity`, `smoke.activity_retry`, and
 `smoke.parent_awaits_child` before it waits for any result. The parent invokes
 `Temporal.Child_workflow.execute`; its registered child waits on a durable
-timer, and the driver asserts `SMOKE:CHILD` from the parent. A green job for
-this revision is evidence for that concrete happy path only, not live proof of
-child failure, retry, cancellation, replay, or recovery behavior.
+timer, and the driver asserts `SMOKE:CHILD` from the parent. The retry workflow
+uses a policy with two attempts: its activity deliberately fails once and the
+driver requires the exact `SMOKE:ATTEMPT:2` result, which proves a second
+activity task is expected to be delivered by the live server/Core path. The
+retry-policy constructor, JSON representation, and Core conversion remain
+separately covered by synthetic tests; a green job for this revision will be
+the live evidence for retry delivery.
+A green job for this revision will provide evidence for these concrete happy
+paths only; until that job succeeds, the added retry path is implemented but
+pending live CI verification. It will not provide live proof of retry
+timeouts, non-retryable classification, cancellation, replay, or recovery
+behavior.
 
 The driver in this matrix is a one-shot OCaml assertion runner, not another
 worker. It starts known workflows through `Temporal.Client`, waits for their
@@ -42,9 +51,10 @@ depend on history left by an earlier run.
 | Direct-style workflow execution, suspension, futures, and deterministic replay | **Verified (synthetic only).** `make test-runtime`; [`test/runtime/test_scheduler.ml`](../../test/runtime/test_scheduler.ml), [`test/runtime/test_activation.ml`](../../test/runtime/test_activation.ml), and native execution tests. | **Verified (live success path).** Timer, activity, and child waits suspend and later resume smoke workflows through real polling and completion. | Replay and unusual scheduling paths remain synthetic-only. |
 | OCaml/Rust JSON bridge validation and payload boundaries | **Verified (synthetic only).** `make test-bridge`; OCaml protocol tests under [`test/bridge/`](../../test/bridge/) and Rust protocol tests under [`rust/core-bridge/tests/`](../../rust/core-bridge/tests/) validate closed records, ownership, rejection, and normalization. | **Verified (live success path).** Happy-path client, workflow, and activity records cross both public processes. | Malformed and uncommon record variants need dedicated live fault injection if they become supported scenarios. |
 | PostgreSQL, Temporal Server, namespace, and Core lifecycle | Focused supervisor/bridge lifecycle tests cover invalid and repeated transitions. | **Verified (live success path).** The fixture starts the stack, waits for health, runs [`test/integration/test_core_lifecycle.ml`](../../test/integration/test_core_lifecycle.ml), and cleans the project. | Upgrade, persistence, and production-topology coverage are separate concerns. |
-| A workflow starts, runs, and returns a terminal result | Synthetic activation and native adapter tests cover command construction and terminal handling. | **Verified (live success path).** The driver starts three top-level workflows, retains their exact workflow/run handles, waits through `Temporal.Client`, and fails on unexpected terminal outcomes or results. | Failed, cancelled, timed-out, terminated, and continued-as-new outcomes remain untested live. |
+| A workflow starts, runs, and returns a terminal result | Synthetic activation and native adapter tests cover command construction and terminal handling. | **Verified (prior live success paths; retry addition pending CI).** The driver retains exact workflow/run handles and waits through `Temporal.Client`; the earlier three top-level workflows are live-verified, while the newly added fourth retry workflow is implemented but pending this revision's live CI job. | Failed, cancelled, timed-out, terminated, and continued-as-new outcomes remain untested live. |
 | Durable timers and wake-up | **Verified (synthetic only).** [`test/runtime/test_activation.ml`](../../test/runtime/test_activation.ml) covers zero-duration behavior, timer scheduling, and timer resolution. | **Verified (live success path).** `smoke.timer_then_activity` and the child in `smoke.parent_awaits_child` each wait for a short durable timer before returning. | Timer cancellation, unusual durations, and replay need separate live assertions. |
-| Remote activity task polling and completion | **Verified (synthetic only).** [`test/runtime/test_native_activity_execution.ml`](../../test/runtime/test_native_activity_execution.ml), worker execution tests, and activity bridge tests cover typed task/completion conversion and lease retention. | **Verified (live success path).** `smoke.mock_transform` runs in the worker and returns the deterministic decoded result used by the two activity-oriented workflows. | Activity failure, retry, timeout, heartbeat, and asynchronous completion are **Planned — later expansion**. |
+| Remote activity task polling and completion | **Verified (synthetic only).** [`test/runtime/test_native_activity_execution.ml`](../../test/runtime/test_native_activity_execution.ml), worker execution tests, and activity bridge tests cover typed task/completion conversion and lease retention. | **Verified for the prior success path; retry addition pending live CI.** `smoke.mock_transform` remains live-verified, while `smoke.retry_once` is implemented and will extend that evidence after this revision's integration job succeeds. | Activity timeout, heartbeat, asynchronous completion, and non-retryable failure are **Planned — later expansion**. |
+| Activity retry policy and retry delivery | **Verified (synthetic only).** [`test/unit/test_activity_retry_policy.ml`](../../test/unit/test_activity_retry_policy.ml), [`test/runtime/test_activity_retry_policy.ml`](../../test/runtime/test_activity_retry_policy.ml), OCaml/Rust protocol tests, and Core conversion tests validate the immutable policy, exact coefficient bits, and malformed-input rejection without a server. | **Implemented; pending live CI verification.** `smoke.activity_retry` schedules `smoke.retry_once` with an explicit two-attempt policy; the first implementation call should return a retryable activity failure, the second should return `SMOKE:ATTEMPT:2`, and the one-shot driver asserts that exact result. | Retry backoff under larger intervals, non-retryable error-type matching, timeout-triggered retries, and retry behavior across worker restart remain **Planned — later expansion**. |
 | Multiple operations scheduled before awaiting | **Verified (synthetic only).** Scheduler and activation tests cover completion ordering, first-error behavior, and cancellation semantics. | **Verified (live success path).** `smoke.fan_out` creates two mock-activity futures before its first wait and checks the ordered combined result. | `race`, cancellation, and explicit server-history ordering assertions are **Planned — later expansion**. |
 | Typed workflow failures and non-success terminal outcomes | **Verified (synthetic only).** Error, protocol, client, worker, and runtime tests check typed rejection and terminal state handling without exceptions for expected failures. | No non-success terminal outcome is asserted live. | **Planned — later expansion.** The driver already fails the gate for an unexpected terminal class. |
 | Cancellation and graceful shutdown with outstanding work | **Verified (synthetic only).** Activation cancellation/cache eviction and supervisor shutdown tests cover state cleanup and idempotence. | The live gate performs clean shutdown after its successful work completes. | Cancel an outstanding execution and test graceful teardown with retained work: **Planned — later expansion.** |
@@ -66,7 +76,8 @@ make test-temporal-integration # real PostgreSQL/Temporal + two OCaml binaries
 
 `make test-temporal-integration` is the only command in this list that starts
 a real Temporal Server. It owns the fixture lifecycle, starts the independent
-worker and driver, asserts terminal results, prints useful failure logs, and
-cleans the Compose project. A green `make verify` alone is not live workflow
+worker and one-shot assertion driver, asserts terminal results (including the
+retry attempt marker), prints useful failure logs, and cleans the Compose
+project and PostgreSQL volume. A green `make verify` alone is not live workflow
 evidence, and the green two-binary gate must not be generalized to unlisted
-terminal, child failure/cancellation, or recovery scenarios.
+terminal, child failure/cancellation, retry timeout, or recovery scenarios.

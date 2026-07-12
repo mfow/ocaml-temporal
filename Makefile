@@ -110,15 +110,15 @@ temporal-run-driver:
 	if [ "$$status" -ne 0 ]; then $(MAKE) temporal-inspect-smoke || true; $(MAKE) temporal-logs || true; fi; \
 	exit "$$status"
 
-# Performs a failure-only metadata check for the four known workflow IDs: the
-# driver's three top-level executions and its deterministic child. The
+# Performs a failure-only metadata check for the known workflow IDs: the
+# driver's four top-level executions and its deterministic child. The
 # admin-tools output contains execution status/run identity but no history or
 # payloads, which distinguishes a start, worker-dispatch, and terminal-wait
 # failure without expanding the acceptance test's privacy surface. A missing
 # workflow is expected when the driver stalled before its first start, so every
 # query is best effort and cannot mask the original exit status.
 temporal-inspect-smoke:
-	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity two-binary-parent-awaits-child two-binary-parent-child-smoke; do \
+	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity two-binary-activity-retry two-binary-parent-awaits-child two-binary-parent-child-smoke; do \
 		echo "--- Temporal metadata for $$workflow_id ---"; \
 		$(TEMPORAL_COMPOSE) run --rm --no-deps temporal-admin-tools \
 			temporal workflow describe --workflow-id "$$workflow_id" \

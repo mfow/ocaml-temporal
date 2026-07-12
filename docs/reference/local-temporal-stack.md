@@ -81,8 +81,13 @@ executable uses the private supervisor and C/Rust bridge to connect the
 official Core client, construct and namespace-validate a workflow/remote-
 activity worker, exercise invalid and repeated lifecycle transitions, and shut
 the graph down deterministically. It then waits for `smoke-worker` to publish
-readiness and runs `smoke-driver` as a one-shot test process. The driver
-implementation starts seven smoke workflows before waiting for any result. For
+readiness and runs `smoke-driver` as a one-shot test process. Before
+`Temporal.Worker.create`, the worker removes any prior readiness marker after
+validating its marker environment; its finalizer removes the marker again.
+This ordering prevents a reused container from reporting a previous run's
+readiness while the current worker is still being constructed or has failed.
+The driver implementation starts seven smoke workflows before waiting for any
+result. For
 the heartbeat workflow, the first activity attempt records a progress detail
 with a 500 ms heartbeat timeout and returns a retryable error; the driver
 requires the second attempt to receive that detail and timeout from Temporal.
@@ -96,9 +101,10 @@ ordinary retry scenarios are part of the same driver and are also started before
 the first wait. Historical live evidence covers the four baseline success
 payloads and the typed failure; the heartbeat and cancellation assertions are
 implemented and locally covered, but they are not live-verified because the
-attempted Actions run was cancelled. After the driver exits, the Makefile stops the
-worker and requires its graceful-shutdown marker; the driver's successful
-`client_shutdown` phase provides the corresponding client teardown evidence.
+attempted Actions run was cancelled. After the driver exits, the Makefile stops
+the worker and requires the current run's exact `.worker-stopped` marker; the
+driver's successful `client_shutdown` phase provides the corresponding client
+teardown evidence.
 
 This is a real workflow-result acceptance fixture, not only a lifecycle test.
 It has live evidence for the baseline fan-out, timer/activity, and parent/child

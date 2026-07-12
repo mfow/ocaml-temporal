@@ -23,9 +23,11 @@ one typed non-retryable failure, and one exact-run cancellation. Only the five
 baseline executions are currently backed by live CI evidence; the heartbeat and
 cancellation assertions remain local-only until a green live run verifies them.
 
-`smoke-worker` publishes an atomic readiness marker after public
-`Temporal.Worker.create` succeeds. Compose waits for that health check before
-`smoke-driver` is run. Each acceptance run starts after `temporal-clean` has
+`smoke-worker` removes any prior readiness marker after validating its marker
+environment and before public `Temporal.Worker.create` begins. Once creation
+succeeds it publishes a new atomic readiness marker. Compose waits for that
+health check before `smoke-driver` is run. Each acceptance run starts after
+`temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
 later acceptance run. The driver starts all seven top-level workflows before
@@ -188,7 +190,8 @@ starts.
 
 The worker health check becomes healthy only after `Temporal.Worker.create`
 has connected, validated the native worker, and registered its OCaml
-definitions. It deliberately publishes readiness before `Worker.run` enters
+definitions. Startup first removes the marker from any interrupted or reused
+container, then deliberately publishes readiness before `Worker.run` enters
 the long-lived poll loop, so the Makefile can wait for a semantic readiness
 marker rather than treating a bare process or TCP listener as readiness.
 `temporal-start-worker` waits for that health check, and the subsequent
@@ -196,8 +199,9 @@ marker rather than treating a bare process or TCP listener as readiness.
 the explicit Makefile ordering therefore launches exactly one driver after the
 already-ready worker. The driver's exit status is authoritative for workflow
 assertions; the complete integration target additionally requires the driver's
-graceful client-shutdown marker and the worker's clean-stop marker. None of
-these acceptance signals may be replaced by a schema migration, namespace
+graceful client-shutdown marker and the current run's exact `worker-stopped`
+marker. None of these acceptance signals may be replaced by a schema
+migration, namespace
 registration, TCP check, or a `temporal operator cluster health` check.
 
 `make test-temporal-integration` owns the fixture lifecycle: create its

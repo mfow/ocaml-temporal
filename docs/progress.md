@@ -28,6 +28,19 @@ configuration contract, the worker-stop contract, and the restart/replay
 contract; GitHub Actions is treated as pending infrastructure evidence rather
 than a local correctness signal.
 
+## 2026-07-13: Readiness-marker stale-state protection
+
+The two-binary worker now removes its configured readiness marker immediately
+after validating the marker environment and before `Worker.create` begins. Its
+finalizer still removes the marker after normal shutdown and runtime errors.
+This prevents a reused or interrupted Compose container from satisfying the
+health check with a previous run's `worker-ready` file while the current
+worker is still starting or has failed. The Docker-free readiness contract
+seeds that stale marker and checks the source ordering, while the Compose
+configuration contract requires the Makefile target. GitHub Actions may remain
+queued because of repository quota; this milestone records local verification
+only and makes no CI-success claim.
+
 ## 2026-07-13: Acceptance validator and client-boundary hardening (#164–#165)
 
 The merged tip is `1fa679c`: [#164](https://github.com/mfow/ocaml-temporal/pull/164)

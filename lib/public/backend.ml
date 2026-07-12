@@ -553,17 +553,20 @@ let native_client_start (client : native_client) (request : start_request) :
     | Ok (Error error) -> Error (native_client_error error)
     | Ok (Ok ticket) ->
         let rec await_outcome () : (start_response, Error.t) result =
-          match
-            Native.perform client.supervisor
-              (Native.Client_wait_start_workflow ticket)
-          with
-          | Error error -> Error (native_supervisor_error error)
-          | Ok None ->
-              (* The native wait is intentionally bounded. Yielding here is
-                 only on the ordinary caller Domain, never on the supervisor
-                 owner or a workflow scheduler fiber. *)
-              Thread.yield ();
-              await_outcome ()
+          if Atomic.get client.closed then
+            Error (bridge_error "client is shut down")
+          else
+            match
+              Native.perform client.supervisor
+                (Native.Client_wait_start_workflow ticket)
+            with
+            | Error error -> Error (native_supervisor_error error)
+            | Ok None ->
+                (* The native wait is intentionally bounded. Yielding here is
+                   only on the ordinary caller Domain, never on the supervisor
+                   owner or a workflow scheduler fiber. *)
+                Thread.yield ();
+                await_outcome ()
           | Ok (Some (Client_protocol.Accepted { execution })) ->
               Ok
                 {
@@ -628,13 +631,15 @@ let native_client_wait (client : native_client) (request : wait_request) =
       }
     in
     let rec await_terminal () =
-      match Native.perform client.supervisor (Native.Client_wait_workflow request) with
-      | Error (Native.Backend { Bridge.status = Bridge.Not_ready; _ }) ->
-          Thread.yield ();
-          await_terminal ()
-      | Error error -> Error (native_supervisor_error error)
-      | Ok (Error error) -> Error (native_client_error error)
-      | Ok (Ok response) -> native_terminal_result response
+      if Atomic.get client.closed then Error (bridge_error "client is shut down")
+      else
+        match Native.perform client.supervisor (Native.Client_wait_workflow request) with
+        | Error (Native.Backend { Bridge.status = Bridge.Not_ready; _ }) ->
+            Thread.yield ();
+            await_terminal ()
+        | Error error -> Error (native_supervisor_error error)
+        | Ok (Error error) -> Error (native_client_error error)
+        | Ok (Ok response) -> native_terminal_result response
     in
     await_terminal ()
 

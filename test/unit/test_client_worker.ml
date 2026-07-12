@@ -279,6 +279,36 @@ let test_client_validation_errors () =
     (Temporal.Client.cancel ~reason:"contains\000nul" handle);
   unwrap (Temporal.Client.shutdown client)
 
+(** Identifier limits are enforced before transport selection. This keeps the
+    deterministic mock honest about the native JSON bridge's 65,536-byte
+    bound, so an oversized start or cancellation request cannot pass tests
+    locally and fail only after switching to HTTP(S). *)
+let test_client_identifier_size_validation () =
+  let oversized = String.make 65_537 'x' in
+  let oversized_workflow =
+    Temporal.Workflow.define ~name:oversized ~input:Temporal.Codec.string
+      ~output:Temporal.Codec.string (fun input -> Ok input)
+  in
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  expect_error "defect"
+    (Temporal.Client.start client ~workflow:echo_workflow
+       ~task_queue:"unit-test" ~id:oversized ~input:"ignored" ());
+  expect_error "defect"
+    (Temporal.Client.start client ~workflow:oversized_workflow
+       ~task_queue:"unit-test" ~id:"valid-id" ~input:"ignored" ());
+  let handle =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"bounded-cancel" ~input:"ignored" ())
+  in
+  expect_error "defect"
+    (Temporal.Client.cancel ~request_id:oversized handle);
+  unwrap (Temporal.Client.shutdown client)
+
 (** An HTTP-shaped endpoint is deliberately handed to the native configuration
     validator rather than the deterministic mock. The malformed host fails
     before a runtime or network connection is allocated, proving the public
@@ -316,6 +346,7 @@ let () =
   test_exact_run_cancellation ();
   test_completed_mock_run_is_immutable ();
   test_client_validation_errors ();
+  test_client_identifier_size_validation ();
   test_native_client_configuration_boundary ();
   test_worker_validation_errors ();
   test_native_worker_configuration_boundary ()

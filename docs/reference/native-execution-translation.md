@@ -87,10 +87,11 @@ the complete result before returning it to the bridge.
 | `Cancel_workflow_execution` | `Cancel_workflow_execution` | This is already an exact marker. |
 
 Child starts now have a closed semantic command record and are converted to
-Core without fabricating language-level options. The native runtime still does
-not represent the child-start resolution job, so a workflow that waits for a
-child result remains outside this first native execution slice. That missing
-resolution path is intentionally documented rather than silently treating a
+Core without fabricating language-level options. The native worker gates that
+completion before submission because the native runtime still does not
+represent the child-start resolution job; a workflow that waits for a child
+result remains outside this first native execution slice. That missing
+resolution path is intentionally rejected rather than silently treating a
 started child as completed.
 
 ### Activity command defaults and options

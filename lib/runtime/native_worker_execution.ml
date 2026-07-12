@@ -280,6 +280,23 @@ let is_terminal completion =
       | Protocol.Cancel_timer _ -> false)
     completion.Protocol.commands
 
+(** Identifies a child-start command before it reaches Core. The current
+    activation protocol can encode the start, but it cannot yet decode the
+    child-resolution job that Core returns; submitting the start would
+    therefore leave a live worker with no safe way to retire its next lease. *)
+let contains_child_workflow_start completion =
+  List.exists
+    (function Protocol.Start_child_workflow _ -> true | _ -> false)
+    completion.Protocol.commands
+
+(** Explains the temporary worker-level gate for child workflows. The semantic
+    protocol remains lossless for focused translation tests, while the live
+    worker rejects the operation until matching child-resolution activations
+    and their lease handling are implemented. *)
+let child_workflow_resolution_error () =
+  make_error ~path:"$.completion.commands" "unsupported"
+    "child workflow starts are gated until child-resolution activations are supported"
+
 (** Reports one bounded lifecycle message without allowing a reporter defect to
     affect worker progress. *)
 let report level ~operation ?error_kind () =
@@ -542,39 +559,46 @@ module Make (Supervisor : SUPERVISOR) = struct
   (** Produces a typed completion for a successfully executed activation and
       updates the registry only after the supervisor confirms retirement. *)
   let submit_completion adapter activation completion ~run_id =
-    let pending =
-      {
-        run_id;
-        completion = copy_completion completion;
-        result =
-          Pending_completed
-            {
-              command_count = List.length completion.commands;
-              terminal = is_terminal completion;
-              evicted =
-                List.exists
-                  (function Protocol.Remove_from_cache _ -> true | _ -> false)
-                  activation.Protocol.jobs;
-            };
-      }
-    in
-    if Run_map.mem pending.run_id adapter.pending then
-      Error
-        (make_error ~path:"$.run_id" "duplicate_pending_completion"
-           "a workflow run already has an unacknowledged completion")
-    else begin
-      adapter.pending <- Run_map.add pending.run_id pending adapter.pending;
-      match attempt_completion adapter.supervisor pending.completion with
-      | Accepted -> accepted_pending adapter pending
-      | Rejected_by_supervisor error -> Error error
-      | Raised_by_supervisor exception_ ->
-          (* Preserve the historical cleanup contract for a binding exception:
-             remove this uncertain ordinary completion before the outer guard
-             submits one explicit failure completion. If that fallback also
-             fails, [retire_with_failure] records its own retryable lease. *)
-          adapter.pending <- Run_map.remove pending.run_id adapter.pending;
-          raise exception_
-    end
+    if contains_child_workflow_start completion then
+      (* Do not send a partially supported child command to Core. Retiring the
+         leased activation with one non-retryable failure removes the local
+         execution and leaves the native lease accounting unambiguous. *)
+      retire_with_failure ~remove_run:true adapter activation
+        (child_workflow_resolution_error ())
+    else
+      let pending =
+        {
+          run_id;
+          completion = copy_completion completion;
+          result =
+            Pending_completed
+              {
+                command_count = List.length completion.commands;
+                terminal = is_terminal completion;
+                evicted =
+                  List.exists
+                    (function Protocol.Remove_from_cache _ -> true | _ -> false)
+                    activation.Protocol.jobs;
+              };
+        }
+      in
+      if Run_map.mem pending.run_id adapter.pending then
+        Error
+          (make_error ~path:"$.run_id" "duplicate_pending_completion"
+             "a workflow run already has an unacknowledged completion")
+      else begin
+        adapter.pending <- Run_map.add pending.run_id pending adapter.pending;
+        match attempt_completion adapter.supervisor pending.completion with
+        | Accepted -> accepted_pending adapter pending
+        | Rejected_by_supervisor error -> Error error
+        | Raised_by_supervisor exception_ ->
+            (* Preserve the historical cleanup contract for a binding exception:
+               remove this uncertain ordinary completion before the outer guard
+               submits one explicit failure completion. If that fallback also
+               fails, [retire_with_failure] records its own retryable lease. *)
+            adapter.pending <- Run_map.remove pending.run_id adapter.pending;
+            raise exception_
+      end
 
   (** Applies one activation while the adapter mutex is held. No source call or
       map mutation is performed after an error that has not been acknowledged

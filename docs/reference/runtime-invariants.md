@@ -55,7 +55,9 @@ and bridge, read the [documentation guide](../README.md) first.
 - Child-workflow IDs are explicit, non-empty, valid UTF-8, and at most 65,536
   UTF-8 bytes. Invalid identity consumes neither a sequence nor a command. A
   child resolver is registered before its command is emitted and removed before
-  its output is decoded.
+  its output is decoded. The native worker currently gates the resulting
+  child-start completion before submission because the matching Core
+  child-resolution activation is not yet represented.
 - Activities, child workflows, and timers share one monotonic command sequence.
 - Zero-duration sleep emits no timer.
 - Positive sleep emits one timer and resumes only for its exact sequence.

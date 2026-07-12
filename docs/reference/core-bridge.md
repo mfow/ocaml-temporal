@@ -54,7 +54,9 @@ Core-required field and are accepted only after exact validation. Child-start
 commands now retain their workflow identity and input payload; options not yet
 exposed by the OCaml runtime remain at explicit Core defaults and are rejected
 if a reverse conversion encounters non-default values. Child result resolution
-is still outside this first worker slice. No field is silently dropped.
+is still outside this first worker slice, so the native worker gates child-start
+completions before they reach Core until that activation path is implemented.
+No field is silently dropped.
 See the translation reference for the complete mapping table and test coverage.
 
 ## Native client start and exact-run wait

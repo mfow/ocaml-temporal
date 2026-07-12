@@ -51,9 +51,12 @@ The private bilateral completion protocol now has a closed
 `start_child_workflow` command. The OCaml runtime maps its deterministic
 sequence, child workflow ID and type, and copied input payload into that
 record. Rust validates the identifiers, emits Temporal Core's
-`StartChildWorkflowExecution` command, and rejects non-default Core options
-that the current OCaml API does not expose instead of silently discarding
-them. The JSON schema and both-language round-trip tests cover the same shape.
+`StartChildWorkflowExecution` command for focused translation, and rejects
+non-default Core options that the current OCaml API does not expose instead of
+silently discarding them. The native worker gates this command before
+submission until child-resolution activations are decoded, so no partially
+supported live path can strand a parent lease. The JSON schema and
+both-language round-trip tests cover the semantic shape.
 
 The activation side still lacks Core's child-resolution job, so this milestone
 does not claim that a workflow can await a child result or that the live

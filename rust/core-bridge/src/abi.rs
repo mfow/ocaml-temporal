@@ -743,10 +743,15 @@ impl Runtime {
             .worker
             .take()
             .expect("checked worker remains owned until terminal finalization");
-        handle
-            .block_on(worker.finalize())
-            .map_err(worker_bridge_failure)?;
-        Ok(Vec::new())
+        match handle.block_on(worker.finalize()) {
+            Ok(()) => Ok(Vec::new()),
+            Err((worker, error)) => {
+                // Put the worker back so the language side can finish outstanding
+                // tasks and retry graceful shutdown instead of losing the graph.
+                self.worker = Some(worker);
+                Err(worker_bridge_failure(error))
+            }
+        }
     }
 
     /// Takes one workflow activation from the Rust lane without waiting.
@@ -1127,7 +1132,14 @@ fn drop_runtime_graph(
         // work. Force-fail every still-owned Core task before finalization so
         // outstanding debt cannot strand the worker graph in the process.
         handle.block_on(worker.force_complete_outstanding_for_dispose());
-        let _ = handle.block_on(worker.finalize());
+        match handle.block_on(worker.finalize()) {
+            Ok(()) => {}
+            Err((worker, _)) => {
+                // Dispose cannot wait for OCaml. Dropping after force-complete
+                // is the last-resort reclaim path.
+                drop(worker);
+            }
+        }
     }
     drop(client);
     drop(core);

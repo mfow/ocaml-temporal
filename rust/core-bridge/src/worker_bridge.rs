@@ -704,19 +704,50 @@ impl PollLanes {
     }
 
     /// Consumes a fully drained worker and runs Core's terminal finalizer.
-    pub async fn finalize(self) -> Result<(), WorkerBridgeError> {
+    ///
+    /// On failure the original [`PollLanes`] is returned so the caller can still
+    /// force-complete outstanding tasks or retry. A failed finalize must not
+    /// drop the only handle that can still talk to Core.
+    pub async fn finalize(self) -> Result<(), (Self, WorkerBridgeError)> {
         let outstanding = self
             .ledger
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .outstanding();
         if outstanding != 0 {
-            return Err(WorkerBridgeError::OutstandingTasks(outstanding));
+            return Err((self, WorkerBridgeError::OutstandingTasks(outstanding)));
         }
-        let worker =
-            Arc::try_unwrap(self.worker).map_err(|_| WorkerBridgeError::WorkerStillShared)?;
-        worker.finalize_shutdown().await;
-        Ok(())
+        let Self {
+            worker,
+            ledger,
+            workflow_ready,
+            activity_ready,
+            workflow_signal,
+            activity_signal,
+            workflow_lane,
+            activity_lane,
+            shutdown_started,
+        } = self;
+        match Arc::try_unwrap(worker) {
+            Ok(worker) => {
+                worker.finalize_shutdown().await;
+                Ok(())
+            }
+            Err(worker) => Err((
+                Self {
+                    worker,
+                    ledger,
+                    workflow_ready,
+                    activity_ready,
+                    workflow_signal,
+                    activity_signal,
+                    workflow_lane,
+                    activity_lane,
+                    shutdown_started,
+                },
+                WorkerBridgeError::WorkerStillShared,
+            )),
+        }
     }
 }
 

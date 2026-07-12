@@ -70,8 +70,9 @@ val schedule_activity :
   ('output, Temporal_base.Error.t) Future_store.t
 
 (** Assigns a private correlation sequence, records how to decode the child
-    result, emits a command containing the application-supplied durable [id],
-    and returns the child result future together with a cancellation operation.
+    result, emits a command containing the application-supplied durable [id]
+    and optional Core-owned retry policy, and returns the child result future
+    together with a cancellation operation.
     The default policy is [Child_try_cancel], so cancellation requests the
     child unless a caller explicitly chooses [Child_abandon]. The operation is
     valid only while this context is current; it emits at most one cancellation
@@ -83,6 +84,7 @@ val start_child_workflow :
   id:string ->
   name:string ->
   input:Temporal_base.Codec.payload ->
+  ?retry_policy:Activation.retry_policy ->
   ?cancellation_type:Activation.child_workflow_cancellation_type ->
   decode:(Temporal_base.Codec.payload -> ('output, Temporal_base.Error.t) result) ->
   unit ->

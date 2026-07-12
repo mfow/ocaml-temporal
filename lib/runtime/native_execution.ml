@@ -5,8 +5,8 @@
     payloads into the deterministic runtime representation, runs an existing
     [Execution.t], and converts only exactly representable commands back to the
     semantic protocol. In particular, it never invents activity timeouts, task
-    queues, or child-workflow options merely to make a command fit an older
-    protocol shape. *)
+    queues, or child-workflow options that are absent from the semantic
+    protocol merely to make a command fit an older protocol shape. *)
 
 module Protocol = Temporal_protocol.Workflow_protocol
 
@@ -746,11 +746,42 @@ let command_to_protocol command =
                do_not_eagerly_execute;
              })
   | Activation.Start_child_workflow
-      { seq; id; name; input; cancellation_type } ->
+      { seq; id; name; input; retry_policy; cancellation_type } ->
       let* () = validate_sequence "$.command.seq" seq in
       let* () = validate_identifier "$.command.id" id in
       let* () = validate_identifier "$.command.name" name in
       let* input = protocol_payload "$.command.input" input in
+      let* retry_policy =
+        match retry_policy with
+        | None -> Ok None
+        | Some value ->
+            let* initial_interval =
+              duration_of_milliseconds
+                "$.command.retry_policy.initial_interval"
+                value.initial_interval
+            in
+            let* maximum_interval =
+              duration_of_milliseconds
+                "$.command.retry_policy.maximum_interval"
+                value.maximum_interval
+            in
+            let policy =
+              Protocol.
+                {
+                  initial_interval;
+                  backoff_coefficient_bits = value.backoff_coefficient_bits;
+                  maximum_interval;
+                  maximum_attempts = value.maximum_attempts;
+                  non_retryable_error_types =
+                    List.map Fun.id value.non_retryable_error_types;
+                }
+            in
+            let* () =
+              Protocol.validate_retry_policy policy
+              |> Result.map_error protocol_error
+            in
+            Ok (Some policy)
+      in
       Ok
         (Protocol.Start_child_workflow
            {
@@ -758,6 +789,7 @@ let command_to_protocol command =
              workflow_id = id;
              workflow_type = name;
              input = [ input ];
+             retry_policy;
              cancellation_type = protocol_child_cancellation_type cancellation_type;
            })
   | Activation.Cancel_child_workflow { seq; reason } ->

@@ -120,6 +120,28 @@ let greeting_child =
   Temporal.Workflow.remote ~name:"greeting_child" ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
 
+(** A validated policy used by the child retry regression.  The policy is
+    intentionally expressed through the public activity module because child
+    and activity retries share Temporal Core's wire representation. *)
+let child_retry_policy =
+  match
+    Temporal.Activity.Retry_policy.make
+      ~initial_interval:(Temporal.Duration.of_ms 1_000L)
+      ~backoff_coefficient:2.0
+      ~maximum_interval:(Temporal.Duration.of_ms 5_000L)
+      ~maximum_attempts:3 ~non_retryable_error_types:[ "InvalidInput" ] ()
+  with
+  | Ok policy -> policy
+  | Error error -> failwith (Temporal.Error.message error)
+
+(** Parent fixture that delegates retry scheduling to Core.  No OCaml retry
+    loop is involved, which keeps the operation deterministic during replay. *)
+let retrying_child_parent_workflow =
+  Temporal.Workflow.define ~name:"retrying_child_parent"
+    ~input:Temporal.Codec.unit ~output:Temporal.Codec.string (fun () ->
+      Temporal.Child_workflow.execute ~retry_policy:child_retry_policy
+        ~id:"retrying-child" greeting_child "Ada")
+
 (** Parent fixture that exercises the direct-style child convenience function.
     The child call suspends this workflow until the matching resolution job is
     delivered by the synthetic Core boundary. *)
@@ -174,6 +196,7 @@ let test_child_workflow_cancellation () =
           id = "cancel-me";
           name = "greeting_child";
           input = payload "Ada";
+          retry_policy = None;
           cancellation_type = Activation.Child_wait_cancellation_requested;
         };
       Activation.Cancel_child_workflow { seq = 1L; reason = "no longer needed" };
@@ -228,6 +251,7 @@ let test_default_child_workflow_cancellation_policy () =
           id = "default-cancel-me";
           name = "greeting_child";
           input = payload "Ada";
+          retry_policy = None;
           cancellation_type = Activation.Child_try_cancel;
         };
       Activation.Cancel_child_workflow
@@ -601,6 +625,7 @@ let test_child_workflow_completion () =
           id = "greeting/Ada";
           name = "greeting_child";
           input = payload "Ada";
+          retry_policy = None;
           cancellation_type = Activation.Child_try_cancel;
         };
     ]
@@ -613,6 +638,33 @@ let test_child_workflow_completion () =
          Activation.Resolve_child_workflow
            { seq = 1L; result = Ok (payload "Hello Ada") };
        ])
+
+(** Verifies the public child retry policy is copied into the private command
+    without exposing bridge-specific fields to workflow authors.  The Core
+    worker, rather than this OCaml activation loop, owns subsequent retries. *)
+let test_child_workflow_retry_policy () =
+  let execution = Execution.start retrying_child_parent_workflow () in
+  expect "child retry policy command"
+    [
+      Activation.Start_child_workflow
+        {
+          seq = 1L;
+          id = "retrying-child";
+          name = "greeting_child";
+          input = payload "Ada";
+          retry_policy =
+            Some
+              {
+                Activation.initial_interval = 1_000L;
+                backoff_coefficient_bits = "4611686018427387904";
+                maximum_interval = 5_000L;
+                maximum_attempts = 3;
+                non_retryable_error_types = [ "InvalidInput" ];
+              };
+          cancellation_type = Activation.Child_try_cancel;
+        };
+    ]
+    (Execution.activate execution [ Activation.Start_workflow ])
 
 (** Parent fixture that starts a child and activity before awaiting either.
     Their shared sequence space and source order must be replay-stable. *)
@@ -639,6 +691,7 @@ let test_child_workflow_concurrency_and_decoding () =
           id = "child-1";
           name = "greeting_child";
           input = payload "Ada";
+          retry_policy = None;
           cancellation_type = Activation.Child_try_cancel;
         };
       Activation.Schedule_activity
@@ -794,6 +847,7 @@ let test_child_workflow_id_boundary () =
           id = "after-invalid";
           name = "greeting_child";
           input = payload "Ada";
+          retry_policy = None;
           cancellation_type = Activation.Child_try_cancel;
         };
     ]
@@ -949,6 +1003,7 @@ let test_child_cancel_after_natural_completion_is_noop () =
           id = "late-cancel-child";
           name = "child-workflow";
           input = payload "Ada";
+          retry_policy = None;
           cancellation_type = Activation.Child_try_cancel;
         };
     ]
@@ -1167,6 +1222,7 @@ let () =
   test_start_sleep ();
   test_empty_all_uses_current_workflow_owner ();
   test_child_workflow_completion ();
+  test_child_workflow_retry_policy ();
   test_child_workflow_cancellation ();
   test_default_child_workflow_cancellation_policy ();
   test_child_workflow_concurrency_and_decoding ();

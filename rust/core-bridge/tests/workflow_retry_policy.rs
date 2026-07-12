@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use ocaml_temporal_core_bridge::workflow_protocol::{
-    self, ActivityCancellationType, Completion, CompletionCommand, Duration, Payload, RetryPolicy,
+    self, ActivityCancellationType, ChildWorkflowCancellationType, Completion, CompletionCommand,
+    Duration, Payload, RetryPolicy,
 };
 use temporalio_protos::coresdk::workflow_completion;
 
@@ -35,6 +36,75 @@ fn completion(policy: Option<RetryPolicy>) -> Completion {
             do_not_eagerly_execute: false,
         }],
     }
+}
+
+/// Builds a child command with the same explicit policy used by the public
+/// child-workflow API.  Keeping this fixture beside activity retry tests
+/// proves the two command paths share the exact Core policy conversion.
+fn child_completion(policy: Option<RetryPolicy>) -> Completion {
+    Completion {
+        run_id: "run-child".to_owned(),
+        commands: vec![CompletionCommand::StartChildWorkflow {
+            seq: 2,
+            workflow_id: "child-1".to_owned(),
+            workflow_type: "example.child".to_owned(),
+            input: vec![Payload {
+                metadata: BTreeMap::new(),
+                data: b"input".to_vec(),
+            }],
+            retry_policy: policy,
+            cancellation_type: ChildWorkflowCancellationType::TryCancel,
+        }],
+    }
+}
+
+/// Confirms a child retry policy is carried through semantic JSON, Core, and
+/// the reverse conversion without losing exact coefficient bits.  Core owns
+/// the retry state machine; the language layer only declares its policy.
+#[test]
+fn child_policy_round_trips_losslessly() {
+    let policy = RetryPolicy {
+        initial_interval: Duration {
+            seconds: 1,
+            nanoseconds: 0,
+        },
+        backoff_coefficient_bits: 2.0f64.to_bits().to_string(),
+        maximum_interval: Duration {
+            seconds: 5,
+            nanoseconds: 0,
+        },
+        maximum_attempts: 3,
+        non_retryable_error_types: vec!["InvalidInput".to_owned()],
+    };
+    let value = child_completion(Some(policy.clone()));
+    let encoded = workflow_protocol::encode_completion(&value).unwrap();
+    assert!(encoded.contains("\"retry_policy\""));
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        value
+    );
+
+    let core = workflow_protocol::completion_to_core(&value).unwrap();
+    let Some(workflow_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("completion should be successful");
+    };
+    let Some(
+        temporalio_protos::coresdk::workflow_commands::workflow_command::Variant::StartChildWorkflowExecution(
+            child,
+        ),
+    ) = success.commands[0].variant.as_ref()
+    else {
+        panic!("completion should contain a child command");
+    };
+    let core_policy = child.retry_policy.as_ref().expect("policy is explicit");
+    assert_eq!(core_policy.backoff_coefficient.to_bits(), 2.0f64.to_bits());
+    assert_eq!(core_policy.maximum_attempts, 3);
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        value
+    );
 }
 
 /// Confirms explicit retry policy values survive JSON and the official Core

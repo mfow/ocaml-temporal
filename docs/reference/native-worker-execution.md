@@ -95,8 +95,9 @@ already been accepted.
    commands in creation order.
 6. `Native_execution` converts the command batch to a checked semantic
    completion. Activity commands retain their complete Core fields and child
-   starts retain their workflow identity and input payload before submission.
-   Core child options that the current OCaml runtime does not expose stay at
+   starts retain their workflow identity, input payload, and optional retry
+   policy before submission. Core child options that the current OCaml runtime
+   does not expose stay at
    explicit defaults. When Core later sends a child start acknowledgment, the
    adapter stores the returned run ID and keeps the parent future pending; a
    separate terminal child resolution then completes that future.
@@ -181,9 +182,9 @@ native teardown is not started and the public shutdown remains retryable. A
 native teardown failure leaves the worker closed because its ownership graph
 may be partially released. Repeated successful shutdown calls are idempotent.
 
-The semantic translator accepts child-start commands with the workflow identity
-and input fields represented by the protocol. Core child options not yet
-exposed by the OCaml runtime remain explicit defaults, but the two child
+The semantic translator accepts child-start commands with the workflow identity,
+input, and optional retry policy represented by the protocol. Core child options
+not yet exposed by the OCaml runtime remain explicit defaults, but the two child
 resolution activations are decoded and validated losslessly. Start and
 terminal events share one Core sequence; only that exact pair is accepted. The
 live Compose gate includes the initial workflow/activity success path, one

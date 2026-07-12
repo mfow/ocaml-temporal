@@ -163,6 +163,9 @@ type child_workflow_cancellation_type =
   | Child_abandon
   | Child_wait_cancellation_requested
 
+(** A bridge-ready retry policy shared by activity and child-workflow
+    commands. Durations and the coefficient bit string are validated before
+    the value is serialized or handed to the Rust bridge. *)
 type retry_policy = {
   initial_interval : duration;
   backoff_coefficient_bits : string;
@@ -191,6 +194,7 @@ type completion_command =
       workflow_id : string;
       workflow_type : string;
       input : payload list;
+      retry_policy : retry_policy option;
       cancellation_type : child_workflow_cancellation_type;
     }
   | Cancel_child_workflow of { seq : int64; reason : string }
@@ -1612,6 +1616,7 @@ let completion_command path json =
             "workflow_id";
             "workflow_type";
             "input";
+            "retry_policy";
             "cancellation_type";
           ]
           json
@@ -1624,6 +1629,10 @@ let completion_command path json =
       let* workflow_type = identifier (path ^ ".workflow_type") workflow_type_json in
       let* input_json = field path "input" entries in
       let* input = list (path ^ ".input") payload input_json in
+      let* retry_policy_json = field path "retry_policy" entries in
+      let* retry_policy =
+        nullable (path ^ ".retry_policy") retry_policy retry_policy_json
+      in
       let* cancellation_json = field path "cancellation_type" entries in
       let* cancellation_name =
         string (path ^ ".cancellation_type") cancellation_json
@@ -1633,7 +1642,8 @@ let completion_command path json =
       in
       Ok
         (Start_child_workflow
-           { seq; workflow_id; workflow_type; input; cancellation_type })
+           { seq; workflow_id; workflow_type; input; retry_policy;
+             cancellation_type })
   | "cancel_child_workflow" ->
       let* entries = exact_object path [ "kind"; "seq"; "reason" ] json in
       let* seq_json = field path "seq" entries in
@@ -1718,8 +1728,13 @@ let completion_command_json = function
             ("seq", `Intlit (Int64.to_string seq));
           ])
   | Start_child_workflow
-      { seq; workflow_id; workflow_type; input; cancellation_type } ->
+      { seq; workflow_id; workflow_type; input; retry_policy; cancellation_type } ->
       let* input = payloads_json input in
+      let* retry_policy =
+        match retry_policy with
+        | None -> Ok `Null
+        | Some value -> retry_policy_json value
+      in
       Ok
         (`Assoc
           [
@@ -1728,6 +1743,7 @@ let completion_command_json = function
             ("workflow_id", `String workflow_id);
             ("workflow_type", `String workflow_type);
             ("input", input);
+            ("retry_policy", retry_policy);
             ( "cancellation_type",
               `String (child_cancellation_type_string cancellation_type) );
           ])

@@ -496,12 +496,16 @@ pub enum CompletionCommand {
         do_not_eagerly_execute: bool,
     },
     /// Starts a child workflow and records the policy used for an explicit
-    /// later cancellation command.
+    /// later cancellation command.  Core owns retries, so an optional policy
+    /// is carried with the command rather than reimplemented in replayed OCaml
+    /// code.
     StartChildWorkflow {
         seq: u32,
         workflow_id: String,
         workflow_type: String,
         input: Vec<Payload>,
+        #[serde(deserialize_with = "required_nullable")]
+        retry_policy: Option<RetryPolicy>,
         cancellation_type: ChildWorkflowCancellationType,
     },
     /// Requests cancellation of a previously started child workflow.
@@ -1045,10 +1049,14 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
             CompletionCommand::StartChildWorkflow {
                 workflow_id,
                 workflow_type,
+                retry_policy,
                 ..
             } => {
                 identifier(workflow_id, "$.commands.workflow_id")?;
                 identifier(workflow_type, "$.commands.workflow_type")?;
+                if let Some(retry_policy) = retry_policy {
+                    validate_retry_policy(retry_policy, "$.commands.retry_policy")?;
+                }
             }
             CompletionCommand::CancelChildWorkflow { reason, .. } => {
                 if reason.is_empty() {
@@ -1958,6 +1966,7 @@ fn command_to_core(
             workflow_id,
             workflow_type,
             input,
+            retry_policy,
             cancellation_type,
         } => Variant::StartChildWorkflowExecution(core_commands::StartChildWorkflowExecution {
             seq: *seq,
@@ -1967,10 +1976,14 @@ fn command_to_core(
                 .iter()
                 .map(payload_to_core)
                 .collect::<Result<_, _>>()?,
+            retry_policy: retry_policy
+                .as_ref()
+                .map(retry_policy_to_core)
+                .transpose()?,
             cancellation_type: child_cancellation_to_core(*cancellation_type),
-            // The current OCaml command carries no task queue, namespace, or
-            // child policy options. Defaulting the remaining Core fields is
-            // deliberate and documented by the semantic schema.
+            // Namespace, task queue, timeouts, and the other child options are
+            // still intentionally left at Core defaults until they have a
+            // stable public representation.
             ..Default::default()
         }),
         CompletionCommand::CancelChildWorkflow { seq, reason } => {
@@ -2091,7 +2104,6 @@ fn command_from_core(
                 || value.workflow_task_timeout.is_some()
                 || value.parent_close_policy != 0
                 || value.workflow_id_reuse_policy != 0
-                || value.retry_policy.is_some()
                 || !value.cron_schedule.is_empty()
                 || !value.headers.is_empty()
                 || !value.memo.is_empty()
@@ -2112,6 +2124,11 @@ fn command_from_core(
                     .iter()
                     .map(payload_from_core)
                     .collect::<Result<_, _>>()?,
+                retry_policy: value
+                    .retry_policy
+                    .as_ref()
+                    .map(retry_policy_from_core)
+                    .transpose()?,
                 cancellation_type: child_cancellation_from_core(value.cancellation_type)?,
             })
         }

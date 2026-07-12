@@ -1,9 +1,9 @@
 (** Driver process for the two-OCaml-binary live acceptance test.
 
     This executable is a deliberately small, typed harness. It starts the
-    fan-out, timer, retry, and parent/child scenarios before waiting for any of
-    them, then checks the exact terminal payloads returned by the public client
-    API. Without
+    fan-out, timer, retry, parent/child, and typed-failure scenarios before
+    waiting for any of them, then checks the exact terminal outcomes returned
+    by the public client API. Without
     [TEMPORAL_TWO_BINARY_LIVE=1] the process exits with a distinct status
     instead of accidentally exercising the in-memory [mock://] backend and
     giving a false live-smoke signal. *)
@@ -118,6 +118,33 @@ let terminal_kind = function
   | Client.Timed_out _ -> "timed_out"
   | Client.Continued_as_new _ -> "continued_as_new"
 
+(** Requires the live workflow to fail as a non-retryable workflow application
+    error. [Error.view] exposes the stable category and retry policy while the
+    stable message prefix identifies this fixture's intentional failure without
+    depending on extra source or Core failure-info text. *)
+let require_non_retryable_failure operation expected_message = function
+  | Ok (Client.Failed error) ->
+      let view = Error.view error in
+      if
+        view.category = `Workflow
+        && view.non_retryable
+        && String.starts_with ~prefix:expected_message view.message
+      then Ok ()
+      else
+        Error
+          (Error.defect
+             ~message:
+               (Printf.sprintf
+                  "%s returned an unexpected workflow failure (kind=%s, non_retryable=%b)"
+                  operation (Error.kind error) view.non_retryable))
+  | Ok outcome ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "%s returned terminal outcome %s" operation
+                (terminal_kind outcome)))
+  | Error error -> Error error
+
 (** Starts one workflow and records the server-issued run identity only after
     the typed client has accepted it. *)
 let start_workflow client ~workflow ~task_queue ~id ~input =
@@ -203,9 +230,14 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-parent-awaits-child" ~input:"smoke"
         in
+        let* failure_handle =
+          start_workflow client ~workflow:Definitions.non_retryable_failure
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-non-retryable-failure" ~input:"smoke"
+        in
         (* All starts intentionally happen before the first wait. This proves
            the client retains independent exact-run handles while the worker
-           services activity-only, retrying, and parent/child workflow
+           services activity-only, retrying, parent/child, and failing workflow
            executions. *)
         let* fan_result = wait_workflow fan_handle in
         let* () =
@@ -223,8 +255,13 @@ let run () =
             (Ok retry_result)
         in
         let* parent_result = wait_workflow parent_handle in
-        require_completed "smoke.parent_awaits_child" "SMOKE:CHILD"
-          (Ok parent_result)
+        let* () =
+          require_completed "smoke.parent_awaits_child" "SMOKE:CHILD"
+            (Ok parent_result)
+        in
+        let* failure_result = wait_workflow failure_handle in
+        require_non_retryable_failure "smoke.non_retryable_failure"
+          "intentional terminal workflow failure" (Ok failure_result)
       in
       finish result
 

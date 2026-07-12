@@ -114,3 +114,16 @@ let parent_awaits_child =
       Temporal.Child_workflow.execute
         ~id:("two-binary-parent-child-" ^ seed)
         child_after_timer seed)
+
+(** Deliberately fails the workflow with a typed, non-retryable application
+    error. The failure is deterministic and does not inspect its input, so a
+    replay observes the same terminal command. The live driver checks the
+    category, retry policy, and stable message prefix rather than matching
+    Core's full diagnostic text, which may include source and failure-info
+    context. *)
+let non_retryable_failure =
+  Temporal.Workflow.define ~name:"smoke.non_retryable_failure"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun _seed ->
+      Error
+        (Temporal.Error.make ~non_retryable:true ~category:`Workflow
+           ~message:"intentional terminal workflow failure" ()))

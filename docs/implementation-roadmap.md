@@ -19,13 +19,13 @@ cleaner and more maintainable OCaml design.
 |---|---|---|---|
 | 1 | Repository foundation, typed public definitions, codecs, deterministic futures, effect scheduler, and synthetic activations | `make verify` runs from Docker Compose and deterministic command tests pass | Complete |
 | 2 | Rust static library, OCaml C stubs, private owner-Domain mailbox, live worker poll/completion loop, minimum OCaml client, and the real Compose smoke-test topology | An OCaml test-client container starts workflows executed by a separate OCaml worker against Temporal Server and PostgreSQL | Complete: the initial two-binary fan-out and timer/activity success paths pass in Linux CI |
-| 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | In progress: timer, mock-activity, fan-out, parent/child, activity-retry, and typed non-retryable workflow-failure paths are live in CI; the current change adds marker-guarded exact-run cancellation, while restart/replay/cache and broader failure coverage remain |
-| 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes), added to the live smoke suite | Parent workflows fan out to mock activities and children, await one/all, and cancel safely through the real cluster | In progress: child command and two-stage start/terminal resolution translation are complete; one parent/child success path and an experimental cooperative `Temporal.Scope` observation slice are covered by focused tests, while server-side scope cancellation and broader child lifecycle coverage remain |
+| 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | In progress: fan-out, timer/activity, parent/child, one ordinary activity retry, and typed non-retryable workflow-failure paths are verified in live CI; marker-guarded exact-run cancellation and heartbeat-detail retry are implemented and locally covered but not live-verified, while restart/replay/cache and broader failure coverage remain |
+| 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes), added to the live smoke suite | Parent workflows fan out to mock activities and children, await one/all, and cancel safely through the real cluster | In progress: child command and two-stage start/terminal resolution translation are complete; focused tests cover child start rejection/failure, duplicate or out-of-order lifecycle events, cancellation-policy translation, and lease cleanup. One parent/child success path is live-verified, and an experimental cooperative `Temporal.Scope` observation slice is locally tested; live child failure/cancellation/retry/replay/recovery and server-side cancellation remain |
 | 5 | Signals, queries, updates, validators, conditions, and handler policies | CLI-driven interactive workflow tests pass, including mode violations | Planned |
 | 6 | Continue-as-new, patches, side effects, external workflow operations, memo, search attributes, priority, and fairness | Recorded histories replay and advanced command integration tests pass | In progress: the public continue-as-new command, bilateral JSON validation, and Core conversion are implemented and unit-tested; live server coverage and the remaining Phase 6 features are pending |
 | 7 | OCaml activities, local activities, heartbeats, async completion, interceptors, payload codecs, and graceful shutdown | Activity conformance and Kubernetes-style termination tests pass | In progress: remote activities and context-aware heartbeats are implemented and focused-tested; live heartbeat/timeout coverage, local activities, asynchronous completion, interceptors, and broader conformance remain |
-| 8 | Client API, schedules, visibility, reset/terminate/cancel, update handles, Nexus, and test-server controls | Client conformance suite passes against supported Temporal Server versions | Planned |
-| 9 | Performance, observability, security, packaging, API stability, and release automation | Published benchmark report, SBOM/license audit, OPAM lint, docs, and release dry run pass | Planned |
+| 8 | Client API, schedules, visibility, reset/terminate/cancel, update handles, Nexus, and test-server controls | Client conformance suite passes against supported Temporal Server versions | In progress: public client start, exact-run wait, exact-run cancellation, and idempotent shutdown are implemented and focused-tested; the baseline start/wait path is live-verified, while cancellation remains local-only and schedules, visibility, reset/terminate, updates, Nexus, and test-server controls remain |
+| 9 | Performance, observability, security, packaging, API stability, and release automation | Published benchmark report, SBOM/license audit, OPAM lint, docs, and release dry run pass | In progress: structured `logs` observability, quality/security checks, permissive-license audits, and OPAM packaging/lint gates are implemented; benchmarks, SBOM, API-stability validation, and release automation remain |
 | 10 | Parity closure | Every parity-matrix row links to implementation, tests, and documentation | Planned |
 
 ## Plan documents
@@ -55,9 +55,11 @@ cleaner and more maintainable OCaml design.
    parent/child success path is wired into that fixture. The public API now has
    an experimental cooperative `Temporal.Scope` slice: it deterministically
    cancels observation of a future and returns a typed `Cancelled` result, but
-   it does not yet emit activity or child-workflow cancellation commands. The
-   live scope/child cancellation paths and broader child lifecycle coverage
-   remain pending.
+   it does not yet emit activity or child-workflow cancellation commands.
+   Focused tests now cover scope ownership, repeated cancellation, child
+   start/terminal lifecycle edges, and malformed cancellation input. Live
+   child/activity cancellation and broader live child lifecycle coverage remain
+   pending.
    Poll decode failures use an exact-document rejection ABI: Rust retains
    semantic handoff state and will not retire a lease for a changed workflow
    activation or activity task.
@@ -85,10 +87,10 @@ essential-feature tests:
 
 The smoke suite now contains seven top-level scenarios: fan-out, timer/activity,
 ordinary activity retry, heartbeat-detail activity retry, parent/child, typed
-non-retryable workflow failure, and marker-guarded exact-run cancellation.
-Every subsequent essential capability adds scenarios to that same suite. The suite is
-table-driven and records both the supported case
-and its important error, cancellation, replay, or shutdown behavior. It is not
+non-retryable workflow failure, and marker-guarded exact-run cancellation. The
+current driver starts all seven before waiting, asserts each expected terminal
+outcome, and records bounded operation-phase and shutdown diagnostics. Every
+subsequent essential capability adds scenarios to that same suite. It is not
 considered complete while an essential SDK capability is exercised only by the
 synthetic interpreter.
 

@@ -97,7 +97,7 @@ fn take_all_outstanding_drains_workflow_and_activity_debt() {
     assert_eq!(workflows, vec!["run-1".to_owned()]);
     assert_eq!(activities, vec![token.to_vec()]);
     assert_eq!(ledger.outstanding(), 0);
-    assert!(ledger.can_finalize() == false); // still Open, not Draining
+    assert!(!ledger.can_finalize()); // still Open, not Draining
     ledger.begin_draining();
     assert!(ledger.can_finalize());
 }

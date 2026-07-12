@@ -778,8 +778,17 @@ fn map_start_status(workflow_id: &str, status: Status) -> ClientOperationError {
         >(status.details())
         .map(|detail| detail.run_id)
         // Status details are server input too.  Do not reflect an empty or
-        // oversized run ID into the ABI's bounded JSON error document.
-        .filter(|run_id| !run_id.is_empty() && run_id.len() <= protocol::MAX_STRING_BYTES);
+        // oversized run ID into the ABI's bounded JSON error document.  NUL
+        // bytes are rejected as well: Rust strings can contain them, but the
+        // bilateral identifier contract deliberately cannot.  Treating a
+        // malformed optional detail as absent preserves the useful
+        // AlreadyStarted category without emitting a body that OCaml must
+        // reject after the status has already been classified.
+        .filter(|run_id| {
+            !run_id.is_empty()
+                && run_id.len() <= protocol::MAX_STRING_BYTES
+                && !run_id.contains('\0')
+        });
         ClientOperationError::AlreadyStarted {
             workflow_id: workflow_id.to_owned(),
             existing_run_id,
@@ -1012,6 +1021,7 @@ fn validate_identifier(value: &str, path: &str) -> Result<(), protocol::Protocol
 mod tests {
     use super::*;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use temporalio_client::tonic::codegen::Bytes;
 
     /// Builds the smallest valid start document used by strict-parser tests.
     fn start_json() -> String {
@@ -1448,6 +1458,50 @@ mod tests {
                 workflow_id: "workflow-1".to_owned(),
                 existing_run_id: None,
             }
+        );
+    }
+
+    /// Constructs one length-delimited protobuf field for the small status
+    /// detail fixture below. The test values are deliberately short, so the
+    /// one-byte length encoding keeps the fixture readable without adding a
+    /// protobuf dependency solely to manufacture a gRPC error.
+    fn length_delimited_field(tag: u8, value: &[u8]) -> Vec<u8> {
+        assert!(value.len() < 128, "fixture field must fit one-byte length");
+        let mut field = vec![tag, value.len() as u8];
+        field.extend_from_slice(value);
+        field
+    }
+
+    /// Encodes the `google.rpc.Status -> Any -> AlreadyStartedFailure` shape
+    /// returned by Temporal so the test exercises the same decoder path used
+    /// for real server errors, including Rust strings with an embedded NUL.
+    fn already_started_status_with_run_id(run_id: &str) -> Status {
+        let failure = length_delimited_field(0x12, run_id.as_bytes());
+        let type_url =
+            b"type.googleapis.com/temporal.api.errordetails.v1.WorkflowExecutionAlreadyStartedFailure";
+        let mut any = length_delimited_field(0x0a, type_url);
+        any.extend(length_delimited_field(0x12, &failure));
+        let details = length_delimited_field(0x1a, &any);
+        Status::with_details(Code::AlreadyExists, "server", Bytes::from(details))
+    }
+
+    #[test]
+    /// Preserves the AlreadyStarted category while omitting malformed
+    /// server-provided run IDs that violate the bilateral JSON contract.
+    fn already_started_status_drops_nul_run_id_from_error_body() {
+        let valid = map_start_status("workflow-1", already_started_status_with_run_id("run-1"));
+        assert_eq!(
+            valid.to_json(),
+            r#"{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":"run-1"}"#
+        );
+
+        let malformed = map_start_status(
+            "workflow-1",
+            already_started_status_with_run_id("run-\0-invalid"),
+        );
+        assert_eq!(
+            malformed.to_json(),
+            r#"{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":null}"#
         );
     }
 

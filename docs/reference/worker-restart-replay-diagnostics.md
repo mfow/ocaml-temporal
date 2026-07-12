@@ -102,6 +102,49 @@ making an acceptance decision. If the worker cannot provide the replay bit, a
 successful terminal result may be described as **worker restarted and
 continued** only; it must not be reported as replay evidence.
 
+## Controller lifecycle evidence
+
+The controller also needs to prove that it replaced a worker while the exact
+workflow run was still pending. That evidence is separate from the history
+projection and the worker replay records: history describes what Temporal
+recorded, diagnostics describe what a worker observed, and the controller
+document describes what the test harness did. Its closed, ordered shape is
+defined by
+[`restart-replay-controller.schema.json`](../schemas/acceptance/restart-replay-controller.schema.json).
+
+The checked-in fixture contains exactly eleven records, in this order:
+
+1. `stack_ready` proves that no project volume was left by a previous run and
+   that Temporal passed its health check.
+2. `driver_accepted` records the workflow ID and the exact run ID returned by
+   `Client.start`.
+3. `history_checked` at `initial` records that the pending run reached the
+   timer boundary before replacement.
+4. `driver_waiting` proves that the one-shot assertion process had not exited
+   before the worker was replaced.
+5. `generation_one_stopped` records a graceful generation-1 shutdown and its
+   container identity.
+6. `generation_one_removed` proves that the stopped container was removed,
+   rather than silently reused by Compose.
+7. `generation_two_ready` records a different container and a fresh
+   generation-aware readiness observation.
+8. `replay_observed` records generation 2 seeing the same run with
+   `is_replaying=true` and a positive history length.
+9. `history_checked` at `terminal` records that the same run reached the
+   required completion event sequence.
+10. `driver_completed` proves that the driver received the expected completed
+    result.
+11. `postgres_volume_removed` proves that teardown removed the test data.
+
+Every record has a closed field set and a successful status. The validator
+cross-checks the workflow/run identity, requires generation-2 container
+replacement, and requires zero project volumes at both the start and end. It
+does not create a live Temporal observation: `controller.json` is currently an
+offline contract fixture that a future Compose controller must produce from
+real process, history, replay, and cleanup observations. A passing fixture
+check therefore remains necessary contract coverage, not live restart/replay
+evidence.
+
 ## Local gate and limits
 
 Run the offline contract check with:
@@ -112,9 +155,10 @@ make test-temporal-worker-restart
 
 This target does not start Docker, PostgreSQL, Temporal Server, an OCaml
 worker, or a client. It runs positive fixtures and negative cases through the
-same validator that a future controller will call. It proves the schema-level
-identity/order/replay rules and nothing more. The real acceptance target still
-needs a worker activation diagnostic hook, a strict Temporal history adapter,
-generation-aware readiness markers, graceful worker replacement, and a
-failure trap that removes the PostgreSQL volume. Those requirements remain in
+same validators that a future controller will call. It proves the
+schema-level identity/order/replay rules and the ordered lifecycle contract,
+but nothing about a running stack. The real acceptance target still needs a
+worker activation diagnostic hook, a strict Temporal history adapter,
+generation-aware readiness markers, graceful worker replacement, and a failure
+trap that removes the PostgreSQL volume. Those requirements remain in
 [`worker-restart-replay-acceptance.md`](worker-restart-replay-acceptance.md).

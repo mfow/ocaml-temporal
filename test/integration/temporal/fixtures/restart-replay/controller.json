@@ -1,0 +1,74 @@
+{
+  "workflow_id": "two-binary-worker-restart-replay",
+  "run_id": "11111111-1111-4111-8111-111111111111",
+  "events": [
+    {
+      "step": "stack_ready",
+      "status": "ok",
+      "remaining_project_volumes_before_start": 0,
+      "temporal_healthy": true
+    },
+    {
+      "step": "driver_accepted",
+      "status": "ok",
+      "workflow_id": "two-binary-worker-restart-replay",
+      "run_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "step": "history_checked",
+      "status": "ok",
+      "stage": "initial",
+      "event_count": 5
+    },
+    {
+      "step": "driver_waiting",
+      "status": "ok"
+    },
+    {
+      "step": "generation_one_stopped",
+      "status": "ok",
+      "generation": 1,
+      "container_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "exit_code": 0,
+      "shutdown_marker": true
+    },
+    {
+      "step": "generation_one_removed",
+      "status": "ok",
+      "generation": 1,
+      "container_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "remaining_worker_containers": 0
+    },
+    {
+      "step": "generation_two_ready",
+      "status": "ok",
+      "generation": 2,
+      "container_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "readiness_generation": 2,
+      "fresh_container": true
+    },
+    {
+      "step": "replay_observed",
+      "status": "ok",
+      "generation": 2,
+      "is_replaying": true,
+      "history_length": "5"
+    },
+    {
+      "step": "history_checked",
+      "status": "ok",
+      "stage": "terminal",
+      "event_count": 16
+    },
+    {
+      "step": "driver_completed",
+      "status": "ok",
+      "outcome": "completed"
+    },
+    {
+      "step": "postgres_volume_removed",
+      "status": "ok",
+      "remaining_project_volumes": 0
+    }
+  ]
+}

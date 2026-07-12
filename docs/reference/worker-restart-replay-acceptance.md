@@ -14,10 +14,12 @@ before the coverage matrix is changed.
 The current `make test-temporal-worker-restart` target is an offline contract
 check. It runs the checked-in normalized-history and diagnostics fixtures
 through the strict validator described in the
-[diagnostic contract](worker-restart-replay-diagnostics.md); it does not start
-Docker, PostgreSQL, Temporal Server, an OCaml worker, or an OCaml client. The
-live coverage matrix therefore still marks restart, replay, and cache eviction
-as planned rather than live evidence.
+[diagnostic contract](worker-restart-replay-diagnostics.md), including the
+ordered controller lifecycle fixture that proves the required stop/remove/
+replace/cleanup observations. It does not start Docker, PostgreSQL, Temporal
+Server, an OCaml worker, or an OCaml client. The live coverage matrix therefore
+still marks restart, replay, and cache eviction as planned rather than live
+evidence.
 
 ## What this scenario proves
 
@@ -100,8 +102,11 @@ The restart boundary needs evidence that generation 1 actually committed the
 timer. A fixed sleep in the controller is not sufficient: it can stop the
 worker before the first workflow task, or after the timer has already fired.
 The current `test-temporal-worker-restart` target does not execute this
-sequence; it remains the Docker-free contract gate above. Once a live Compose
-controller is implemented, it should use this bounded sequence:
+sequence; it remains the Docker-free contract gate above. The offline
+controller fixture and schema define the exact record order that the live
+controller must later emit, but they do not substitute for observations from
+Docker, Temporal, or the worker processes. Once a live Compose controller is
+implemented, it should use this bounded sequence:
 
 1. The live restart target invokes the same clean-stack setup as the existing
    integration target. `temporal-clean` runs before startup and in an exit
@@ -263,8 +268,10 @@ The implementation should land as a separate acceptance slice, in this order:
    add unit/runtime tests proving that the workflow emits the same timer and
    activity commands when replayed with identical activation history.
 2. Add a bounded, machine-readable history synchronizer and generation-aware
-   worker readiness/replay markers to the fixture. Keep all payload logging
-   disabled.
+   worker readiness/replay markers to the fixture. Have the live controller
+   emit the ordered records defined by
+   [`restart-replay-controller.schema.json`](../schemas/acceptance/restart-replay-controller.schema.json),
+   and keep all payload logging disabled.
 3. Add a dedicated live Make target and CI job (one supported OCaml version)
    separate from the current Docker-free contract target. It should start the
    driver in the background, perform the controlled worker replacement, wait

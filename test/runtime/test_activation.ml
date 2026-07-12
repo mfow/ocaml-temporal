@@ -959,6 +959,30 @@ let test_cancel_and_evict () =
   expect "evicted execution stays inert" []
     (Execution.activate evicted [ Activation.Start_workflow ])
 
+(** Confirms the public continue-as-new operation buffers a terminal command,
+    stops the current workflow fiber, and preserves the successor definition's
+    encoded input through the private execution adapter. *)
+let test_continue_as_new_terminal () =
+  let successor =
+    Temporal.Workflow.remote ~name:"continuation_target"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let source =
+    Temporal.Workflow.define ~name:"continuation_source"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.continue_as_new successor ())
+  in
+  let execution = Execution.start source () in
+  let expected_input =
+    match Temporal.Codec.encode Temporal.Codec.unit () with
+    | Ok value -> base_payload value
+    | Error error -> failwith (Temporal.Error.message error)
+  in
+  expect "continue-as-new command"
+    [ Activation.Continue_as_new
+        { workflow_type = "continuation_target"; input = expected_input } ]
+    (Execution.activate execution [ Activation.Start_workflow ])
+
 let () =
   test_commands_and_completion ();
   test_activity_options_and_queue ();
@@ -978,4 +1002,5 @@ let () =
   test_child_workflow_failures_and_sequence_ownership ();
   test_child_start_conflicting_result_keeps_future_pending ();
   test_child_resolution_rejections_preserve_lifecycle_state ();
-  test_cancel_and_evict ()
+  test_cancel_and_evict ();
+  test_continue_as_new_terminal ()

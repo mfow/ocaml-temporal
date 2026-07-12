@@ -199,6 +199,7 @@ type completion_command =
   | Cancel_timer of { seq : int64 }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
+  | Continue_as_new of { workflow_type : string; input : payload list }
   | Cancel_workflow_execution
 
 type completion = { run_id : string; commands : completion_command list }
@@ -1633,6 +1634,17 @@ let completion_command path json =
       let* reason_json = field path "reason" entries in
       let* reason = cancellation_reason (path ^ ".reason") reason_json in
       Ok (Cancel_child_workflow { seq; reason })
+  | "continue_as_new" ->
+      let* entries =
+        exact_object path [ "kind"; "workflow_type"; "input" ] json
+      in
+      let* workflow_type_json = field path "workflow_type" entries in
+      let* workflow_type =
+        identifier (path ^ ".workflow_type") workflow_type_json
+      in
+      let* input_json = field path "input" entries in
+      let* input = list (path ^ ".input") payload input_json in
+      Ok (Continue_as_new { workflow_type; input })
   | "request_cancel_activity" ->
       let* entries = exact_object path [ "kind"; "seq" ] json in
       let* seq_json = field path "seq" entries in
@@ -1720,6 +1732,15 @@ let completion_command_json = function
             ("seq", `Intlit (Int64.to_string seq));
             ("reason", `String reason);
           ])
+  | Continue_as_new { workflow_type; input } ->
+      let* input = payloads_json input in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "continue_as_new");
+            ("workflow_type", `String workflow_type);
+            ("input", input);
+          ])
   | Start_timer { seq; start_to_fire_timeout } ->
       Ok
         (`Assoc
@@ -1753,7 +1774,8 @@ let completion_commands_json commands =
 
 (** Identifies commands that end a workflow execution. *)
 let terminal = function
-  | Complete_workflow _ | Fail_workflow _ | Cancel_workflow_execution -> true
+  | Complete_workflow _ | Fail_workflow _ | Continue_as_new _
+  | Cancel_workflow_execution -> true
   | _ -> false
 
 (** Requires a terminal command, if present, to be unique and final. *)

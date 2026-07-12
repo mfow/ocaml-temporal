@@ -70,7 +70,8 @@ let emit_terminal execution command =
           "workflow completed"
     | Fail_workflow _ | Cancel_workflow_execution
     | Schedule_activity _ | Start_child_workflow _ | Request_cancel_activity _
-    | Cancel_child_workflow _ | Start_timer _ | Cancel_timer _ -> ())
+    | Cancel_child_workflow _ | Start_timer _ | Cancel_timer _
+    | Continue_as_new _ -> ())
 
 (** Fails the workflow through the same one-terminal-command check. *)
 let fail execution error =
@@ -231,7 +232,19 @@ let activate execution jobs =
           if execution.evicted then []
           else (
             if not execution.terminal then run_scheduler execution;
-            Workflow_context_store.take_commands execution.context)))
+            let commands = Workflow_context_store.take_commands execution.context in
+            (* Continue-as-new is emitted by a private terminal effect rather
+               than [emit_terminal], so finalize the execution after the
+               scheduler has stopped. This prevents a later activation from
+               reusing a run that Core has already replaced. *)
+            if
+              List.exists
+                (function Activation.Continue_as_new _ -> true | _ -> false)
+                commands
+            then (
+              execution.terminal <- true;
+              Workflow_context_store.shutdown execution.context);
+            commands)))
   in
   let tags =
     Observability.tags ~operation:"activate" ~duration_ms

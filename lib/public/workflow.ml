@@ -63,3 +63,21 @@ let start_sleep duration =
 
 (** Implements direct-style sleep as timer creation followed by a future wait. *)
 let sleep duration = Future.await (start_sleep duration)
+
+(** Requests a fresh run of the same workflow type with [input]. This is a
+    terminal direct-style operation: it encodes the successor input, buffers a
+    Core continue-as-new command, and aborts the current private workflow
+    fiber. If encoding fails, the current run is failed with that typed codec
+    error instead of raising it through the worker loop. *)
+let continue_as_new definition next_input =
+  match Temporal_runtime.Workflow_context_store.current () with
+  | None ->
+      invalid_arg "Temporal.Workflow.continue_as_new used outside a workflow execution"
+  | Some context -> (
+      match Codec_private.encode_base (input definition) next_input with
+      | Ok payload ->
+          Temporal_runtime.Workflow_context_store.continue_as_new context
+            ~workflow_type:(name definition) ~input:payload
+      | Error error ->
+          Temporal_runtime.Workflow_context_store.terminate context
+            (Temporal_runtime.Activation.Fail_workflow error))

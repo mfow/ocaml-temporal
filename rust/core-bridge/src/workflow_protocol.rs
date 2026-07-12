@@ -526,6 +526,13 @@ pub enum CompletionCommand {
     FailWorkflow {
         failure: Failure,
     },
+    /// Replaces the current run with a fresh run of the same workflow type.
+    /// The language layer currently supplies only the workflow type and input;
+    /// all other Core options remain explicit defaults until exposed safely.
+    ContinueAsNew {
+        workflow_type: String,
+        input: Vec<Payload>,
+    },
     CancelWorkflow,
 }
 
@@ -971,6 +978,7 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
             command,
             CompletionCommand::CompleteWorkflow { .. }
                 | CompletionCommand::FailWorkflow { .. }
+                | CompletionCommand::ContinueAsNew { .. }
                 | CompletionCommand::CancelWorkflow
         );
         if terminal && index + 1 != value.commands.len() {
@@ -1048,6 +1056,9 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                         "reason must be valid UTF-8",
                     ));
                 }
+            }
+            CompletionCommand::ContinueAsNew { workflow_type, .. } => {
+                identifier(workflow_type, "$.commands.workflow_type")?;
             }
             CompletionCommand::StartTimer {
                 start_to_fire_timeout,
@@ -1974,6 +1985,21 @@ fn command_to_core(
                 failure: Some(failure_to_core(failure)?),
             })
         }
+        CompletionCommand::ContinueAsNew {
+            workflow_type,
+            input,
+        } => {
+            Variant::ContinueAsNewWorkflowExecution(core_commands::ContinueAsNewWorkflowExecution {
+                workflow_type: workflow_type.clone(),
+                arguments: input
+                    .iter()
+                    .map(payload_to_core)
+                    .collect::<Result<_, _>>()?,
+                // The semantic protocol intentionally exposes no task queue,
+                // timeout, memo, header, retry, or versioning controls yet.
+                ..Default::default()
+            })
+        }
         CompletionCommand::CancelWorkflow => {
             Variant::CancelWorkflowExecution(core_commands::CancelWorkflowExecution {})
         }
@@ -2110,6 +2136,33 @@ fn command_from_core(
                     .ok_or_else(|| invalid_core("Core fail command has no failure"))?,
             )?,
         }),
+        Variant::ContinueAsNewWorkflowExecution(value) => {
+            if !value.task_queue.is_empty()
+                || value.workflow_run_timeout.is_some()
+                || value.workflow_task_timeout.is_some()
+                || !value.memo.is_empty()
+                || !value.headers.is_empty()
+                || value.search_attributes.is_some()
+                || value.retry_policy.is_some()
+                || value.versioning_intent != 0
+                || value.initial_versioning_behavior != 0
+                || value.backoff_start_interval.is_some()
+            {
+                return Err(unsupported(
+                    "Core continue-as-new options are not represented by this protocol",
+                ));
+            }
+            identifier(&value.workflow_type, "$.commands.workflow_type")
+                .map_err(|_| invalid_core("Core continue-as-new workflow type is invalid"))?;
+            Ok(CompletionCommand::ContinueAsNew {
+                workflow_type: value.workflow_type.clone(),
+                input: value
+                    .arguments
+                    .iter()
+                    .map(payload_from_core)
+                    .collect::<Result<_, _>>()?,
+            })
+        }
         Variant::CancelWorkflowExecution(_) => Ok(CompletionCommand::CancelWorkflow),
         _ => Err(unsupported("Core workflow command kind is not supported")),
     }

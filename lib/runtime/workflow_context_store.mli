@@ -112,6 +112,15 @@ val fire_timer : t -> seq:int64 -> (unit, Temporal_base.Error.t) result
 (** Appends a command to the current activation output buffer. *)
 val emit : t -> Activation.command -> unit
 
+(** Buffers a terminal command and stops the current workflow fiber. This is a
+    package-private control boundary used by terminal workflow operations. *)
+val terminate : t -> Activation.command -> 'value
+
+(** Buffers a continue-as-new command and stops the current workflow fiber.
+    The successor input is encoded before it reaches this private operation. *)
+val continue_as_new :
+  t -> workflow_type:string -> input:Temporal_base.Codec.payload -> 'value
+
 (** Returns buffered commands in emission order and atomically clears them. *)
 val take_commands : t -> Activation.command list
 

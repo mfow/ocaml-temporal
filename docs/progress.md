@@ -14,6 +14,22 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Typed child-workflow cancellation control
+
+Status: locally verified in the OCaml activation, native translation, bridge
+protocol, and Rust Core-conversion tests. Live Temporal acceptance is not
+claimed by this entry.
+
+Child workflows now expose an opaque `start_handle` that pairs the typed result
+future with an idempotent `cancel` operation. The handle can select Core's
+`Try_cancel`, `Wait_cancellation_completed`, `Wait_cancellation_requested`, or
+`Abandon` policy; cancellation reasons are validated before becoming durable
+history commands. The OCaml activation algebra, strict JSON protocol and
+schema, Rust Core conversion, and native worker copy path all preserve the
+child sequence, policy, and reason. Focused tests cover cancel-before-start,
+duplicate cancel requests, typed child cancellation results, JSON round trips,
+and Core command conversion.
+
 ## 2026-07-12: Public future shutdown guards
 
 Status: locally verified in the focused runtime and package checks; this

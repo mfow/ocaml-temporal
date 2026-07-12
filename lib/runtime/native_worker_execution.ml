@@ -287,6 +287,7 @@ let is_terminal completion =
       | Protocol.Cancel_workflow_execution -> true
       | Protocol.Schedule_activity _
       | Protocol.Start_child_workflow _
+      | Protocol.Cancel_child_workflow _
       | Protocol.Request_cancel_activity _
       | Protocol.Start_timer _
       | Protocol.Cancel_timer _ -> false)
@@ -433,6 +434,7 @@ module Make (Supervisor : SUPERVISOR) = struct
       | Protocol.Start_child_workflow command ->
           Protocol.Start_child_workflow
             { command with input = List.map copy_payload command.input }
+      | Protocol.Cancel_child_workflow _ as command -> command
       | Protocol.Request_cancel_activity _ as command -> command
       | Protocol.Start_timer _ as command -> command
       | Protocol.Cancel_timer _ as command -> command

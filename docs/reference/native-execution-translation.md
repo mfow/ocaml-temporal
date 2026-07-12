@@ -84,7 +84,8 @@ the complete result before returning it to the bridge.
 | --- | --- | --- |
 | `Request_cancel_activity` | `Request_cancel_activity` | The sequence is range-checked. |
 | `Schedule_activity` | `Schedule_activity` | Activity ID, type, task queue, argument payloads, timeout policies, optional retry policy, cancellation policy, and eager-execution flag are validated and copied. Defaults are applied by the workflow context before this boundary; the translator never invents them. |
-| `Start_child_workflow` | `Start_child_workflow` | The sequence, child workflow ID and type, and one copied input payload are retained. The current runtime does not expose namespace, task queue, timeout, policy, retry, header, memo, search-attribute, versioning, or priority options, so the Rust Core command receives those fields at their documented defaults and rejects non-default values on the reverse conversion. |
+| `Start_child_workflow` | `Start_child_workflow` | The sequence, child workflow ID and type, one copied input payload, and explicit child-cancellation policy are retained. Namespace, task queue, timeout, retry, header, memo, search-attribute, versioning, and priority options remain Core defaults and non-default values are rejected on reverse conversion. |
+| `Cancel_child_workflow` | `Cancel_child_workflow` | The sequence and validated reason are copied into Core's `CancelChildWorkflowExecution` command. The policy from the matching start command determines whether Core reports immediately or waits for cancellation progress. |
 | `Start_timer` | `Start_timer` | Non-negative milliseconds are split into exact seconds and nanoseconds; no floating-point conversion is used. |
 | `Cancel_timer` | `Cancel_timer` | The sequence is range-checked. |
 | `Complete_workflow` with the canonical unit/null payload | `Complete_workflow { result = None }` | The nullable protocol result is preserved. |

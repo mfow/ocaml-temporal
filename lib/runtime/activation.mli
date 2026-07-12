@@ -28,6 +28,14 @@ type activity_cancellation_type =
   | Wait_cancellation_completed
   | Abandon
 
+(** Controls when Core resolves a parent future after a child cancellation
+    request. *)
+type child_workflow_cancellation_type =
+  | Child_try_cancel
+  | Child_wait_cancellation_completed
+  | Child_abandon
+  | Child_wait_cancellation_requested
+
 (** A validated activity retry policy kept in exact, bridge-ready form.  The
     coefficient is an unsigned decimal rendering of its IEEE-754 bits; the
     other numeric fields retain their exact OCaml integer values. *)
@@ -64,7 +72,10 @@ type command =
       id : string;
       name : string;
       input : Temporal_base.Codec.payload;
+      cancellation_type : child_workflow_cancellation_type;
     }
+  (** Requests cancellation of a pending child workflow. *)
+  | Cancel_child_workflow of { seq : int64; reason : string }
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; milliseconds : int64 }
   | Cancel_timer of { seq : int64 }

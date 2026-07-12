@@ -365,6 +365,29 @@ The ID is durable Temporal identity. It must be non-empty, valid UTF-8, free of
 NUL bytes, and within the bridge's bounded length. `Child_workflow.execute`
 starts and waits in one call.
 
+When a workflow needs to keep the child operation alongside other work, retain
+the opaque handle returned by `start_handle`:
+
+```ocaml
+let child =
+  Temporal.Child_workflow.start_handle
+    ~cancellation_type:Temporal.Child_workflow.Try_cancel
+    ~id:"document-review" review document
+
+let stop_child () =
+  Temporal.Child_workflow.cancel ~reason:"review no longer needed" child
+
+let result = Temporal.Future.await (Temporal.Child_workflow.future child)
+```
+
+`cancel` returns a typed result and is idempotent for one handle; it does not
+raise for an expected Temporal failure. The `Try_cancel` policy asks Core to
+request cancellation and report the child result promptly. Use
+`Wait_cancellation_completed` or `Wait_cancellation_requested` when the parent
+must remain pending until Core observes that stage, or `Abandon` when no child
+request should be sent. The reason is validated before it becomes a durable
+command, and the handle cannot be forged for another child sequence.
+
 The definitions and calls above compile, and the synthetic runtime tests cover
 child scheduling and deterministic future resolution. The native protocol and
 worker adapter now also carry the child-start acknowledgment and terminal

@@ -70,7 +70,7 @@ let emit_terminal execution command =
           "workflow completed"
     | Fail_workflow _ | Cancel_workflow_execution
     | Schedule_activity _ | Start_child_workflow _ | Request_cancel_activity _
-    | Start_timer _ | Cancel_timer _ -> ())
+    | Cancel_child_workflow _ | Start_timer _ | Cancel_timer _ -> ())
 
 (** Fails the workflow through the same one-terminal-command check. *)
 let fail execution error =

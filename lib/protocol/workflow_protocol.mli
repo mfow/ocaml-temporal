@@ -196,6 +196,15 @@ type activity_cancellation_type =
   | Wait_cancellation_completed
   | Abandon
 
+(** Controls how Core reports a child-workflow cancellation request to the
+    parent.  The policy is part of the command so replay sees the same
+    cancellation semantics on every activation. *)
+type child_workflow_cancellation_type =
+  | Child_try_cancel
+  | Child_wait_cancellation_completed
+  | Child_abandon
+  | Child_wait_cancellation_requested
+
 (** A validated retry policy carried by a scheduled activity command.  The
     backoff coefficient is kept as canonical unsigned IEEE-754 bits so JSON
     transport cannot round or otherwise reinterpret a floating-point value. *)
@@ -232,7 +241,11 @@ type completion_command =
       workflow_id : string;
       workflow_type : string;
       input : payload list;
+      cancellation_type : child_workflow_cancellation_type;
     }
+  (** Requests cancellation of a previously started child workflow.  [reason]
+      is retained in history and is therefore part of deterministic replay. *)
+  | Cancel_child_workflow of { seq : int64; reason : string }
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; start_to_fire_timeout : duration }
   | Cancel_timer of { seq : int64 }

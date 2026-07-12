@@ -523,7 +523,13 @@ let test_activity_command_translation_and_validation () =
     unwrap "child command translation"
       (Native_execution.command_to_protocol
          (Activation.Start_child_workflow
-            { seq = 2L; id = "child/1"; name = "child"; input }))
+            {
+              seq = 2L;
+              id = "child/1";
+              name = "child";
+              input;
+              cancellation_type = Activation.Child_abandon;
+            }))
   with
   | Protocol.Start_child_workflow
       {
@@ -531,6 +537,7 @@ let test_activity_command_translation_and_validation () =
         workflow_id = "child/1";
         workflow_type = "child";
         input = [ child_input ];
+        cancellation_type = Protocol.Child_abandon;
       }
     when child_input =
       {
@@ -540,6 +547,18 @@ let test_activity_command_translation_and_validation () =
       ()
   | _ -> failwith "child command fields were not preserved"
   end;
+  begin match
+    unwrap "child cancellation translation"
+      (Native_execution.command_to_protocol
+         (Activation.Cancel_child_workflow
+            { seq = 2L; reason = "stop child" }))
+  with
+  | Protocol.Cancel_child_workflow { seq = 2L; reason = "stop child" } -> ()
+  | _ -> failwith "child cancellation fields were not preserved"
+  end;
+  expect_error_code "empty child cancellation reason" "invalid_message"
+    (Native_execution.command_to_protocol
+       (Activation.Cancel_child_workflow { seq = 2L; reason = "" }));
   let invalid_metadata : Temporal_base.Codec.payload =
     {
       Temporal_base.Payload.metadata = [ ("encoding", "\255") ];

@@ -154,6 +154,15 @@ type activity_cancellation_type =
   | Wait_cancellation_completed
   | Abandon
 
+(** Controls how Core reports a child-workflow cancellation request to the
+    parent.  The policy is part of the command so replay sees the same
+    cancellation semantics on every activation. *)
+type child_workflow_cancellation_type =
+  | Child_try_cancel
+  | Child_wait_cancellation_completed
+  | Child_abandon
+  | Child_wait_cancellation_requested
+
 type retry_policy = {
   initial_interval : duration;
   backoff_coefficient_bits : string;
@@ -182,7 +191,9 @@ type completion_command =
       workflow_id : string;
       workflow_type : string;
       input : payload list;
+      cancellation_type : child_workflow_cancellation_type;
     }
+  | Cancel_child_workflow of { seq : int64; reason : string }
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; start_to_fire_timeout : duration }
   | Cancel_timer of { seq : int64 }
@@ -249,6 +260,19 @@ let valid_utf_8 value =
       && loop (offset + Uchar.utf_decode_length decoded)
   in
   loop 0
+
+(** Validates a cancellation reason before it becomes part of history.  A
+    reason is human-readable text rather than an identifier, but it still must
+    be non-empty, bounded, UTF-8, and free of embedded NUL bytes for every
+    supported Core transport. *)
+let cancellation_reason path value =
+  let* value = string path value in
+  if String.length value = 0 then Error (invalid path "reason must not be empty")
+  else if String.contains value '\000' then
+    Error (invalid path "reason must not contain NUL")
+  else if not (valid_utf_8 value) then
+    Error (invalid path "reason must be valid UTF-8")
+  else Ok value
 
 (** Reads a JSON Boolean. *)
 let bool path = function
@@ -1324,6 +1348,23 @@ let cancellation_type_string = function
   | Wait_cancellation_completed -> "wait_cancellation_completed"
   | Abandon -> "abandon"
 
+(** Decodes the child-workflow cancellation policy emitted by the OCaml
+    runtime.  Child policies are deliberately separate from activity policies:
+    Core supports an additional wait-for-requested state for children. *)
+let child_cancellation_type path = function
+  | "try_cancel" -> Ok Child_try_cancel
+  | "wait_cancellation_completed" -> Ok Child_wait_cancellation_completed
+  | "abandon" -> Ok Child_abandon
+  | "wait_cancellation_requested" -> Ok Child_wait_cancellation_requested
+  | _ -> Error (invalid path "unknown child workflow cancellation type")
+
+(** Renders the canonical policy spelling used by the bridge JSON protocol. *)
+let child_cancellation_type_string = function
+  | Child_try_cancel -> "try_cancel"
+  | Child_wait_cancellation_completed -> "wait_cancellation_completed"
+  | Child_abandon -> "abandon"
+  | Child_wait_cancellation_requested -> "wait_cancellation_requested"
+
 (** Decodes a nullable duration. *)
 let optional_duration path value = nullable path duration value
 
@@ -1556,7 +1597,15 @@ let completion_command path json =
              })
   | "start_child_workflow" ->
       let* entries =
-        exact_object path [ "kind"; "seq"; "workflow_id"; "workflow_type"; "input" ]
+        exact_object path
+          [
+            "kind";
+            "seq";
+            "workflow_id";
+            "workflow_type";
+            "input";
+            "cancellation_type";
+          ]
           json
       in
       let* seq_json = field path "seq" entries in
@@ -1567,7 +1616,23 @@ let completion_command path json =
       let* workflow_type = identifier (path ^ ".workflow_type") workflow_type_json in
       let* input_json = field path "input" entries in
       let* input = list (path ^ ".input") payload input_json in
-      Ok (Start_child_workflow { seq; workflow_id; workflow_type; input })
+      let* cancellation_json = field path "cancellation_type" entries in
+      let* cancellation_name =
+        string (path ^ ".cancellation_type") cancellation_json
+      in
+      let* cancellation_type =
+        child_cancellation_type (path ^ ".cancellation_type") cancellation_name
+      in
+      Ok
+        (Start_child_workflow
+           { seq; workflow_id; workflow_type; input; cancellation_type })
+  | "cancel_child_workflow" ->
+      let* entries = exact_object path [ "kind"; "seq"; "reason" ] json in
+      let* seq_json = field path "seq" entries in
+      let* seq = uint32 (path ^ ".seq") seq_json in
+      let* reason_json = field path "reason" entries in
+      let* reason = cancellation_reason (path ^ ".reason") reason_json in
+      Ok (Cancel_child_workflow { seq; reason })
   | "request_cancel_activity" ->
       let* entries = exact_object path [ "kind"; "seq" ] json in
       let* seq_json = field path "seq" entries in
@@ -1633,7 +1698,8 @@ let completion_command_json = function
             ("kind", `String "request_cancel_activity");
             ("seq", `Intlit (Int64.to_string seq));
           ])
-  | Start_child_workflow { seq; workflow_id; workflow_type; input } ->
+  | Start_child_workflow
+      { seq; workflow_id; workflow_type; input; cancellation_type } ->
       let* input = payloads_json input in
       Ok
         (`Assoc
@@ -1643,6 +1709,16 @@ let completion_command_json = function
             ("workflow_id", `String workflow_id);
             ("workflow_type", `String workflow_type);
             ("input", input);
+            ( "cancellation_type",
+              `String (child_cancellation_type_string cancellation_type) );
+          ])
+  | Cancel_child_workflow { seq; reason } ->
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "cancel_child_workflow");
+            ("seq", `Intlit (Int64.to_string seq));
+            ("reason", `String reason);
           ])
   | Start_timer { seq; start_to_fire_timeout } ->
       Ok

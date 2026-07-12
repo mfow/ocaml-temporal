@@ -440,6 +440,18 @@ pub enum ActivityCancellationType {
     Abandon,
 }
 
+/// Controls when Core resolves the parent after a child cancellation request.
+/// The extra `WaitCancellationRequested` state is specific to child workflows
+/// and is intentionally not merged with activity cancellation policies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildWorkflowCancellationType {
+    TryCancel,
+    WaitCancellationCompleted,
+    Abandon,
+    WaitCancellationRequested,
+}
+
 /// Retry policy supplied with one scheduled activity.
 ///
 /// The coefficient remains an unsigned decimal rendering of its IEEE-754
@@ -483,14 +495,19 @@ pub enum CompletionCommand {
         cancellation_type: ActivityCancellationType,
         do_not_eagerly_execute: bool,
     },
-    /// Starts a child workflow using the fields currently exposed by the
-    /// OCaml runtime. Core-only options stay at their documented defaults
-    /// until the language API grows explicit controls for them.
+    /// Starts a child workflow and records the policy used for an explicit
+    /// later cancellation command.
     StartChildWorkflow {
         seq: u32,
         workflow_id: String,
         workflow_type: String,
         input: Vec<Payload>,
+        cancellation_type: ChildWorkflowCancellationType,
+    },
+    /// Requests cancellation of a previously started child workflow.
+    CancelChildWorkflow {
+        seq: u32,
+        reason: String,
     },
     RequestCancelActivity {
         seq: u32,
@@ -1010,6 +1027,27 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
             } => {
                 identifier(workflow_id, "$.commands.workflow_id")?;
                 identifier(workflow_type, "$.commands.workflow_type")?;
+            }
+            CompletionCommand::CancelChildWorkflow { reason, .. } => {
+                if reason.is_empty() {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.reason",
+                        "reason must not be empty",
+                    ));
+                }
+                if reason.as_bytes().contains(&0) {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.reason",
+                        "reason must not contain NUL",
+                    ));
+                }
+                bounded_text(reason, "$.commands.reason")?;
+                if std::str::from_utf8(reason.as_bytes()).is_err() {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.reason",
+                        "reason must be valid UTF-8",
+                    ));
+                }
             }
             CompletionCommand::StartTimer {
                 start_to_fire_timeout,
@@ -1811,6 +1849,40 @@ fn cancellation_from_core(value: i32) -> Result<ActivityCancellationType, CoreCo
     )
 }
 
+/// Converts the semantic child policy to the pinned Core enum without relying
+/// on numeric values at the OCaml/Rust boundary.
+fn child_cancellation_to_core(value: ChildWorkflowCancellationType) -> i32 {
+    use core_child_workflow::ChildWorkflowCancellationType as Core;
+    (match value {
+        ChildWorkflowCancellationType::TryCancel => Core::TryCancel,
+        ChildWorkflowCancellationType::WaitCancellationCompleted => Core::WaitCancellationCompleted,
+        ChildWorkflowCancellationType::Abandon => Core::Abandon,
+        ChildWorkflowCancellationType::WaitCancellationRequested => Core::WaitCancellationRequested,
+    }) as i32
+}
+
+/// Converts a Core child policy while rejecting enum values added by a newer
+/// Core than this bridge was compiled against.
+fn child_cancellation_from_core(
+    value: i32,
+) -> Result<ChildWorkflowCancellationType, CoreConversionError> {
+    use core_child_workflow::ChildWorkflowCancellationType as Core;
+    Ok(
+        match Core::try_from(value)
+            .map_err(|_| invalid_core("unknown Core child cancellation type"))?
+        {
+            Core::TryCancel => ChildWorkflowCancellationType::TryCancel,
+            Core::WaitCancellationCompleted => {
+                ChildWorkflowCancellationType::WaitCancellationCompleted
+            }
+            Core::Abandon => ChildWorkflowCancellationType::Abandon,
+            Core::WaitCancellationRequested => {
+                ChildWorkflowCancellationType::WaitCancellationRequested
+            }
+        },
+    )
+}
+
 /// Builds one official Core command with unsupported optional fields defaulted explicitly.
 fn command_to_core(
     value: &CompletionCommand,
@@ -1861,6 +1933,7 @@ fn command_to_core(
             workflow_id,
             workflow_type,
             input,
+            cancellation_type,
         } => Variant::StartChildWorkflowExecution(core_commands::StartChildWorkflowExecution {
             seq: *seq,
             workflow_id: workflow_id.clone(),
@@ -1869,11 +1942,18 @@ fn command_to_core(
                 .iter()
                 .map(payload_to_core)
                 .collect::<Result<_, _>>()?,
+            cancellation_type: child_cancellation_to_core(*cancellation_type),
             // The current OCaml command carries no task queue, namespace, or
             // child policy options. Defaulting the remaining Core fields is
             // deliberate and documented by the semantic schema.
             ..Default::default()
         }),
+        CompletionCommand::CancelChildWorkflow { seq, reason } => {
+            Variant::CancelChildWorkflowExecution(core_commands::CancelChildWorkflowExecution {
+                child_workflow_seq: *seq,
+                reason: reason.clone(),
+            })
+        }
         CompletionCommand::StartTimer {
             seq,
             start_to_fire_timeout,
@@ -1976,7 +2056,6 @@ fn command_from_core(
                 || !value.headers.is_empty()
                 || !value.memo.is_empty()
                 || value.search_attributes.is_some()
-                || value.cancellation_type != 0
                 || value.versioning_intent != 0
                 || value.priority.is_some()
             {
@@ -1993,6 +2072,18 @@ fn command_from_core(
                     .iter()
                     .map(payload_from_core)
                     .collect::<Result<_, _>>()?,
+                cancellation_type: child_cancellation_from_core(value.cancellation_type)?,
+            })
+        }
+        Variant::CancelChildWorkflowExecution(value) => {
+            if value.reason.is_empty() || value.reason.as_bytes().contains(&0) {
+                return Err(invalid_core("Core child cancellation reason is invalid"));
+            }
+            bounded_text(&value.reason, "$.commands.reason")
+                .map_err(|_| invalid_core("Core child cancellation reason is too long"))?;
+            Ok(CompletionCommand::CancelChildWorkflow {
+                seq: value.child_workflow_seq,
+                reason: value.reason.clone(),
             })
         }
         Variant::RequestCancelActivity(value) => {

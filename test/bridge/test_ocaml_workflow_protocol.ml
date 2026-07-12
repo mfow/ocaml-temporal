@@ -102,16 +102,48 @@ let test_start_child_workflow_command () =
               workflow_id = "child/1";
               workflow_type = "child";
               input = [ input ];
+              cancellation_type = Child_try_cancel;
             };
         ];
     }
   in
   let encoded = unwrap (Protocol.encode_completion completion) in
   check_string "child command"
-    {|{"commands":[{"input":[{"data":{"data":"","encoding":"base64"},"metadata":{"encoding":{"data":"YmluYXJ5L251bGw=","encoding":"base64"}}}],"kind":"start_child_workflow","seq":2,"workflow_id":"child/1","workflow_type":"child"}],"run_id":"parent-run"}|}
+    {|{"commands":[{"cancellation_type":"try_cancel","input":[{"data":{"data":"","encoding":"base64"},"metadata":{"encoding":{"data":"YmluYXJ5L251bGw=","encoding":"base64"}}}],"kind":"start_child_workflow","seq":2,"workflow_id":"child/1","workflow_type":"child"}],"run_id":"parent-run"}|}
     encoded;
   if unwrap (Protocol.decode_completion encoded) <> completion then
     failwith "child command did not round-trip"
+
+(** Proves the OCaml decoder applies the same cancellation reason and policy
+    boundaries as the Rust decoder, including JSON-escaped NUL bytes. *)
+let test_child_cancellation_validation () =
+  let document reason : Yojson.Safe.t =
+    `Assoc
+      [
+        ("run_id", `String "parent-run");
+        ( "commands",
+          `List
+            [
+              `Assoc
+                [
+                  ("kind", `String "cancel_child_workflow");
+                  ("seq", `Int 7);
+                  ("reason", `String reason);
+                ];
+            ] );
+      ]
+  in
+  List.iter
+    (fun reason ->
+      require_error
+        (Protocol.decode_completion (Yojson.Safe.to_string (document reason))))
+    [ ""; String.make 1 '\000' ];
+  require_error
+    (Protocol.decode_completion
+       (Yojson.Safe.to_string (document (String.make 65_537 'x'))));
+  require_error
+    (Protocol.decode_completion
+       {|{"run_id":"parent-run","commands":[{"kind":"start_child_workflow","seq":7,"workflow_id":"child","workflow_type":"child","input":[],"cancellation_type":"unknown"}]}|})
 
 (** Proves closed nested objects, numeric bounds, canonical binary data, and
     workflow semantic invariants are rejected identically by both languages. *)
@@ -526,6 +558,7 @@ let () =
   run "workflow activations" test_valid_activations;
   run "workflow completion" test_valid_completion;
   run "start child workflow command" test_start_child_workflow_command;
+  run "child cancellation validation" test_child_cancellation_validation;
   run "malformed workflow documents" test_invalid_documents;
   run "large nested payload" test_large_nested_payload;
   run "metadata key canonicalization" test_metadata_key_canonicalization;

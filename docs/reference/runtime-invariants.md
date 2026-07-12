@@ -111,9 +111,11 @@ and bridge, read the [documentation guide](../README.md) first.
   tokens, or content cannot consume real outstanding work. Rejection cleanup
   removes ledger and semantic ownership together even when Core reports an
   error, while the original OCaml protocol failure remains the primary result.
-- Native `Not_ready` is represented as `Ok None`. ABI version 1 has no
-  readiness wait, so no workflow fiber or effect scheduler blocks on a native
-  lock, condition variable, or timer while waiting for a poll lane.
+- Native `Not_ready` is represented as `Ok None`. ABI version 1 also exposes
+  bounded `Wait_workflow` and `Wait_activity` readiness operations. Only the
+  owner-Domain supervisor may invoke them; the C boundary releases the OCaml
+  runtime lock while Rust waits, and no workflow fiber or effect scheduler
+  invokes or blocks on a native lock, condition variable, or timer.
 - Rust panics, decode errors, and Core failures become explicit bridge errors.
 - Foreign runtime threads never call arbitrary OCaml closures.
 - Blocking FFI calls occur only while the OCaml runtime lock is released.

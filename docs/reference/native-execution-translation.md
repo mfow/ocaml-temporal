@@ -4,7 +4,8 @@ This document describes the private, pure-OCaml adapter between the checked
 workflow protocol and the deterministic workflow runtime. Workflow authors do
 not call it directly. The private native-worker adapter uses it after Rust has
 decoded a Core activation and before it submits the resulting completion back
-to Rust; production supervisor wiring remains a separate integration step.
+to Rust. The production supervisor owns the lifecycle and invokes this adapter
+through its typed operations.
 
 ## Where the adapter sits
 

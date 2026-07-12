@@ -187,7 +187,7 @@ allocation made by the other side.
 
 ### Private OCaml worker operations
 
-`Temporal_core_bridge.Native_bridge` exposes eight private wrappers over the
+`Temporal_core_bridge.Native_bridge` exposes nine private wrappers over the
 poll, readiness, completion, and rejection symbols. They are used by the
 native worker adapter and are not part of the public workflow-authoring API:
 
@@ -199,6 +199,7 @@ native worker adapter and are not part of the public workflow-authoring API:
 | `worker_reject_workflow_json` | Retire the lease when OCaml cannot decode the exact Rust-produced activation document | `unit` |
 | `worker_try_poll_activity` | Drain one already-ready remote activity task without waiting | semantic activity JSON bytes |
 | `worker_wait_activity` | Wait for remote-activity readiness without consuming a task | `unit` wake signal |
+| `worker_record_activity_heartbeat_json` | Validate and record progress for an outstanding activity lease without completing it | `unit` |
 | `worker_complete_activity_json` | Validate and complete one leased activity task | `unit` |
 | `worker_reject_activity_json` | Retire the lease when OCaml cannot decode the exact Rust-produced activity document | `unit` |
 
@@ -240,9 +241,10 @@ operations. It exposes a typed GADT rather than raw JSON bytes:
 | `Complete_workflow completion` | canonical strict JSON is generated and reparsed before the native completion call |
 | `Try_poll_activity` | `Activity_protocol.task option`; `None` means the activity lane was empty at that instant |
 | `Wait_activity` | bounded native readiness wait; it does not consume an activity task and releases the OCaml runtime lock |
+| `Record_activity_heartbeat heartbeat` | canonical strict heartbeat JSON is validated and recorded for the outstanding activity lease without retiring it |
 | `Complete_activity completion` | the opaque token and result are validated before the native completion call |
 
-All six operations enter the same bounded mailbox as client and worker
+All seven operations enter the same bounded mailbox as client and worker
 lifecycle changes. A poll, completion, worker shutdown, and runtime shutdown
 therefore cannot race native graph state. The pure protocol conversion module
 is visible only from the private supervisor library so both serialization

@@ -38,9 +38,11 @@ evidence for this milestone.
 
 The native activity adapter now carries an explicit retryability classification
 from the supervisor for completion rejections and separately classifies private
-transient completion exceptions. Only connection and bounded-not-ready native
-statuses are retryable in production; protocol, configuration, worker-state,
-and supervisor-defect failures remain fatal. A new private
+transient completion exceptions. Only the explicit bilateral `Retryable` status
+is eligible for a completion retry in production. Generic `Connection` and
+`Not_ready` statuses are fail-closed because this Core revision may already have
+consumed the lease; protocol, configuration, worker-state, and supervisor-defect
+failures remain fatal. A new private
 `Temporal_runtime.Native_worker_loop` applies a bounded activity-lane readiness
 wait before retrying a retained completion, then allows the next activity task
 to run without invoking the original OCaml implementation again. The wait is

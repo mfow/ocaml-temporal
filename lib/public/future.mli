@@ -6,14 +6,18 @@
     public signature exposes no kernel constructor, record field, callback, or
     lifecycle operation. The kernel is a Dune package-private implementation
     detail, unavailable through the supported [temporal-sdk] dependency and
-    not part of the public API. *)
+    not part of the public API. The handle is valid only for the lifetime of
+    its owning execution; completion, eviction, cancellation, or shutdown
+    disposes pending callbacks and continuations. *)
 type ('value, 'error) t = ('value, 'error) Temporal_future_kernel.t
 
 (** Identifies the input that completed a heterogeneous race. *)
 type ('left, 'right) race = Left of 'left | Right of 'right
 
 (** Returns the result if it is ready. Otherwise, suspends only the current
-    workflow fiber and lets other runnable workflow fibers continue. *)
+    workflow fiber and lets other runnable workflow fibers continue. A handle
+    retained after its owning execution has ended must not be awaited or used
+    to coordinate unrelated work. *)
 val await : ('value, 'error) t -> ('value, 'error) result
 
 (** Returns a future that applies the function to a successful result. Errors

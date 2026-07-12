@@ -89,6 +89,11 @@ module Make (Supervisor : SUPERVISOR) : sig
       rejection is retried before polling a new task, so an activity is never
       executed twice merely because its completion transport was unavailable.
       [Ok Not_ready] means the native poll had no ready task. *)
+
+  (** Retries every retained completion while the adapter mutex is held. [Ok ()]
+      proves that no opaque activity lease remains in this adapter; [Error _]
+      leaves the exact completion retained so shutdown must remain retryable. *)
+  val drain : t -> (unit, error_view) result
 end
 
 val register :

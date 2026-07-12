@@ -25,6 +25,7 @@ type fake_supervisor = {
   completions : Protocol.completion list ref;
   poll_error : source_error option ref;
   rejected_poll_count : int ref;
+  reject_next_completion : bool ref;
   raise_next_completion : bool ref;
 }
 
@@ -36,6 +37,7 @@ let fake_supervisor () =
     completions = ref [];
     poll_error = ref None;
     rejected_poll_count = ref 0;
+    reject_next_completion = ref false;
     raise_next_completion = ref false;
   }
 
@@ -65,6 +67,9 @@ module Fake_supervisor = struct
     if !(supervisor.raise_next_completion) then begin
       supervisor.raise_next_completion := false;
       raise (Failure "injected completion exception")
+    end else if !(supervisor.reject_next_completion) then begin
+      supervisor.reject_next_completion := false;
+      Error { code = "temporarily_unavailable"; message = "completion transport unavailable" }
     end else if Hashtbl.mem supervisor.leased completion.run_id then begin
       Hashtbl.remove supervisor.leased completion.run_id;
       supervisor.completions := completion :: !(supervisor.completions);
@@ -290,6 +295,44 @@ let test_unexpected_completion_exception_is_retried () =
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "completion exception retry left a native lease outstanding"
 
+(** A workflow completion that is rejected after execution is retained exactly
+    as produced. Draining the adapter acknowledges it without invoking the
+    workflow implementation again, which is the shutdown safety property the
+    native worker relies on. *)
+let test_completion_rejection_is_drained_without_redo () =
+  let supervisor = fake_supervisor () in
+  let calls = ref 0 in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_completion_retry"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        incr calls;
+        Ok ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-completion-retry"
+       [ initialize ~run_id:"run-completion-retry"
+           ~workflow_type:"native_worker_completion_retry" ]);
+  supervisor.reject_next_completion := true;
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  begin match Worker.poll worker with
+  | Error { code = "completion_failed"; _ } -> ()
+  | _ -> failwith "completion rejection did not remain a typed error"
+  end;
+  if !calls <> 1 then failwith "rejected completion reran the workflow";
+  if Hashtbl.length supervisor.leased <> 1 then
+    failwith "rejected completion unexpectedly retired the native lease";
+  begin match Worker.drain worker with
+  | Ok () -> ()
+  | Error error ->
+      failwith
+        (Printf.sprintf "pending workflow completion was not drained: %s" error.message)
+  end;
+  if !calls <> 1 then failwith "draining the completion reran the workflow";
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "drained workflow completion left a native lease outstanding";
+  if List.length !(supervisor.completions) <> 1 then
+    failwith "draining submitted more than one workflow completion"
+
 (** If an ordinary completion raises, the adapter converts the exception into a
     typed rejected outcome and submits one explicit failure completion. *)
 let test_failure_completion_exception_is_typed () =
@@ -486,6 +529,7 @@ let () =
   test_cancellation ();
   test_eviction ();
   test_unexpected_completion_exception_is_retried ();
+  test_completion_rejection_is_drained_without_redo ();
   test_failure_completion_exception_is_typed ();
   test_resumed_failure_removes_run ();
   test_activity_command_retires_lease ();

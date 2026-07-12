@@ -57,3 +57,9 @@ val run : t -> (unit, Temporal_base.Error.t) result
     releases the supervisor's worker, client, and Rust runtime graph exactly
     once. Repeated calls are idempotent. *)
 val shutdown : t -> (unit, Temporal_base.Error.t) result
+
+(** Returns [true] only when the most recent shutdown failure occurred while
+    retrying an OCaml-owned completion. In that state native teardown has not
+    started and the caller may retry; a native teardown error returns [false]
+    because the supervisor graph is already terminal. *)
+val shutdown_retryable : t -> bool

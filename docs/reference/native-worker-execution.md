@@ -37,13 +37,17 @@ The adapter owns only OCaml values:
 - an immutable map from workflow type name to an existentially typed local
   definition;
 - a mutable map from Temporal run ID to its matching typed `Execution.t`;
+- a mutable map of workflow completions whose native acknowledgement has not
+  yet been proven, with every payload buffer copied into adapter-owned storage;
 - one mutex that serializes polling, execution, and completion submission.
 
-No native pointer, Rust future, continuation, or payload buffer is stored in
-the maps. The mutex protects OCaml scheduler state in addition to the
-supervisor's own owner-Domain serialization, so two ordinary producer Domains
-cannot execute the same run concurrently. Workflow fibers must not call the
-adapter directly because supervisor operations may block their producer Domain.
+No native pointer, Rust future, or continuation is stored in the maps. The
+pending completion map owns copied protocol bytes until acknowledgement and
+then releases them with the ordinary OCaml value lifetime. The mutex protects
+OCaml scheduler state in addition to the supervisor's own owner-Domain
+serialization, so two ordinary producer Domains cannot execute the same run
+concurrently. Workflow fibers must not call the adapter directly because
+supervisor operations may block their producer Domain.
 
 ## Worker configuration validation
 
@@ -83,11 +87,11 @@ already been accepted.
    `unsupported` errors because the first semantic protocol has no child
    command variant; no replacement command is fabricated for that unsupported
    path.
-7. The completion is submitted through the same supervisor. The run entry is
-   removed only after the supervisor confirms completion retirement. Terminal
-   commands remove the run; a cache-removal activation also removes it after
-   its required empty acknowledgement. Pending timer/activity work keeps the
-   run entry.
+7. The completion is copied into an adapter-owned pending record before it is
+   submitted through the same supervisor. The run entry is removed only after
+   the supervisor confirms completion retirement. Terminal commands remove the
+   run; a cache-removal activation also removes it after its required empty
+   acknowledgement. Pending timer/activity work keeps the run entry.
 
 Activations without initialization must identify a run already in the map.
 Unknown run IDs are completed with a non-retryable bridge failure, which
@@ -100,8 +104,10 @@ runtime (for example, a child-workflow command before its semantic protocol
 record exists) receives a typed `Fail_workflow` completion. `poll` returns
 `Ok (Rejected ...)` only after that completion has been accepted, and marks
 `lease_retired = true`. If the native completion operation fails, `poll` returns
-an error and leaves the run entry in place so the caller can retry or shut down
-without a false claim of retirement.
+an error and leaves the exact completion in the pending map so the caller can
+retry or shut down without a false claim of retirement. A retry never reruns
+the workflow implementation. `drain` retries every pending completion while
+holding the adapter mutex and returns `Ok ()` only after the map is empty.
 
 Malformed JSON or a malformed semantic activation is rejected below this
 module by the supervisor's protocol adapter. That lower layer owns the raw
@@ -134,8 +140,10 @@ cannot starve behind workflow readiness (or the reverse). A task-level
 workflow/activity failure is completed through Core and then the loop
 continues; a transport, protocol, or lifecycle error returns a typed
 `Temporal.Error.t`. `shutdown` closes admission, waits for an active loop to
-leave the adapters, and then releases worker, client, and Rust runtime state in
-reverse ownership order. Repeated shutdown calls are idempotent.
+leave the adapters, drains both pending completion maps, and only then
+releases worker, client, and Rust runtime state in reverse ownership order. If
+either drain fails, native teardown is not started and shutdown remains
+retryable. Repeated successful shutdown calls are idempotent.
 
 The native workflow adapter intentionally rejects child-workflow commands until
 their complete Core fields are represented by the semantic protocol. Activity
@@ -154,6 +162,8 @@ verify:
 - durable timer suspension and resumption through a matching sequence;
 - cancellation and cache-eviction removal of suspended runs;
 - complete activity-command scheduling and lease retirement;
+- retention and retry of a rejected workflow completion without rerunning the
+  workflow, including an explicit adapter drain;
 - unknown run rejection and lease retirement;
 - typed cleanup when completion raises, including the unacknowledged-lease
   path when the failure completion itself raises;

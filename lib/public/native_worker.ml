@@ -166,12 +166,15 @@ let supervisor_capacity = 32
 
 (** Native worker lifecycle state. The atomic flag is the only state observed
     by the polling loop from [shutdown]; adapter maps remain owner-confined to
-    the run loop and are fully drained before native teardown starts. *)
+    the run loop. [shutdown_retryable] distinguishes a failed adapter drain
+    (where the native graph is still usable) from a native teardown failure
+    (where reopening the public worker would only hide a terminal graph). *)
 type t = {
   supervisor : Native.t;
   workflows : Workflow.t;
   activities : Activity.t;
   closed : bool Atomic.t;
+  shutdown_retryable : bool Atomic.t;
   run_mutex : Mutex.t;
 }
 
@@ -238,6 +241,7 @@ let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities (
         workflows;
         activities;
         closed = Atomic.make false;
+        shutdown_retryable = Atomic.make false;
         run_mutex = Mutex.create ();
       }
   in
@@ -321,16 +325,45 @@ let run worker =
       result)
 
 (** Stops polling first, then waits for the loop mutex so no adapter-held lease
-    remains when native worker shutdown begins. The native supervisor performs
-    reverse-order worker/client/runtime cleanup and joins its owner Domain. *)
+    remains when native worker shutdown begins. Adapter completion maps are
+    drained while that mutex is held; native teardown is started only after
+    both maps prove empty. If a drain fails, the graph remains usable and the
+    caller can retry without losing the exact pending completion. *)
 let shutdown worker =
   if Atomic.compare_and_set worker.closed false true then begin
     Mutex.lock worker.run_mutex;
-    Mutex.unlock worker.run_mutex;
-    match Native.shutdown worker.supervisor with
-    | Ok () as result ->
-        report Logs.Info ~operation:"worker_shutdown" ();
-        result
-    | Error error -> Error (public_native_error "worker shutdown" error)
+    let drained =
+      Fun.protect
+        ~finally:(fun () -> Mutex.unlock worker.run_mutex)
+        (fun () ->
+          match Workflow.drain worker.workflows with
+          | Error error ->
+              Error (public_adapter_error "workflow completion drain" error)
+          | Ok () -> (
+              match Activity.drain worker.activities with
+              | Ok () -> Ok ()
+              | Error error ->
+                  Error
+                    (public_activity_error "activity completion drain" error)))
+    in
+    match drained with
+    | Error error ->
+        (* The native graph has not been touched. Reopening both flags leaves
+           [run] and a later [shutdown] able to retry the exact completion. *)
+        Atomic.set worker.closed false;
+        Atomic.set worker.shutdown_retryable true;
+        Error error
+    | Ok () ->
+        Atomic.set worker.shutdown_retryable false;
+        match Native.shutdown worker.supervisor with
+        | Ok () as result ->
+            report Logs.Info ~operation:"worker_shutdown" ();
+            result
+        | Error error -> Error (public_native_error "worker shutdown" error)
   end
   else Ok ()
+
+(** Reports whether the most recent shutdown failure occurred before native
+    teardown. The public wrapper uses this private state to reopen its own
+    admission flag only for a safe adapter-drain retry. *)
+let shutdown_retryable worker = Atomic.get worker.shutdown_retryable

@@ -320,12 +320,13 @@ let shutdown worker =
         result
     | Error _ as error ->
         (* The mock backend can retry a failed shutdown admission. The native
-           supervisor, by contrast, has already linearized its terminal
-           mailbox request and retains the exact failure result; reopening the
-           public flag would only admit calls that can never reach that graph.
-           Keep native workers closed after such a terminal error. *)
+           supervisor normally retains a terminal failure, but an adapter-drain
+           failure is different: Native_worker has not started teardown and
+           deliberately retains the exact completion for a safe retry. *)
         (match worker.backend with
         | Mock_backend _ -> Atomic.set worker.closed false
-        | Native_backend _ -> ());
+        | Native_backend backend ->
+            if Native_worker.shutdown_retryable backend then
+              Atomic.set worker.closed false);
         error
   else Ok ()

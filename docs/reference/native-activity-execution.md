@@ -85,6 +85,13 @@ same lease concurrently.  The mutex is an OCaml state guard; it does not hold
 the OCaml runtime lock while Rust waits.  The concrete supervisor is
 responsible for releasing that runtime lock in its C boundary.
 
+The private worker shutdown path calls the adapter's `drain` operation before
+closing native Core. It retries every retained completion while holding the
+same mutex and starts teardown only after the token map is empty. A failed
+drain leaves the exact completion and the native graph usable, so callers can
+retry rather than converting a transient transport error into an
+`outstanding_tasks` shutdown failure.
+
 ## Current boundary and deliberate limits
 
 This slice implements typed local activity dispatch, failure/cancellation

@@ -593,12 +593,18 @@ module Make (Supervisor : SUPERVISOR) = struct
       | Accepted -> accepted_pending adapter pending
       | Rejected_by_supervisor error -> Error error
       | Raised_by_supervisor exception_ ->
-          (* Preserve the historical cleanup contract for a binding exception:
-             remove this uncertain ordinary completion before the outer guard
-             submits one explicit failure completion. If that fallback also
-             fails, [retire_with_failure] records its own retryable lease. *)
-          adapter.pending <- Run_map.remove pending.run_id adapter.pending;
-          raise exception_
+          (* Eviction acknowledgements must stay empty completions. Removing
+             them and re-raising lets the outer guard submit Fail_workflow,
+             which is invalid for an eviction lease. Keep the empty pending
+             entry for retry, matching [finish_pending]. *)
+          (match pending.result with
+          | Pending_completed { evicted = true; _ } ->
+              Error (completion_exception_error exception_)
+          | Pending_completed _ | Pending_rejected _ ->
+              (* Ordinary completions: preserve the historical cleanup contract
+                 so the outer guard can submit one explicit failure completion. *)
+              adapter.pending <- Run_map.remove pending.run_id adapter.pending;
+              raise exception_)
     end
 
   (** A cache-eviction activation is acknowledged with a successful empty

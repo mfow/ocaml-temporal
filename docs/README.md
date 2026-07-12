@@ -50,8 +50,9 @@ The remaining reference documents are useful when changing one subsystem:
   bounded Rust history feeder, strict JSON/base64 format, Core ownership, and
   the local evidence for the first replay-plumbing slice.
 - [Worker restart/replay diagnostic contract](reference/worker-restart-replay-diagnostics.md)
-  defines the payload-free normalized history and generation/replay records
-  used by the offline contract gate before the live controller exists.
+  defines the payload-free normalized history, generation/replay records, and
+  ordered controller lifecycle evidence used by the offline contract gate
+  before the live controller exists.
 - [Feature coverage and implementation status](reference/feature-coverage.md)
   gives the short status reference and distinguishes live evidence, mock-only
   tests, partly live-tested native bridge support, and deferred features.
@@ -136,9 +137,10 @@ readiness checks, failure logs, and volume cleanup; do not run the fixture's
 Compose file from the repository root.
 
 `make test-temporal-worker-restart` is deliberately different from the live
-integration command: it uses no Docker and validates only the normalized
-history/replay diagnostic contract and its rejection paths. It must not be
-used as evidence that a worker was restarted or that Temporal replay occurred.
+integration command: it uses no Docker and validates the normalized
+history/replay diagnostic contract, the ordered restart-controller lifecycle
+contract, and their rejection paths. It must not be used as evidence that a
+worker was restarted or that Temporal replay occurred.
 
 ## Terms used in this project
 

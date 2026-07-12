@@ -57,6 +57,9 @@ val resolved :
 (** Returns the identity of the workflow scheduler that created the future. *)
 val owner_id : ('value, 'error) t -> int
 
+(** Reports whether callbacks queued for the future's owner may still run. *)
+val callbacks_live : ('value, 'error) t -> bool
+
 (** Runs [action] with [id] published as the Domain-local current scheduler
     owner. The scheduler installs this around each fiber so [await] can reject
     foreign-owner futures even when another scheduler is running elsewhere. *)
@@ -88,9 +91,10 @@ val add_waiter :
 (** Registers an observer that receives the future result through the owning
     scheduler. Ready and closed futures are delivered using the same scheduler
     queue, so callers never need to race a direct callback against completion.
-    A callback still queued when the owner shuts down is skipped, because
-    shutdown has already closed derived futures and released their resources.
-    Observers are internal and should not capture longer-lived resources. *)
+    A callback still queued when the owner shuts down is skipped after runtime
+    teardown; public derived wrappers do not receive a synthetic terminal
+    result and must not schedule more work from a skipped callback. Observers
+    are internal and should not capture longer-lived resources. *)
 val observe :
   ('value, 'error) t -> (('value, 'error) result -> unit) -> unit
 

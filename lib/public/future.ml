@@ -11,9 +11,9 @@ type ('left, 'right) race = Left of 'left | Right of 'right
     keeping the function out of [future.mli] prevents arbitrary construction
     outside the SDK's deterministic lifecycle. *)
 let make_repr ~await ~await_gate ~observe ~is_ready ~peek ~owner_id
-    ~outside_error ~enqueue =
+    ~outside_error ~callbacks_live ~enqueue =
   Temporal_future_kernel.make ~await ~await_gate ~observe ~is_ready ~peek ~owner_id
-    ~outside_error ~enqueue
+    ~outside_error ~callbacks_live ~enqueue
 
 (** Converts one internal runtime future to the public error vocabulary. This
     helper is used only for the context-owned empty aggregate; normal command
@@ -30,7 +30,9 @@ let of_internal ~outside_error future =
     ~is_ready:(fun () -> Temporal_runtime.Future_store.is_ready future)
     ~peek:(fun () -> Option.map map_error (Temporal_runtime.Future_store.peek future))
     ~owner_id:(Temporal_runtime.Future_store.owner_id future)
-    ~outside_error ~enqueue:(Temporal_runtime.Future_store.enqueue future)
+    ~outside_error
+    ~callbacks_live:(fun () -> Temporal_runtime.Future_store.callbacks_live future)
+    ~enqueue:(Temporal_runtime.Future_store.enqueue future)
 
 (** Returns the result, suspending the current workflow fiber only when the
     owning scheduler can resume it. *)
@@ -57,13 +59,17 @@ let make_derived ~parent ~outside_error =
         observers := [];
         List.iter
           (fun callback ->
-            Temporal_future_kernel.enqueue parent (fun () -> callback value))
+            Temporal_future_kernel.enqueue parent (fun () ->
+                if Temporal_future_kernel.callbacks_live parent then
+                  callback value))
           callbacks
   in
   let observe callback =
     match !result with
     | Some value ->
-        Temporal_future_kernel.enqueue parent (fun () -> callback value)
+        Temporal_future_kernel.enqueue parent (fun () ->
+            if Temporal_future_kernel.callbacks_live parent then
+              callback value)
     | None -> observers := callback :: !observers
   in
   let await_gate register = Temporal_future_kernel.await_gate parent register in
@@ -77,6 +83,7 @@ let make_derived ~parent ~outside_error =
         if not
              (Temporal_runtime.Future_store.current_owner_matches
                 (Temporal_future_kernel.owner_id parent))
+             || not (Temporal_future_kernel.callbacks_live parent)
         then Error (outside_error ())
         else
           let observed = ref None in
@@ -92,6 +99,7 @@ let make_derived ~parent ~outside_error =
       ~is_ready:(fun () -> Option.is_some !result)
       ~peek:(fun () -> !result)
       ~owner_id:(Temporal_future_kernel.owner_id parent) ~outside_error
+      ~callbacks_live:(fun () -> Temporal_future_kernel.callbacks_live parent)
       ~enqueue:(Temporal_future_kernel.enqueue parent)
   in
   (future, resolve)
@@ -102,10 +110,12 @@ let ready_like source result =
   make_repr ~await:(fun () -> result)
     ~await_gate:(fun register -> register (fun () -> ()))
     ~observe:(fun callback ->
-      Temporal_future_kernel.enqueue source (fun () -> callback result))
+      Temporal_future_kernel.enqueue source (fun () ->
+          if Temporal_future_kernel.callbacks_live source then callback result))
     ~is_ready:(fun () -> true) ~peek:(fun () -> Some result)
     ~owner_id:(Temporal_future_kernel.owner_id source)
     ~outside_error:(Temporal_future_kernel.outside_error source)
+    ~callbacks_live:(fun () -> Temporal_future_kernel.callbacks_live source)
     ~enqueue:(Temporal_future_kernel.enqueue source)
 
 (** Builds the structured defect shared by aggregate ownership checks. *)
@@ -185,6 +195,7 @@ let all futures =
             ~observe:(fun observer -> observer (Ok []))
             ~is_ready:(fun () -> true) ~peek:(fun () -> Some (Ok []))
             ~owner_id:(-1) ~outside_error:ownership_error
+            ~callbacks_live:(fun () -> true)
             ~enqueue:(fun thunk -> thunk ())
       | Some context ->
           let future =

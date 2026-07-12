@@ -26,6 +26,7 @@ let of_internal ?outside_error future =
       Option.map map_error (Temporal_runtime.Future_store.peek future))
     ~owner_id:(Temporal_runtime.Future_store.owner_id future)
     ~outside_error
+    ~callbacks_live:(fun () -> Temporal_runtime.Future_store.callbacks_live future)
     ~enqueue:(Temporal_runtime.Future_store.enqueue future)
 
 (** Creates a settled public value for validation failures and detached calls;
@@ -36,4 +37,5 @@ let resolved ~outside_error result =
     ~await_gate:(fun register -> register (fun () -> ()))
     ~observe:(fun observer -> observer result)
     ~is_ready:(fun () -> true) ~peek:(fun () -> Some result) ~owner_id:(-1)
-    ~outside_error ~enqueue:(fun thunk -> thunk ())
+    ~outside_error ~callbacks_live:(fun () -> true)
+    ~enqueue:(fun thunk -> thunk ())

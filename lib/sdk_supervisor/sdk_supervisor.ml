@@ -182,9 +182,11 @@ module Make (Backend : Backend) = struct
 
   (** Schedules forgotten-instance cleanup on a system thread. A finalizer must
       not block while waiting for mailbox capacity or the owner Domain. The
-      detached thread uses the ordinary serialized shutdown path; if creating
-      it is impossible during process teardown, closing the mailbox at least
-      releases the owner and permits backend-native finalizers to run. *)
+      detached thread uses the ordinary serialized shutdown path. If creating
+      that thread is impossible, the finalizer runs [shutdown] inline as a last
+      resort: blocking the finalizer is preferable to [Mailbox.close] alone,
+      which never admits the terminal Backend.shutdown request and would leave
+      the native runtime/client/worker graph unreclaimed. *)
   let cleanup_abandoned supervisor =
     if not (Atomic.get supervisor.shutdown_finished) then
       match
@@ -193,7 +195,14 @@ module Make (Backend : Backend) = struct
           supervisor
       with
       | _thread -> ()
-      | exception _ -> Mailbox.close supervisor.mailbox
+      | exception _ ->
+          (* Never block the finalizer Domain waiting on the mailbox owner
+             (which may be this Domain). Admit terminal shutdown without
+             awaiting, then close so an idle owner can drain and exit. The
+             runtime custom-block finalizer remains the last-resort native
+             reclaim path if the owner never joins. *)
+          (try initiate_shutdown supervisor with _ -> ());
+          Mailbox.close supervisor.mailbox
 
   (** Starts the mailbox first so backend construction itself occurs on the
       owner Domain. Failed initialization stops and joins that Domain before

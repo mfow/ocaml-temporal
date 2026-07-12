@@ -137,6 +137,16 @@ jobs:
       - name: Install Protocol Buffers compiler on Windows
         if: runner.os == 'Windows'
         run: choco install protoc --no-progress --yes
+      - name: Expose Protocol Buffers compiler to Cygwin
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          protoc_unix_path=/c/ProgramData/chocolatey/bin/protoc.exe
+          test -x "$protoc_unix_path"
+          echo "$(dirname "$protoc_unix_path")" >> "$GITHUB_PATH"
+          echo "PROTOC=$(cygpath -w "$protoc_unix_path")" >> "$GITHUB_ENV"
+          "$protoc_unix_path" --version
       - name: Install OCaml dependencies
         run: opam install . --deps-only --with-test --yes
       - name: Build, lint, and test natively

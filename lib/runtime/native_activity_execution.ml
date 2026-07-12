@@ -566,6 +566,25 @@ module Make (Supervisor : SUPERVISOR) = struct
       | Protocol.Start start -> process_start adapter token start
       | Cancel cancel -> process_cancel adapter token cancel
 
+  (** Retries every retained activity completion while the adapter mutex is
+      held. Native worker shutdown calls this before closing Rust so a
+      temporary completion transport failure cannot become an outstanding
+      task-token lease. *)
+  let drain adapter : (unit, error_view) result =
+    Mutex.lock adapter.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock adapter.mutex)
+      (fun () ->
+        let rec loop () =
+          match Token_map.min_binding_opt adapter.leases with
+          | None -> Ok ()
+          | Some (_, lease) -> (
+              match finish_lease adapter lease with
+              | Ok _ -> loop ()
+              | Error error -> Error error)
+        in
+        loop ())
+
   (** Serializes pending-completion retry, native polling, implementation
       execution, and completion submission. The mutex covers the complete
       transaction, including the user implementation, so the map cannot race

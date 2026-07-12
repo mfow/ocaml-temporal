@@ -1,10 +1,10 @@
 (** Worker process for the first two-OCaml-binary live acceptance test.
 
     The worker registers the same shared workflow definitions as the driver and
-    keeps the public worker loop alive until graceful shutdown. The process is
-    intentionally not added as a Compose service yet because the current public
-    [Worker.create] surface routes only to the deterministic in-memory backend;
-    accepting an HTTP endpoint here would produce a false green smoke test. *)
+    keeps the public native worker loop alive until graceful shutdown. The
+    executable remains guarded by [TEMPORAL_TWO_BINARY_LIVE] so a local run
+    cannot accidentally connect to a developer's Temporal endpoint; the
+    Compose job is the only place that enables the live gate. *)
 
 module Worker = Temporal.Worker
 module Error = Temporal.Error
@@ -16,8 +16,8 @@ let required_env name =
   | Some value when not (String.equal value "") -> Ok value
   | _ -> Error (Error.defect ~message:(name ^ " must not be empty"))
 
-(** Prevents a normal local invocation from silently running the mock backend
-    and being reported as a real Temporal worker. *)
+(** Prevents a normal local invocation from silently connecting to a Temporal
+    endpoint and being reported as a real acceptance run. *)
 let require_live_gate () =
   match Sys.getenv_opt "TEMPORAL_TWO_BINARY_LIVE" with
   | Some "1" -> Ok ()

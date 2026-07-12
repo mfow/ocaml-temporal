@@ -11,8 +11,8 @@ typed validation failures.
 
 Rust sends one `task` after Core has leased a remote activity attempt. The task
 contains an opaque binary `task_token` and either a complete start context or a
-cancellation update. The future OCaml activity runner must retain the token and
-copy it unchanged into exactly one `completion`. The adapter never interprets
+cancellation update. The native OCaml activity adapter retains the token and
+copies it unchanged into exactly one `completion`. The adapter never interprets
 token bytes. Rust's outstanding-task ledger remains responsible for proving
 that a completion names a currently leased attempt.
 
@@ -27,8 +27,8 @@ will-complete-asynchronously.
 The module has no native handle, mutable global registry, Domain, fiber, or
 callback. Decoding allocates OCaml-owned values. Encoding reads those values
 and returns a new JSON string. Native worker lifecycle and serialization remain
-the supervisor's responsibility, so this adapter adds no race or cross-language
-memory-ownership path.
+the supervisor's responsibility, so this adapter adds no race or
+cross-language memory-ownership path.
 
 ## Shared semantic codecs
 

@@ -134,8 +134,9 @@ let expect label expected actual =
 
 (** Parent fixture that retains a child handle, requests cancellation before
     the start acknowledgment, and then waits for Core's typed cancellation
-    result. Calling [cancel] a second time verifies that one handle emits only
-    one durable command even when application code retries the request. *)
+    result. Calling [cancel] before and after resolution verifies that one
+    handle emits only one durable command even when application code retries
+    the request. *)
 let cancelling_child_parent_workflow =
   Temporal.Workflow.define ~name:"cancelling_child_parent"
     ~input:Temporal.Codec.unit ~output:Temporal.Codec.string (fun () ->
@@ -155,7 +156,10 @@ let cancelling_child_parent_workflow =
               Error
                 (Temporal.Error.defect
                    ~message:"cancelled child unexpectedly completed")
-          | Error error -> Ok (Temporal.Error.kind error))
+          | Error error -> (
+              match Temporal.Child_workflow.cancel handle with
+              | Ok () -> Ok (Temporal.Error.kind error)
+              | Error cancel_error -> Error cancel_error))
       | Error error, _ | _, Error error -> Error error)
 
 (** Verifies explicit child policy, cancellation command ordering, idempotence,

@@ -17,7 +17,6 @@ type child_workflow_resolution =
 type child_workflow_state = {
   resolve : child_workflow_resolution;
   mutable start_run_id : string option;
-  mutable cancel_requested : bool;
 }
 
 (** State shared by SDK operations in one workflow execution. Activities and
@@ -191,6 +190,10 @@ let bridge_error message =
 let start_child_workflow context ~id ~name ~input
     ?(cancellation_type = Activation.Child_abandon) ~decode () =
   let seq = allocate_sequence context in
+  (* Keep this bit in the handle closure rather than in the pending table so a
+     repeated cancel remains idempotent even after Core has removed the child
+     state while delivering its terminal result. *)
+  let cancellation_requested = ref false in
   let future, resolve = Scheduler.promise context.scheduler ~outside_error in
   Hashtbl.add context.child_workflows seq
     {
@@ -209,7 +212,6 @@ let start_child_workflow context ~id ~name ~input
                             ("child workflow result decoder raised: "
                             ^ Printexc.to_string exn)))));
       start_run_id = None;
-      cancel_requested = false;
     };
   emit context
     (Activation.Start_child_workflow
@@ -235,15 +237,16 @@ let start_child_workflow context ~id ~name ~input
                ~message:"child cancellation reason must be valid UTF-8")
         else (
           match Hashtbl.find_opt context.child_workflows seq with
-          | None ->
+          | None when not !cancellation_requested ->
               Error
                 (bridge_error
                    (Printf.sprintf
                       "unknown or completed child workflow sequence %Ld" seq))
-          | Some state when state.cancel_requested -> Ok ()
-          | Some state ->
-              state.cancel_requested <- true;
+          | None -> Ok ()
+          | Some _ when !cancellation_requested -> Ok ()
+          | Some _ ->
               emit context (Activation.Cancel_child_workflow { seq; reason });
+              cancellation_requested := true;
               Ok ())
     | _ ->
         Error

@@ -148,13 +148,15 @@ or Core diagnostics that might embed those values.
 ## Client start and exact-run wait semantics
 
 The private client operations are separate from the worker activation protocol.
-`client_start_workflow_json` accepts a closed object with `namespace`,
-`workflow_id`, `workflow_type`, `task_queue`, and an ordered array of the
-canonical Temporal payload objects. The bridge passes those fields to Core's
-raw `StartWorkflowExecution` request and returns an execution reference with
-the server-assigned run ID. Start options not represented by this first schema
-are left at Core's documented defaults rather than being guessed by the
-language layer.
+`client_start_workflow_json` accepts a closed object with the stable
+idempotency key `request_id`, `namespace`, `workflow_id`, `workflow_type`,
+`task_queue`, and an ordered array of the canonical Temporal payload objects.
+The bridge passes those fields to Core's raw `StartWorkflowExecution` request
+and returns an execution reference with the server-assigned run ID. The
+public client may generate `request_id` when its caller omits one, but one
+logical start and every retry of its asynchronous ticket use the same key.
+Start options not represented by this first schema are left at Core's
+documented defaults rather than being guessed by the language layer.
 
 `client_wait_workflow_json` accepts exactly one execution identity. Each ABI
 call issues a close-event history long poll with `wait_new_event = true` and a

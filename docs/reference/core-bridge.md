@@ -65,12 +65,15 @@ lower-level than the public OCaml `Client` module. The adapter uses Core's raw
 the OCaml boundary; it does not instantiate Rust's statically typed workflow
 definitions.
 
-The start request contains `namespace`, `workflow_id`, `workflow_type`,
-`task_queue`, and an ordered `input` payload array. Optional start policies are
-not silently invented in this first slice: Core receives its documented server
-defaults. The successful response contains the namespace, workflow ID, and
-run ID allocated by Temporal. Both request and response are strictly decoded,
-re-encoded, and reparsed before crossing the boundary.
+The start request contains the stable idempotency key `request_id`,
+`namespace`, `workflow_id`, `workflow_type`, `task_queue`, and an ordered
+`input` payload array. The request ID is copied into Core's
+`StartWorkflowExecution` request and remains unchanged across bounded ticket
+polls. Optional start policies are not silently invented in this first slice:
+Core receives its documented server defaults. The successful response contains
+the namespace, workflow ID, and run ID allocated by Temporal. Both request and
+response are strictly decoded, re-encoded, and reparsed before crossing the
+boundary.
 
 The wait request names `namespace`, `workflow_id`, and one concrete `run_id`.
 There is no `follow_runs` escape hatch in the document: the operation always

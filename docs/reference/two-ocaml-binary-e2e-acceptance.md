@@ -18,9 +18,9 @@ The remaining blockers are concrete rather than environmental:
 
 1. connect the native workflow/activity poll and completion operations to the
    deterministic execution registry and public worker loop; and
-2. add activity-task semantic conversion, worker readiness/health signalling,
-   and Compose services that run these two binaries only after those operations
-   are implemented.
+2. connect the existing activity-task semantic conversion, add worker
+   readiness/health signalling, and add Compose services that run these two
+   binaries only after those operations are wired.
 
 Until those seams are complete, CI should continue running the existing
 Core-client/worker lifecycle smoke and compile the scaffold with the ordinary
@@ -225,13 +225,15 @@ validators before an operation changes native or workflow state.
 The current activation/completion schema already defines the workflow-side
 semantic conversion for initialization, activity resolution, timer firing,
 cancellation, eviction, activity scheduling, timers, and terminal commands.
-The live slice adds a similarly closed activity-task/activity-completion
-schema. It must represent only the information an OCaml activity runner needs;
-raw `ActivityTask` protobuf bytes, raw pointers, and Core errors are forbidden
-outside Rust. For the first acceptance test, the activity schema needs at
-least task token, activity type, workflow/run identifiers, attempt, input
-payloads, and completion status. Future heartbeat, cancellation, local
-activity, and async-completion fields can be added as separate closed changes.
+The closed `activity-task` and `activity-completion` schemas already exist and
+are validated by both language adapters. The remaining live-slice work is to
+connect those codecs to the native poll/completion loop. They represent only
+the information an OCaml activity runner needs; raw `ActivityTask` protobuf
+bytes, raw pointers, and Core errors are forbidden outside Rust. The first
+acceptance test uses their existing task token, activity type, workflow/run
+identifiers, attempt, input payloads, and completion variants. Future
+heartbeat, local-activity, and asynchronous-completion fields can be added as
+separate closed changes.
 
 `client.start_workflow` accepts workflow type, workflow ID, task queue, and
 typed input payloads. It returns the server-issued run ID. `client.wait_workflow_result`

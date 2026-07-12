@@ -302,6 +302,38 @@ let test_shutdown_waits_and_is_idempotent () =
   expect "use after shutdown" (Error Supervisor.Closed)
     (Supervisor.perform supervisor (Echo 1))
 
+(** [initiate_shutdown] must return while a concurrent [shutdown] is still
+    waiting on earlier admitted work. Holding the shutdown mutex across
+    await/join would stall initiation for the whole graceful period. *)
+let test_initiate_shutdown_does_not_wait_for_teardown () =
+  let config = backend_config () in
+  let supervisor = Result.get_ok (Supervisor.create ~capacity:2 config) in
+  let entered = create_gate () in
+  let release = create_gate () in
+  let active =
+    Domain.spawn (fun () -> Supervisor.perform supervisor (Block (entered, release)))
+  in
+  await_gate entered;
+  let shutdown_started = Atomic.make false in
+  let shutdown =
+    Domain.spawn (fun () ->
+        Atomic.set shutdown_started true;
+        Supervisor.shutdown supervisor)
+  in
+  await_atomic shutdown_started;
+  let started = Unix.gettimeofday () in
+  Supervisor.initiate_shutdown supervisor;
+  let elapsed = Unix.gettimeofday () -. started in
+  if elapsed > 0.5 then
+    failwith
+      (Printf.sprintf
+         "initiate_shutdown blocked for %.3fs behind concurrent teardown"
+         elapsed);
+  open_gate release;
+  expect "active work under concurrent initiate" (Ok ()) (Domain.join active);
+  expect "concurrent teardown" (Ok ()) (Domain.join shutdown);
+  expect "initiate while teardown single close" 1 (Atomic.get config.closes)
+
 (** Initiating shutdown closes SDK operation admission synchronously even
     while earlier backend work is still blocked. Concurrent public shutdown
     callers then await the one cached terminal request and share its result. *)
@@ -438,6 +470,7 @@ let () =
   test_unexpected_operation_failure_cleans_up ();
   test_unexpected_failure_releases_contending_callers ();
   test_shutdown_waits_and_is_idempotent ();
+  test_initiate_shutdown_does_not_wait_for_teardown ();
   test_shutdown_initiation_closes_admission_and_shares_result ();
   test_shutdown_error_is_cached ();
   test_abandoned_supervisor_is_cleaned_up ();

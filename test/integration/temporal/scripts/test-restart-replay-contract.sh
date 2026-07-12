@@ -35,14 +35,24 @@ expect_failure() {
 
 "$validator" \
   --history "$fixture/history.terminal.json" \
+  --initial-history "$fixture/history.initial.json" \
   --diagnostics "$fixture/diagnostics.json" \
   --workflow-id "$workflow_id" \
   --run-id "$run_id" \
   --stage terminal \
   --require-replay >/dev/null
 
+# Terminal validation cannot be used without retaining the initial snapshot;
+# otherwise the cross-document event-prefix check would be bypassed.
 expect_failure "$validator" \
   --history "$fixture/history.terminal.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id" \
+  --stage terminal
+
+expect_failure "$validator" \
+  --history "$fixture/history.terminal.json" \
+  --initial-history "$fixture/history.initial.json" \
   --workflow-id "$workflow_id" \
   --run-id wrong-run-id \
   --stage terminal
@@ -65,6 +75,7 @@ jq '.records[1].is_replaying = false' \
   "$fixture/diagnostics.json" >"$tmp/diagnostics-without-replay.json"
 expect_failure "$validator" \
   --history "$fixture/history.terminal.json" \
+  --initial-history "$fixture/history.initial.json" \
   --diagnostics "$tmp/diagnostics-without-replay.json" \
   --workflow-id "$workflow_id" \
   --run-id "$run_id" \
@@ -75,6 +86,7 @@ jq '.records[1].history_length = "9223372036854775808"' \
   "$fixture/diagnostics.json" >"$tmp/diagnostics-out-of-range.json"
 expect_failure "$validator" \
   --history "$fixture/history.terminal.json" \
+  --initial-history "$fixture/history.initial.json" \
   --diagnostics "$tmp/diagnostics-out-of-range.json" \
   --workflow-id "$workflow_id" \
   --run-id "$run_id" \
@@ -85,6 +97,7 @@ jq '.events[10].event_id = "9"' \
   "$fixture/history.terminal.json" >"$tmp/history-nonmonotonic.json"
 expect_failure "$validator" \
   --history "$tmp/history-nonmonotonic.json" \
+  --initial-history "$fixture/history.initial.json" \
   --workflow-id "$workflow_id" \
   --run-id "$run_id" \
   --stage terminal
@@ -107,6 +120,24 @@ jq '.events = .events[0:5]
   "$fixture/history.terminal.json" >"$tmp/history-early-terminal.json"
 expect_failure "$validator" \
   --history "$tmp/history-early-terminal.json" \
+  --initial-history "$fixture/history.initial.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id" \
+  --stage terminal
+
+# The baseline must be the exact initial event prefix, not merely a valid
+# pending-timer history for the same workflow/run identity. This mutation keeps
+# the baseline valid on its own while changing one already-observed event.
+jq '.events[2].type = "WorkflowTaskScheduled"' \
+  "$fixture/history.initial.json" >"$tmp/history-prefix-mismatch.json"
+"$validator" \
+  --history "$tmp/history-prefix-mismatch.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id" \
+  --stage initial >/dev/null
+expect_failure "$validator" \
+  --history "$fixture/history.terminal.json" \
+  --initial-history "$tmp/history-prefix-mismatch.json" \
   --workflow-id "$workflow_id" \
   --run-id "$run_id" \
   --stage terminal

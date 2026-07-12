@@ -6,13 +6,17 @@ set -eu
 # normalized history shape consumed here, so this script deliberately accepts
 # a file rather than scraping human-formatted CLI output. A future adapter can
 # call it for an initial timer boundary and then again for the terminal
-# history without changing the acceptance assertions.
+# history without changing the acceptance assertions. Terminal validation also
+# requires the initial snapshot: checking the two documents independently
+# would allow an adapter bug to replace the workflow's history between the
+# restart boundary and completion.
 
 # Prints the command-line contract and exits with the conventional usage code.
 usage() {
   cat >&2 <<'EOF'
 usage: validate-restart-replay.sh --history FILE --workflow-id ID --run-id ID
-       [--stage initial|terminal] [--diagnostics FILE] [--require-replay]
+       [--stage initial|terminal] [--initial-history FILE]
+       [--diagnostics FILE] [--require-replay]
 EOF
   exit 2
 }
@@ -25,6 +29,7 @@ fail() {
 }
 
 history=''
+initial_history=''
 diagnostics=''
 workflow_id=''
 run_id=''
@@ -36,6 +41,11 @@ while [ "$#" -gt 0 ]; do
     --history)
       [ "$#" -ge 2 ] || usage
       history=$2
+      shift 2
+      ;;
+    --initial-history)
+      [ "$#" -ge 2 ] || usage
+      initial_history=$2
       shift 2
       ;;
     --diagnostics)
@@ -76,6 +86,12 @@ done
 [ -n "$run_id" ] || usage
 [ "$stage" = initial ] || [ "$stage" = terminal ] || usage
 [ -r "$history" ] || fail "history file is not readable: $history"
+if [ "$stage" = terminal ] && [ -z "$initial_history" ]; then
+  fail "terminal stage requires --initial-history"
+fi
+if [ -n "$initial_history" ] && [ ! -r "$initial_history" ]; then
+  fail "initial history file is not readable: $initial_history"
+fi
 if [ -n "$diagnostics" ] && [ ! -r "$diagnostics" ]; then
   fail "diagnostics file is not readable: $diagnostics"
 fi
@@ -123,41 +139,49 @@ terminal_types='[
   "WorkflowExecutionCompleted"
 ]'
 
-# Validate the top-level object, exact object keys, bounded identifiers, event
-# shape, and strictly increasing server event IDs in one jq expression. Event
-# IDs are decimal strings rather than JSON numbers: Temporal uses signed 64-bit
-# IDs, and converting them to a double would silently lose ordering precision
-# above 2^53. No payload or arbitrary event attributes are accepted here.
-if ! "$jq_bin" -e \
-  --arg expected_workflow "$workflow_id" \
-  --arg expected_run "$run_id" \
-  --argjson event_types "$event_types" \
-  --argjson terminal_types "$terminal_types" \
-  '
-    type == "object"
-    and (keys | sort) == ["events", "run_id", "workflow_id"]
-    and (.workflow_id == $expected_workflow)
-    and (.run_id == $expected_run)
-    and (.workflow_id | type == "string" and length > 0 and length <= 65536)
-    and (.run_id | type == "string" and length > 0 and length <= 65536)
-    and (.events | type == "array" and length >= 1 and length <= 1000000)
-    and (all(.events[];
-      (type == "object")
-      and ((keys | sort) == ["event_id", "type"])
-      and (.event_id | type == "string" and test("^[1-9][0-9]{0,18}$"))
-      and (.event_id |
-        length < 19 or (length == 19 and . <= "9223372036854775807"))
-      and (.type | type == "string" and ($event_types | index(.)) != null)
-    ))
-    and (([.events[].event_id] as $ids |
-      [range(1; ($ids | length)) as $i |
-        (($ids[$i] | length) > ($ids[$i - 1] | length))
-        or ((($ids[$i] | length) == ($ids[$i - 1] | length))
-            and $ids[$i] > $ids[$i - 1])
-      ] | all))
-  ' "$history" >/dev/null; then
-  fail "history document does not match the strict normalized contract"
-fi
+# Validates the top-level object, exact object keys, bounded identifiers,
+# event shape, and strictly increasing server event IDs. Event IDs are decimal
+# strings rather than JSON numbers: Temporal uses signed 64-bit IDs, and
+# converting them to a double would silently lose ordering precision above
+# 2^53. No payload or arbitrary event attributes are accepted here. The
+# function is used for both snapshots so the prefix comparison below never
+# compares an unchecked baseline with a checked terminal history.
+validate_history_shape() {
+  history_path=$1
+  error_message=$2
+  if ! "$jq_bin" -e \
+    --arg expected_workflow "$workflow_id" \
+    --arg expected_run "$run_id" \
+    --argjson event_types "$event_types" \
+    '
+      type == "object"
+      and (keys | sort) == ["events", "run_id", "workflow_id"]
+      and (.workflow_id == $expected_workflow)
+      and (.run_id == $expected_run)
+      and (.workflow_id | type == "string" and length > 0 and length <= 65536)
+      and (.run_id | type == "string" and length > 0 and length <= 65536)
+      and (.events | type == "array" and length >= 1 and length <= 1000000)
+      and (all(.events[];
+        (type == "object")
+        and ((keys | sort) == ["event_id", "type"])
+        and (.event_id | type == "string" and test("^[1-9][0-9]{0,18}$"))
+        and (.event_id |
+          length < 19 or (length == 19 and . <= "9223372036854775807"))
+        and (.type | type == "string" and ($event_types | index(.)) != null)
+      ))
+      and (([.events[].event_id] as $ids |
+        [range(1; ($ids | length)) as $i |
+          (($ids[$i] | length) > ($ids[$i - 1] | length))
+          or ((($ids[$i] | length) == ($ids[$i - 1] | length))
+              and $ids[$i] > $ids[$i - 1])
+        ] | all))
+    ' "$history_path" >/dev/null; then
+    fail "$error_message"
+  fi
+}
+
+validate_history_shape "$history" \
+  "history document does not match the strict normalized contract"
 
 # This helper treats the required event names as an ordered subsequence. It
 # permits unrelated scheduling/started events between the boundaries while
@@ -171,38 +195,73 @@ has_order='def has_order($required):
       end)
   | .index == ($required | length);'
 
-case "$stage" in
-  initial)
-    if ! "$jq_bin" -e \
-      --argjson required '["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted"]' \
-      --argjson terminal_types "$terminal_types" \
-       "$has_order
-       has_order(\$required)
-       and (all(.events[];
-         . as \$event
-         | all(\$terminal_types[]; . != \$event.type)
-           and \$event.type != \"TimerFired\"
-           and \$event.type != \"ActivityTaskScheduled\"
-           and \$event.type != \"ActivityTaskStarted\"
-           and \$event.type != \"ActivityTaskCompleted\"
-       ))" "$history" >/dev/null; then
-      fail "initial history does not prove a pending timer before worker stop"
-    fi
-    ;;
-  terminal)
-    if ! "$jq_bin" -e \
-      --argjson required '["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted", "TimerFired", "ActivityTaskScheduled", "ActivityTaskCompleted", "WorkflowExecutionCompleted"]' \
-      --argjson terminal_types "$terminal_types" \
-      "$has_order
-       has_order(\$required)
-       and .events[-1].type == \"WorkflowExecutionCompleted\"
-       and (all(.events[0:-1][];
-         . as \$event | all(\$terminal_types[]; . != \$event.type)
-       ))" "$history" >/dev/null; then
-      fail "terminal history does not prove timer, activity, and completion order"
-    fi
-    ;;
-esac
+# Checks that one history ends at the observed pending-timer boundary without
+# a timer firing, activity, or terminal event that would make worker shutdown
+# unsafe.
+validate_initial_stage() {
+  history_path=$1
+  error_message=$2
+  if ! "$jq_bin" -e \
+    --argjson required '["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted"]' \
+    --argjson terminal_types "$terminal_types" \
+     "$has_order
+     has_order(\$required)
+     and (all(.events[];
+       . as \$event
+       | all(\$terminal_types[]; . != \$event.type)
+         and \$event.type != \"TimerFired\"
+         and \$event.type != \"ActivityTaskScheduled\"
+         and \$event.type != \"ActivityTaskStarted\"
+         and \$event.type != \"ActivityTaskCompleted\"
+     ))" "$history_path" >/dev/null; then
+    fail "$error_message"
+  fi
+}
+
+# Checks that one history contains the complete timer/activity path and ends
+# with a successful workflow completion rather than a failure or cancellation.
+validate_terminal_stage() {
+  history_path=$1
+  if ! "$jq_bin" -e \
+    --argjson required '["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted", "TimerFired", "ActivityTaskScheduled", "ActivityTaskCompleted", "WorkflowExecutionCompleted"]' \
+    --argjson terminal_types "$terminal_types" \
+    "$has_order
+     has_order(\$required)
+     and .events[-1].type == \"WorkflowExecutionCompleted\"
+     and (all(.events[0:-1][];
+       . as \$event | all(\$terminal_types[]; . != \$event.type)
+     ))" "$history_path" >/dev/null; then
+    fail "terminal history does not prove timer, activity, and completion order"
+  fi
+}
+
+if [ "$stage" = initial ]; then
+  validate_initial_stage "$history" \
+    "initial history does not prove a pending timer before worker stop"
+else
+  validate_history_shape "$initial_history" \
+    "initial history does not match the strict normalized contract"
+  validate_initial_stage "$initial_history" \
+    "initial history does not prove a pending timer before worker stop"
+
+  # The terminal document must extend the exact initial event prefix. Matching
+  # only workflow/run IDs is insufficient: a malformed adapter could return a
+  # different history for the same IDs and falsely turn an unrelated success
+  # into restart/replay evidence.
+  if ! "$jq_bin" -e \
+    --slurpfile initial "$initial_history" \
+    '
+      . as $terminal
+      | $initial[0] as $baseline
+      | ($baseline.events | length) <= ($terminal.events | length)
+      and all(range(0; ($baseline.events | length));
+        $terminal.events[.] == $baseline.events[.])
+    ' "$history" >/dev/null; then
+    fail "terminal history does not extend the validated initial history"
+  fi
+
+  validate_terminal_stage "$history"
+fi
 
 event_count=$($jq_bin -r '.events | length' "$history")
 printf 'restart_replay_history stage=%s workflow_id=%s run_id=%s event_count=%s\n' \

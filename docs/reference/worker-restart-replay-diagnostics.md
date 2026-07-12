@@ -44,25 +44,33 @@ It takes `--stage initial` or `--stage terminal`:
 ```sh
 validate-restart-replay.sh \
   --history history.json \
+  --initial-history initial-history.json \
   --workflow-id two-binary-worker-restart-replay \
   --run-id <exact-start-run-id> \
-  --stage initial
+  --stage terminal
 ```
 
 The initial stage requires the ordered subsequence
 `WorkflowExecutionStarted`, `WorkflowTaskCompleted`, and `TimerStarted`. It
 also rejects `TimerFired`, activity, and terminal events, so the controller
 cannot mistake an already-completed workflow for a safe pending-timer
-boundary.
+boundary. The terminal stage takes the initial document through
+`--initial-history`; it validates that document with the same initial-stage
+rules and requires the terminal document to begin with the exact same ordered
+event prefix. Matching workflow and run IDs alone is not enough because a
+history adapter that returned a different event list for the same IDs could
+otherwise turn an unrelated completion into restart/replay evidence.
 
 The terminal stage requires the ordered subsequence
 `WorkflowExecutionStarted`, `WorkflowTaskCompleted`, `TimerStarted`,
 `TimerFired`, `ActivityTaskScheduled`, `ActivityTaskCompleted`, and
 `WorkflowExecutionCompleted`, with the workflow-completed event last. Other
 known Temporal scheduling/started events may appear between those boundaries.
-Event IDs must be positive canonical decimal strings in strict ascending
-numeric order, and the
-document's workflow/run IDs must exactly match the driver record.
+Event IDs must be positive canonical decimal strings in strict ascending order
+in both documents, and the document's workflow/run IDs must exactly match the
+driver record. The JSON Schemas describe each document independently; the
+validator enforces this cross-document prefix relationship because JSON Schema
+cannot compare two separate files.
 
 ## Replay diagnostics
 

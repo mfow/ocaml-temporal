@@ -182,12 +182,15 @@ and bridge, read the [documentation guide](../README.md) first.
   it may temporarily raise the waiting queue to `capacity + 1`, and no later
   normal request can be admitted ahead of it.
 - Concurrent `submit_and_close` calls linearize at that same mutex. For an
-  open mailbox, exactly one contender appends the terminal request and gets a
-  pending reply; every other contender observes `Closed`. The winning request
-  remains after work already admitted, and normal posts submitted after the
-  transition are rejected. The regression test releases multiple producer
-  Domains through a barrier before the race and checks the single winner,
-  losing results, late rejection, and FIFO drain.
+  open mailbox with no handler failure, exactly one contender appends the
+  terminal request and gets a pending reply; every other contender observes
+  `Closed`. If the admitted terminal handler fails before a later contender
+  reaches the mutex, that contender instead observes the terminal
+  `Handler_raised` failure. The winning request remains after work already
+  admitted, and normal posts submitted after the transition are rejected. The
+  regression test releases multiple producer Domains through a barrier before
+  the race and checks the single winner, losing results, late rejection, and
+  FIFO drain.
 - Queue and lifecycle state are data-race free. Every condition wait rechecks
   its protected predicate after waking.
 - Normal close rejects new work and drains all admitted work before the owner

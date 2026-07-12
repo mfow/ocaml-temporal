@@ -137,6 +137,11 @@ and bridge, read the [documentation guide](../README.md) first.
 - Shutdown closes both readiness signals before waking Core polls, but queued
   messages always take precedence over terminal state and are drained before a
   readiness wait reports shutdown or a fatal lane error.
+- Dispose force-fails ledger debt and queued tasks before joining the Core poll
+  lanes so shutdown cannot wait for OCaml. Because a poll already in flight can
+  publish a task after that first drain, dispose joins both lanes and performs a
+  final no-producer drain before finalization; no task may remain only in a
+  ready queue or ledger at the point the worker graph is released.
 
 ## Native activation translation
 

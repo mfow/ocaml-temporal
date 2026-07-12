@@ -1198,6 +1198,12 @@ fn drop_runtime_graph(
         // lanes so dispose cannot block forever waiting for OCaml.
         handle.block_on(worker.force_complete_outstanding_for_dispose());
         let _ = handle.block_on(worker.join_poll_lanes());
+        // A poll that was already inside Core can return after the first drain
+        // and publish a new ready task before its lane exits.  The joins above
+        // establish that no producer remains; a final pass therefore closes
+        // the only window in which a late task could otherwise be dropped with
+        // an outstanding Core completion debt.
+        handle.block_on(worker.force_complete_outstanding_for_dispose());
         match handle.block_on(worker.finalize()) {
             Ok(()) => {}
             Err((worker, _)) => {

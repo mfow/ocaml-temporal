@@ -45,6 +45,88 @@ let retry_once_activity =
           (Printf.sprintf "%s:ATTEMPT:%d" (String.uppercase_ascii input)
              attempt))
 
+(** The environment variable used by the cancellation handshake activity. The
+    marker lives in the repository bind mount so the independent driver can
+    observe completion without adding another Temporal workflow signal. *)
+let cancellation_ready_file_env = "SMOKE_CANCELLATION_READY_FILE"
+
+(** Checks the marker path before any activity attempts to write it. A live
+    acceptance run must provide an absolute, non-empty path without NUL bytes;
+    rejecting anything else keeps an accidental host-path or malformed
+    environment setting from turning into an uncontrolled filesystem write. *)
+let validate_cancellation_ready_file path =
+  if String.equal path "" then
+    Error
+      (Temporal.Error.defect
+         ~message:(cancellation_ready_file_env ^ " must not be empty"))
+  else if String.contains path '\000' then
+    Error
+      (Temporal.Error.defect
+         ~message:(cancellation_ready_file_env ^ " must not contain NUL"))
+  else if Filename.is_relative path then
+    Error
+      (Temporal.Error.defect
+         ~message:(cancellation_ready_file_env ^ " must be an absolute path"))
+  else Ok path
+
+(** Reads and validates the shared marker path from the process environment.
+    This is called by both the worker startup path and the activity itself so
+    configuration is checked before the worker becomes ready and again at the
+    side-effect boundary. *)
+let cancellation_ready_file () =
+  match Sys.getenv_opt cancellation_ready_file_env with
+  | None ->
+      Error
+        (Temporal.Error.defect
+           ~message:(cancellation_ready_file_env ^ " must be set"))
+  | Some path -> validate_cancellation_ready_file path
+
+(** Removes a prior marker as best-effort test cleanup. The marker is not
+    workflow state; deleting it between runs prevents a driver from mistaking
+    a previous activity completion for the current execution's handshake. *)
+let clear_cancellation_ready_file path =
+  try if Sys.file_exists path then Sys.remove path with _ -> ()
+
+(** Publishes the per-run token with a temporary file followed by [Sys.rename].
+    The rename is atomic on the shared Linux bind mount, so the driver observes
+    either the complete marker or no marker, never a partially written file.
+    Any temporary file is removed on failure before a typed activity error is
+    returned. *)
+let publish_cancellation_ready path token =
+  let temporary = Printf.sprintf "%s.tmp.%d" path (Unix.getpid ()) in
+  let cleanup () =
+    try if Sys.file_exists temporary then Sys.remove temporary with _ -> ()
+  in
+  try
+    let channel = open_out_bin temporary in
+    Fun.protect
+      ~finally:(fun () -> close_out_noerr channel)
+      (fun () ->
+        output_string channel token;
+        output_char channel '\n';
+        flush channel);
+    Sys.rename temporary path;
+    Ok ()
+  with exception_ ->
+    cleanup ();
+    Error
+      (Temporal.Error.make ~category:`Activity
+         ~message:
+           (Printf.sprintf "cannot publish cancellation readiness marker: %s"
+              (Printexc.to_string exception_))
+         ())
+
+(** A test-only activity that publishes the cancellation handshake token. Its
+    filesystem side effect is intentionally isolated to the activity process;
+    the workflow itself remains deterministic and only schedules this activity
+    alongside its durable timer. *)
+let cancellation_ready_activity =
+  Temporal.Activity.define ~name:"smoke.cancellation_ready"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.unit (fun token ->
+      match cancellation_ready_file () with
+      | Error error -> Error error
+      | Ok path -> publish_cancellation_ready path token)
+
 (** Builds the short, bounded policy used by [activity_retry]. Keeping this as
     a result lets the workflow return a typed configuration defect if the
     public constructor's validation ever changes, instead of hiding a
@@ -137,7 +219,12 @@ let non_retryable_failure =
     the timer fires. *)
 let long_running_cancellation =
   Temporal.Workflow.define ~name:"smoke.long_running_cancellation"
-    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
-      match Temporal.Workflow.sleep (Temporal.Duration.of_ms 30_000L) with
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun token ->
+      let timer = Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 30_000L) in
+      let marker =
+        Temporal.Activity.start ~do_not_eagerly_execute:true
+          cancellation_ready_activity token
+      in
+      match Temporal.Future.await (Temporal.Future.both timer marker) with
       | Error error -> Error error
-      | Ok () -> Ok (String.uppercase_ascii (seed ^ ":finished")))
+      | Ok ((), ()) -> Ok (String.uppercase_ascii (token ^ ":finished")))

@@ -55,11 +55,11 @@ The health gate verifies the primary and visibility `schema_version` tables,
 calls Temporal's gRPC cluster-health operation, and describes the
 `temporal-sdk-test` namespace. Namespace creation is idempotent.
 
-`temporal-stop` removes the containers and network but retains the named
-PostgreSQL volume for interactive inspection. A later `temporal-start` can
-reuse that data and safely rerun the schema updater. This convenience is not
-used by the acceptance target. To delete local histories and all schema data
-explicitly:
+`temporal-stop` removes the containers and network without being the acceptance
+teardown. The acceptance target always calls `temporal-clean` before and after
+its run, so no PostgreSQL volume or workflow history is preserved between
+acceptance runs. To remove local histories and all schema data explicitly (or
+after an interactive stack stop):
 
 ```sh
 make temporal-clean
@@ -82,14 +82,16 @@ official Core client, construct and namespace-validate a workflow/remote-
 activity worker, exercise invalid and repeated lifecycle transitions, and shut
 the graph down deterministically. It then waits for `smoke-worker` to publish
 readiness and runs `smoke-driver` as a one-shot test process. The driver starts
-six smoke workflows before waiting for any result, sends `Temporal.Client.cancel`
-for the long-running workflow's exact handle, and checks four exact success
-payloads, one typed non-retryable workflow failure, and one typed `Cancelled`
-result for that same workflow/run pair. The parent/child and retry scenarios are
-part of the same driver and are also started before the first wait. After the
-driver exits, the Makefile stops the worker and requires its graceful-shutdown
-marker; the driver's successful `client_shutdown` phase provides the
-corresponding client teardown evidence.
+six smoke workflows before waiting for any result. For the long-running
+workflow, it waits for the test-only marker activity to publish the current
+run token after the durable timer and marker commands are accepted together,
+then sends `Temporal.Client.cancel` for that exact handle. It checks four exact
+success payloads, one typed non-retryable workflow failure, and one typed
+`Cancelled` result for the same workflow/run pair. The parent/child and retry
+scenarios are part of the same driver and are also started before the first
+wait. After the driver exits, the Makefile stops the worker and requires its
+graceful-shutdown marker; the driver's successful `client_shutdown` phase
+provides the corresponding client teardown evidence.
 
 This is a real workflow-result acceptance test, not only a lifecycle test. It
 includes one live parent/child success path, one server-managed activity retry,

@@ -8,6 +8,7 @@ COMPOSE := docker compose --project-directory "$(TEMPORAL_FIXTURE_DIR)" --file "
 TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) SMOKE_DRIVER_TIMEOUT_SECONDS=$(TEMPORAL_DRIVER_TIMEOUT_SECONDS) $(COMPOSE) --profile temporal
 TEMPORAL_DRIVER_TIMEOUT_SECONDS ?= 120
 SMOKE_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.smoke-driver.log
+SMOKE_CANCELLATION_READY_FILE := $(TEMPORAL_FIXTURE_DIR)/.cancellation-ready
 SERVICE ?= dev
 OCAML_VERSION ?= 5.2
 OCAML_IMAGE ?= ocaml/opam:debian-12-ocaml-$(OCAML_VERSION)
@@ -104,9 +105,11 @@ temporal-start-worker:
 temporal-run-driver:
 	@set -eu; \
 	rm -f "$(SMOKE_DRIVER_LOG_FILE)"; \
+	rm -f "$(SMOKE_CANCELLATION_READY_FILE)"; \
 	status=0; \
 	$(TEMPORAL_COMPOSE) run --rm --no-deps smoke-driver >"$(SMOKE_DRIVER_LOG_FILE)" 2>&1 || status=$$?; \
 	cat "$(SMOKE_DRIVER_LOG_FILE)"; \
+	rm -f "$(SMOKE_CANCELLATION_READY_FILE)"; \
 	if [ "$$status" -eq 0 ] && ! grep -F "two-binary phase=client_shutdown status=ok" "$(SMOKE_DRIVER_LOG_FILE)" >/dev/null; then \
 		echo "smoke-driver did not report graceful client shutdown" >&2; \
 		status=1; \
@@ -163,10 +166,11 @@ temporal-logs:
 
 temporal-stop:
 	$(TEMPORAL_COMPOSE) down --remove-orphans
+	@rm -f "$(SMOKE_CANCELLATION_READY_FILE)"
 
 temporal-clean:
 	$(TEMPORAL_COMPOSE) down --volumes --remove-orphans
-	@rm -f "$(SMOKE_DRIVER_LOG_FILE)"
+	@rm -f "$(SMOKE_DRIVER_LOG_FILE)" "$(SMOKE_CANCELLATION_READY_FILE)"
 
 test-temporal-integration: test-temporal-config
 	@set -eu; \

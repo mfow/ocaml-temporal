@@ -8,3 +8,4 @@ __pycache__/
 .idea/
 .vscode/
 .worktrees/
+test/integration/temporal/.cancellation-ready

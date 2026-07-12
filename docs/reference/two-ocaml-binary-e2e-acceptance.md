@@ -2,13 +2,14 @@
 
 **Status:** The fan-out, timer/activity, parent/child, and activity-retry
 success scenarios were verified in Linux CI run
-[`29187733405`](https://github.com/mfow/ocaml-temporal/actions/runs/29187733405)
-for commit `b895d3c`. The retry workflow uses an explicit activity retry
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+for merge commit `a4eaccc8`. The retry workflow uses an explicit activity retry
 policy: its worker activity fails once, Temporal delivers a second attempt,
 and the driver asserts the exact attempt-2 result. The retry-policy constructor
 and bilateral JSON/Core conversion remain synthetic evidence; the CI run is
-the live evidence for this one server-managed retry delivery. The worker and
-driver remain guarded by
+the live evidence for this one server-managed retry delivery. The fifth
+top-level workflow also returns a typed non-retryable `Workflow` failure. The
+worker and driver remain guarded by
 `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
 
 `smoke-worker` publishes an atomic readiness marker after public
@@ -17,12 +18,15 @@ driver remain guarded by
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
 later acceptance run. The driver starts all six top-level workflows before
-waiting for any result. It acknowledges cancellation for
-`two-binary-long-running-cancellation` before the first wait. Four must
-complete with exact payloads, one must return a typed non-retryable workflow
-failure, and the cancelled execution must return typed `Cancelled` metadata
-when the driver waits on that same exact handle. This prevents a TCP check or a
-process that merely started from being reported as an SDK acceptance pass.
+waiting for any result. The cancellation scenario waits for the
+`smoke.cancellation_ready` activity marker after the long-running workflow has
+issued its durable-timer and marker commands in one activation, then
+acknowledges cancellation for `two-binary-long-running-cancellation` before
+the first terminal wait. Four must complete with exact payloads, one must
+return a typed non-retryable workflow failure, and the cancelled execution
+must return typed `Cancelled` metadata when the driver waits on that same exact
+handle. This prevents a TCP check or a process that merely started from being
+reported as an SDK acceptance pass.
 
 The public `Temporal.Client` and `Temporal.Worker` now route HTTP(S) calls
 through the private Rust/Core supervisor. The deterministic `mock://` backend
@@ -44,12 +48,13 @@ the registered child waits on a short durable timer, and the driver asserts the
 parent's exact result. It also runs `smoke.activity_retry`: the first
 `smoke.retry_once` attempt returns a retryable activity error and the second
 returns `SMOKE:ATTEMPT:2`, which the driver compares as an exact terminal
-payload. The driver also starts `smoke.long_running_cancellation`, sends an
-exact-run cancellation request before waiting for any result, and requires the
-same handle to return a typed `Cancelled` error. A passing
-`make test-temporal-integration` run is the evidence for these concrete happy
-paths and cancellation path only; child start failures, activity retry
-timeouts, replay, and worker recovery remain separate scenarios. The
+payload. The driver also starts `smoke.non_retryable_failure` and requires its
+stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
+for its `smoke.cancellation_ready` marker activity (with eager execution
+disabled), sends an exact-run cancellation request, and requires the same
+handle to return a typed `Cancelled` error. The cancellation path is pending
+its own CI evidence; child start failures, activity retry timeouts, replay, and
+worker recovery remain separate scenarios. The
 intentionally broader follow-up requirements are listed in [Required
 assertions and failure evidence](#required-assertions-and-failure-evidence).
 
@@ -214,8 +219,9 @@ registers these local definitions with the public SDK:
 
 The fixture implements this shape with the concrete `smoke.fan_out`,
 `smoke.timer_then_activity`, `smoke.activity_retry`,
-`smoke.long_running_cancellation`, `smoke.child_after_timer`,
-`smoke.parent_awaits_child`, `smoke.mock_transform`, and `smoke.retry_once`
+`smoke.child_after_timer`, `smoke.parent_awaits_child`,
+`smoke.non_retryable_failure`, `smoke.long_running_cancellation`,
+`smoke.mock_transform`, `smoke.retry_once`, and `smoke.cancellation_ready`
 definitions, all of which are registered by the long-lived public worker:
 
 ```ocaml
@@ -225,8 +231,8 @@ let () =
       ~task_queue:"ocaml-temporal-two-binary-smoke"
       ~workflows:
         [ fan_out; timer_then_activity; activity_retry; child_after_timer;
-          parent_awaits_child ]
-      ~activities:[ mock_transform; retry_once_activity ]
+          parent_awaits_child; non_retryable_failure; long_running_cancellation ]
+      ~activities:[ mock_transform; retry_once_activity; cancellation_ready_activity ]
       ()
   with
   | Error error -> report_and_exit error
@@ -444,25 +450,28 @@ The driver's successful exit establishes all of the following:
 1. each top-level workflow start returned a nonempty run ID that the driver
    retained for its corresponding exact-run wait; the driver starts six
    distinct top-level runs before its first wait;
-2. the cancellation request names the long-running workflow's exact retained
+2. the driver observes the atomically published
+   `SMOKE_CANCELLATION_READY_FILE` marker containing the current run token,
+   proving the timer and marker commands were accepted before cancellation;
+3. the cancellation request names the long-running workflow's exact retained
    workflow ID and run ID, and Temporal acknowledges it before the driver waits;
-3. all six terminal waits matched the exact workflow ID and run ID returned by
+4. all six terminal waits matched the exact workflow ID and run ID returned by
    their own starts;
-4. `smoke.fan_out` returned the ordered result requiring both mock activity
+5. `smoke.fan_out` returned the ordered result requiring both mock activity
    completions;
-5. `smoke.timer_then_activity` returned its expected result after a durable
+6. `smoke.timer_then_activity` returned its expected result after a durable
    timer and its mock activity completion;
-6. `smoke.activity_retry` returned `SMOKE:ATTEMPT:2` only after its first
+7. `smoke.activity_retry` returned `SMOKE:ATTEMPT:2` only after its first
    activity attempt failed and Temporal scheduled the second attempt;
-7. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
+8. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
    completed its own durable timer; and
-8. the four success responses were not workflow failures, cancellations,
+9. the four success responses were not workflow failures, cancellations,
    timeouts, terminations, continued-as-new outcomes, codec failures, or
    bridge failures; and
-9. `smoke.non_retryable_failure` returned a `Workflow` error with
+10. `smoke.non_retryable_failure` returned a `Workflow` error with
    `non_retryable=true` and the stable intentional-failure message prefix; and
-10. `smoke.long_running_cancellation` returned a `Cancelled` error with
-    `non_retryable=false` and the stable message `workflow execution was
+11. `smoke.long_running_cancellation` returned a `Cancelled` error with
+   `non_retryable=false` and the stable message `workflow execution was
     cancelled`.
 
 The driver logs no-payload phase records for starts, exact-run cancellation,
@@ -491,7 +500,7 @@ Child-start commands and both child-resolution jobs have a closed bilateral
 schema, Core conversion, pure-OCaml lifecycle tests, and this one real-server
 parent/child success assertion. The activity retry policy has the same
 separation: bilateral policy validation is synthetic, while CI run
-[`29187733405`](https://github.com/mfow/ocaml-temporal/actions/runs/29187733405)
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
 makes its attempt-2 result live evidence for one server-managed retry. Neither
 assertion claims coverage of child failure/cancellation, retry timeouts, replay,
 or recovery behavior.

@@ -41,7 +41,6 @@ require_text '--build-dir=/workspace/_build/smoke-worker'
 require_text '--build-dir=/workspace/_build/smoke-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "120"'
 require_text '--kill-after=10s'
-require_text 'temporal workflow describe'
 require_text 'user: 1000:1000'
 if ! grep -F 'user: "${HOST_UID:-1000}:${HOST_GID:-1000}"' "$compose_file" >/dev/null; then
   echo "smoke services must inherit the invoking host UID/GID" >&2
@@ -52,6 +51,10 @@ require_text 'test -s /tmp/ocaml-temporal-two-binary-worker.ready'
 require_text 'stop_grace_period: 30s'
 
 makefile="$root/Makefile"
+if ! grep -F 'temporal workflow describe' "$makefile" >/dev/null; then
+  echo "failure diagnostics must use the official Temporal CLI workflow describe command" >&2
+  exit 1
+fi
 for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-two-binary test-temporal-integration; do
   if ! grep -E "^${target}:" "$makefile" >/dev/null; then
     echo "Makefile does not define required target: $target" >&2

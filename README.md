@@ -220,3 +220,4 @@ AI models used to help build this project:
 - GPT-5.6 Sol
 - GPT-5.6 Terra
 - GPT-5.6 Luna
+- Grok 4.5

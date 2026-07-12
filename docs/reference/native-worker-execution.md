@@ -15,11 +15,15 @@ try_poll_workflow : supervisor -> (activation option, error) result
 complete_workflow : supervisor -> completion -> (unit, error) result
 ```
 
-The concrete `Sdk_supervisor.Native` module will instantiate this signature
-with its owner-Domain operations. The adapter intentionally does not mention a
-readiness-wait symbol: the current bridge exposes a nonblocking poll, while a
-future readiness mechanism can be added to the supervisor without changing
-the run registry or deterministic translation.
+The concrete `Sdk_supervisor.Native` module instantiates this signature with
+operations on its owner Domain. The public worker loop also uses two private,
+bounded readiness operations (`Wait_workflow` and `Wait_activity`). They do not
+consume a task; they only let the Rust/Core lane sleep until work is likely to
+be available. The C boundary releases the OCaml runtime lock during that wait,
+and the 100 ms bound lets the supervisor admit shutdown even when no task
+arrives. Keeping waits outside this adapter means the registry remains usable
+with deterministic fake sources and the execution translation does not depend
+on a particular scheduling primitive.
 
 The supervisor remains the sole owner of the Rust runtime, client, worker, and
 native task ledger. It must decode and semantically validate the JSON returned
@@ -113,6 +117,34 @@ acknowledgement also fails, it returns an error and does not claim retirement.
 The mutex is still released by `Fun.protect`, so a producer Domain cannot lose
 the registry lock or strand a second caller.
 
+## Public worker wiring
+
+`Temporal.Worker.create` validates all registration definitions before opening a
+native resource. A `mock://` target selects the deterministic in-memory backend
+used by unit tests; an `http://` or `https://` target creates one private
+supervisor, connects the Core client, starts one workflow/remote-activity
+worker, and installs the two typed adapters described above. The application
+still owns the final executable: Rust remains a static implementation detail
+behind the private supervisor and no native handle is exposed through the
+public API.
+
+`Temporal.Worker.run` first drains both nonblocking lanes. When both are empty,
+it alternates the bounded workflow and activity waits so an activity-only load
+cannot starve behind workflow readiness (or the reverse). A task-level
+workflow/activity failure is completed through Core and then the loop
+continues; a transport, protocol, or lifecycle error returns a typed
+`Temporal.Error.t`. `shutdown` closes admission, waits for an active loop to
+leave the adapters, and then releases worker, client, and Rust runtime state in
+reverse ownership order. Repeated shutdown calls are idempotent.
+
+The native workflow adapter intentionally rejects child-workflow commands until
+their complete Core fields are represented by the semantic protocol. Activity
+commands are accepted only when their required identifiers, payloads, timeout
+policies, and cancellation options are present; a missing field is rejected in
+the same typed way. These are lease-retiring failures rather than fabricated
+defaults. The live Compose acceptance remains the gate for proving the full
+workflow/activity path end to end.
+
 ## Verification
 
 `test/runtime/test_native_worker_execution.ml` uses a fake semantic queue to
@@ -130,6 +162,7 @@ verify:
 - rejection of empty, NUL-containing, oversized, and non-UTF-8 worker queues
   before worker publication.
 
-The fake tests do not claim live Temporal compatibility. The Compose
-acceptance suite remains the gate for the concrete supervisor wiring and real
-Temporal Server behavior.
+The fake tests do not claim live Temporal compatibility. Focused supervisor and
+bridge tests cover readiness and lifecycle ownership; the Compose acceptance
+suite remains the gate for real Temporal Server behavior and for the remaining
+activity/child-workflow command support.

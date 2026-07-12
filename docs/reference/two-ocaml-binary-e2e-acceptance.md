@@ -6,25 +6,28 @@ executables can be compiled against the same public `temporal-sdk` package,
 but it is not a live test yet. The binaries refuse to run unless
 `TEMPORAL_TWO_BINARY_LIVE=1` is set, and no Compose service enables that flag.
 
-The public `Temporal.Client` now routes HTTP(S) start and exact-run wait calls
+The public `Temporal.Client` and `Temporal.Worker` now route HTTP(S) calls
 through the private Rust/Core supervisor. The deterministic `mock://` backend
-remains available for unit tests. The worker still needs its native poll,
-readiness, and completion loop wired into the public registration/dispatch
-surface; running the scaffold against `temporal:7233` before those worker seams
-exist would test a partial path and could be mistaken for a green SDK
-acceptance test.
+remains available for unit tests. The worker's native poll, bounded readiness,
+completion, and typed registration loop is covered by focused tests, but the
+scaffold is not a live test yet: no Compose service enables
+`TEMPORAL_TWO_BINARY_LIVE=1`, and the current Compose target exercises only the
+lower-level lifecycle executable.
 
 The remaining blockers are concrete rather than environmental:
 
-1. connect the native workflow/activity poll and completion operations to the
-   deterministic execution registry and public worker loop; and
-2. connect the existing activity-task semantic conversion, add worker
-   readiness/health signalling, and add Compose services that run these two
-   binaries only after those operations are wired.
+1. enable the two public binaries as separate Compose services only after
+   Temporal/PostgreSQL readiness is proven;
+2. make the driver assert both terminal workflow results while the worker
+   executes the registered workflow and mock activity against the live server;
+   and
+3. retain explicit typed rejection for child-workflow commands until their
+   complete Core fields and replay behavior are implemented.
 
-Until those seams are complete, CI should continue running the existing
-Core-client/worker lifecycle smoke and compile the scaffold with the ordinary
-OCaml build. It must not promote the scaffold to a live acceptance target.
+Until those services and assertions are complete, CI should continue running
+the existing Core-client/worker lifecycle smoke and compile the scaffold with
+the ordinary OCaml build. It must not promote the scaffold to a live
+acceptance target.
 
 ## Purpose
 

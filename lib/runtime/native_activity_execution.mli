@@ -4,10 +4,10 @@
     semantic completions. This adapter owns the OCaml activity registry, decodes
     one activity input with the definition's codec, invokes the local
     implementation, and keeps an unacknowledged completion until the supervisor
-    confirms the exact opaque task token. It is intentionally not part of the
-    public worker API yet: the public worker wiring will adopt it only after the
-    native activity poll path is connected and exercised by the live acceptance
-    worker. *)
+    confirms the exact opaque task token. It is intentionally hidden from the
+    public worker API: [Temporal.Worker] supplies the supervisor operations and
+    owns lifecycle while this module remains responsible only for typed
+    dispatch and lease-safe completion. *)
 
 (** Native operations needed by the adapter. A supervisor implementation owns
     the Rust/Core handle graph and must serialize these calls on its owner

@@ -21,7 +21,10 @@ val activity : ('input, 'output) Activity.t -> registered_activity
 type t
 
 (** Creates and validates a worker. Duplicate names and remote-only definitions
-    return typed defects before any backend graph is allocated. *)
+    return typed defects before any backend graph is allocated. A [mock://]
+    target selects the deterministic test backend; an [http://] or [https://]
+    target creates the OCaml-owned native Core worker and its private Rust
+    bridge. *)
 val create :
   ?identity:string ->
   target_url:string ->
@@ -32,10 +35,14 @@ val create :
   unit ->
   (t, Error.t) result
 
-(** Runs the workflow and activity poll loops until the backend reports
-    shutdown. Each accepted task is decoded, dispatched to its registered
-    OCaml function, encoded, and completed before the next task is admitted. *)
+(** Runs the workflow and activity poll loops until [shutdown] is requested.
+    Each accepted task is decoded, dispatched to its registered OCaml function,
+    encoded, and completed before the next task is admitted. Native waits
+    release the OCaml runtime lock and return periodically so shutdown cannot
+    be stranded. *)
 val run : t -> (unit, Error.t) result
 
-(** Initiates graceful worker shutdown. Repeated calls are safe and idempotent. *)
+(** Initiates graceful worker shutdown. Repeated calls are safe and idempotent;
+    a native teardown error closes the worker permanently because the private
+    supervisor has already linearized its terminal request. *)
 val shutdown : t -> (unit, Error.t) result

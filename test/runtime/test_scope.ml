@@ -104,6 +104,17 @@ let test_cancellation_resumes_waiter () =
       | Ok scope ->
           scope_ref := Some scope;
           result := Some (Temporal.Scope.await scope source));
+  expect "initial cancellation wait" "blocked"
+    (Scheduler.run_label scheduler);
+  begin match !scope_ref with
+  | None -> failwith "scope was not created before the first run"
+  | Some scope ->
+      expect_error "off-scheduler cancellation" "defect"
+        "Temporal.Scope.cancel used outside its owning workflow scheduler"
+        (Temporal.Scope.cancel scope);
+      if Temporal.Scope.is_cancelled scope then
+        failwith "off-scheduler cancellation mutated the scope"
+  end;
   Scheduler.spawn scheduler (fun () ->
       match !scope_ref with
       | None -> failwith "cancellation fiber ran before scope creation"

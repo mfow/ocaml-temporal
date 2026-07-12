@@ -20,8 +20,10 @@ val with_scope :
   ('value, Error.t) result
 
 (** Requests cancellation of [scope]. The operation is idempotent. It must be
-    called by the owning workflow scheduler while the scope is live; after the
-    scheduler has shut down, it only records the terminal state. *)
+    called by the owning workflow scheduler while the scope is active; an
+    active scope called between scheduler runs, from another Domain, or after
+    scheduler shutdown returns a typed defect. Repeating cancellation after
+    it has already been requested is always [Ok ()]. *)
 val cancel : t -> (unit, Error.t) result
 
 (** Reports whether cancellation has been requested for [scope]. *)

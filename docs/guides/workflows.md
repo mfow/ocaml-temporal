@@ -359,8 +359,11 @@ let run_with_deadline input =
 `Scope.cancel` is idempotent, `Scope.check` is a non-blocking cancellation
 check, and `Scope.await` returns an `Error.t` with category `Cancelled` when
 the scope has been cancelled before the observed future completes. A scope is
-owned by one workflow execution and must be cancelled from its owning
-scheduler; this keeps signal delivery deterministic across OCaml Domains.
+owned by one workflow execution and an active scope must be cancelled from
+its owning scheduler; calls between scheduler runs, from another OCaml
+Domain, or after shutdown return a typed defect. This keeps signal delivery
+deterministic and prevents a cancellation request from being recorded without
+an owner queue turn that can resume waiters.
 
 This first scope slice is intentionally cooperative. It cancels observation of
 the wrapped future and lets workflow teardown release still-pending operations;

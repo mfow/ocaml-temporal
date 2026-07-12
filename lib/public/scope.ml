@@ -63,14 +63,16 @@ let create () =
 let owns_scheduler scope =
   Temporal_runtime.Future_store.current_owner_matches scope.owner_id
 
-(** Records cancellation and signals waiters through the owning scheduler. A
-    signal closed by normal workflow teardown needs no resolver call; marking
-    the state still makes later [check] calls deterministic and idempotent. *)
+(** Records cancellation and signals waiters through the owning scheduler.
+    An active scope cannot be cancelled between scheduler runs or from another
+    Domain: doing so would mutate state without a queue turn that can resume
+    its waiters. Once a scope is already cancelled, repeated calls are pure
+    idempotent reads and therefore remain safe. *)
 let cancel scope =
   match scope.state with
   | Cancelled -> Ok ()
   | Active ->
-      if scope.callbacks_live () && not (owns_scheduler scope) then
+      if not (owns_scheduler scope) then
         Error (ownership_error "cancel")
       else (
         scope.state <- Cancelled;

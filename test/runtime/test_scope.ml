@@ -231,10 +231,75 @@ let test_cross_execution_future_is_rejected () =
   Workflow_context_store.shutdown first_context;
   Workflow_context_store.shutdown second_context
 
+(** Scope handles remain tied to the scheduler that created them. Even while a
+    different workflow scheduler is actively running, cancellation, status,
+    checks, and awaits must return typed ownership defects rather than reading
+    or mutating the first workflow's mutable scope state. The owner can still
+    use the handle after those rejected foreign attempts. *)
+let test_foreign_scheduler_scope_operations_are_rejected () =
+  let owner_scheduler = Scheduler.create () in
+  let owner_context = Workflow_context_store.create owner_scheduler in
+  let foreign_scheduler = Scheduler.create () in
+  let foreign_context = Workflow_context_store.create foreign_scheduler in
+  let owner_future, resolve_owner_future = promise owner_scheduler in
+  resolve_owner_future (Ok 99);
+  let scope_ref = ref None in
+  with_active_context owner_scheduler owner_context (fun () ->
+      match Temporal.Scope.create () with
+      | Error error -> failwith (Temporal.Error.message error)
+      | Ok scope -> scope_ref := Some scope);
+  expect "owner scope creation" "blocked"
+    (Scheduler.run_label owner_scheduler);
+  let foreign_cancel = ref None in
+  let foreign_status = ref None in
+  let foreign_check = ref None in
+  let foreign_await = ref None in
+  Scheduler.spawn foreign_scheduler (fun () ->
+      Workflow_context_store.with_context foreign_context (fun () ->
+          match !scope_ref with
+          | None -> failwith "foreign scheduler ran before scope creation"
+          | Some scope ->
+              foreign_cancel := Some (Temporal.Scope.cancel scope);
+              foreign_status := Some (Temporal.Scope.is_cancelled scope);
+              foreign_check := Some (Temporal.Scope.check scope);
+              foreign_await := Some (Temporal.Scope.await scope owner_future)));
+  expect "foreign scope operation run" "complete"
+    (Scheduler.run_label foreign_scheduler);
+  expect_error "foreign scope cancellation" "defect"
+    "Temporal.Scope.cancel used outside its owning workflow scheduler"
+    (Option.get !foreign_cancel);
+  expect_error "foreign scope status" "defect"
+    "Temporal.Scope.is_cancelled used outside its owning workflow scheduler"
+    (Option.get !foreign_status);
+  expect_error "foreign scope check" "defect"
+    "Temporal.Scope.check used outside its owning workflow scheduler"
+    (Option.get !foreign_check);
+  expect_error "foreign scope await" "defect"
+    "Temporal.Scope.await used outside its owning workflow scheduler"
+    (Option.get !foreign_await);
+  let owner_cancel = ref None in
+  let owner_status = ref None in
+  with_active_context owner_scheduler owner_context (fun () ->
+      match !scope_ref with
+      | None -> failwith "owner scope was not retained"
+      | Some scope ->
+          owner_cancel := Some (Temporal.Scope.cancel scope);
+          owner_status := Some (Temporal.Scope.is_cancelled scope));
+  expect "owner scope cleanup run" "complete"
+    (Scheduler.run_label owner_scheduler);
+  expect "owner cancellation after foreign attempts" (Some (Ok ()))
+    !owner_cancel;
+  expect "owner status after foreign attempts" (Some (Ok true)) !owner_status;
+  expect "scope cancellation emits no command" []
+    (Workflow_context_store.take_commands owner_context);
+  Workflow_context_store.shutdown owner_context;
+  Workflow_context_store.shutdown foreign_context
+
 (** Executes the focused scope contract. *)
 let () =
   test_create_outside_workflow ();
   test_completed_future_and_cleanup ();
   test_cancellation_resumes_waiter ();
   test_cancellation_is_idempotent ();
-  test_cross_execution_future_is_rejected ()
+  test_cross_execution_future_is_rejected ();
+  test_foreign_scheduler_scope_operations_are_rejected ()

@@ -7,11 +7,20 @@ cache behavior has been verified yet. The existing
 the current live evidence; this design must be implemented and pass in CI
 before the coverage matrix is changed.
 
+The current `make test-temporal-worker-restart` target is an offline contract
+check. It runs the checked-in normalized-history and diagnostics fixtures
+through the strict validator described in the
+[diagnostic contract](worker-restart-replay-diagnostics.md); it does not start
+Docker, PostgreSQL, Temporal Server, an OCaml worker, or an OCaml client. The
+live coverage matrix therefore still marks restart, replay, and cache eviction
+as planned rather than live evidence.
+
 ## What this scenario proves
 
-The current two-process smoke test proves that a worker can execute a workflow
-to completion while it remains alive. The next scenario must prove a narrower
-recovery contract:
+The existing two-process acceptance fixture has historical live evidence for
+the baseline success paths while one worker remains alive. It does not stop or
+replace a worker, inspect server history, or expose an `is_replaying` marker.
+The next scenario must prove a narrower recovery contract:
 
 1. an OCaml test-driver starts one workflow through `Temporal.Client` and waits
    for that exact workflow/run pair;
@@ -86,11 +95,13 @@ ID returned by `Client.start` rather than looking up a later run by workflow ID.
 The restart boundary needs evidence that generation 1 actually committed the
 timer. A fixed sleep in the controller is not sufficient: it can stop the
 worker before the first workflow task, or after the timer has already fired.
-The implementation should use this bounded sequence:
+The current `test-temporal-worker-restart` target does not execute this
+sequence; it remains the Docker-free contract gate above. Once a live Compose
+controller is implemented, it should use this bounded sequence:
 
-1. `test-temporal-worker-restart` invokes the same clean-stack setup as the
-   existing integration target. `temporal-clean` runs before startup and in an
-   exit trap.
+1. The live restart target invokes the same clean-stack setup as the existing
+   integration target. `temporal-clean` runs before startup and in an exit
+   trap.
 2. The controller starts Temporal/PostgreSQL, runs the normal lifecycle check,
    and starts generation 1 of `smoke-worker`.
 3. The one-shot driver starts the named workflow and writes its existing
@@ -134,9 +145,10 @@ second OCaml worker hidden inside the test client.
 
 ## Replay evidence and limits
 
-The internal semantic activation already retains Core's `is_replaying` bit,
-history length, run ID, and cache-removal metadata. The future fixture should
-emit a privacy-safe diagnostic record when it receives the post-restart
+The internal semantic activation currently retains Core's `is_replaying` bit,
+history length, run ID, and cache-removal metadata, but no public worker
+callback or live diagnostic path exposes those fields yet. The future fixture
+should emit a privacy-safe diagnostic record when it receives the post-restart
 activation, containing only:
 
 ```text
@@ -249,10 +261,10 @@ The implementation should land as a separate acceptance slice, in this order:
 2. Add a bounded, machine-readable history synchronizer and generation-aware
    worker readiness/replay markers to the fixture. Keep all payload logging
    disabled.
-3. Add a dedicated Make target and CI job (one supported OCaml version) that
-   starts the driver in the background, performs the controlled worker
-   replacement, waits for the exact assertion, and always removes the
-   PostgreSQL volume.
+3. Add a dedicated live Make target and CI job (one supported OCaml version)
+   separate from the current Docker-free contract target. It should start the
+   driver in the background, perform the controlled worker replacement, wait
+   for the exact assertion, and always remove the PostgreSQL volume.
 4. Run the acceptance repeatedly from a clean stack, including a failure-path
    run that proves diagnostics appear before cleanup. Verify the target on both
    Linux `amd64` and `arm64` when the existing live job's platform policy

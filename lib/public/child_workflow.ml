@@ -18,7 +18,10 @@ type cancellation_type =
     that may target its private sequence. The record is hidden by the public
     interface so callers cannot forge a sequence number. *)
 type 'output handle = {
+  (* Future resolved by Core for the child start and terminal outcome. *)
   future : ('output, Error.t) Future.t;
+  (* Owner-checked operation that emits at most one cancellation command for
+     this child and preserves the caller's reason for replay diagnostics. *)
   cancel : reason:string -> (unit, Error.t) result;
 }
 

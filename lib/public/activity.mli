@@ -13,10 +13,13 @@ type ('input, 'output) contextual_implementation =
 
 (** A description of an activity and the OCaml types it accepts and returns.
     The definition stores the activity's Temporal name and its input and output
-    codecs. It may also contain a local implementation. *)
+    codecs. It contains either a plain local implementation, a context-aware
+    implementation, or neither when it is a remote scheduling reference. *)
 type ('input, 'output) t
 
-(** Creates a definition for an activity that this OCaml worker will run. *)
+(** Creates a definition for an activity that this OCaml worker will run. The
+    name is validated immediately; an empty or NUL-containing name raises
+    [Invalid_argument] because it cannot safely enter Temporal history. *)
 val define :
   name:string ->
   input:'input Codec.t ->
@@ -33,7 +36,8 @@ val define_with_context :
   ('input, 'output) t
 
 (** Creates a typed reference to an activity run by another worker. The name
-    and codecs must agree with that worker's activity definition. *)
+    and codecs must agree with that worker's activity definition; the returned
+    value has no executable callback and must not be registered as local code. *)
 val remote :
   name:string ->
   input:'input Codec.t ->
@@ -60,7 +64,10 @@ val implementation_with_context :
   ('input, 'output) t ->
   ('input, 'output) contextual_implementation option
 
-(** Encodes and submits one typed heartbeat value for the current activity. *)
+(** Encodes and submits one typed heartbeat value for the current activity. The
+    payload is copied before crossing into the private runtime, and stale or
+    unavailable contexts return typed errors rather than retaining a released
+    task token. *)
 val heartbeat : context -> 'a Codec.t -> 'a -> (unit, Error.t) result
 
 (** Operations available to a contextual activity attempt. *)
@@ -68,13 +75,14 @@ module Context : sig
   (** The attempt-scoped context passed to contextual activity helpers. *)
   type t = context
 
-  (** Sends one typed heartbeat value. *)
+  (** Sends one typed heartbeat value and returns a typed error if this attempt
+      is no longer active. *)
   val heartbeat : t -> 'a Codec.t -> 'a -> (unit, Error.t) result
 
   (** Sends already encoded detail payloads in order. *)
   val heartbeat_payloads : t -> Payload.t list -> (unit, Error.t) result
 
-  (** Returns details from the preceding heartbeat attempt. *)
+  (** Returns a copied list of details from the preceding heartbeat attempt. *)
   val details : t -> Payload.t list
 
   (** Returns the configured heartbeat interval, if one was supplied. *)
@@ -83,7 +91,8 @@ end
 
 (** The cancellation policy sent with an activity command. [Try_cancel] asks
     the activity worker to stop when possible, [Wait_cancellation_completed]
-    waits for acknowledgement, and [Abandon] leaves the activity running. *)
+    waits for acknowledgement, and [Abandon] leaves the activity running. The
+    policy affects the parent future and is deterministic during replay. *)
 type cancellation_type =
   | Try_cancel
   | Wait_cancellation_completed
@@ -146,7 +155,8 @@ end
     queue, and omitted timeouts use a 60-second start-to-close timeout because
     Temporal requires at least one activity timeout. If input or option
     validation fails, the returned future contains a typed error and no command
-    is emitted. *)
+    is emitted. [do_not_eagerly_execute] controls whether Core may run the
+    activity inline with the scheduling activation; it defaults to [false]. *)
 val start :
   ?activity_id:string ->
   ?task_queue:string ->

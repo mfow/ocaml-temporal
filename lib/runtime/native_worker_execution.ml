@@ -466,6 +466,17 @@ module Make (Supervisor : SUPERVISOR) = struct
       (Printf.sprintf "supervisor completion raised: %s"
          (exception_error exception_).message)
 
+  (** Drops one run from the registry and always tears down its scheduler.
+      Terminal and eviction paths already shut down the execution; a second
+      [Execution.shutdown] is idempotent. Reject paths that inserted a run
+      before failing must still release paused effect continuations here. *)
+  let drop_run adapter run_id =
+    match Run_map.find_opt run_id adapter.runs with
+    | None -> ()
+    | Some (Run { execution; _ }) ->
+        Execution.shutdown execution;
+        adapter.runs <- Run_map.remove run_id adapter.runs
+
   (** Applies bookkeeping only after the supervisor acknowledges a retained
       completion. This is the single release point for both normal and
       adapter-generated failure completions. *)
@@ -473,8 +484,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     adapter.pending <- Run_map.remove pending.run_id adapter.pending;
     match pending.result with
     | Pending_completed { command_count; terminal; evicted } ->
-        if terminal || evicted then
-          adapter.runs <- Run_map.remove pending.run_id adapter.runs;
+        if terminal || evicted then drop_run adapter pending.run_id;
         report Logs.Debug ~operation:"workflow_activation_completed" ();
         Ok
           (Completed
@@ -484,8 +494,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                terminal;
              })
     | Pending_rejected { error; remove_run } ->
-        if remove_run then
-          adapter.runs <- Run_map.remove pending.run_id adapter.runs;
+        if remove_run then drop_run adapter pending.run_id;
         report Logs.Warning ~operation:"workflow_activation_rejected"
           ~error_kind:error.code ();
         Ok

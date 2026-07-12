@@ -35,12 +35,19 @@ type activity_entry =
     hash-table iteration, which matters when the backend config is serialized. *)
 module Name_map = Map.Make (String)
 
+(** A worker owns either the deterministic mock backend or the real native
+    adapters. The choice is made once at construction and cannot change while
+    polling, which keeps lifecycle ownership explicit. *)
+type backend =
+  | Mock_backend of Backend.worker
+  | Native_backend of Native_worker.t
+
 (** A worker owns one backend and immutable registries after construction. *)
 type t = {
-  backend : Backend.worker;
+  backend : backend;
   workflows : workflow_entry Name_map.t;
   activities : activity_entry Name_map.t;
-  mutable closed : bool;
+  closed : bool Atomic.t;
 }
 
 (** Stable default identity for worker diagnostics. *)
@@ -134,11 +141,39 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                       let activity_names =
                         Name_map.bindings activities |> List.map fst
                       in
-                      Result.map
-                        (fun backend ->
-                          { backend; workflows; activities; closed = false })
-                        (Backend.worker_create config ~workflow_names
-                           ~activity_names)))))
+                      if String.starts_with ~prefix:"mock://" target_url then
+                        Result.map
+                          (fun backend ->
+                            {
+                              backend = Mock_backend backend;
+                              workflows;
+                              activities;
+                              closed = Atomic.make false;
+                            })
+                          (Backend.worker_create config ~workflow_names
+                             ~activity_names)
+                      else
+                        let native_workflows =
+                          Name_map.bindings workflows
+                          |> List.map (fun (_, Workflow_entry { definition; _ }) ->
+                                 Native_worker.register_workflow definition)
+                        in
+                        let native_activities =
+                          Name_map.bindings activities
+                          |> List.map (fun (_, Activity_entry { definition; _ }) ->
+                                 Native_worker.register_activity definition)
+                        in
+                        Result.map
+                          (fun backend ->
+                            {
+                              backend = Native_backend backend;
+                              workflows;
+                              activities;
+                              closed = Atomic.make false;
+                            })
+                          (Native_worker.create ~target_url ~namespace ~identity
+                             ~task_queue ~workflows:native_workflows
+                             ~activities:native_activities ())))))
 
 (** Converts an implementation exception into a structured defect rather than
     letting a user callback tear down the worker poll loop. *)
@@ -190,16 +225,16 @@ let dispatch_activity worker task =
     backend receives the failure so Core cannot be left waiting for a response;
     once that acknowledgement succeeds, the worker keeps polling because a
     failed workflow task is not a worker-level transport failure. *)
-let complete_workflow worker task =
+let complete_workflow worker backend task =
   match dispatch_workflow worker task with
   | Ok output ->
       Result.map
         (fun () -> ())
-        (Backend.worker_complete_workflow worker.backend
+        (Backend.worker_complete_workflow backend
            (Backend.Workflow_completed { task_token = task.task_token; output }))
   | Error error ->
       Result.bind
-        (Backend.worker_complete_workflow worker.backend
+        (Backend.worker_complete_workflow backend
            (Backend.Workflow_failed
               { task_token = task.task_token; error }))
         (fun () -> Ok ())
@@ -208,24 +243,24 @@ let complete_workflow worker task =
     Activity failures are ordinary Temporal outcomes; after the backend
     accepts the failure, the worker remains available for later tasks and
     retries. *)
-let complete_activity worker task =
+let complete_activity worker backend task =
   match dispatch_activity worker task with
   | Ok output ->
       Result.map
         (fun () -> ())
-        (Backend.worker_complete_activity worker.backend
+        (Backend.worker_complete_activity backend
            (Backend.Activity_completed { task_token = task.task_token; output }))
   | Error error ->
       Result.bind
-        (Backend.worker_complete_activity worker.backend
+        (Backend.worker_complete_activity backend
            (Backend.Activity_failed
               { task_token = task.task_token; error }))
         (fun () -> Ok ())
 
 (** Polls both streams until each reports shutdown. Core-backed adapters may
     block inside their poll calls; this loop never waits on an OCaml lock. *)
-let run worker =
-  if worker.closed then
+let run_mock worker backend =
+  if Atomic.get worker.closed then
     Error
       (Temporal_base.Error.make ~category:`Bridge ~message:"worker is shut down" ())
   else
@@ -234,43 +269,64 @@ let run worker =
       else
         let workflow_result =
           if workflow_shutdown then Ok Backend.Shutdown
-          else Backend.worker_poll_workflow worker.backend
+          else Backend.worker_poll_workflow backend
         in
         Result.bind workflow_result (function
           | Backend.Task task ->
-              Result.bind (complete_workflow worker task) (fun () ->
-                  loop false activity_shutdown)
+              Result.bind (complete_workflow worker backend task) (fun () ->
+                loop false activity_shutdown)
           | Backend.Idle ->
               let activity_result =
                 if activity_shutdown then Ok Backend.Shutdown
-                else Backend.worker_poll_activity worker.backend
+                else Backend.worker_poll_activity backend
               in
               Result.bind activity_result (function
                 | Backend.Task task ->
-                    Result.bind (complete_activity worker task) (fun () ->
+                    Result.bind (complete_activity worker backend task) (fun () ->
                         loop workflow_shutdown false)
                 | Backend.Idle -> loop workflow_shutdown activity_shutdown
                 | Backend.Shutdown -> loop workflow_shutdown true)
           | Backend.Shutdown ->
               let activity_result =
                 if activity_shutdown then Ok Backend.Shutdown
-                else Backend.worker_poll_activity worker.backend
+                else Backend.worker_poll_activity backend
               in
               Result.bind activity_result (function
                 | Backend.Task task ->
-                    Result.bind (complete_activity worker task) (fun () ->
+                    Result.bind (complete_activity worker backend task) (fun () ->
                         loop true false)
                 | Backend.Idle -> loop true activity_shutdown
                 | Backend.Shutdown -> loop true true))
     in
     loop false false
 
+(** Runs the selected backend. The native path owns its own typed adapters and
+    therefore does not convert semantic activations into the mock task shape. *)
+let run worker =
+  match worker.backend with
+  | Mock_backend backend -> run_mock worker backend
+  | Native_backend backend -> Native_worker.run backend
+
 (** Shuts down the backend once and remembers that no new poll may be admitted. *)
 let shutdown worker =
-  if worker.closed then Ok ()
-  else
-    match Backend.worker_shutdown worker.backend with
+  if Atomic.compare_and_set worker.closed false true then
+    let result =
+      match worker.backend with
+      | Mock_backend backend -> Backend.worker_shutdown backend
+      | Native_backend backend -> Native_worker.shutdown backend
+    in
+    match result with
     | Ok () as result ->
-        worker.closed <- true;
         result
-    | Error _ as error -> error
+    | Error _ as error ->
+        (* The mock backend can retry a failed shutdown admission. The native
+           supervisor normally retains a terminal failure, but an adapter-drain
+           failure is different: Native_worker has not started teardown and
+           deliberately retains the exact completion for a safe retry. *)
+        (match worker.backend with
+        | Mock_backend _ -> Atomic.set worker.closed false
+        | Native_backend backend ->
+            if Native_worker.shutdown_retryable backend then
+              Atomic.set worker.closed false);
+        error
+  else Ok ()

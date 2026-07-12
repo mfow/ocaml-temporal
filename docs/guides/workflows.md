@@ -5,12 +5,15 @@ OCaml functions that return `result`. Expected failures—such as an activity
 failure, cancellation, timeout, or invalid payload—are values rather than
 exceptions.
 
-This guide describes the API that compiles today. The current runtime uses a
-synthetic activation interpreter for tests and is not yet a production worker
-connected to Temporal Server. Child invocation and future aggregation compile
-and run against that interpreter; cancellation scopes and live Core worker
-wiring remain future work. The pure-OCaml command translator already preserves
-the complete activity record and validates it before the native boundary.
+This guide describes the API that compiles today. The `mock://` target uses a
+deterministic in-memory backend for fast unit tests. An `http://` or `https://`
+target constructs the OCaml-owned worker, routes poll/complete operations
+through the private Rust/Core bridge, and waits on native readiness without
+holding the OCaml runtime lock. The public wiring is live, while the complete
+Temporal command surface is still being expanded: activity scheduling is
+supported, and child-workflow commands remain explicitly rejected until their
+translation and replay tests are complete. The pure-OCaml command translator
+validates activity fields before the native boundary.
 
 ## Typed payload codecs
 
@@ -109,7 +112,7 @@ let call_llm =
 ```
 
 Definition names must be non-empty and cannot contain NUL bytes. Invalid names
-raise `Invalid_argument` during worker configuration because they are
+return a typed configuration defect during worker creation because they are
 programmer defects, not workflow execution failures.
 
 ## Futures and direct-style waiting
@@ -241,9 +244,12 @@ let fastest left right input =
   Temporal.Future.race (left input) (right input)
 
 let enrich document =
-  let summary = Temporal.Activity.start summarize in
-  let review = Temporal.Child_workflow.start ~id:"review-1" review in
-  fan_out [ summary; review ] document
+  let starters =
+    [ (fun input -> Temporal.Activity.start summarize input);
+      (fun input ->
+        Temporal.Child_workflow.start ~id:"review-1" review input) ]
+  in
+  fan_out starters document
   |> Temporal.Future.await
 ```
 
@@ -265,7 +271,7 @@ let client_result =
       ~namespace:"default" ()
   in
   let* handle =
-    Temporal.Client.start client ~workflow:greeting_workflow
+    Temporal.Client.start client ~workflow:greeting
       ~task_queue:"greetings" ~id:"greeting-1" ~input:"Ada" ()
   in
   Temporal.Client.wait handle
@@ -285,18 +291,23 @@ together. Workflow and activity bodies remain ordinary OCaml functions:
 let worker_result =
   Temporal.Worker.create ~target_url:"http://127.0.0.1:7233"
     ~namespace:"default" ~task_queue:"greetings"
-    ~workflows:[ Temporal.Worker.workflow greeting_workflow ]
+    ~workflows:[ Temporal.Worker.workflow greeting ]
     ~activities:[] ()
   |> Result.bind Temporal.Worker.run
 ```
 
 The public lifecycle surface is intentionally independent of native handles or
-Temporal protobufs. HTTP(S) clients now route start and exact-run waits through
-the private Rust/Core supervisor, with bounded native waits and typed JSON
-validation at the OCaml boundary. The `mock://` endpoint remains a private,
-deterministic seam for unit tests. Native worker polling and completion are
-being connected separately; they use distinct activation/task types and an
-explicit admission, shutdown, and finalization lifecycle.
+Temporal protobufs. HTTP(S) clients route start and exact-run waits through the
+private Rust/Core supervisor, while HTTP(S) workers use the same supervisor to
+poll and complete typed workflow and activity tasks. Native readiness waits are
+bounded and release the OCaml runtime lock, so a concurrent `shutdown` can
+always reach the owner Domain. The `mock://` endpoint remains a private,
+deterministic seam for unit tests. Activity scheduling is currently translated
+end to end; child-workflow commands are still rejected by the first semantic
+native protocol until their complete Core fields and replay behavior are
+implemented. `Temporal.Worker.run` itself is a blocking lifecycle loop; an
+application should run it on an ordinary dedicated Domain or system thread
+rather than directly on a cooperative Eio/Lwt scheduler fiber.
 
 ## Current integration boundary
 
@@ -304,7 +315,10 @@ The workflow interpreter is still tested against a synthetic activation
 interpreter. It can deterministically emit activity, child-workflow, and timer
 commands, apply explicitly ordered resolution jobs, suspend and resume OCaml
 continuations, aggregate futures, tear down cache entries, and replay the same
-input to the same command bytes. The public client path is connected to the
-pinned Rust Temporal Core SDK, but the two-process worker acceptance path is
-not yet enabled; it will replace synthetic jobs with serialized Core workflow
-activations while preserving the same public workflow style.
+input to the same command bytes. The public client and worker paths are both
+connected to the pinned Rust Temporal Core SDK. The current Compose acceptance
+checks the lower-level native lifecycle; a later milestone will replace that
+fixture with two public OCaml binaries (a starter and a worker) and assert
+workflow results against a real Temporal Server. Until then, native child
+workflow commands remain an explicit typed rejection rather than an invented
+wire representation.

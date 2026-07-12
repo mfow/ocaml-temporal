@@ -1,10 +1,10 @@
 (** Worker process for the first two-OCaml-binary live acceptance test.
 
     The worker registers the same shared workflow definitions as the driver and
-    keeps the public worker loop alive until graceful shutdown. The process is
-    guarded by [TEMPORAL_TWO_BINARY_LIVE] so a local invocation cannot silently
-    connect to a developer's Temporal endpoint; only the dedicated Compose job
-    enables that gate. *)
+    keeps the public native worker loop alive until graceful shutdown. The
+    executable remains guarded by [TEMPORAL_TWO_BINARY_LIVE] so a local run
+    cannot accidentally connect to a developer's Temporal endpoint; the
+    Compose job is the only place that enables the live gate. *)
 
 module Worker = Temporal.Worker
 module Error = Temporal.Error

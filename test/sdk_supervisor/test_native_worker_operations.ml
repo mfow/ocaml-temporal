@@ -312,6 +312,12 @@ let test_native_lifecycle_guards () =
   (match Supervisor.perform supervisor Supervisor.Try_poll_activity with
   | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
   | _ -> failwith "activity poll without worker was accepted");
+  (match Supervisor.perform supervisor Supervisor.Wait_workflow with
+  | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
+  | _ -> failwith "workflow readiness wait without worker was accepted");
+  (match Supervisor.perform supervisor Supervisor.Wait_activity with
+  | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
+  | _ -> failwith "activity readiness wait without worker was accepted");
   let invalid_completion : Workflow.completion =
     { run_id = ""; commands = [] }
   in

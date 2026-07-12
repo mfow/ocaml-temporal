@@ -1,7 +1,7 @@
 (** Exercises the public client and worker surface without a live Temporal
     server. The [mock://] endpoint remains a deterministic unit-test seam;
-    HTTP(S) clients now route through the private Rust/Core supervisor, while
-    this file deliberately avoids requiring a running server. *)
+    HTTP(S) routing is checked at the native configuration boundary so these
+    tests do not require a running Temporal service. *)
 
 (** Converts an expected SDK failure into a readable unit-test diagnostic. *)
 let unwrap = function
@@ -33,9 +33,8 @@ let contains_substring source needle =
   in
   if needle_length = 0 then true else search 0
 
-(** Requires an expected category and a stable diagnostic fragment. Messages are
-    intentionally checked only at the fragment level so wording can improve
-    without making the test depend on incidental punctuation. *)
+(** Requires a structured failure whose message retains a stable diagnostic
+    fragment without coupling the test to the complete native wording. *)
 let expect_error_message_contains category fragment = function
   | Error error
     when Temporal.Error.kind error = category
@@ -211,7 +210,8 @@ let test_client_validation_errors () =
 (** An HTTP-shaped endpoint is deliberately handed to the native configuration
     validator rather than the deterministic mock. The malformed host fails
     before a runtime or network connection is allocated, proving the public
-    routing decision without needing Temporal Server in a unit test. *)
+    routing decision without needing Temporal Server in this unit executable.
+*)
 let test_native_client_configuration_boundary () =
   expect_error_message_contains "bridge" "native client configuration failed"
     (Temporal.Client.create ~target_url:"http://" ~namespace:"unit-test" ())
@@ -223,6 +223,16 @@ let test_worker_validation_errors () =
     (Temporal.Worker.create ~target_url:"mock://dispatch"
        ~namespace:"unit-test" ~task_queue:"" ~workflows:[] ~activities:[] ())
 
+(** A non-mock endpoint must enter the native configuration boundary rather
+    than silently falling back to the deterministic fake. An invalid absolute
+    URL fails before a runtime or network resource is allocated, which keeps
+    this assertion independent from Temporal Server availability. *)
+let test_native_worker_configuration_boundary () =
+  expect_error "bridge"
+    (Temporal.Worker.create ~target_url:"http://"
+       ~namespace:"unit-test" ~task_queue:"unit-test" ~workflows:[]
+       ~activities:[] ())
+
 let () =
   test_duplicate_workflows ();
   test_duplicate_activities ();
@@ -232,4 +242,5 @@ let () =
   test_typed_start_and_wait_handle ();
   test_client_validation_errors ();
   test_native_client_configuration_boundary ();
-  test_worker_validation_errors ()
+  test_worker_validation_errors ();
+  test_native_worker_configuration_boundary ()

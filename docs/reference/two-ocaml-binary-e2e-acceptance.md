@@ -13,15 +13,27 @@ either result, and the Makefile tears down the isolated project and volume on
 success or failure. This prevents a TCP check or a process that merely started
 from being reported as an SDK acceptance pass.
 
+The public `Temporal.Client` and `Temporal.Worker` now route HTTP(S) calls
+through the private Rust/Core supervisor. The deterministic `mock://` backend
+remains available for unit tests. The worker's native poll, bounded readiness,
+completion, and typed registration loop is covered by focused tests; the
+Compose acceptance is the next verification layer against a real server.
+
 During teardown, the worker's small test-process control Domain translates
 Compose's SIGTERM into `Temporal.Worker.shutdown`; the signal handler itself
 only sets an atomic flag. The 30-second worker stop grace period gives the
 bounded native waits time to leave their poll loop before the container is
 removed. This is test-process lifecycle code, not a second worker supervisor.
 
-The native worker implementation is being delivered separately. Until that
-implementation is present on the branch being tested, the new services may
-compile but cannot honestly be described as a live end-to-end pass.
+The remaining live verification requirements are concrete:
+
+1. start the two public binaries as separate Compose services after
+   Temporal/PostgreSQL readiness is proven; and
+2. assert both terminal workflow results while the worker executes the
+   registered workflow and mock activity against the live server.
+
+Until a real `make test-temporal-integration` run passes, this document does
+not describe the acceptance as complete.
 
 ## Purpose
 

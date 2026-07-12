@@ -1,10 +1,10 @@
 # Private native activity execution adapter
 
 `Temporal_runtime.Native_activity_execution` is the private OCaml layer that
-turns a decoded Temporal activity task into a typed OCaml function call.  It is
-not the public worker API yet.  The eventual worker supervisor will provide
-the same typed operations after Rust/Core has polled and validated the native
-JSON envelope:
+turns a decoded Temporal activity task into a typed OCaml function call. It is
+connected to the native `Temporal.Worker` path through the one owner-Domain
+supervisor. The supervisor provides these typed operations after Rust/Core has
+polled and validated the native JSON envelope:
 
 ```ocaml
 try_poll_activity :
@@ -85,14 +85,20 @@ same lease concurrently.  The mutex is an OCaml state guard; it does not hold
 the OCaml runtime lock while Rust waits.  The concrete supervisor is
 responsible for releasing that runtime lock in its C boundary.
 
+The private worker shutdown path calls the adapter's `drain` operation before
+closing native Core. It retries every retained completion while holding the
+same mutex and starts teardown only after the token map is empty. A failed
+drain leaves the exact completion and the native graph usable, so callers can
+retry rather than converting a transient transport error into an
+`outstanding_tasks` shutdown failure.
+
 ## Current boundary and deliberate limits
 
 This slice implements typed local activity dispatch, failure/cancellation
-completions, strict completion validation, and transport retry.  It does not
-yet expose heartbeats, asynchronous activity completion, activity retry policy
-decisions, or public worker wiring.  Those features require the native
-supervisor's activity poll/complete path and will be added only after this
-ownership contract is connected to the live Docker Compose acceptance worker.
+completions, strict completion validation, transport retry, and public worker
+wiring. It does not yet expose heartbeats, asynchronous activity completion, or
+activity retry policy decisions. Those features require additional semantic
+protocol fields and remain behind the live Docker Compose acceptance gate.
 
 The semantic wire shape already carries the full decoded Temporal activity
 context (headers, heartbeat details, timeouts, retry policy, priority, and

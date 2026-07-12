@@ -425,12 +425,15 @@ for another child sequence.
 
 The definitions and calls above compile, and the synthetic runtime tests cover
 child scheduling and deterministic future resolution. The native protocol and
-worker adapter now also carry the child-start acknowledgment and terminal
+worker adapter also carry the child-start acknowledgment and terminal
 resolution required to resume the parent. The adapter rejects final-before-
 start, duplicate, and unknown sequences as typed bridge failures, preserving
 the parent lease rather than acknowledging an unsafe completion. Focused tests
-cover the complete lifecycle, but the live acceptance test still needs to
-exercise it against Temporal Server.
+cover the complete lifecycle. The live Compose fixture covers the parent/child
+success path: the parent calls `Child_workflow.execute`, the registered child
+waits on a durable timer, and the driver asserts the parent's exact result.
+That happy path does not claim live coverage for child start failure,
+cancellation, retries, replay, or recovery.
 
 ### Continue a run with fresh history
 

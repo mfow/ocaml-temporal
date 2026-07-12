@@ -354,23 +354,26 @@ let resolved result =
            (Result.map_error Error_private.to_base result))
   | None -> Future_private.resolved ~outside_error result
 
-(** Schedules an activity after encoding input and validating all command
-    options. The native runtime receives a base payload; its result decoder is
-    converted back to public errors at the same boundary. *)
+(** Schedules an activity after validating command options and encoding input.
+    Option validation deliberately happens first: a malformed activity ID or
+    task queue must not invoke an application codec, allocate workflow state,
+    or perform any user conversion before the request is rejected. The native
+    runtime receives a base payload; its result decoder is converted back to
+    public errors at the same boundary. *)
 let start ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
     ?retry_policy ?(cancellation_type = Try_cancel)
     ?(do_not_eagerly_execute = false)
     definition input =
-  match Codec_private.encode_base definition.input input with
-  | Error error -> resolved (Error (Error_private.of_base error))
-  | Ok input -> (
-      match validate_optional_identifier "activity id" activity_id with
+  match validate_optional_identifier "activity id" activity_id with
+  | Error error -> resolved (Error error)
+  | Ok () -> (
+      match validate_optional_identifier "task queue" task_queue with
       | Error error -> resolved (Error error)
       | Ok () -> (
-          match validate_optional_identifier "task queue" task_queue with
-          | Error error -> resolved (Error error)
-          | Ok () ->
+          match Codec_private.encode_base definition.input input with
+          | Error error -> resolved (Error (Error_private.of_base error))
+          | Ok input -> (
               match Temporal_runtime.Workflow_context_store.current () with
               | None ->
                   resolved
@@ -395,16 +398,18 @@ let start ?activity_id ?task_queue ?schedule_to_close_timeout
                   let retry_policy =
                     Option.map runtime_retry_policy retry_policy
                   in
-                  Future_private.of_internal
-                    (Temporal_runtime.Workflow_context_store.schedule_activity
-                       context ~name:(name definition) ~input ?activity_id
-                       ?task_queue ?schedule_to_close_timeout
-                       ?schedule_to_start_timeout ?start_to_close_timeout
-                       ?heartbeat_timeout ?retry_policy
-                       ~cancellation_type:(runtime_cancellation_type cancellation_type)
-                       ~do_not_eagerly_execute
-                       ~decode:(Codec_private.decode_base definition.output)
-                       ())) )
+                  let future =
+                    Temporal_runtime.Workflow_context_store.schedule_activity
+                      context ~name:(name definition) ~input ?activity_id
+                      ?task_queue ?schedule_to_close_timeout
+                      ?schedule_to_start_timeout ?start_to_close_timeout
+                      ?heartbeat_timeout ?retry_policy
+                      ~cancellation_type:(runtime_cancellation_type cancellation_type)
+                      ~do_not_eagerly_execute
+                      ~decode:(Codec_private.decode_base definition.output)
+                      ()
+                  in
+                  Future_private.of_internal future)))
 
 (** Direct-style convenience for scheduling and awaiting one activity. *)
 let execute ?activity_id ?task_queue ?schedule_to_close_timeout

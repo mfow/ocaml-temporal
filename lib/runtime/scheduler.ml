@@ -120,11 +120,21 @@ let run_label scheduler =
 (** Returns the recorded queue sequence numbers in the order they ran. *)
 let trace scheduler = List.rev scheduler.trace_rev
 
-(** Closes pending futures in creation order and clears queued functions so
-    their captured workflow values can be collected. *)
+(** Closes pending futures in creation order, then drains any already-queued
+    resumptions. Waiters parked on futures that settled before shutdown were
+    moved onto the queue as continue thunks; [Queue.clear] would drop those
+    one-shot continuations without continue or discontinue. Drain them while
+    [active] is false so the thunks discontinue instead, and skip the drain
+    when the scheduler is mid-[run] so the existing loop owns the queue. *)
 let shutdown scheduler =
   if scheduler.active then (
     scheduler.active <- false;
     List.iter (fun teardown -> teardown ()) (List.rev scheduler.teardowns);
     scheduler.teardowns <- [];
-    Queue.clear scheduler.queue)
+    if not scheduler.running then
+      while not (Queue.is_empty scheduler.queue) do
+        let (Runnable (_, thunk)) = Queue.pop scheduler.queue in
+        try thunk () with
+        | Future_store.Scheduler_shutdown -> ()
+        | exception_ -> scheduler.failures <- exception_ :: scheduler.failures
+      done)

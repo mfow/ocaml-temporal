@@ -91,12 +91,23 @@ let create ~owner ~outside_error =
     | Pending pending ->
         promise.state <- Ready result;
         owner.on_settled ();
+        (* Resume only while the owning scheduler is still live. After
+           shutdown, the same queued thunk must discontinue the one-shot
+           continuation so Fun.protect cleanups still run and the fiber is
+           never silently dropped by Queue.clear. *)
         List.iter
           (fun continuation ->
-            owner.enqueue (fun () -> Effect.Deep.continue continuation result))
+            owner.enqueue (fun () ->
+                if owner.is_running () then
+                  Effect.Deep.continue continuation result
+                else
+                  try Effect.Deep.discontinue continuation Scheduler_shutdown
+                  with Scheduler_shutdown -> ()))
           (List.rev pending.waiters);
         List.iter
-          (fun observer -> owner.enqueue (fun () -> observer result))
+          (fun observer ->
+            owner.enqueue (fun () ->
+                if owner.is_running () then observer result))
           (List.rev pending.observers);
         pending.waiters <- [];
         pending.observers <- []
@@ -140,10 +151,19 @@ let add_waiter promise continuation =
   match promise.state with
   | Pending pending -> pending.waiters <- continuation :: pending.waiters
   | Ready result ->
-      promise.owner.enqueue (fun () -> Effect.Deep.continue continuation result)
+      promise.owner.enqueue (fun () ->
+          if promise.owner.is_running () then
+            Effect.Deep.continue continuation result
+          else
+            try Effect.Deep.discontinue continuation Scheduler_shutdown
+            with Scheduler_shutdown -> ())
   | Closed ->
       promise.owner.enqueue (fun () ->
-          Effect.Deep.continue continuation (Error (promise.outside_error ())))
+          if promise.owner.is_running () then
+            Effect.Deep.continue continuation (Error (promise.outside_error ()))
+          else
+            try Effect.Deep.discontinue continuation Scheduler_shutdown
+            with Scheduler_shutdown -> ())
 
 (** Registers a callback used by [map], [map_error], and [both]. It always runs
     through the workflow scheduler and never pauses a fiber itself. *)

@@ -266,6 +266,25 @@ let test_shutdown_closes_pending_continuations () =
   | exception Invalid_argument _ -> ()
   | _ -> failwith "shutdown future remained resolvable"
 
+(** Resolving a future while the scheduler is idle enqueues continue thunks.
+    Shutdown must discontinue those thunks rather than [Queue.clear] them, so
+    [Fun.protect] cleanups still run. *)
+let test_shutdown_discontinues_queued_ready_continuations () =
+  let scheduler = Scheduler.create () in
+  let future, resolve =
+    promise scheduler ~outside_error:(fun () -> "outside")
+  in
+  let cleaned = ref false in
+  Scheduler.spawn scheduler (fun () ->
+      Fun.protect
+        ~finally:(fun () -> cleaned := true)
+        (fun () -> ignore (Temporal.Future.await future)));
+  expect "queue waiter" "blocked" (Scheduler.run_label scheduler);
+  resolve (Ok 7);
+  Scheduler.shutdown scheduler;
+  if not !cleaned then
+    failwith "queued ready continuation was dropped without discontinue"
+
 let () =
   test_fifo_resume ();
   test_double_resolution ();
@@ -280,4 +299,5 @@ let () =
   test_first_completion_error ();
   test_mapper_defect_is_contained ();
   test_both_observes_sibling_after_error ();
-  test_shutdown_closes_pending_continuations ()
+  test_shutdown_closes_pending_continuations ();
+  test_shutdown_discontinues_queued_ready_continuations ()

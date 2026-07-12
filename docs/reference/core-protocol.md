@@ -28,6 +28,36 @@ because OCaml and Rust are compiled and shipped together. A different number
 means a stale or partial build and fails startup; per-message negotiation and
 mixed versions are unsupported.
 
+## Two JSON layers
+
+There are two related uses of the word “protocol” in this repository. They are
+not nested inside one another:
+
+1. The generic control envelope below has `kind`, `correlation_id`,
+   `operation`, and `body`. It is the reusable transport foundation for a
+   request/response exchange and is covered by `control_protocol` tests.
+2. The live client and worker C ABI operations pass one direct,
+   operation-specific JSON object. For example, a workflow poll returns a
+   `workflow-activation` object, and a workflow completion accepts a
+   `workflow-completion` object. The native ABI status (`not_ready`, protocol,
+   connection, and so on) is returned separately; it is not another JSON
+   envelope around that object.
+
+The operation-specific documents therefore start at their own schema root:
+
+| Native operation family | Direct JSON document | Reference |
+| --- | --- | --- |
+| Client start, ticket poll/wait | start request, ticket, or start outcome | [client protocol](client-protocol.md) |
+| Client exact-run wait/cancel | wait or cancellation request and response | [client protocol](client-protocol.md) |
+| Workflow worker poll/complete/reject | activation or completion | This document's workflow sections |
+| Remote activity worker poll/complete/heartbeat | task, completion, or heartbeat | [activity protocol](activity-protocol.md) |
+
+Use the envelope shape only when an operation explicitly declares an envelope;
+do not put an activation, completion, task, or client request inside a second
+`body` object merely because both layers use JSON. This distinction also
+explains why the schemas in `docs/schemas/bridge` describe several different
+top-level documents rather than one universal message schema.
+
 ## Envelope and correlation
 
 Requests and successful responses have exactly four fields:

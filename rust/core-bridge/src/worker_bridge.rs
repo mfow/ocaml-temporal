@@ -124,6 +124,37 @@ pub enum WorkerBridgeError {
     WorkerStillShared,
 }
 
+/// Converts one internal worker failure into the bounded diagnostic category
+/// that the ABI may expose to OCaml.
+///
+/// The `CoreWorkflow` and `CoreActivity` variants retain their detailed Core
+/// error text so the Rust state machine can classify the failure internally.
+/// That text may contain server-provided data, however, so it must never be
+/// formatted into a C result or an OCaml exception.  Keeping this mapping as a
+/// closed match makes adding a new failure variant a compiler-audited change:
+/// the new variant cannot accidentally inherit a debug representation at the
+/// public boundary.
+pub fn public_worker_error_message(error: &WorkerBridgeError) -> &'static str {
+    match error {
+        WorkerBridgeError::Completion(CompleteError::UnknownWorkflow) => {
+            "Temporal worker completion referred to an unknown workflow"
+        }
+        WorkerBridgeError::Completion(CompleteError::UnknownActivity) => {
+            "Temporal worker completion referred to an unknown activity"
+        }
+        WorkerBridgeError::Completion(CompleteError::NotLeased) => {
+            "Temporal worker completion referred to an unleased task"
+        }
+        WorkerBridgeError::Completion(CompleteError::AlreadyLeased) => {
+            "Temporal worker completion referred to an already leased task"
+        }
+        WorkerBridgeError::CoreWorkflow(_) => "Temporal workflow completion was rejected by Core",
+        WorkerBridgeError::CoreActivity(_) => "Temporal activity completion was rejected by Core",
+        WorkerBridgeError::OutstandingTasks(_) => "Temporal worker has outstanding tasks",
+        WorkerBridgeError::WorkerStillShared => "Temporal worker remains shared after shutdown",
+    }
+}
+
 /// One task or terminal lane error waiting for the OCaml supervisor.
 pub type ReadyTask<T> = Result<T, PollLaneError>;
 
@@ -953,6 +984,30 @@ pub enum AdmitError {
     InvalidIdentity,
     /// Core supplied cancellation for an activity the bridge does not own.
     UnknownActivityCancellation,
+}
+
+/// Converts one poll-lane failure into a bounded diagnostic category for the
+/// public ABI.  In particular, the `Core` string is deliberately ignored
+/// because it can contain gRPC status text or other remote data.
+pub fn public_poll_lane_error_message(error: &PollLaneError) -> &'static str {
+    match error {
+        PollLaneError::Core(_) => "Temporal worker poll lane failed",
+        PollLaneError::Admission(AdmitError::Draining) => {
+            "Temporal worker poll lane rejected work while draining"
+        }
+        PollLaneError::Admission(AdmitError::InvalidIdentity) => {
+            "Temporal worker poll lane received an invalid task identity"
+        }
+        PollLaneError::Admission(AdmitError::UnknownActivityCancellation) => {
+            "Temporal worker poll lane received an unknown activity cancellation"
+        }
+        PollLaneError::DuplicateIdentity => {
+            "Temporal worker poll lane received a duplicate task identity"
+        }
+        PollLaneError::InvalidActivityVariant => {
+            "Temporal worker poll lane received an invalid activity variant"
+        }
+    }
 }
 
 /// A language completion did not match one outstanding Core task.

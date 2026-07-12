@@ -109,13 +109,23 @@ Draft 2020-12 JSON Schema cannot express equality between those fields.
 
 Temporal AlreadyStarted responses use status `12` and a closed JSON error body
 (`kind`, `workflow_id`, `existing_run_id`) rather than copying gRPC server text.
-Other RPC failures contain only a stable status code. Core payload and failure
-conversion errors use a `protocol` error kind with a closed conversion code;
-the only values are `core_unsupported` and `core_invalid`. RPC codes use the
-closed lowercase tonic status vocabulary, and never include payload bytes or
-server diagnostics. Machine-readable
+Other RPC failures use a closed JSON body containing only a stable `kind` and
+status/code value. Core payload and failure conversion errors use a `protocol`
+error kind with a closed conversion code; the only values are
+`core_unsupported` and `core_invalid`. RPC codes use the closed lowercase tonic
+status vocabulary, and never include payload bytes or server diagnostics.
+Machine-readable
 schemas for these documents live under
 `docs/schemas/bridge/client-*.schema.json`.
+
+Worker and poll-lane failures use the same closed-category rule. Rust may keep
+the original Core error inside its private state machine long enough to decide
+which transition failed, but the ABI maps it to a constant message before
+allocating the C result. OCaml repeats that mapping for worker statuses before
+an error can reach the public worker API or its logs. Consequently Core/gRPC
+status text, endpoint details, task identifiers, and payload data cannot cross
+the Rust/C/OCaml boundary. This is intentionally a discard, not a redacted
+copy: the current logging policy does not expose those private diagnostics.
 
 All client identifiers are nonempty and NUL-free. The schemas state the
 65,536-character necessary bound, while the bilateral runtime validators apply
@@ -140,7 +150,9 @@ completes leased work.
 A result has one success buffer and one error buffer. At most one owns memory:
 
 - success may place arbitrary binary bytes in `value`;
-- failure may place a UTF-8 diagnostic in `error`;
+- failure may place a UTF-8 diagnostic in `error`; worker and poll-lane
+  failures use bounded constant categories, while client operation failures
+  use the closed JSON documents described above;
 - an empty allocation is always represented as `{ NULL, 0 }`.
 
 Rust owns both allocations. The caller may copy their bytes but must never

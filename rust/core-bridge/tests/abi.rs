@@ -1,5 +1,9 @@
 use std::ptr;
 
+use ocaml_temporal_core_bridge::worker_bridge::{
+    AdmitError, CompleteError, PollLaneError, WorkerBridgeError, public_poll_lane_error_message,
+    public_worker_error_message,
+};
 use ocaml_temporal_core_bridge::{
     ABI_VERSION, Buffer, Result as AbiResult, STATUS_ABI_MISMATCH, STATUS_INVALID_ARGUMENT,
     STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, ocaml_temporal_core_v1_check_abi_version,
@@ -29,6 +33,52 @@ fn bytes(buffer: &Buffer) -> Vec<u8> {
         // SAFETY: Tests read buffers returned by the bridge before freeing the
         // containing result, so the allocation remains live for this copy.
         unsafe { std::slice::from_raw_parts(buffer.ptr, buffer.len).to_vec() }
+    }
+}
+
+#[test]
+/// Proves Core completion diagnostics are reduced to closed categories before
+/// the ABI maps them into an OCaml-facing result.
+fn worker_error_categories_never_include_core_diagnostics() {
+    let hostile = "tonic::Status { message: secret-core-diagnostic }";
+    let errors = [
+        WorkerBridgeError::CoreWorkflow(hostile.to_owned()),
+        WorkerBridgeError::CoreActivity(hostile.to_owned()),
+        WorkerBridgeError::Completion(CompleteError::UnknownWorkflow),
+        WorkerBridgeError::Completion(CompleteError::UnknownActivity),
+        WorkerBridgeError::Completion(CompleteError::NotLeased),
+        WorkerBridgeError::Completion(CompleteError::AlreadyLeased),
+        WorkerBridgeError::OutstandingTasks(7),
+        WorkerBridgeError::WorkerStillShared,
+    ];
+
+    for error in errors {
+        let message = public_worker_error_message(&error);
+        assert!(!message.contains(hostile), "{message}");
+        assert!(!message.contains("tonic"), "{message}");
+        assert!(!message.contains("secret-core-diagnostic"), "{message}");
+    }
+}
+
+#[test]
+/// Proves a poll-lane Core/gRPC diagnostic is discarded at the ABI mapping
+/// point while non-Core lane categories remain closed constants as well.
+fn poll_lane_categories_never_include_core_diagnostics() {
+    let hostile = "tonic::Status { message: secret-core-diagnostic }";
+    let errors = [
+        PollLaneError::Core(hostile.to_owned()),
+        PollLaneError::Admission(AdmitError::Draining),
+        PollLaneError::Admission(AdmitError::InvalidIdentity),
+        PollLaneError::Admission(AdmitError::UnknownActivityCancellation),
+        PollLaneError::DuplicateIdentity,
+        PollLaneError::InvalidActivityVariant,
+    ];
+
+    for error in errors {
+        let message = public_poll_lane_error_message(&error);
+        assert!(!message.contains(hostile), "{message}");
+        assert!(!message.contains("tonic"), "{message}");
+        assert!(!message.contains("secret-core-diagnostic"), "{message}");
     }
 }
 

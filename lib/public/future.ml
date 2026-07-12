@@ -71,13 +71,21 @@ let make_derived ~parent ~outside_error =
     match !result with
     | Some value -> value
     | None ->
-        let observed = ref None in
-        await_gate (fun signal ->
-            observe (fun value ->
-                if Option.is_none !observed then (
-                  observed := Some value;
-                  signal ()))) ;
-        Option.value !observed ~default:(Error (outside_error ()))
+        (* Outside the owning scheduler fiber, return a pure defect without
+           allocating a gate future on the parent scheduler (which would race
+           another Domain or leak after shutdown). *)
+        if not
+             (Temporal_runtime.Future_store.current_owner_matches
+                (Temporal_future_kernel.owner_id parent))
+        then Error (outside_error ())
+        else
+          let observed = ref None in
+          await_gate (fun signal ->
+              observe (fun value ->
+                  if Option.is_none !observed then (
+                    observed := Some value;
+                    signal ())));
+          Option.value !observed ~default:(Error (outside_error ()))
   in
   let future =
     make_repr ~await ~await_gate ~observe

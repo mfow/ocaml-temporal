@@ -57,6 +57,11 @@ val owner_id : ('value, 'error) t -> int
     foreign-owner futures even when another scheduler is running elsewhere. *)
 val with_current_owner_id : int option -> (unit -> 'a) -> 'a
 
+(** Reports whether this Domain is currently running scheduler [id]. Used by
+    derived public futures to reject outside await without mutating foreign
+    scheduler state. *)
+val current_owner_matches : int -> bool
+
 (** Queues [thunk] on the scheduler that owns [future]. The callback is never
     run inline for an active workflow, which keeps completion ordering
     deterministic. *)

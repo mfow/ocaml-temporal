@@ -88,9 +88,11 @@ fn consume(mut result: AbiResult, expected_status: i32) -> String {
 }
 
 /// Strict lifecycle decoding rejects unknown fields before attempting network
-/// I/O, so a typo cannot silently select a default connection behavior.
+/// I/O, so a typo cannot silently select a default connection behavior. The
+/// parser detail is intentionally not echoed: an unknown input field name is
+/// application-controlled text and must not cross the native result boundary.
 #[test]
-fn client_configuration_rejects_unknown_fields() {
+fn client_configuration_rejects_unknown_fields_without_echoing_them() {
     let mut runtime = runtime();
 
     let config = br#"{
@@ -99,13 +101,30 @@ fn client_configuration_rejects_unknown_fields() {
         "unexpected":true
     }"#;
     let message = consume(connect(runtime, config), STATUS_CONFIGURATION);
-    assert!(message.contains("unknown field `unexpected`"), "{message}");
+    assert_eq!(message, "invalid lifecycle configuration JSON");
     // SAFETY: The runtime slot is live and uniquely owned.
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
         STATUS_OK
     );
     assert!(runtime.is_null());
+}
+
+/// Syntax failures use the same closed diagnostic as shape failures, so parser
+/// implementation details never become part of the C/OCaml error contract.
+#[test]
+fn malformed_lifecycle_configuration_has_a_closed_diagnostic() {
+    let mut runtime = runtime();
+    let config = br#"{"target_url":"http://127.0.0.1:7233","identity":"worker","secret"}"#;
+    let message = consume(connect(runtime, config), STATUS_CONFIGURATION);
+    assert_eq!(message, "invalid lifecycle configuration JSON");
+
+    // SAFETY: Parsing failed before any child was published, and this test
+    // retains exclusive ownership of the runtime pointer slot.
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
 }
 
 /// URL and required-string validation is completed before any connection is

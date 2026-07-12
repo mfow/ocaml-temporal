@@ -1986,6 +1986,12 @@ unsafe fn invoke(output: *mut Result, operation: impl FnOnce() -> Operation) -> 
 
 /// Decodes one bounded strict UTF-8 JSON lifecycle configuration.
 ///
+/// Parser details are deliberately reduced to one stable category. Serde's
+/// diagnostics can include an input-controlled object member name (for
+/// example, an unknown field), and the lifecycle configuration is an
+/// application-controlled boundary rather than a place to reflect arbitrary
+/// input back through the C/OCaml result buffer.
+///
 /// # Safety
 ///
 /// A nonzero `input_len` requires `input` to identify that many readable bytes
@@ -2013,9 +2019,9 @@ unsafe fn decode_config<T: for<'de> Deserialize<'de>>(
         // the nonempty null case was rejected before constructing this slice.
         unsafe { std::slice::from_raw_parts(input, input_len) }
     };
-    serde_json::from_slice(bytes).map_err(|error| Failure {
+    serde_json::from_slice(bytes).map_err(|_error| Failure {
         status: STATUS_CONFIGURATION,
-        message: format!("invalid lifecycle configuration JSON: {error}"),
+        message: "invalid lifecycle configuration JSON".to_owned(),
     })
 }
 

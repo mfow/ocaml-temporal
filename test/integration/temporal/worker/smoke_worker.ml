@@ -35,7 +35,11 @@ let publish_marker path contents =
     let channel = open_out_bin temporary in
     Fun.protect
       ~finally:(fun () -> close_out_noerr channel)
-      (fun () -> output_string channel contents);
+      (fun () ->
+        output_string channel contents;
+        (* Flush before the rename so a successful marker always represents
+           bytes that reached the operating-system file boundary. *)
+        flush channel);
     Sys.rename temporary path;
     Ok ()
   with exception_ ->

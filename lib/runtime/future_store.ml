@@ -68,6 +68,12 @@ let with_current_owner_id id action =
     ~finally:(fun () -> Domain.DLS.set current_owner_id_key previous)
     action
 
+(** True when this Domain is currently running the scheduler with [id]. *)
+let current_owner_matches id =
+  match Domain.DLS.get current_owner_id_key with
+  | Some current -> current = id
+  | None -> false
+
 (** Internal exception used only to release a paused fiber during shutdown. It
     is caught inside this module and never becomes a workflow error. *)
 exception Scheduler_shutdown

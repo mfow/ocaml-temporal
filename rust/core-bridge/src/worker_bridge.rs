@@ -37,6 +37,55 @@ pub fn workflow_rejection_message(reason: &'static str) -> String {
     format!("OCaml bridge could not represent the workflow activation: {reason}")
 }
 
+/// Builds the bounded failure text sent to Core when a polled workflow
+/// activation cannot be admitted into the bridge ledger for delivery to OCaml.
+fn workflow_admission_rejection_message(reason: &'static str) -> String {
+    format!("OCaml bridge could not admit the workflow activation: {reason}")
+}
+
+/// Builds the bounded failure text sent to Core when a polled activity task
+/// cannot be admitted into the bridge ledger for delivery to OCaml.
+fn activity_admission_rejection_message(reason: &'static str) -> String {
+    format!("OCaml bridge could not admit the activity task: {reason}")
+}
+
+/// Fails one Core workflow activation that the bridge will never hand to OCaml.
+///
+/// Core already transferred ownership of the activation by returning it from
+/// `poll_workflow_activation`. Dropping it without a completion leaves an
+/// outstanding workflow task that blocks further polling and graceful
+/// finalization. Admission failures therefore complete through Core here
+/// before the poll lane surfaces a diagnostic error.
+async fn force_fail_undeliverable_workflow(
+    worker: &Worker,
+    run_id: &str,
+    reason: &'static str,
+) {
+    let completion = WorkflowActivationCompletion::fail(
+        run_id,
+        workflow_admission_rejection_message(reason).into(),
+        Some(WorkflowTaskFailedCause::WorkflowWorkerUnhandledFailure),
+    );
+    // Best-effort: a Core rejection is already a fatal worker condition. The
+    // lane still reports the original admission failure to the owner Domain.
+    let _ = worker.complete_workflow_activation(completion).await;
+}
+
+/// Fails one Core activity task that the bridge will never hand to OCaml.
+///
+/// Used only for undeliverable *start* (or malformed) tasks that would
+/// otherwise leave a Core completion debt. Pure cancel notifications that do
+/// not create a new ledger obligation are not completed here.
+async fn force_fail_undeliverable_activity(worker: &Worker, task_token: &[u8], reason: &'static str) {
+    let completion = ActivityTaskCompletion {
+        task_token: task_token.to_vec(),
+        result: Some(ActivityExecutionResult::fail(
+            activity_admission_rejection_message(reason).into(),
+        )),
+    };
+    let _ = worker.complete_activity_task(completion).await;
+}
+
 /// Returns the exact Core task surface implemented by the first worker slice.
 pub fn bridge_task_types() -> WorkerTaskTypes {
     WorkerTaskTypes {
@@ -563,6 +612,10 @@ impl PollLanes {
 }
 
 /// Polls workflow activations serially and records ownership before enqueueing.
+///
+/// Every activation returned by Core must either be delivered to OCaml or
+/// force-failed back to Core. Admission rejections therefore complete the
+/// undeliverable activation before the lane error is published.
 async fn run_workflow_lane(
     worker: Arc<Worker>,
     ledger: Arc<Mutex<TaskLedger>>,
@@ -587,18 +640,53 @@ async fn run_workflow_lane(
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .admit_polled_workflow(&activation.run_id);
-        let message = match admission {
-            Ok(Admission::New) => Ok(activation),
-            Ok(_) => Err(PollLaneError::DuplicateIdentity),
-            Err(error) => Err(PollLaneError::Admission(error)),
-        };
-        if !signal.enqueue(&sender, message) {
-            return;
+        match admission {
+            Ok(Admission::New) => {
+                if !signal.enqueue(&sender, Ok(activation)) {
+                    return;
+                }
+            }
+            Ok(Admission::Duplicate) | Ok(Admission::ExistingCancellation) => {
+                // ExistingCancellation is not produced for workflows today; it
+                // is handled here so a future ledger change cannot drop a Core
+                // task. Completing the undeliverable activation does not touch
+                // the first outstanding ledger entry for the same run ID.
+                let run_id = activation.run_id.clone();
+                force_fail_undeliverable_workflow(
+                    worker.as_ref(),
+                    &run_id,
+                    "duplicate workflow activation identity",
+                )
+                .await;
+                let error = PollLaneError::DuplicateIdentity;
+                if !signal.enqueue(&sender, Err(error)) {
+                    return;
+                }
+            }
+            Err(error) => {
+                let run_id = activation.run_id.clone();
+                let reason = match error {
+                    AdmitError::InvalidIdentity => "invalid workflow run identity",
+                    AdmitError::Draining => "worker is draining and cannot admit new work",
+                    AdmitError::UnknownActivityCancellation => {
+                        "unexpected activity cancellation during workflow admission"
+                    }
+                };
+                force_fail_undeliverable_workflow(worker.as_ref(), &run_id, reason).await;
+                if !signal.enqueue(&sender, Err(PollLaneError::Admission(error))) {
+                    return;
+                }
+            }
         }
     }
 }
 
 /// Polls remote activities serially and associates cancellation with its start.
+///
+/// Start tasks that cannot be delivered are force-failed to Core so their
+/// completion debt cannot stall shutdown. Duplicate cancel notifications do
+/// not create a second Core obligation and are therefore dropped without a
+/// completion after the diagnostic error is published.
 async fn run_activity_lane(
     worker: Arc<Worker>,
     ledger: Arc<Mutex<TaskLedger>>,
@@ -623,8 +711,16 @@ async fn run_activity_lane(
             Some(activity_task::Variant::Start(_)) => ActivityAdmission::Start,
             Some(activity_task::Variant::Cancel(_)) => ActivityAdmission::Cancel,
             None => {
+                // A missing variant still consumed a Core poll slot. Fail it
+                // so the opaque token cannot remain outstanding forever.
+                force_fail_undeliverable_activity(
+                    worker.as_ref(),
+                    &task.task_token,
+                    "activity task has no start or cancel variant",
+                )
+                .await;
                 let error = PollLaneError::InvalidActivityVariant;
-                if !signal.enqueue(&sender, Err(error.clone())) {
+                if !signal.enqueue(&sender, Err(error)) {
                     return;
                 }
                 continue;
@@ -634,13 +730,45 @@ async fn run_activity_lane(
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .admit_polled_activity(&task.task_token, kind);
-        let message = match admission {
-            Ok(Admission::New | Admission::ExistingCancellation) => Ok(task),
-            Ok(Admission::Duplicate) => Err(PollLaneError::DuplicateIdentity),
-            Err(error) => Err(PollLaneError::Admission(error)),
-        };
-        if !signal.enqueue(&sender, message) {
-            return;
+        match admission {
+            Ok(Admission::New | Admission::ExistingCancellation) => {
+                if !signal.enqueue(&sender, Ok(task)) {
+                    return;
+                }
+            }
+            Ok(Admission::Duplicate) => {
+                // A second Start for the same token is a Core/bridge defect
+                // that still carries a poll result Core expects to complete.
+                // A second Cancel is only a repeated notification for an
+                // already-tracked debt and must not complete the activity.
+                if kind == ActivityAdmission::Start {
+                    force_fail_undeliverable_activity(
+                        worker.as_ref(),
+                        &task.task_token,
+                        "duplicate activity start identity",
+                    )
+                    .await;
+                }
+                if !signal.enqueue(&sender, Err(PollLaneError::DuplicateIdentity)) {
+                    return;
+                }
+            }
+            Err(error) => {
+                // InvalidIdentity on Start and UnknownActivityCancellation may
+                // still leave Core holding the polled task. Force-fail using
+                // the opaque token so the poll debt cannot outlive the lane.
+                let reason = match error {
+                    AdmitError::InvalidIdentity => "invalid activity task token",
+                    AdmitError::Draining => "worker is draining and cannot admit new work",
+                    AdmitError::UnknownActivityCancellation => {
+                        "activity cancellation for an unknown task token"
+                    }
+                };
+                force_fail_undeliverable_activity(worker.as_ref(), &task.task_token, reason).await;
+                if !signal.enqueue(&sender, Err(PollLaneError::Admission(error))) {
+                    return;
+                }
+            }
         }
     }
 }

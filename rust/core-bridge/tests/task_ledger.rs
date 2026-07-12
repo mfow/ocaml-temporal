@@ -186,9 +186,22 @@ fn post_join_dispose_pass_harvests_late_poll_admissions() {
     assert_eq!(initial_workflows, vec!["initial-run".to_owned()]);
     assert_eq!(initial_activities, vec![initial_token.to_vec()]);
 
-    // A Core poll that was already in flight bypasses the draining admission
-    // check. The post-join pass must collect both task shapes once producers
-    // are known to have stopped.
+    // A same-identity poll racing after the snapshot is rejected before the
+    // lane can enqueue an `Ok` activation. This is why clearing retired
+    // tombstones at the completed join barrier cannot expose a queued
+    // duplicate.
+    assert_eq!(
+        ledger.admit_polled_workflow("initial-run"),
+        Err(AdmitError::Retired)
+    );
+    assert_eq!(
+        ledger.admit_polled_activity(initial_token, ActivityAdmission::Start),
+        Err(AdmitError::Retired)
+    );
+
+    // A Core poll that was already in flight bypasses the first disposal
+    // snapshot. The post-join pass must collect both new task shapes once
+    // producers are known to have stopped.
     assert_eq!(ledger.admit_polled_workflow("late-run"), Ok(Admission::New));
     let late_token = b"late-activity-token";
     assert_eq!(
@@ -200,6 +213,14 @@ fn post_join_dispose_pass_harvests_late_poll_admissions() {
     assert_eq!(late_workflows, vec!["late-run".to_owned()]);
     assert_eq!(late_activities, vec![late_token.to_vec()]);
     assert_eq!(ledger.outstanding(), 0);
+    assert_eq!(
+        ledger.admit_polled_workflow("late-run"),
+        Err(AdmitError::Retired)
+    );
+    assert_eq!(
+        ledger.admit_polled_activity(late_token, ActivityAdmission::Start),
+        Err(AdmitError::Retired)
+    );
     assert!(ledger.can_finalize());
 }
 

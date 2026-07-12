@@ -19,6 +19,7 @@ val make :
   peek:(unit -> ('value, 'error) result option) ->
   owner_id:int ->
   outside_error:(unit -> 'error) ->
+  callbacks_live:(unit -> bool) ->
   enqueue:((unit -> unit) -> unit) ->
   ('value, 'error) t
 
@@ -43,6 +44,9 @@ val owner_id : ('value, 'error) t -> int
 
 (** Builds the error returned when the value is used outside its owner. *)
 val outside_error : ('value, 'error) t -> unit -> 'error
+
+(** Reports whether queued callbacks may still run for this future's owner. *)
+val callbacks_live : ('value, 'error) t -> bool
 
 (** Queues a callback on the scheduler that owns this value. *)
 val enqueue : ('value, 'error) t -> (unit -> unit) -> unit

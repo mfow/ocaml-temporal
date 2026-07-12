@@ -24,6 +24,7 @@ let public_future ~outside_error future =
     ~peek:(fun () -> Temporal_runtime.Future_store.peek future)
     ~owner_id:(Temporal_runtime.Future_store.owner_id future)
     ~outside_error
+    ~callbacks_live:(fun () -> Temporal_runtime.Future_store.callbacks_live future)
     ~enqueue:(Temporal_runtime.Future_store.enqueue future)
 
 (** Creates a test-controlled scheduler promise and exposes it through the
@@ -188,8 +189,11 @@ let test_all_order_and_errors () =
 (** Verifies an empty aggregate is immediately successful without allocating
     pending scheduler work. *)
 let test_all_empty () =
-  expect "empty all" (Some (Ok []))
-    (Temporal.Future.peek (Temporal.Future.all []))
+  let empty = Temporal.Future.all [] in
+  expect "empty all" (Some (Ok [])) (Temporal.Future.peek empty);
+  let mapped = Temporal.Future.map List.length empty in
+  expect "empty all derived callback" (Some (Ok 0))
+    (Temporal.Future.peek mapped)
 
 (** Verifies ready inputs use argument order, while pending inputs use
     deterministic scheduler callback order. Losing inputs remain observable. *)
@@ -334,6 +338,53 @@ let test_shutdown_skips_queued_observers () =
   if Temporal.Future.is_ready derived then
     failwith "derived future became ready after scheduler shutdown"
 
+(** A source resolved before the scheduler starts can queue its runtime
+    observer ahead of a shutdown root. That observer may then queue callbacks
+    for a second public derived future after the shutdown root is already in
+    the queue; both mapper and observer callbacks must be inert when drained. *)
+let test_shutdown_skips_public_derived_callbacks () =
+  let scheduler = Scheduler.create () in
+  let source, resolve = promise scheduler ~outside_error:(fun () -> "outside") in
+  let derived = Temporal.Future.map (fun value -> value + 1) source in
+  let mapper_ran = ref false in
+  let observer_ran = ref false in
+  let downstream =
+    Temporal.Future.map
+      (fun value ->
+        mapper_ran := true;
+        value + 1)
+      derived
+  in
+  Temporal_future_kernel.observe derived (fun _ -> observer_ran := true);
+  resolve (Ok 1);
+  Scheduler.spawn scheduler (fun () -> Scheduler.shutdown scheduler);
+  expect "public derived shutdown drain" "complete"
+    (Scheduler.run_label scheduler);
+  if !mapper_ran then
+    failwith "queued public mapper ran after scheduler shutdown";
+  if !observer_ran then
+    failwith "queued public observer ran after scheduler shutdown";
+  if Temporal.Future.is_ready downstream then
+    failwith "downstream public future became ready after scheduler shutdown"
+
+(** Awaiting an unresolved public derived future after re-entrant shutdown must
+    return its typed outside-owner error without allocating a new gate future
+    on a scheduler that is already closed. *)
+let test_shutdown_rejects_derived_await () =
+  let scheduler = Scheduler.create () in
+  let source, _resolve = promise scheduler ~outside_error in
+  let derived = Temporal.Future.map Fun.id source in
+  let observed = ref None in
+  Scheduler.spawn scheduler (fun () ->
+      Scheduler.shutdown scheduler;
+      observed := Some (Temporal.Future.await derived));
+  expect "derived await after shutdown" "complete"
+    (Scheduler.run_label scheduler);
+  match !observed with
+  | Some (Error _) -> ()
+  | Some (Ok _) -> failwith "derived await succeeded after scheduler shutdown"
+  | None -> failwith "derived await was not evaluated"
+
 let () =
   test_fifo_resume ();
   test_double_resolution ();
@@ -352,4 +403,6 @@ let () =
   test_shutdown_closes_pending_continuations ();
   test_shutdown_discontinues_queued_ready_continuations ();
   test_shutdown_skips_queued_root_thunks ();
-  test_shutdown_skips_queued_observers ()
+  test_shutdown_skips_queued_observers ();
+  test_shutdown_skips_public_derived_callbacks ();
+  test_shutdown_rejects_derived_await ()

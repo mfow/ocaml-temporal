@@ -156,6 +156,11 @@ let resolved ~outside_error result =
 
 let owner_id promise = promise.owner.id
 
+(** Reports whether callbacks queued for [promise] may still run. The scheduler
+    turns this false during shutdown, while the inert owner for resolved
+    outside-workflow values keeps it true for immediate combinators. *)
+let callbacks_live promise = promise.owner.callbacks_live ()
+
 (** Queues one callback on the scheduler that owns [promise]. This is the
     low-level escape hatch used by public wrappers to preserve the same FIFO
     execution ordering as native future completions. *)
@@ -198,8 +203,9 @@ let add_waiter promise continuation =
 
 (** Registers a callback used by [map], [map_error], and [both]. It runs
     through the workflow scheduler without pausing a fiber; callbacks queued
-    when the owner shuts down become no-ops because their derived futures have
-    already been closed. *)
+    when the owner shuts down become no-ops after runtime teardown. Public
+    derived wrappers use the same liveness signal to avoid scheduling work
+    from these skipped callbacks. *)
 let observe promise observer =
   match promise.state with
   | Pending pending -> pending.observers <- observer :: pending.observers

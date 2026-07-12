@@ -16,6 +16,8 @@ type ('value, 'error) t = {
   owner_id_impl : int;
   (* Builds the typed error returned when the future is used off-owner. *)
   outside_error_impl : unit -> 'error;
+  (* Reports whether queued callbacks may still run for this owner. *)
+  callbacks_live_impl : unit -> bool;
   (* Queues a callback on the owning scheduler. *)
   enqueue_impl : (unit -> unit) -> unit;
 }
@@ -24,7 +26,7 @@ type ('value, 'error) t = {
     callbacks remain the source of truth for lifecycle and cleanup; this
     record only groups those callbacks behind the private package boundary. *)
 let make ~await ~await_gate ~observe ~is_ready ~peek ~owner_id ~outside_error
-    ~enqueue =
+    ~callbacks_live ~enqueue =
   {
     await_impl = await;
     await_gate_impl = await_gate;
@@ -33,6 +35,7 @@ let make ~await ~await_gate ~observe ~is_ready ~peek ~owner_id ~outside_error
     peek_impl = peek;
     owner_id_impl = owner_id;
     outside_error_impl = outside_error;
+    callbacks_live_impl = callbacks_live;
     enqueue_impl = enqueue;
   }
 
@@ -56,6 +59,9 @@ let owner_id future = future.owner_id_impl
 
 (** Builds the error returned when the value is used outside its owner. *)
 let outside_error future = future.outside_error_impl
+
+(** Reports whether queued callbacks may still run for this future's owner. *)
+let callbacks_live future = future.callbacks_live_impl ()
 
 (** Queues a callback on the scheduler that owns this value. *)
 let enqueue future callback = future.enqueue_impl callback

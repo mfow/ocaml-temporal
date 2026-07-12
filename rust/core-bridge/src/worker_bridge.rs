@@ -511,6 +511,68 @@ impl PollLanes {
             .can_finalize()
     }
 
+    /// Best-effort Core completion for every task still owned by this worker.
+    ///
+    /// Used by runtime dispose/free when OCaml cannot finish leased work. The
+    /// method drains ready queues, force-fails each undelivered task, then
+    /// force-fails every remaining ledger entry so [`Self::finalize`] is not
+    /// blocked by outstanding completion debt. Errors from Core are ignored:
+    /// dispose must still release the process graph.
+    pub async fn force_complete_outstanding_for_dispose(&mut self) {
+        while let Some(ready) = self.workflow_signal.take(&mut self.workflow_ready) {
+            if let Ok(activation) = ready {
+                let run_id = activation.run_id.clone();
+                force_fail_undeliverable_workflow(
+                    self.worker.as_ref(),
+                    &run_id,
+                    "runtime dispose drained undelivered workflow activation",
+                )
+                .await;
+                self.ledger
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .force_remove_workflow(&run_id);
+            }
+        }
+        while let Some(ready) = self.activity_signal.take(&mut self.activity_ready) {
+            if let Ok(task) = ready {
+                let task_token = task.task_token.clone();
+                force_fail_undeliverable_activity(
+                    self.worker.as_ref(),
+                    &task_token,
+                    "runtime dispose drained undelivered activity task",
+                )
+                .await;
+                self.ledger
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .force_remove_activity(&task_token);
+            }
+        }
+
+        let (workflow_ids, activity_tokens) = self
+            .ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take_all_outstanding();
+        for run_id in workflow_ids {
+            force_fail_undeliverable_workflow(
+                self.worker.as_ref(),
+                &run_id,
+                "runtime dispose retired outstanding workflow lease",
+            )
+            .await;
+        }
+        for task_token in activity_tokens {
+            force_fail_undeliverable_activity(
+                self.worker.as_ref(),
+                &task_token,
+                "runtime dispose retired outstanding activity lease",
+            )
+            .await;
+        }
+    }
+
     /// Sends a leased workflow completion to Core, then retires its debt.
     ///
     /// The ledger entry is deliberately retained when Core rejects the value,
@@ -1098,6 +1160,27 @@ impl TaskLedger {
     /// Returns all completion obligations currently owned by the bridge.
     pub fn outstanding(&self) -> usize {
         self.outstanding_workflows() + self.outstanding_activities()
+    }
+
+    /// Unconditionally removes one workflow identity during dispose cleanup.
+    pub fn force_remove_workflow(&mut self, run_id: &str) {
+        self.workflows.remove(run_id);
+    }
+
+    /// Unconditionally removes one activity token during dispose cleanup.
+    pub fn force_remove_activity(&mut self, task_token: &[u8]) {
+        self.activities.remove(task_token);
+    }
+
+    /// Takes every outstanding identity so dispose can force-fail each once.
+    pub fn take_all_outstanding(&mut self) -> (Vec<String>, Vec<Vec<u8>>) {
+        let workflows = self.workflows.drain().map(|(run_id, _)| run_id).collect();
+        let activities = self
+            .activities
+            .drain()
+            .map(|(task_token, _)| task_token)
+            .collect();
+        (workflows, activities)
     }
 
     /// Rejects admission once shutdown has atomically entered draining.

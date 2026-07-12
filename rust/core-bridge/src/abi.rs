@@ -1118,9 +1118,11 @@ fn drop_runtime_graph(
             worker.initiate_shutdown();
         }
         let _ = handle.block_on(worker.join_poll_lanes());
-        if worker.can_finalize() {
-            let _ = handle.block_on(worker.finalize());
-        }
+        // GC dispose and defensive free cannot rely on OCaml finishing leased
+        // work. Force-fail every still-owned Core task before finalization so
+        // outstanding debt cannot strand the worker graph in the process.
+        handle.block_on(worker.force_complete_outstanding_for_dispose());
+        let _ = handle.block_on(worker.finalize());
     }
     drop(client);
     drop(core);

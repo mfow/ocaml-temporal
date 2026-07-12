@@ -24,6 +24,14 @@ reason and its independent detail flags. The completion result is a closed
 variant: completed with an optional payload, failed, cancelled, or
 will-complete-asynchronously.
 
+The `will-complete-asynchronously` variant is protocol-only at this baseline.
+The public activity adapter never emits it, and the existing worker completion
+operation is for the original Core worker lease only. A future asynchronous
+implementation must first acknowledge the handoff through that worker path,
+then use a separate namespace-bound client operation for the later completion,
+failure, cancellation, or heartbeat. Activity authors cannot construct this
+variant or retain the ordinary attempt context today.
+
 The module has no native handle, mutable global registry, Domain, fiber, or
 callback. Decoding allocates OCaml-owned values. Encoding reads those values
 and returns a new JSON string. Native worker lifecycle and serialization remain

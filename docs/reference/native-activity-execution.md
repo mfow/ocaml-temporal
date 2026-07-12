@@ -87,6 +87,13 @@ instead of retaining a native pointer or accidentally heartbeating a later
 task. A successful heartbeat does not acknowledge or retire the activity lease;
 the terminal completion retry map remains the sole owner of completion debt.
 
+`heartbeat_timeout` is copied server metadata, not a local deadline. The
+adapter exposes it but does not start a timer or synthesize timeout/retry
+behavior; Temporal Core owns timeout decisions and subsequent task delivery.
+If Core has already timed out an attempt, this synchronous adapter has no
+stale-completion recovery or asynchronous-lease operation, so timeout-triggered
+retry remains explicitly unimplemented.
+
 An implementation exception is caught at this boundary and becomes a typed
 non-retryable failure.  Exceptions are therefore a last-resort defect guard,
 not the normal way an activity reports an expected failure.

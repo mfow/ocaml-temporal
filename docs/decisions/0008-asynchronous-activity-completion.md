@@ -166,6 +166,18 @@ reviewable:
    shutdown scenarios. These are live feature tests; focused fake-supervisor
    tests must remain separate.
 
+## Current heartbeat boundary
+
+The asynchronous handoff described here is not implemented yet. The current
+activity protocol keeps `will_complete_async` so the semantic wire shape is
+closed, but the public adapter emits only synchronous terminal completions.
+Likewise, `heartbeat_timeout` is copied context metadata; the adapter does not
+run a local timeout timer or attempt to recover a completion after Core has
+timed out the lease. Existing context-lifecycle, payload-copying, protocol,
+and ABI tests prove the synchronous ownership boundary. The next milestone is
+the separate namespace-bound async lease and client terminal-operation path,
+followed by live timeout and retry acceptance.
+
 ## Consequences
 
 - Synchronous activities retain their simple, idiomatic API and existing

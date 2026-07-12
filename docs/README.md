@@ -39,6 +39,10 @@ The remaining reference documents are useful when changing one subsystem:
 - [Live acceptance coverage](reference/live-acceptance-coverage.md) separates
   synthetic evidence from the verified real-server two-binary success path
   and planned scenario expansion.
+- [Worker restart and replay acceptance design](reference/worker-restart-replay-acceptance.md)
+  specifies the next controlled worker-replacement scenario, its exact
+  assertions, diagnostic evidence, and fresh-volume cleanup rules. It is a
+  design document, not live verification.
 - [Feature coverage and implementation status](reference/feature-coverage.md)
   gives the short status reference and distinguishes live evidence, mock-only
   tests, partly live-tested native bridge support, and deferred features.

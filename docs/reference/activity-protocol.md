@@ -146,6 +146,15 @@ metadata and are not copied into an application payload. A heartbeat is
 non-terminal and therefore cannot acknowledge cancellation or completion by
 itself.
 
+Cancellation is an update on the start task's token, not a second completion
+obligation. The Rust poll lane may enqueue that update while the owner Domain
+is handing off or completing the start. If the owner later sees
+`AlreadyLeased` (the start is still owned) or `UnknownActivity` (the start has
+already completed), it drops the stale cancellation without sending another
+completion. This mirrors Temporal Core's own orphan-cancellation handling and
+prevents a duplicate-token completion race; start-shaped delivery failures
+continue to use the normal force-failure path.
+
 `will_complete_async` remains a protocol and Core-conversion variant, but the
 current OCaml adapter neither emits it nor exposes a handle for a later
 completion. Current activities therefore return a terminal result

@@ -20,11 +20,10 @@ fn workflow_run_ids_are_unique_and_completion_is_exact() {
     assert_eq!(ledger.outstanding_workflows(), 0);
 }
 
-/// Remote activity cancellation reuses the original task token and therefore
-/// updates an existing admission instead of creating a second completion owed
-/// to Core.
+/// A cancellation polled before the owner leases the start reuses the original
+/// task token and therefore still creates only one completion obligation.
 #[test]
-fn activity_cancellation_reuses_the_existing_token() {
+fn cancellation_before_start_lease_reuses_one_completion_debt() {
     let mut ledger = TaskLedger::new();
     let token = b"opaque-task-token";
 
@@ -38,6 +37,57 @@ fn activity_cancellation_reuses_the_existing_token() {
     );
     assert_eq!(ledger.outstanding_activities(), 1);
     assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(ledger.complete_activity(token), Ok(()));
+    assert_eq!(ledger.outstanding_activities(), 0);
+}
+
+/// A cancellation can already be queued when the owner completes its start.
+/// Leasing the stale update must fail without creating a second completion
+/// debt, which is the state the poll-lane handoff treats as advisory.
+#[test]
+fn cancellation_after_start_completion_has_no_second_completion_debt() {
+    let mut ledger = TaskLedger::new();
+    let token = b"opaque-task-token";
+
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::ExistingCancellation)
+    );
+    assert_eq!(ledger.complete_activity(token), Ok(()));
+    assert_eq!(ledger.outstanding_activities(), 0);
+    assert_eq!(
+        ledger.lease_activity(token),
+        Err(CompleteError::UnknownActivity)
+    );
+    assert_eq!(ledger.outstanding_activities(), 0);
+}
+
+/// A cancellation observed while the start is still leased cannot be leased
+/// independently. The start remains the sole completion owner until it ends.
+#[test]
+fn cancellation_during_start_lease_does_not_create_second_completion_debt() {
+    let mut ledger = TaskLedger::new();
+    let token = b"opaque-task-token";
+
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::ExistingCancellation)
+    );
+    assert_eq!(
+        ledger.lease_activity(token),
+        Err(CompleteError::AlreadyLeased)
+    );
+    assert_eq!(ledger.outstanding_activities(), 1);
     assert_eq!(ledger.complete_activity(token), Ok(()));
     assert_eq!(ledger.outstanding_activities(), 0);
 }

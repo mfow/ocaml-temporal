@@ -167,6 +167,17 @@ type cancellation_type =
   (* Resolve the parent without requesting cancellation of the activity. *)
   | Abandon
 
+(** Couples a typed activity result future with the only cancellation operation
+    that can target its private runtime sequence. The record is hidden by the
+    public interface so callers cannot forge a sequence or bypass the owning
+    workflow scheduler. *)
+type 'output handle = {
+  (* Future resolved by Core with the activity's decoded result or failure. *)
+  future : ('output, Error.t) Future.t;
+  (* Owner-checked operation that emits at most one cancel command. *)
+  cancel : unit -> (unit, Error.t) result;
+}
+
 (* Converts the public cancellation policy to the private runtime variant at
    the last boundary before a command is emitted. *)
 let runtime_cancellation_type = function
@@ -354,32 +365,35 @@ let resolved result =
            (Result.map_error Error_private.to_base result))
   | None -> Future_private.resolved ~outside_error result
 
+(** Builds a ready handle for a request that failed before an activity command
+    could be emitted. The future contains the original typed defect and cancel
+    returns that same defect, so invalid or detached operations cannot leave
+    hidden cancellation state behind. *)
+let failed_handle error =
+  { future = resolved (Error error); cancel = (fun () -> Error error) }
+
 (** Schedules an activity after validating command options and encoding input.
     Option validation deliberately happens first: a malformed activity ID or
     task queue must not invoke an application codec, allocate workflow state,
     or perform any user conversion before the request is rejected. The native
     runtime receives a base payload; its result decoder is converted back to
     public errors at the same boundary. *)
-let start ?activity_id ?task_queue ?schedule_to_close_timeout
+let start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
     ?retry_policy ?(cancellation_type = Try_cancel)
     ?(do_not_eagerly_execute = false)
     definition input =
   match validate_optional_identifier "activity id" activity_id with
-  | Error error -> resolved (Error error)
+  | Error error -> failed_handle error
   | Ok () -> (
       match validate_optional_identifier "task queue" task_queue with
-      | Error error -> resolved (Error error)
+      | Error error -> failed_handle error
       | Ok () -> (
           match Codec_private.encode_base definition.input input with
-          | Error error -> resolved (Error (Error_private.of_base error))
+          | Error error -> failed_handle (Error_private.of_base error)
           | Ok input -> (
               match Temporal_runtime.Workflow_context_store.current () with
-              | None ->
-                  resolved
-                    (Error
-                       (Error.defect
-                          ~message:"activity operation used outside a workflow"))
+              | None -> failed_handle (outside_error ())
               | Some context ->
                   let schedule_to_close_timeout =
                     Option.map Duration.to_ms schedule_to_close_timeout
@@ -398,7 +412,7 @@ let start ?activity_id ?task_queue ?schedule_to_close_timeout
                   let retry_policy =
                     Option.map runtime_retry_policy retry_policy
                   in
-                  let future =
+                  let future, cancel =
                     Temporal_runtime.Workflow_context_store.schedule_activity
                       context ~name:(name definition) ~input ?activity_id
                       ?task_queue ?schedule_to_close_timeout
@@ -409,7 +423,30 @@ let start ?activity_id ?task_queue ?schedule_to_close_timeout
                       ~decode:(Codec_private.decode_base definition.output)
                       ()
                   in
-                  Future_private.of_internal future)))
+                  {
+                    future = Future_private.of_internal future;
+                    cancel = (fun () ->
+                      Result.map_error Error_private.of_base (cancel ()))
+                  })))
+
+(** Returns the typed future associated with an activity handle. *)
+let future handle = handle.future
+
+(** Requests cancellation of the exact activity represented by [handle].
+    Repeated calls are idempotent, including calls after the activity has
+    already resolved. The Temporal Core command carries the private sequence,
+    so this operation intentionally has no unused reason argument. *)
+let cancel handle = handle.cancel ()
+
+(** Schedules an activity and returns only its future. Callers that need to
+    cancel explicitly should retain the handle returned by [start_handle]. *)
+let start ?activity_id ?task_queue ?schedule_to_close_timeout
+    ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
+    ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input =
+  future
+    (start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
+       ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
+       ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input)
 
 (** Direct-style convenience for scheduling and awaiting one activity. *)
 let execute ?activity_id ?task_queue ?schedule_to_close_timeout

@@ -102,6 +102,11 @@ type cancellation_type =
   | Wait_cancellation_completed
   | Abandon
 
+(** An opaque typed activity operation. The handle keeps the result future and
+    the owner-checked cancellation operation together; callers cannot forge the
+    private runtime sequence used by the cancellation command. *)
+type 'output handle
+
 (** A deterministic retry policy for one scheduled activity.
 
     [initial_interval] and [maximum_interval] are positive whole-millisecond
@@ -151,6 +156,36 @@ module Retry_policy : sig
       retried. *)
   val non_retryable_error_types : t -> string list
 end
+
+(** Schedules an activity and retains a handle for explicit cancellation. The
+    command is emitted immediately and [future] remains pending until Core
+    reports a terminal result. Invalid options or input encoding return a ready
+    failed handle without emitting a command or consuming a sequence. The
+    default policy is [Try_cancel]. *)
+val start_handle :
+  ?activity_id:string ->
+  ?task_queue:string ->
+  ?schedule_to_close_timeout:Duration.t ->
+  ?schedule_to_start_timeout:Duration.t ->
+  ?start_to_close_timeout:Duration.t ->
+  ?heartbeat_timeout:Duration.t ->
+  ?retry_policy:Retry_policy.t ->
+  ?cancellation_type:cancellation_type ->
+  ?do_not_eagerly_execute:bool ->
+  ('input, 'output) t ->
+  'input ->
+  'output handle
+
+(** Returns the typed future owned by an activity operation handle. *)
+val future : 'output handle -> ('output, Error.t) Future.t
+
+(** Requests cancellation of the exact activity represented by [handle].
+    Repeated calls are idempotent, including a call after natural completion
+    or activity-start failure. Calls made outside the owning workflow return a
+    typed lifecycle error and emit no command. The underlying Temporal Core
+    command identifies the activity by its private sequence and carries no
+    user-supplied reason. *)
+val cancel : 'output handle -> (unit, Error.t) result
 
 (** Schedules the activity and returns immediately with a future for its
     result. Start several independent activities before awaiting them to let

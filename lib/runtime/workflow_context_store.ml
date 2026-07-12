@@ -140,15 +140,29 @@ let terminate context command =
 let continue_as_new context ~workflow_type ~input =
   terminate context (Activation.Continue_as_new { workflow_type; input })
 
+(** Builds an error indicating that Core and the OCaml runtime disagree about
+    which operation sequence is pending or that a bridge lifecycle rule was
+    violated. *)
+let bridge_error message =
+  Temporal_base.Error.make ~non_retryable:true ~category:`Bridge ~message ()
+
 (** Saves the future resolver before emitting the schedule command. This order
-    ensures even an immediate synthetic result can find the pending activity. *)
+    ensures even an immediate synthetic result can find the pending activity.
+    The returned cancellation operation closes over the activity's terminal
+    state, so a late retry remains idempotent after the resolver is removed. *)
 let schedule_activity context ~name ~input ?activity_id ?task_queue
     ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
     ?heartbeat_timeout ?retry_policy ?(cancellation_type = Activation.Try_cancel)
     ?(do_not_eagerly_execute = false) ~decode () =
   let seq = allocate_sequence context in
+  (* These flags belong to the handle, not the pending table. Core removes an
+     activity entry before delivering its result, so the closure must retain
+     enough lifecycle state to recognize valid late cancellation retries. *)
+  let cancellation_requested = ref false in
+  let terminal = ref false in
   let future, resolve = Scheduler.promise context.scheduler ~outside_error in
   Hashtbl.add context.activities seq (fun result ->
+      terminal := true;
       match result with
       | Error error -> resolve (Error error)
       | Ok payload ->
@@ -194,13 +208,29 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
          cancellation_type;
          do_not_eagerly_execute;
        });
-  future
-
-(** Builds an error indicating that Core and the OCaml runtime disagree about
-    which operation sequence is pending or that a bridge lifecycle rule was
-    violated. *)
-let bridge_error message =
-  Temporal_base.Error.make ~non_retryable:true ~category:`Bridge ~message ()
+  let cancel () =
+    match current () with
+    | Some current when current == context -> (
+        match Hashtbl.find_opt context.activities seq with
+        | None when not !terminal && not !cancellation_requested ->
+            Error
+              (bridge_error
+                 (Printf.sprintf
+                    "unknown or completed activity sequence %Ld" seq))
+        | None -> Ok ()
+        | Some _ when !cancellation_requested -> Ok ()
+        | Some _ ->
+            (* Core's request-cancel command identifies the activity by sequence
+               only, so the handle exposes no ignored reason argument. *)
+            emit context (Activation.Request_cancel_activity { seq });
+            cancellation_requested := true;
+            Ok ())
+    | _ ->
+        Error
+          (Temporal_base.Error.defect
+             ~message:"activity cancellation used outside its workflow")
+  in
+  (future, cancel)
 
 (** Saves a child resolver before emitting its command. The explicit [id] is
     application-owned durable identity; an optional retry policy is copied

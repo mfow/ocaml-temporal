@@ -184,6 +184,31 @@ let cancelling_child_parent_workflow =
               | Error cancel_error -> Error cancel_error))
       | Error error, _ | _, Error error -> Error error)
 
+(** Parent fixture that retains an activity handle, requests cancellation before
+    the activity result arrives, and then observes the typed cancellation
+    failure. Repeating [cancel] before and after resolution verifies that the
+    handle emits one request for its private activity sequence. *)
+let cancelling_activity_parent_workflow =
+  Temporal.Workflow.define ~name:"cancelling_activity_parent"
+    ~input:Temporal.Codec.unit ~output:Temporal.Codec.string (fun () ->
+      let handle =
+        Temporal.Activity.start_handle
+          ~cancellation_type:Temporal.Activity.Wait_cancellation_completed
+          greeting "Ada"
+      in
+      match (Temporal.Activity.cancel handle, Temporal.Activity.cancel handle) with
+      | Ok (), Ok () -> (
+          match Temporal.Future.await (Temporal.Activity.future handle) with
+          | Ok _ ->
+              Error
+                (Temporal.Error.defect
+                   ~message:"cancelled activity unexpectedly completed")
+          | Error error -> (
+              match Temporal.Activity.cancel handle with
+              | Ok () -> Ok (Temporal.Error.kind error)
+              | Error cancel_error -> Error cancel_error))
+      | Error error, _ | _, Error error -> Error error)
+
 (** Verifies explicit child policy, cancellation command ordering, idempotence,
     and typed cancellation resolution without relying on a live server. *)
 let test_child_workflow_cancellation () =
@@ -216,6 +241,42 @@ let test_child_workflow_cancellation () =
                     ~message:"child cancellation acknowledged" ());
            };
        ])
+
+(** Verifies the public activity handle emits one request-cancel command in
+    source order and resumes its parent only after the typed terminal result.
+    Core's activity cancellation command carries only the private sequence, so
+    no user reason can be accidentally dropped at this boundary. *)
+let test_activity_cancellation () =
+  let execution = Execution.start cancelling_activity_parent_workflow () in
+  expect "activity cancellation commands"
+    [ Activation.Schedule_activity
+        {
+          seq = 1L;
+          activity_id = "ocaml-activity-1";
+          activity_type = "greeting";
+          task_queue = "default";
+          arguments = [ payload "Ada" ];
+          schedule_to_close_timeout = None;
+          schedule_to_start_timeout = None;
+          start_to_close_timeout = Some 60_000L;
+          heartbeat_timeout = None;
+          retry_policy = None;
+          cancellation_type = Activation.Wait_cancellation_completed;
+          do_not_eagerly_execute = false;
+        };
+      Activation.Request_cancel_activity { seq = 1L } ]
+    (Execution.activate execution [ Activation.Start_workflow ]);
+  expect "cancelled activity resolves parent"
+    [ Activation.Complete_workflow (payload "cancelled") ]
+    (Execution.activate execution
+       [ Activation.Resolve_activity
+           {
+             seq = 1L;
+             result =
+               Error
+                 (Temporal_base.Error.make ~category:`Cancelled
+                    ~message:"activity cancellation acknowledged" ());
+           } ])
 
 (** Parent fixture that uses the public cancellation default rather than
     choosing a policy explicitly. The command assertion below is the
@@ -983,6 +1044,122 @@ let test_child_start_conflicting_result_keeps_future_pending () =
   | Some (Ok _) -> failwith "terminal child result payload was not preserved"
   | None -> failwith "terminal child result did not resolve the child future"
 
+(** A cancellation racing with an activity's natural result is a harmless
+    retry. The runtime removes the resolver before invoking it, so the handle's
+    terminal marker must make this late call a no-op rather than emit a command
+    for an unknown sequence. *)
+let test_activity_cancel_after_natural_completion_is_noop () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let future, cancel =
+    Workflow_context_store.schedule_activity context ~name:"greeting"
+      ~input:(payload "Ada") ~decode:(fun value -> Ok value) ()
+  in
+  expect "natural-completion activity schedule command"
+    [ Activation.Schedule_activity
+        {
+          seq = 1L;
+          activity_id = "ocaml-activity-1";
+          activity_type = "greeting";
+          task_queue = "default";
+          arguments = [ payload "Ada" ];
+          schedule_to_close_timeout = None;
+          schedule_to_start_timeout = None;
+          start_to_close_timeout = Some 60_000L;
+          heartbeat_timeout = None;
+          retry_policy = None;
+          cancellation_type = Activation.Try_cancel;
+          do_not_eagerly_execute = false;
+        } ]
+    (Workflow_context_store.take_commands context);
+  let result = payload "done" in
+  (match Workflow_context_store.resolve_activity context ~seq:1L (Ok result) with
+  | Ok () -> ()
+  | Error error ->
+      failwith
+        ("natural activity result was rejected: " ^ public_error_message error));
+  (match Future_store.peek future with
+  | Some (Ok value) when Bytes.equal value.data result.data -> ()
+  | Some (Error error) ->
+      failwith ("natural activity completion failed: " ^ public_error_message error)
+  | Some (Ok _) -> failwith "natural activity payload was changed"
+  | None -> failwith "natural activity result did not resolve the future");
+  (match
+     Workflow_context_store.with_context context (fun () -> cancel ())
+   with
+  | Ok () -> ()
+  | Error error ->
+      failwith
+        ("late activity cancellation failed: " ^ public_error_message error));
+  expect "late activity cancellation emits no command" []
+    (Workflow_context_store.take_commands context);
+  Workflow_context_store.shutdown context
+
+(** A terminal activity failure closes the handle lifecycle just like a
+    successful result. A later cancellation retry must therefore be idempotent
+    and must not allocate a second command. *)
+let test_activity_cancel_after_failure_is_noop () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let future, cancel =
+    Workflow_context_store.schedule_activity context ~name:"greeting"
+      ~input:(payload "Ada") ~decode:(fun value -> Ok value) ()
+  in
+  ignore (Workflow_context_store.take_commands context);
+  let failure =
+    Temporal_base.Error.make ~non_retryable:true ~category:`Activity
+      ~message:"activity rejected" ()
+  in
+  (match Workflow_context_store.resolve_activity context ~seq:1L (Error failure) with
+  | Ok () -> ()
+  | Error error ->
+      failwith
+        ("activity failure was rejected: " ^ public_error_message error));
+  (match Future_store.peek future with
+  | Some (Error error) when String.equal (public_error_message error) "activity rejected" ->
+      ()
+  | Some (Error error) ->
+      failwith ("activity failure changed: " ^ public_error_message error)
+  | Some (Ok _) -> failwith "failed activity unexpectedly succeeded"
+  | None -> failwith "failed activity future remained pending");
+  (match
+     Workflow_context_store.with_context context (fun () -> cancel ())
+   with
+  | Ok () -> ()
+  | Error error ->
+      failwith
+        ("cancellation after activity failure was not idempotent: "
+        ^ public_error_message error));
+  expect "failed activity retry emits no command" []
+    (Workflow_context_store.take_commands context);
+  Workflow_context_store.shutdown context
+
+(** Cancellation is owned by the workflow context that created the handle. A
+    detached call is rejected before the pending sequence can be mutated, while
+    the owning context can still issue the one valid command afterward. *)
+let test_activity_cancel_owner_check () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let _future, cancel =
+    Workflow_context_store.schedule_activity context ~name:"greeting"
+      ~input:(payload "Ada") ~decode:(fun value -> Ok value) ()
+  in
+  ignore (Workflow_context_store.take_commands context);
+  (match cancel () with
+  | Error error -> expect "detached activity cancellation" "defect" (public_error_kind error)
+  | Ok () -> failwith "detached activity cancellation was accepted");
+  expect "detached activity cancellation emits no command" []
+    (Workflow_context_store.take_commands context);
+  (match Workflow_context_store.with_context context (fun () -> cancel ()) with
+  | Ok () -> ()
+  | Error error ->
+      failwith
+        ("owning activity cancellation was rejected: " ^ public_error_message error));
+  expect "owning activity cancellation command"
+    [ Activation.Request_cancel_activity { seq = 1L } ]
+    (Workflow_context_store.take_commands context);
+  Workflow_context_store.shutdown context
+
 (** A cancellation that races with a child's natural terminal result is a
     harmless retry, not a new bridge failure. This test drives the private
     context directly so it can assert that the handle emits no late cancel
@@ -1224,12 +1401,16 @@ let () =
   test_child_workflow_completion ();
   test_child_workflow_retry_policy ();
   test_child_workflow_cancellation ();
+  test_activity_cancellation ();
   test_default_child_workflow_cancellation_policy ();
   test_child_workflow_concurrency_and_decoding ();
   test_child_workflow_validation ();
   test_child_workflow_id_boundary ();
   test_child_workflow_failures_and_sequence_ownership ();
   test_child_start_conflicting_result_keeps_future_pending ();
+  test_activity_cancel_after_natural_completion_is_noop ();
+  test_activity_cancel_after_failure_is_noop ();
+  test_activity_cancel_owner_check ();
   test_child_cancel_after_natural_completion_is_noop ();
   test_child_cancel_after_start_failure_is_noop ();
   test_child_resolution_rejections_preserve_lifecycle_state ();

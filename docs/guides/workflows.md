@@ -314,6 +314,31 @@ different from supplying one: the private protocol carries an explicit JSON
 policy during replay. `Temporal.Workflow.start_sleep` creates a durable timer
 without waiting; `Temporal.Workflow.sleep` is the start-and-wait form.
 
+When a workflow must decide later whether to stop an activity, keep the opaque
+handle returned by `Activity.start_handle` instead of discarding it:
+
+```ocaml
+let lookup =
+  Temporal.Activity.start_handle
+    ~cancellation_type:Temporal.Activity.Try_cancel
+    summarize document
+
+let maybe_stop should_stop =
+  if should_stop then Temporal.Activity.cancel lookup else Ok ()
+
+let result = Temporal.Future.await (Temporal.Activity.future lookup)
+```
+
+`Activity.cancel` identifies exactly one scheduled activity and returns a typed
+`result`. It emits at most one deterministic `Request_cancel_activity` command;
+repeated calls and calls after the activity has completed are idempotent. The
+handle cannot be forged for another activity, and calls made outside its owning
+workflow return a typed lifecycle defect. The command has no user-supplied
+reason field, so cancellation is intentionally parameterless. Use the
+activity's structured result or application payload to carry any domain-level
+explanation. Invalid activity options or input encoding produce a ready failed
+handle and emit no schedule or cancellation command.
+
 ## 5. Combine futures
 
 A `Temporal.Future.t` belongs to the workflow execution that created it. It is

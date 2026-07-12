@@ -9,3 +9,4 @@ __pycache__/
 .vscode/
 .worktrees/
 test/integration/temporal/.cancellation-ready
+test/integration/temporal/.worker-stopped

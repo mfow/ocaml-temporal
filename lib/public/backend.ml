@@ -395,19 +395,21 @@ let terminal_details_error ~category ~message details =
   Error.make ~category
     ~details:(List.map public_payload details) ~message ()
 
+(** Canonical [Codec.unit] / [binary/null] payload. The worker maps unit
+    completions to zero Core payloads; the client reconstructs this marker so
+    unit-output workflows decode instead of becoming a spurious codec error. *)
+let unit_null_payload : Payload.t =
+  { Payload.metadata = [ ("encoding", "binary/null") ]; data = Bytes.empty }
+
 (** Converts one native wait response into the existing public terminal-result
-    algebra. The first public API accepts one output payload because a workflow
-    definition owns one typed output codec; zero or multiple native payloads
-    therefore become an explicit codec error instead of being silently dropped. *)
+    algebra. A single payload is the normal case; zero payloads are the unit
+    completion marker; multiple payloads remain a codec error. *)
 let native_terminal_result (response : Client_protocol.wait_response) =
   match response.outcome with
   | Client_protocol.Completed { result; successor = _ } -> (
       match result with
       | [ payload ] -> Ok (Completed (public_payload payload))
-      | [] ->
-          Error
-            (Error.make ~category:`Codec
-               ~message:"Temporal completed without an output payload" ())
+      | [] -> Ok (Completed unit_null_payload)
       | _ ->
           Error
             (Error.make ~category:`Codec

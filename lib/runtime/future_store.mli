@@ -30,6 +30,11 @@ type ('left, 'right) race = Left of 'left | Right of 'right
 type _ Effect.t +=
   | Await : ('value, 'error) t -> ('value, 'error) result Effect.t
 
+(** Internal control exception used only to release paused fibers during
+    scheduler teardown. It is not a workflow defect; the scheduler must ignore
+    it when discontinuing waiters. *)
+exception Scheduler_shutdown
+
 (** Creates a pending future and the function that will provide its result. It
     also registers cleanup for workflow completion, eviction, or shutdown. *)
 val create :

@@ -14,6 +14,25 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Acceptance validator and client-boundary hardening (#164–#165)
+
+The merged tip is `1fa679c`: [#164](https://github.com/mfow/ocaml-temporal/pull/164)
+(`4724830`) preserves configurable `JQ_BIN` paths containing spaces and adds
+a regression invocation; [#165](https://github.com/mfow/ocaml-temporal/pull/165)
+(`1fa679c`) validates client protocol identifier sizes consistently and adds
+boundary tests.
+
+Focused local verification includes
+`make test-temporal-worker-restart-contract`,
+`HOST_UID=501 HOST_GID=20 make test-temporal-config`,
+`make test-temporal-config`, `sh scripts/check-format.sh`,
+`make test-quality-contract`, and `git diff --check`. GitHub Actions remain
+queued while the repository quota is exhausted, so this entry makes no
+CI-success claim and adds no new live Temporal evidence. The historical
+five-execution live result in run
+[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
+remains the latest successful two-binary acceptance evidence.
+
 ## 2026-07-13: Public client state, protocol evidence, and scheduler teardown (#159–#161)
 
 The merged tip is `02f4627`: [#159](https://github.com/mfow/ocaml-temporal/pull/159)

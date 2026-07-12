@@ -14,6 +14,25 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Typed activity cancellation handles
+
+Status: locally verified in the public activity API, activation runtime, and
+workflow-authoring tests. No live Temporal acceptance is claimed. GitHub
+Actions checks for this milestone may remain pending because of the repository
+quota.
+
+The squash-merged [PR #191](https://github.com/mfow/ocaml-temporal/pull/191),
+commit `cb07df2`, adds an opaque `Activity.start_handle` API alongside the
+existing future-only `Activity.start` and `Activity.execute` helpers. The
+handle keeps the typed result future with an owner-checked, parameterless
+`Activity.cancel` operation. The runtime emits at most one deterministic
+`Request_cancel_activity` command for the private activity sequence, rejects
+calls from another workflow context, and treats repeated or post-terminal
+cancellation as typed idempotent no-ops. Invalid options and input encoding
+produce a ready failed handle without scheduling a command. Focused tests cover
+command ordering, typed cancellation resolution, invalid and detached calls,
+ownership checks, and natural or failed terminal races.
+
 ## 2026-07-13: Replay worker ABI and supervisor operation
 
 The bounded replay worker is now reachable through the private C ABI and the

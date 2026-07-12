@@ -138,6 +138,7 @@ let run () =
               Worker.workflow Definitions.activity_retry;
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
+              Worker.workflow Definitions.non_retryable_failure;
             ]
           ~activities:
             [

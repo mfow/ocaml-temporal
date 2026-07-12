@@ -82,14 +82,16 @@ official Core client, construct and namespace-validate a workflow/remote-
 activity worker, exercise invalid and repeated lifecycle transitions, and shut
 the graph down deterministically. It then waits for `smoke-worker` to publish
 readiness and runs `smoke-driver` as a one-shot test process. The driver starts
-three smoke workflows before waiting for any result and checks the fan-out
-activity result, the timer-then-activity result, and the exact result from a
-parent awaiting a timer-owning child through `Temporal.Client`.
+five smoke workflows before waiting for any result and checks four exact
+success payloads plus one typed non-retryable workflow failure. The parent/child
+and retry scenarios are part of the same driver and are also started before
+the first wait.
 
-This is a real success-path workflow-result acceptance test, not only a
-lifecycle test. It includes one live parent/child success path, but does not
-yet establish child start-failure, cancellation, or retry behavior; cancellation
-with outstanding work; worker restart; replay; or cache eviction.
+This is a real workflow-result acceptance test, not only a lifecycle test. It
+includes one live parent/child success path, one server-managed activity retry,
+and one non-retryable workflow-failure classification. It does not yet
+establish child start-failure, cancellation, or activity timeout behavior;
+cancellation with outstanding work; worker restart; replay; or cache eviction.
 On every pull request and push to `master`, GitHub Actions runs this target once
 in a standalone Ubuntu job labelled for OCaml 5.5. It is intentionally absent
 from the multi-version build matrix because starting a real database and

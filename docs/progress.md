@@ -46,6 +46,32 @@ does not claim live cancellation coverage; that scenario must keep a workflow
 outstanding, issue the request through the two-binary fixture, observe the
 server's cancelled terminal result, and then verify clean shutdown.
 
+## 2026-07-12: Typed non-retryable workflow failure acceptance
+
+Status: implementation and focused source checks are complete on the
+`live-failure-acceptance` branch; the real Compose acceptance passed locally on
+2026-07-12 and the GitHub Actions integration job remains pending.
+
+The two-binary fixture now registers `smoke.non_retryable_failure`, a
+deterministic workflow that returns `Temporal.Error.make
+~category:\`Workflow ~non_retryable:true` with the stable message
+`intentional terminal workflow failure`. The one-shot OCaml driver starts this
+workflow as a fifth top-level execution before waiting for any result. It
+requires the four existing exact success payloads and then inspects
+`Temporal.Error.view` on the fifth `Client.Failed` outcome, rejecting any other
+terminal class, category, retry policy, or message prefix. The worker remains
+the only process that polls and executes workflow code.
+
+The Makefile metadata inspection now includes the fifth workflow ID, and the
+acceptance, feature-coverage, and local-stack references describe the new
+typed-failure boundary. The full command
+`make test-temporal-integration TEMPORAL_COMPOSE_PROJECT=ocaml-temporal-live-failure2
+TEMPORAL_DRIVER_TIMEOUT_SECONDS=180 DUNE_JOBS=1` passed: PostgreSQL and
+Temporal became healthy, the lifecycle check passed, the worker published its
+readiness marker, four workflows returned exact payloads, and the fifth
+returned the required typed non-retryable workflow failure. The PostgreSQL
+volume and Compose project were removed by the target's cleanup trap.
+
 ## 2026-07-12: Live activity retry acceptance scenario
 
 Status: verified in Linux CI run

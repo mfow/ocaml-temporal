@@ -127,8 +127,11 @@ services:
       test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-two-binary-worker.ready"]
       interval: 2s
       timeout: 2s
-      retries: 30
-      start_period: 10s
+      # The first worker start compiles the pinned Rust/Core graph in the
+      # bind-mounted build directory. Give that cold build enough grace before
+      # treating the absence of the readiness marker as a failed worker.
+      retries: 60
+      start_period: 60s
     # The executable converts SIGTERM into Worker.shutdown and needs enough
     # time for Core to release any in-flight workflow/activity lease.
     stop_grace_period: 30s

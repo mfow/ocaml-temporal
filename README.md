@@ -107,14 +107,19 @@ parallelism used by CI.
 ### The real Temporal smoke
 
 `make test-temporal-integration` starts the pinned Temporal Server and
-PostgreSQL containers under `test/integration/temporal/`, waits for both SQL
-schemas and the Temporal frontend to be healthy, runs the OCaml supervisor
-lifecycle acceptance executable, starts a public OCaml worker, and runs a
-separate public OCaml driver. The driver starts three smoke workflows before
-waiting, checks their exact terminal results, including a parent awaiting a
-timer-owning child workflow, and removes the isolated test volume afterward.
-This is a real success-path worker acceptance test; broader failure, child
-start-failure/cancellation, and recovery coverage remains follow-up work.
+PostgreSQL containers under `test/integration/temporal/` from a fresh Compose
+project. It waits for both SQL schemas and the Temporal frontend to be healthy,
+runs the OCaml supervisor lifecycle acceptance executable, starts a public
+OCaml worker, and runs a separate public OCaml driver. The worker is the
+long-lived process that registers and executes the workflows and mock activity.
+The driver is a one-shot OCaml test runner: it does not register a worker, but
+starts three smoke workflows, waits for their exact terminal results, and exits
+nonzero if any expected result is not returned, including the parent awaiting a
+timer-owning child workflow. The target removes the PostgreSQL data volume
+before and after the run, so no database state is preserved between
+acceptance runs. This is a real success-path worker acceptance test; broader
+failure, child start-failure/cancellation, and recovery coverage remains
+follow-up work.
 
 For manual inspection, use `make temporal-start`, `make temporal-health`,
 `make temporal-status`, `make temporal-logs`, and `make temporal-clean`.

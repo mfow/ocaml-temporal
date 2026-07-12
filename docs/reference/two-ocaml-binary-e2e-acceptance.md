@@ -11,10 +11,12 @@ Compose services set it.
 
 `smoke-worker` publishes an atomic readiness marker after public
 `Temporal.Worker.create` succeeds. Compose waits for that health check before
-`smoke-driver` is run. The driver starts all three top-level workflows before
-waiting for any result, and the Makefile tears down the isolated project and
-volume on success or failure. This prevents a TCP check or a process that
-merely started from being reported as an SDK acceptance pass.
+`smoke-driver` is run. Each acceptance run starts after `temporal-clean` has
+removed the Compose project and its PostgreSQL data volume, and cleanup removes
+that volume again on success or failure; no database state is preserved for a
+later acceptance run. The driver starts all three top-level workflows before
+waiting for any result. This prevents a TCP check or a process that merely
+started from being reported as an SDK acceptance pass.
 
 The public `Temporal.Client` and `Temporal.Worker` now route HTTP(S) calls
 through the private Rust/Core supervisor. The deterministic `mock://` backend
@@ -46,11 +48,18 @@ Temporal Server accept connections. It must prove that two independently
 started **OCaml executables**, both linked against the public `temporal-sdk`
 library, can use the same Temporal namespace and task queue:
 
-1. the **driver** starts more than one workflow and waits for each terminal
-   result; and
+1. the **driver**, a one-shot OCaml test runner, starts more than one workflow,
+   checks each expected terminal result, and exits nonzero for a failed
+   assertion; and
 2. the **worker** receives workflow and activity tasks, runs registered OCaml
    workflow and mock-activity implementations, and reports their completions
    through the private Rust/Core bridge.
+
+The two roles are intentionally asymmetric. `smoke-driver` creates a
+client-only SDK instance; it does not register a worker, poll tasks, or execute
+workflow/activity implementations. `smoke-worker` is the long-lived Temporal
+worker that performs those operations. The driver's assertions are the
+acceptance oracle: a successful worker process alone is not a passing test.
 
 The driver is not allowed to call Rust, Temporal's gRPC API, the Temporal CLI,
 or a test-only service directly. The worker is not allowed to use test-only
@@ -203,8 +212,10 @@ unambiguous.
 
 ### Driver executable
 
-The driver is also a normal OCaml application, but it creates a client-only
-SDK instance and does **not** register a worker. It must:
+The driver is a one-shot OCaml acceptance-test executable. It creates a
+client-only SDK instance and does **not** register a worker; the other
+executable, `smoke-worker`, owns task polling and workflow/activity execution.
+The driver must:
 
 1. connect through `Temporal.Client` to the fixture namespace;
 2. start `smoke.fan_out`, `smoke.timer_then_activity`, and
@@ -218,11 +229,11 @@ SDK instance and does **not** register a worker. It must:
 Starting all three executions before the first wait is material. It demonstrates
 that a client can hold independent workflow handles and that the worker can
 service separate workflow executions, rather than passing a single serial
-request through a readiness-only check. Workflow IDs are fixed, unique within
-the freshly created fixture database, and run IDs returned by `start` are
-retained for exact result waiting. If the fixture is ever reused instead of
-recreated, the Make target must provide a unique test-run suffix outside
-workflow code; randomness in the driver is acceptable but randomness in a
+request through a readiness-only check. Workflow IDs are fixed and unique
+within the freshly created fixture database, and run IDs returned by `start`
+are retained for exact result waiting. Because the acceptance target recreates
+that database for every run, it does not depend on a retained volume or on
+test-run suffixes. Randomness in the driver is acceptable but randomness in a
 workflow is not.
 
 The driver returns a nonzero status for connection, start, terminal workflow,

@@ -26,6 +26,14 @@ timer, and the driver asserts `SMOKE:CHILD` from the parent. A green job for
 this revision is evidence for that concrete happy path only, not live proof of
 child failure, retry, cancellation, replay, or recovery behavior.
 
+The driver in this matrix is a one-shot OCaml assertion runner, not another
+worker. It starts known workflows through `Temporal.Client`, waits for their
+exact workflow/run results, and exits nonzero when an assertion fails. The
+separate `smoke-worker` process registers and executes the workflows and mock
+activity. Every integration run starts from a fresh Compose project and drops
+the PostgreSQL data volume before and after the test, so its assertions never
+depend on history left by an earlier run.
+
 ## Coverage matrix
 
 | Capability or scenario | Current local evidence | Real server evidence today | Remaining live boundary |

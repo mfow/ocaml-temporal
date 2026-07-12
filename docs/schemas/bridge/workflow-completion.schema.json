@@ -91,6 +91,16 @@
         },
         {
           "type": "object", "additionalProperties": false,
+          "required": ["kind", "workflow_type", "input"],
+          "description": "Ends the current run and starts a fresh run of the named workflow type. The current SDK emits one input payload; the array mirrors Core's repeated argument field.",
+          "properties": {
+            "kind": {"const": "continue_as_new"},
+            "workflow_type": {"$ref": "#/$defs/identifier"},
+            "input": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
           "required": ["kind", "seq", "start_to_fire_timeout"],
           "properties": {"kind": {"const": "start_timer"}, "seq": {"$ref": "#/$defs/u32"}, "start_to_fire_timeout": {"$ref": "#/$defs/duration"}}
         },

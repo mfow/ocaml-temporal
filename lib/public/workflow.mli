@@ -52,3 +52,11 @@ val start_sleep : Duration.t -> (unit, Error.t) Future.t
     to [Future.await (start_sleep duration)]. A zero duration returns
     immediately without recording a timer. *)
 val sleep : Duration.t -> (unit, Error.t) result
+
+(** Ends the current run and starts a new run of [definition] with [input].
+    This operation never returns to the calling workflow fiber. It is
+    deterministic: the input is encoded through the definition's codec before
+    the successor command is emitted. A codec failure fails the current run
+    with a typed error; calling it outside workflow execution is programmer
+    misuse and raises [Invalid_argument]. *)
+val continue_as_new : ('input, 'output) t -> 'input -> 'value

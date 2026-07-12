@@ -70,4 +70,8 @@ type command =
   | Cancel_timer of { seq : int64 }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t
+  (** Replaces the current run with a new run of the same workflow type. The
+      command is terminal for the current execution; [input] is the one
+      encoded argument passed to the successor run. *)
+  | Continue_as_new of { workflow_type : string; input : Temporal_base.Codec.payload }
   | Cancel_workflow_execution

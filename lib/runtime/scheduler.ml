@@ -2,6 +2,10 @@
     the number to verify first-in, first-out execution order. *)
 type runnable = Runnable of int * (unit -> unit)
 
+(** Private effect used by terminal workflow operations. The interface is
+    declared in the signature so only package-internal modules can perform it. *)
+type _ Effect.t += Abort_workflow : 'value Effect.t
+
 (** State for one workflow scheduler. [pending] counts futures without results,
     and [teardowns] stores the cleanup function for each of those futures. *)
 type t = {
@@ -14,6 +18,7 @@ type t = {
   mutable failures : exn list;
   mutable trace_rev : int list;
   mutable teardowns : (unit -> unit) list;
+  mutable abort_requested : bool;
 }
 
 type status = Complete | Failed of exn | Blocked
@@ -34,6 +39,7 @@ let create () =
     failures = [];
     trace_rev = [];
     teardowns = [];
+    abort_requested = false;
   }
 
 (** Assigns FIFO sequence numbers at enqueue time. Work submitted after shutdown
@@ -82,6 +88,12 @@ let handle scheduler thunk =
               Some
                 (fun (continuation : (result, unit) Effect.Deep.continuation) ->
                   Future_store.add_waiter future continuation)
+          | Abort_workflow ->
+              Some
+                (fun (_continuation : (result, unit) Effect.Deep.continuation) ->
+                  (* A terminal command has already been buffered. Do not run
+                     sibling fibers that could append commands after it. *)
+                  scheduler.abort_requested <- true)
           | _ -> None);
     }
 
@@ -108,7 +120,10 @@ let run scheduler =
     ~finally:(fun () -> scheduler.running <- false)
     (fun () ->
       Future_store.with_current_owner_id (Some scheduler.id) (fun () ->
-          while not (Queue.is_empty scheduler.queue) do
+          while
+            (not (Queue.is_empty scheduler.queue))
+            && not scheduler.abort_requested
+          do
             let (Runnable (sequence, thunk)) = Queue.pop scheduler.queue in
             (* Once shutdown is requested, root thunks are inert but queued
                future callbacks must still run their owner-aware cleanup path.
@@ -153,3 +168,6 @@ let shutdown scheduler =
         | Future_store.Scheduler_shutdown -> ()
         | exception_ -> scheduler.failures <- exception_ :: scheduler.failures
       done)
+
+(** Performs the scheduler's private terminal control effect. *)
+let abort_workflow () = Effect.perform Abort_workflow

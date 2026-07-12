@@ -239,15 +239,22 @@ let test_concurrent_terminal_submissions_have_one_winner () =
   expect "ordinary tail filled" (Ok ()) (Mailbox.post mailbox (Add 2));
   let caller_count = 16 in
   let started = Array.init caller_count (fun _ -> Atomic.make false) in
+  (* Do not let a fast producer close the mailbox while another producer is
+     still starting. The readiness flags establish that every Domain has
+     reached the submission point; this separate gate then releases all of
+     them together so the test exercises concurrent admission. *)
+  let release_submitters = create_gate () in
   let callers =
     Array.mapi
       (fun _ started ->
         Domain.spawn (fun () ->
             Atomic.set started true;
+            await_gate release_submitters;
             Mailbox.submit_and_close mailbox Read))
       started
   in
   Array.iter await_atomic started;
+  open_gate release_submitters;
   let winner = ref None in
   let closed = ref 0 in
   Array.iter

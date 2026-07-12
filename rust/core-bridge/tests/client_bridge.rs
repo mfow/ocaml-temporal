@@ -5,6 +5,7 @@ use std::ptr;
 use ocaml_temporal_core_bridge::{
     Buffer, Result as AbiResult, STATUS_INVALID_ARGUMENT, STATUS_INVALID_STATE, STATUS_OK,
     STATUS_PROTOCOL, ocaml_temporal_core_v1_client_begin_start_workflow_json,
+    ocaml_temporal_core_v1_client_cancel_workflow_json,
     ocaml_temporal_core_v1_client_poll_start_workflow_json,
     ocaml_temporal_core_v1_client_start_workflow_json,
     ocaml_temporal_core_v1_client_wait_start_workflow_json,
@@ -247,6 +248,49 @@ fn client_operations_validate_json_before_state_use() {
         unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
         STATUS_OK
     );
+}
+
+#[test]
+/// Cancellation validates its closed JSON request before checking whether the
+/// runtime has a Temporal connection. This keeps malformed caller data from
+/// being reported as a misleading lifecycle error and proves the cancel ABI
+/// uses the same fail-closed boundary as start and wait.
+fn client_cancel_validates_json_before_state_use() {
+    let mut runtime = ptr::null_mut();
+    let mut result = empty_result();
+    let malformed_cancel = br#"{}"#;
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    // An unconnected runtime would otherwise return STATUS_INVALID_STATE; a
+    // protocol status proves validation happened before state lookup.
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_client_cancel_workflow_json(
+                runtime,
+                malformed_cancel.as_ptr(),
+                malformed_cancel.len(),
+                &mut result,
+            )
+        },
+        STATUS_PROTOCOL
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
+    assert!(runtime.is_null());
 }
 
 #[test]

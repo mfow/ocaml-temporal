@@ -94,6 +94,9 @@ external client_connect_raw : runtime -> bytes -> response
 external client_start_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_start_workflow_json"
 
+external client_cancel_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_cancel_workflow_json"
+
 external client_begin_start_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_begin_start_workflow_json"
 
@@ -374,6 +377,13 @@ let client_connect runtime config =
 let client_start_workflow_json runtime input =
   bridge_call "client_start_workflow_json" (fun () ->
       decode (client_start_workflow_json_raw runtime input))
+
+(** Requests cancellation of one exact workflow run through Rust's official
+    Temporal client. The call crosses only copied JSON; the C binding releases
+    the OCaml runtime lock while the RPC executes. *)
+let client_cancel_workflow_json runtime input =
+  bridge_call "client_cancel_workflow_json" (fun () ->
+      decode (client_cancel_workflow_json_raw runtime input))
 
 (** Admits one asynchronous workflow start and returns an opaque ticket JSON
     document. The native owner retains the Tokio task and all request metadata;

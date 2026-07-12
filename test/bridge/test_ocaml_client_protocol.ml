@@ -33,6 +33,11 @@ let payload data : Protocol.payload =
 let execution : Protocol.execution =
   { namespace = "default"; workflow_id = "workflow-1"; run_id = "run-1" }
 
+(** Cancellation requests retain a stable operation identifier so a caller can
+    retry a transport timeout without creating a second logical request. *)
+let cancel_request : Protocol.cancel_request =
+  { execution; request_id = "cancel-1"; reason = "operator requested cancellation" }
+
 (** Start requests use the same workflow identity as the response fixtures. *)
 let start_request : Protocol.start_request =
   {
@@ -112,6 +117,10 @@ let test_request_validation () =
   require_fragment "start request ID" "request-1" encoded_start;
   let encoded_wait = unwrap (Protocol.encode_wait_request execution) in
   require_fragment "wait request" "{" encoded_wait;
+  let encoded_cancel = unwrap (Protocol.encode_cancel_request cancel_request) in
+  require_fragment "cancel request ID" "cancel-1" encoded_cancel;
+  require_fragment "cancel request reason" "operator requested cancellation"
+    encoded_cancel;
   List.iter
     (fun request -> require_error (Protocol.encode_start_request request))
     [
@@ -127,6 +136,40 @@ let test_request_validation () =
       { execution with namespace = "" };
       { execution with workflow_id = "contains\000nul" };
       { execution with run_id = String.make 65_537 'x' };
+    ];
+  List.iter
+    (fun request -> require_error (Protocol.encode_cancel_request request))
+    [
+      { cancel_request with execution = { execution with namespace = "" } };
+      { cancel_request with execution = { execution with run_id = "" } };
+      { cancel_request with request_id = "contains\000nul" };
+      { cancel_request with reason = String.make 65_537 'x' };
+      { cancel_request with reason = "contains\000nul" };
+    ];
+  (* An empty reason is valid operator context; it is not an omitted field. *)
+  ignore
+    (unwrap
+       (Protocol.encode_cancel_request
+          { cancel_request with reason = "" }))
+
+(** Checks the cancellation acknowledgement's closed shape. A false value is
+    rejected because the native bridge exposes only positively acknowledged
+    control operations, while unknown and duplicate members must fail closed. *)
+let test_cancellation_protocol () =
+  let encoded = unwrap (Protocol.encode_cancel_request cancel_request) in
+  require_fragment "cancel request workflow ID" "workflow-1" encoded;
+  let acknowledged =
+    unwrap (Protocol.decode_cancel_response {|{"acknowledged":true}|})
+  in
+  if not acknowledged.acknowledged then
+    failwith "positive cancellation acknowledgement changed shape";
+  List.iter
+    (fun document -> require_error (Protocol.decode_cancel_response document))
+    [
+      {|{"acknowledged":false}|};
+      {|{"acknowledged":true,"unexpected":true}|};
+      {|{"acknowledged":true,"acknowledged":false}|};
+      {|{"acknowledged":"true"}|};
     ]
 
 (** Exercises the asynchronous-start capability and all three terminal outcome
@@ -286,6 +329,7 @@ let () =
   run "client terminal outcomes" test_terminal_outcomes;
   run "client successor identity" test_successor_identity_validation;
   run "client request validation" test_request_validation;
+  run "client cancellation protocol" test_cancellation_protocol;
   run "client asynchronous starts" test_async_start_protocol;
   run "client closed response shape" test_closed_response_shape;
   run "client response correlation" test_response_execution_correlation;

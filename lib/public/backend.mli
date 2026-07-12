@@ -38,6 +38,16 @@ type wait_request = {
   run_id : string;
 }
 
+(** Exact workflow/run pair and operator metadata for a cancellation request.
+    [request_id] is stable across retries of the same logical control
+    operation; [reason] is optional operator context and may be empty. *)
+type cancel_request = {
+  workflow_id : string;
+  run_id : string;
+  request_id : string;
+  reason : string;
+}
+
 (** Terminal outcomes are kept separate from bridge transport errors so a
     completed Temporal failure remains an ordinary typed value. *)
 type terminal_result =
@@ -117,6 +127,10 @@ val client_start : client -> start_request -> (start_response, Error.t) result
 
 (** Waits for the exact workflow/run pair and returns its terminal outcome. *)
 val client_wait : client -> wait_request -> (terminal_result, Error.t) result
+
+(** Requests cancellation of one exact workflow run. Success acknowledges the
+    server RPC; a later [client_wait] observes the terminal cancellation. *)
+val client_cancel : client -> cancel_request -> (unit, Error.t) result
 
 (** Closes a client backend. Native shutdown is serialized and terminal even
     when it returns an error; the public client caches that exact result so a

@@ -38,6 +38,16 @@ type start_ticket
 type wait_request = execution
 (** Exact run selected by a wait; continued-as-new successors are not followed. *)
 
+type cancel_request = {
+  execution : execution;
+  request_id : string;
+  reason : string;
+}
+(** Exact run and idempotency metadata for a client cancellation request. *)
+
+type cancel_response = { acknowledged : bool }
+(** Positive acknowledgement returned after Temporal accepts the cancellation RPC. *)
+
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -104,6 +114,12 @@ val decode_start_response : request:start_request -> string -> (start_response, 
 val encode_wait_request : wait_request -> (string, error) result
 (** Validates and serializes one exact-run wait request. *)
 
+val encode_cancel_request : cancel_request -> (string, error) result
+(** Validates and serializes one exact-run cancellation request. *)
+
+val decode_cancel_response : string -> (cancel_response, error) result
+(** Strictly decodes the positive native cancellation acknowledgement. *)
+
 val decode_wait_response : request:wait_request -> string -> (wait_response, error) result
 (** Strictly decodes one terminal exact-run response and verifies that the
     returned execution is exactly the requested run. *)
@@ -119,4 +135,8 @@ val decode_start_error :
 val decode_wait_error :
   request:wait_request -> string -> (client_error, error) result
 (** Decodes an exact-run wait error and rejects the start-only
+    [already_started] category. *)
+
+val decode_cancel_error : string -> (client_error, error) result
+(** Decodes a cancellation error and rejects the start-only
     [already_started] category. *)

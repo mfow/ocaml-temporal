@@ -128,6 +128,11 @@ module Native : sig
       (bytes, Temporal_core_bridge.Native_bridge.error) result
     (** Canonically serializes one typed workflow-start request. *)
 
+    val encode_client_cancel_request :
+      Temporal_protocol.Client_protocol.cancel_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one typed exact-run cancellation request. *)
+
     val decode_client_start_ticket :
       Temporal_protocol.Client_protocol.start_request ->
       (bytes, Temporal_core_bridge.Native_bridge.error) result ->
@@ -181,6 +186,14 @@ module Native : sig
       result
     (** Decodes a native exact-run wait result. [Not_ready] remains an outer
         bridge status so callers can retry without a fake terminal outcome. *)
+
+    val decode_client_cancel_result :
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( (unit, Temporal_protocol.Client_protocol.client_error) result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes the cancellation acknowledgement and preserves structured
+        server failures as an inner typed result. *)
   end
 
   (** Validated client settings whose representation remains bridge-private. *)
@@ -224,6 +237,11 @@ module Native : sig
         result operation
         (** Waits for one exact run using a typed request. [Not_ready] remains
             the outer bridge result and is safe to retry. *)
+    | Client_cancel_workflow :
+        Temporal_protocol.Client_protocol.cancel_request ->
+        (unit, Temporal_protocol.Client_protocol.client_error) result operation
+        (** Requests cancellation of one exact run. The acknowledgement does
+            not itself prove that the run has reached its cancelled outcome. *)
     | Start_worker : worker_config -> unit operation
     | Try_poll_workflow :
         Temporal_protocol.Workflow_protocol.activation option operation

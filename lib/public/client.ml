@@ -144,6 +144,60 @@ let wait handle =
       | Backend.Continued_as_new { workflow_id; run_id } ->
           Ok (Continued_as_new { workflow_id; run_id }))
 
+(** Validates cancellation metadata before it reaches the backend. The length
+    limit protects the JSON bridge and matches the Rust-side bound; NUL is
+    rejected because it cannot be represented safely by the C ABI contract. *)
+let validate_cancel_fields ~request_id ~reason =
+  let request_result =
+    match request_id with
+    | None -> Ok ()
+    | Some request_id -> validate_name "cancellation request id" request_id
+  in
+  match request_result with
+  | Error _ as error -> error
+  | Ok () when String.length reason > 65_536 ->
+      Error
+        (Error.defect
+           ~message:"cancellation reason exceeds the protocol safety limit")
+  | Ok () when String.contains reason '\000' ->
+      Error (Error.defect ~message:"cancellation reason must not contain NUL")
+  | Ok () -> Ok ()
+
+(** Allocates a stable request ID for a cancellation call whose caller did not
+    provide one. Hashing the exact execution identity makes repeated calls on
+    the same handle represent one idempotent control operation without keeping
+    another mutable counter in the client state. *)
+let generated_cancel_request_id handle =
+  "ocaml-client-cancel-"
+  ^ Digest.to_hex
+      (Digest.string (handle.workflow_id ^ "\000" ^ handle.run_id))
+
+(** Sends a cancellation request for one exact run and returns only after the
+    server acknowledgement has been decoded. This operation is deliberately
+    separate from [wait], because Temporal cancellation is asynchronous. *)
+let cancel ?request_id ?(reason = "") handle =
+  if Atomic.get handle.client.closed then
+    Error
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else
+    match validate_cancel_fields ~request_id ~reason with
+    | Error error -> Error error
+    | Ok () ->
+        let request_id =
+          match request_id with
+          | Some request_id -> request_id
+          | None -> generated_cancel_request_id handle
+        in
+        let request : Backend.cancel_request =
+          {
+            workflow_id = handle.workflow_id;
+            run_id = handle.run_id;
+            request_id;
+            reason;
+          }
+        in
+        Backend.client_cancel handle.client.backend request
+
 (** Returns the durable workflow identity retained by a handle. *)
 let workflow_id handle = handle.workflow_id
 

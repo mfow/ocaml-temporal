@@ -60,6 +60,18 @@ val wait :
   ('input, 'output) handle ->
   ('output terminal_result, Error.t) result
 
+(** Requests cancellation of the exact run retained by [handle]. A successful
+    call acknowledges Temporal's cancellation RPC; it does not wait for the
+    workflow to stop. Call [wait handle] to observe [Cancelled]. [request_id]
+    is the idempotency key for this logical control operation and should be
+    supplied again if the caller retries after an uncertain transport error.
+    [reason] is operator context and may be empty. *)
+val cancel :
+  ?request_id:string ->
+  ?reason:string ->
+  ('input, 'output) handle ->
+  (unit, Error.t) result
+
 (** Returns the durable workflow ID supplied to [start]. *)
 val workflow_id : ('input, 'output) handle -> string
 

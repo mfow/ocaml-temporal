@@ -185,6 +185,33 @@ let test_typed_start_and_wait_handle () =
     (Temporal.Client.start client ~workflow:echo_workflow
        ~task_queue:"unit-test" ~id:"after-shutdown" ~input:"ignored" ())
 
+(** Cancellation is acknowledged separately from waiting. The mock transport
+    records the exact run cancellation, makes repeated requests idempotent,
+    and exposes the eventual [Cancelled] value through the ordinary wait API. *)
+let test_exact_run_cancellation () =
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let handle =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"unit-cancel" ~input:"ignored" ())
+  in
+  unwrap
+    (Temporal.Client.cancel ~request_id:"cancel-unit-1" ~reason:"unit test"
+       handle);
+  unwrap
+    (Temporal.Client.cancel ~request_id:"cancel-unit-1" ~reason:"unit test"
+       handle);
+  (match Temporal.Client.wait handle with
+  | Ok (Temporal.Client.Cancelled error) ->
+      assert (Temporal.Error.kind error = "cancelled")
+  | Ok _ -> failwith "cancelled mock returned a non-cancelled terminal result"
+  | Error error -> failwith (Temporal.Error.message error));
+  unwrap (Temporal.Client.shutdown client)
+
 (** Invalid client settings are values rather than exceptions, and a malformed
     durable workflow id is rejected before the backend receives it. *)
 let test_client_validation_errors () =
@@ -205,6 +232,15 @@ let test_client_validation_errors () =
     (Temporal.Client.start client ~workflow:echo_workflow
        ~request_id:"contains\000nul" ~task_queue:"unit-test" ~id:"valid-id"
        ~input:"ignored" ());
+  let handle =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"cancel-validation" ~input:"ignored" ())
+  in
+  expect_error "defect"
+    (Temporal.Client.cancel ~request_id:"" handle);
+  expect_error "defect"
+    (Temporal.Client.cancel ~reason:"contains\000nul" handle);
   unwrap (Temporal.Client.shutdown client)
 
 (** An HTTP-shaped endpoint is deliberately handed to the native configuration
@@ -240,6 +276,7 @@ let () =
   test_worker_registration_and_dispatch ();
   test_worker_continues_after_task_failure ();
   test_typed_start_and_wait_handle ();
+  test_exact_run_cancellation ();
   test_client_validation_errors ();
   test_native_client_configuration_boundary ();
   test_worker_validation_errors ();

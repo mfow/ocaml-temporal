@@ -24,6 +24,14 @@ type start_response = { execution : execution }
 type start_ticket = { request : start_request; ticket : string }
 type wait_request = execution
 
+type cancel_request = {
+  execution : execution;
+  request_id : string;
+  reason : string;
+}
+
+type cancel_response = { acknowledged : bool }
+
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -78,6 +86,11 @@ let field path name entries =
 
 let string path json =
   match Workflow.Internal.string path json with
+  | Ok value -> Ok value
+  | Error error -> Error (of_workflow_error path error)
+
+let bool path json =
+  match Workflow.Internal.bool path json with
   | Ok value -> Ok value
   | Error error -> Error (of_workflow_error path error)
 
@@ -261,6 +274,42 @@ let encode_wait_request (value : wait_request) =
         ("workflow_id", json_string value.workflow_id);
         ("run_id", json_string value.run_id);
       ])
+
+(** Serializes an exact-run cancellation request. [request_id] is the
+    Temporal idempotency key for this control operation; [reason] is copied as
+    opaque UTF-8 text and may be empty because Temporal treats it as optional
+    operator context. *)
+let encode_cancel_request (value : cancel_request) =
+  let* () = validate_identifier "$.namespace" value.execution.namespace in
+  let* () = validate_identifier "$.workflow_id" value.execution.workflow_id in
+  let* () = validate_identifier "$.run_id" value.execution.run_id in
+  let* () = validate_identifier "$.request_id" value.request_id in
+  if String.length value.reason > 65_536 then
+    Error (invalid ~path:"$.reason" "reason exceeds the protocol string safety limit")
+  else if String.contains value.reason '\000' then
+    Error (invalid ~path:"$.reason" "reason contains a NUL byte")
+  else
+    encode_object
+      (`Assoc
+        [
+          ("namespace", json_string value.execution.namespace);
+          ("workflow_id", json_string value.execution.workflow_id);
+          ("run_id", json_string value.execution.run_id);
+          ("request_id", json_string value.request_id);
+          ("reason", json_string value.reason);
+        ])
+
+(** Decodes the positive acknowledgement returned by Rust after Temporal has
+    accepted the cancellation RPC. A false acknowledgement is rejected rather
+    than being exposed as success because the public operation has no separate
+    pending state. *)
+let decode_cancel_response input =
+  let* json = decode_object input in
+  let* entries = exact_object "$" [ "acknowledged" ] json in
+  let* acknowledged_json = field "$" "acknowledged" entries in
+  let* acknowledged = bool "$.acknowledged" acknowledged_json in
+  if acknowledged then Ok { acknowledged }
+  else Error (invalid ~path:"$.acknowledged" "cancellation was not acknowledged")
 
 let decode_successor path entries =
   let* successor_json = field path "successor" entries in
@@ -572,3 +621,15 @@ let decode_start_error ~request input =
 let decode_wait_error ~request input =
   let* error = decode_client_error input in
   validate_wait_error request error
+
+(** Decodes a cancellation failure while rejecting the workflow-start-only
+    conflict category. Temporal cancellation can fail at the RPC or protocol
+    layer, but it cannot report that a workflow ID was already started. *)
+let decode_cancel_error input =
+  let* error = decode_client_error input in
+  match error with
+  | Already_started _ ->
+      Error
+        (invalid ~path:"$.kind"
+           "already_started is not a valid cancellation error")
+  | (Rpc _ | Protocol _) -> Ok error

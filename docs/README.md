@@ -22,7 +22,8 @@ The remaining reference documents are useful when changing one subsystem:
 - [Private JSON control protocol](reference/core-protocol.md) defines the
   bilateral envelope and its validation rules.
 - [Native client JSON protocol](reference/client-protocol.md) documents typed
-  workflow-start and exact-run-wait messages.
+  workflow starts, asynchronous start tickets, exact-run waits, and
+  exact-run cancellation messages.
 - [OCaml activity protocol adapter](reference/activity-protocol.md) documents
   remote activity tasks, completions, heartbeats, and opaque task-token
   ownership. The heartbeat schema is
@@ -66,9 +67,10 @@ plan and the source disagree, the source, tests, and progress record win.
 
 An application writes ordinary OCaml functions and links the `temporal-sdk`
 library into its own final executable. `Temporal.Worker` owns workflow and
-activity registration and executes the current native task slice. `Temporal.Client`
-starts an execution and waits for the exact workflow/run pair returned by
-Temporal; it does not execute workflow code.
+activity registration and executes the current native task slice.
+`Temporal.Client` starts an execution, can cancel that exact execution, and
+waits for its exact workflow/run pair returned by Temporal; it does not execute
+workflow code.
 
 For an HTTP(S) endpoint, the public library creates one private supervisor per
 SDK instance. That supervisor owns the Rust runtime, Temporal Core client, and
@@ -142,9 +144,11 @@ used as evidence that a worker was restarted or that Temporal replay occurred.
 - **Temporal Core** is Temporal's official Rust worker/client library. It
   manages server communication and durable worker state machines for an SDK.
 - **SDK** is the whole OCaml-facing worker implementation: workflow runtime,
-  activity dispatch, lifecycle, and the optional client start/wait surface.
-- **Client** is the smaller `Temporal.Client` API for starting a workflow and
-  waiting for one exact execution. It is not the worker.
+  activity dispatch, lifecycle, and the optional client start/cancel/wait
+  surface.
+- **Client** is the smaller `Temporal.Client` API for starting a workflow,
+  cancelling one exact execution, and waiting for that execution. It is not the
+  worker.
 - **Worker** is a `Temporal.Worker` value that registers local OCaml workflow
   and activity functions and polls/completes tasks.
 - **Workflow activation** is a validated batch of work that Core delivers to

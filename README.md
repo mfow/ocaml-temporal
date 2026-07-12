@@ -4,104 +4,125 @@
 
 > **Community-maintained and unofficial. Not affiliated with or endorsed by Temporal Technologies, Inc.**
 
-OCaml Temporal SDK is a pre-release SDK for writing and managing durable
-Temporal workflows and activities in modern OCaml 5. Workflow code uses
-ordinary functions, explicit `result`
-values, typed codecs and futures, and private algebraic effects for
-direct-style suspension.
+OCaml Temporal SDK is an experimental, pre-`0.1.0` implementation of a
+Temporal SDK for OCaml 5. It is intended to let an OCaml application own a
+worker that runs deterministic workflow code as well as activities. It is not
+only a client for starting a workflow and reading its result.
 
-The repository currently contains a verified deterministic runtime kernel,
-synthetic activation interpreter, and native OCaml-to-Rust link through the
-official Rust Temporal Core dependency. The private supervisor can connect the
-official client, construct and namespace-validate a worker, and invoke strict
-typed nonblocking workflow/activity poll and completion operations. It does
-**not yet run the production polling loop** that coordinates readiness and
-those operations with the deterministic executor, so it cannot execute a live
-workflow yet.
+The API and the native boundary may change while the worker implementation is
+completed. The repository is useful today for experimenting with workflow
+authoring, deterministic scheduling, typed payloads, the OCaml/Rust bridge,
+and the first native worker command slice. It is not yet a drop-in replacement
+for the mature Temporal SDKs.
 
-## Current capabilities
+## Architecture in one picture
 
-- Typed local and remote workflow/activity definitions
-- Explicit payload codecs and structured errors
-- FIFO deterministic workflow fibers built on OCaml 5 deep effects
-- Concurrent activity and child-workflow scheduling in the synthetic runtime
-- `Future.both`, `all`, heterogeneous `race`, and homogeneous `first`
-- Durable timer command generation with `Workflow.start_sleep` and `sleep`
-- Deterministic synthetic replay, cancellation, and cache eviction tests
-- Dune-built OCaml executables linked to the Rust Core bridge static library
-- Finalizer-backed, panic-contained runtime-client-worker ownership
-- Typed nonblocking workflow/activity polling, completion, and exact-document
-  rejection behind the private supervisor boundary
-- Bounded wakeable workflow/activity readiness waits that release the OCaml
-  runtime lock
-- Docker Compose development on OCaml 5.2 and current OCaml 5.5
-- Executable no-copyleft dependency policy
+The final application artifact is an OCaml executable. Rust is a private
+static-library implementation detail of that executable; it is not a sidecar
+process and it does not own the OCaml application.
 
-The production worker scheduling loop that coordinates native readiness with
-the deterministic executor, live child-workflow translation, signals, queries,
-updates, continue-as-new, versioning, local activities, Nexus, cancellation
-scopes, and the remaining parity surface are planned and tracked in the
-roadmap.
+```mermaid
+flowchart LR
+    A["OCaml application<br/>Temporal.Client / Temporal.Worker"]
+    B["OCaml workflow runtime<br/>and owner supervisor"]
+    C["C stubs<br/>owned byte copies"]
+    D["Rust static library<br/>Temporal Core"]
+    E["Temporal Server<br/>gRPC and protobuf"]
+    A --> B --> C --> D --> E
+```
+
+One supervisor owns the Rust runtime, Temporal client, optional worker, and
+their native lifetimes for one SDK instance. Public OCaml values do not expose
+Rust handles, pointers, Tokio futures, or protobuf types.
+
+OCaml and Rust exchange a small, private, strictly validated JSON protocol.
+Both sides validate the complete document, copy bytes at the ownership
+boundary, and return bounded typed errors. This JSON is an internal ABI choice:
+it is not JSON sent to Temporal Server. Rust alone converts between the private
+semantic records and Temporal Core's protobuf/gRPC messages. A workflow payload
+may itself use the standard `json/plain` encoding, but Temporal payloads are
+opaque bytes and applications may choose another deterministic codec.
+
+## What works now
+
+| Area | Current status |
+| --- | --- |
+| Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
+| Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
+| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current live command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, and drains retryable completions safely. |
+| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts and exact workflow/run waits. Protocol and lifecycle tests cover it; the Compose acceptance target has not yet asserted a real workflow result. |
+| Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
+| Safety boundary | Rust/Core protobuf handling stays in Rust. OCaml/Rust JSON validation, copied payloads, one-owner lifecycle serialization, and idempotent cleanup are covered by focused tests. |
+
+## What is deliberately still pending
+
+- The two-public-OCaml-binary acceptance test is scaffolded but is not enabled
+  in Compose. The current real-server smoke proves infrastructure, Core client
+  and worker construction, and lifecycle cleanup; it does not yet start a
+  workflow through one OCaml binary and assert its result in another worker.
+- Child-workflow commands can be authored and are translated by the semantic
+  layer, but the native worker does not yet accept a parent completion that
+  contains a child start. The activation schema still needs child-resolution
+  jobs so a parent can resume safely. On the native path this is an explicit
+  typed rejection, not live child-workflow support. Synthetic tests are not
+  evidence that this works against Temporal Server.
+- Signals, queries, updates, continue-as-new, versioning, local activities,
+  Nexus, and the remaining cross-SDK parity surface are roadmap work.
+- The public API, native protocol, and Temporal Core pin remain experimental
+  and may change before a stable release.
+
+Read [the workflow guide](docs/guides/workflows.md) for the supported authoring
+model and [the documentation guide](docs/README.md) for the status of each
+layer.
 
 ## Quick start
 
-Requirements are Docker with Compose v2 and Make. No host OCaml installation
-is required.
+Requirements: Docker with Compose v2 and GNU Make. The normal build and test
+path does not require OCaml, Dune, Rust, or Python installed on the host.
 
 ```sh
-make build
-make test-unit
-make test-runtime
-make verify
-make quality
-make license-check
-make test-temporal-integration
+make build                    # build OCaml and the pinned Rust bridge
+make test-unit                # codecs, definitions, client/worker API tests
+make test-runtime             # deterministic runtime and native adapter tests
+make verify                   # version check, lint, all Dune/Rust/bridge tests
+make quality                  # pinned Rust quality and spelling tools
+make license-check            # permissive dependency audit
+make test-temporal-integration # real PostgreSQL + Temporal lifecycle smoke
 ```
 
-All build and test commands run through Docker Compose. `make verify` checks
-the OCaml code plus the pinned Rust toolchain, static library, formatting,
-Clippy, and Rust tests. `make license-check` is the local OPAM audit, and
-`make clean` removes Compose services and build output. GitHub Actions performs
-the locked Cargo audit once in its standalone license job using a separate
-pinned official Python container; it is not repeated for every OCaml version
-and architecture. The default development image uses OCaml 5.2; use, for
-example, `make verify OCAML_VERSION=5.5` to run the build gate on another
-supported version. GitHub Actions builds and tests OCaml 5.2, 5.3, 5.4, and
-5.5 on native Linux amd64 and arm64 runners for every pull request and every
-push to `master`. Separate native jobs build and test the complete OCaml-to-Rust
-link on Windows x64 and macOS ARM64 with OCaml 5.5. These jobs use
-`make native-verify`; the Compose commands remain the supported local default.
+The default development image uses OCaml 5.2. To try another supported image,
+pass `OCAML_VERSION`, for example `make verify OCAML_VERSION=5.5`. CI runs the
+verification matrix for OCaml 5.2, 5.3, 5.4, and 5.5 on Linux amd64 and arm64,
+and builds the OCaml-to-Rust link natively on Windows x64 and macOS ARM64 with
+OCaml 5.5. The standalone license audit is run once per CI change, not once
+per matrix cell. `make quality` is the exception to the Docker-only toolchain
+path: it expects the pinned `cargo-deny`, `cargo-machete`, and `typos` binaries
+on the host (CI installs their checksum-verified versions). The license audit
+uses the development container and an isolated official Python container.
 
-The explicit `make test-temporal-integration` smoke starts a real Temporal
-Server backed by PostgreSQL, checks both SQL schemas and the frontend gRPC
-health API, then runs the OCaml-owned Core client/worker lifecycle acceptance
-and removes its test data. It does not yet execute an OCaml workflow; see the
-[local stack reference](docs/reference/local-temporal-stack.md) for lifecycle
-commands and the precise acceptance boundary. The Compose file, configuration,
-and fixture helpers are isolated under `test/integration/temporal/`; root Make
-targets are the supported interface to that test infrastructure.
+### The real Temporal smoke
 
-`make quality` is the separate, one-shot repository gate for pinned native
-quality tools. It checks the locked Cargo graph for RustSec advisories and
-unapproved package sources, detects unused direct Rust dependencies, and scans
-OCaml, Rust, documentation, and configuration for likely spelling mistakes.
-Install the exact versions listed in the [quality-gate reference](docs/reference/quality-gates.md)
-before running it locally. GitHub Actions installs checksum-verified release
-artifacts and runs this gate once per change rather than once in every OCaml
-matrix job.
+`make test-temporal-integration` starts the pinned Temporal Server and
+PostgreSQL containers under `test/integration/temporal/`, waits for both SQL
+schemas and the Temporal frontend to be healthy, runs the OCaml supervisor
+lifecycle acceptance executable, and removes the test volume afterward. It is
+intentionally a lifecycle smoke at this stage. It does **not** enable the
+two-binary workflow-result scaffold and therefore does not claim end-to-end
+workflow execution yet.
 
-## Logging
+For manual inspection, use `make temporal-start`, `make temporal-health`,
+`make temporal-status`, `make temporal-logs`, and `make temporal-clean`.
+Running Compose directly from the repository root is unsupported; the Makefile
+selects the fixture and its project directory for you. See the [local stack
+reference](docs/reference/local-temporal-stack.md) for the exact acceptance
+boundary and cleanup behavior.
 
-The SDK emits application-configurable events through the OCaml `logs`
-library. It provides stable `temporal.sdk.lifecycle`, `temporal.sdk.bridge`,
-and `temporal.sdk.workflow` sources, structural tags, and elapsed-millisecond
-measurements at meaningful runtime boundaries. It does not install a reporter
-or set a global logging level; the owning application retains those choices.
-Payloads, workflow arguments, and bridge diagnostics are excluded from log
-events. See the [observability reference](docs/reference/observability.md) for
-level semantics, filtering examples, privacy rules, and Domain considerations.
+## A small workflow example
 
-## Workflow style
+Workflow code is direct-style OCaml. A future represents a result that may
+arrive in a later Temporal activation; `Future.await` suspends only the current
+workflow fiber. Expected operational failures are values, so helpers compose
+with `result` rather than using exceptions for control flow.
 
 ```ocaml
 let summarize =
@@ -110,7 +131,7 @@ let summarize =
     ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
 
-let workflow document =
+let summarize_document document =
   let open Temporal.Result_syntax in
   let summary = Temporal.Activity.start summarize document in
   let timer = Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 10L) in
@@ -119,40 +140,48 @@ let workflow document =
   in
   Ok summary
 
-let definition =
+let summarize_workflow =
   Temporal.Workflow.define
     ~name:"summarize_document"
     ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
-    workflow
+    summarize_document
 ```
 
-The API above compiles and is exercised by the synthetic interpreter. It is
-not a claim that the production worker loop can execute it against Temporal
-Server yet.
+The activity is started before the timer is awaited, so independent work can
+be in flight together. `summarize_document` and ordinary helpers it calls are
+just OCaml functions. Only explicit SDK operations such as activity scheduling
+or a durable timer create Temporal history commands. This example is covered
+by the deterministic runtime and the current native activity/timer command
+slice; it is not a claim that every future Temporal feature is complete.
 
-## Documentation
+See [Writing Workflows in OCaml](docs/guides/workflows.md) for codecs, worker
+registration, client handles, child-workflow boundaries, futures, and
+determinism rules.
+
+## Logging
+
+The SDK reports application-configurable events through the OCaml `logs`
+library. Stable sources include `temporal.sdk.lifecycle`,
+`temporal.sdk.bridge`, and `temporal.sdk.workflow`, with structural operation,
+error-kind, and elapsed-time tags. The library does not install a reporter or
+choose a global log level. Payload bytes, workflow arguments, and bridge JSON
+are excluded from log messages. See the [observability reference](docs/reference/observability.md).
+
+## Further documentation
 
 - [Documentation guide and glossary](docs/README.md)
-- [Architecture](docs/superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
+- [Workflow authoring guide](docs/guides/workflows.md)
+- [Architecture specification](docs/superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
 - [Implementation roadmap](docs/implementation-roadmap.md)
-- [Workflow guide](docs/guides/workflows.md)
 - [Runtime invariants](docs/reference/runtime-invariants.md)
 - [Native Core bridge and ownership](docs/reference/core-bridge.md)
+- [Private JSON control protocol](docs/reference/core-protocol.md)
 - [Native client JSON protocol](docs/reference/client-protocol.md)
-- [Logging and observability](docs/reference/observability.md)
 - [Local Temporal and PostgreSQL stack](docs/reference/local-temporal-stack.md)
 - [Quality and security gates](docs/reference/quality-gates.md)
-- [Temporal Core boundary decision](docs/decisions/0001-temporal-core-c-boundary.md)
 - [Dependency and license inventory](docs/dependencies.md)
 - [Verified progress](docs/progress.md)
-
-## Status and compatibility
-
-The project is a work in progress and its API may change before `0.1.0`. The
-compatibility floor is OCaml 5.2; the test matrix also exercises OCaml 5.5.
-Temporal Core will be pinned by immutable commit and upgraded only with replay
-and cross-language compatibility evidence.
 
 ## License
 
@@ -164,7 +193,10 @@ in the dependency inventory.
 
 ## AI disclosure
 
-AI coding tools were used to generate substantial portions of this project. All committed code in published releases has been reviewed by the maintainer, who accepts responsibility for its correctness, security, licensing and ongoing maintenance. No unreviewed model output is released.
+AI coding tools were used to generate substantial portions of this project.
+All committed code in published releases has been reviewed by the maintainer,
+who accepts responsibility for its correctness, security, licensing, and
+ongoing maintenance. No unreviewed model output is released.
 
 AI models used to help build this project:
 

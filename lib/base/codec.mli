@@ -50,5 +50,6 @@ val bytes : bytes t
 val unit : unit t
 
 (** [option codec] maps [None] to an empty [binary/null] payload and delegates
-    non-null values to [codec]. *)
+    non-null values to [codec]. Duplicate metadata names are rejected before
+    either null handling or nested decoding. *)
 val option : 'a t -> 'a option t

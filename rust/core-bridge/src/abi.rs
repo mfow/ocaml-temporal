@@ -355,6 +355,29 @@ impl Runtime {
     fn start_workflow_json(&mut self, input: &[u8]) -> Operation {
         let text = decode_semantic_input(input)?;
         let request = client_protocol::decode_start_request(text).map_err(protocol_failure)?;
+        // The async begin path owns one Tokio task per request_id in
+        // `pending_starts`. A concurrent sync start with the same logical ID
+        // must not issue a second StartWorkflowExecution while that ticket is
+        // live; callers must poll/wait the existing ticket instead.
+        if let Some((_, pending)) = self
+            .pending_starts
+            .iter()
+            .find(|(_, pending)| pending.request.request_id == request.request_id)
+        {
+            if !client_protocol::same_start_request(pending.request.as_ref(), &request) {
+                return Err(Failure {
+                    status: STATUS_PROTOCOL,
+                    message: "start request_id is already pending for a different request"
+                        .to_owned(),
+                });
+            }
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message:
+                    "Temporal workflow start is already pending for this request_id; poll or wait the async ticket"
+                        .to_owned(),
+            });
+        }
         let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
             status: STATUS_INVALID_STATE,
             message: "Temporal client is not connected".to_owned(),

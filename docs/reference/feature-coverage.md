@@ -11,17 +11,17 @@ a supported feature.
 The project has four deliberately separate evidence levels:
 
 - **Verified live** means a test used the real Temporal Server and PostgreSQL
-  Compose stack. At this baseline, live evidence is limited to infrastructure
-  and Core client/worker lifecycle; no workflow result has crossed the live
-  stack yet.
+  Compose stack. At this baseline, it includes the first two-binary success
+  path: public client start/exact-run wait, public worker workflow/activity
+  dispatch, activity fan-out, and a timer-then-activity workflow.
 - **Unit-tested or mock-only** means deterministic OCaml, Rust, C, or
   in-memory fake tests passed without a workflow execution hosted by Temporal
   Server. This is strong evidence for local semantics and ownership, but not
   proof of server compatibility.
-- **Bridge implemented, live path pending** means the OCaml/Rust protocol and
-  the Rust/Temporal Core conversion are implemented and covered by focused
-  tests, while the complete live worker/client path has not yet exercised that
-  record against a server.
+- **Bridge implemented, partly live-tested** means the OCaml/Rust protocol and
+  Rust/Temporal Core conversion are covered by focused tests, and the first
+  happy-path records have crossed the live worker/client boundary. It does not
+  promote unexercised variants to live support.
 - **Deferred or unsupported** means the public API or runtime intentionally
   does not provide the capability yet. These items are roadmap work, not
   hidden promises.
@@ -36,22 +36,26 @@ records the evidence for completed milestones.
 The live gate is `make test-temporal-integration`. It starts the fixture under
 [`test/integration/temporal/`](../../test/integration/temporal/), waits for
 PostgreSQL and Temporal frontend health, runs the OCaml lifecycle executable,
-and cleans up the Compose project. The assertions are in
-[`test/integration/test_core_lifecycle.ml`](../../test/integration/test_core_lifecycle.ml).
+starts `smoke-worker`, runs the independent `smoke-driver`, and cleans up the
+Compose project. The lifecycle assertions are in
+[`test/integration/test_core_lifecycle.ml`](../../test/integration/test_core_lifecycle.ml);
+the live workflow assertions are in
+[`test/integration/temporal/driver/smoke_driver.ml`](../../test/integration/temporal/driver/smoke_driver.ml).
 
 | Capability | What the live test proves | What it does not prove |
 | --- | --- | --- |
-| PostgreSQL-backed Temporal Server startup | The pinned SQL schemas and Temporal frontend become healthy in the documented Compose topology. | It does not execute an OCaml workflow or activity. |
-| OCaml/C/Rust bridge and Core graph construction | The OCaml supervisor can validate native settings, create the Rust/Core graph, connect a client, and start a workflow-only worker against the real endpoint. | It does not prove that a workflow activation or activity task can be completed through the server. |
+| PostgreSQL-backed Temporal Server startup | The pinned SQL schemas and Temporal frontend become healthy in the documented Compose topology. | It does not prove production topology or upgrade compatibility. |
+| OCaml/C/Rust bridge and Core graph construction | The OCaml supervisor creates the Rust/Core graph, connects a client, and creates a worker against the real endpoint. | It does not prove every protocol error or lifecycle transition under load. |
 | Lifecycle rejection and idempotence | Invalid repeated client/worker transitions are rejected, repeated worker/client shutdown is safe, and reverse-order supervisor shutdown completes. | It does not prove graceful cancellation of an outstanding live execution. |
+| Public client start and exact-run wait | A separate OCaml driver starts two workflows through `Temporal.Client`, retains both returned handles, and waits for each exact workflow/run pair. | It does not cover non-success terminal outcomes or continued-as-new live. |
+| Public worker workflow and activity dispatch | A separate OCaml worker registers and executes two workflows plus their local mock activity through real Core polling/completion. | It does not cover activity failure, retry, heartbeat, asynchronous completion, or child workflows. |
+| Fan-out and durable timer success paths | `smoke.fan_out` returns `SMOKE:LEFT|SMOKE:RIGHT` after scheduling two mock activities before its first wait; `smoke.timer_then_activity` returns `SMOKE:TIMER` after its durable timer and activity. | It does not independently inspect history events, prove every concurrency ordering, or cover cancellation semantics. |
 
-There is intentionally no row here for “workflow returns a result”. The
-two-OCaml-binary driver and worker are guarded by
-`TEMPORAL_TWO_BINARY_LIVE=1`, and the current Compose target does not enable
-that guard. Until a live job starts a workflow, waits for its exact run, and
-checks the decoded result, the repository must not describe that path as
-end-to-end acceptance. See [the local stack reference](local-temporal-stack.md)
-and [the two-binary acceptance design](two-ocaml-binary-e2e-acceptance.md).
+The driver and worker remain guarded by `TEMPORAL_TWO_BINARY_LIVE=1`; the
+dedicated Compose services set it so an ordinary local invocation cannot be
+mistaken for live acceptance. See [the local stack reference](local-temporal-stack.md)
+and [the two-binary acceptance design](two-ocaml-binary-e2e-acceptance.md) for
+the topology and its deliberately narrow current boundary.
 
 ## Unit-tested or mock-only functionality
 
@@ -66,30 +70,31 @@ ownership correctness; they are not live Temporal compatibility tests.
 | Payload codecs and typed failures | [`test/unit/test_codec.ml`](../../test/unit/test_codec.ml), [`test/unit/test_error.ml`](../../test/unit/test_error.ml) | String (`json/plain`), bytes (`binary/plain`), unit (`binary/null`), options, custom codecs, metadata validation, and error details are tested without a server. JSON is a payload option, not a Temporal requirement. |
 | Direct-style workflow suspension | [`test/runtime/test_scheduler.ml`](../../test/runtime/test_scheduler.ml), [`test/runtime/test_activation.ml`](../../test/runtime/test_activation.ml) | OCaml 5 effects suspend one workflow fiber on a future and resume it from a later synthetic activation. No public effect constructor or continuation is exposed. |
 | Futures and concurrent composition | [`test/unit/test_workflow_authoring.ml`](../../test/unit/test_workflow_authoring.ml), [`test/runtime/test_activation.ml`](../../test/runtime/test_activation.ml) | `await`, `map`, `map_error`, `both`, `all`, `race`, `first`, `peek`, and readiness are deterministic and workflow-owned. Losing operations are not implicitly cancelled. |
-| Durable timers in the runtime model | [`test/runtime/test_activation.ml`](../../test/runtime/test_activation.ml), [`test/runtime/test_native_execution.ml`](../../test/runtime/test_native_execution.ml) | Timer commands, zero-duration behavior, exact millisecond conversion, firing, and cancellation are tested synthetically. No live timer has been observed through Temporal Server. |
+| Durable timers in the runtime model | [`test/runtime/test_activation.ml`](../../test/runtime/test_activation.ml), [`test/runtime/test_native_execution.ml`](../../test/runtime/test_native_execution.ml) | Timer commands, zero-duration behavior, exact millisecond conversion, firing, and cancellation are tested synthetically. The first timer success path is also exercised live; detailed timer variants remain synthetic-only. |
 | Activity command authoring | [`test/runtime/test_activation.ml`](../../test/runtime/test_activation.ml), [`test/runtime/test_native_execution.ml`](../../test/runtime/test_native_execution.ml) | IDs, queues, timeout fields, cancellation policy, eager-execution flag, deterministic defaults, payload copying, and invalid-option rejection are covered before a completion is emitted. |
 | Child-workflow scheduling and resolution state | [`test/runtime/test_activation.ml`](../../test/runtime/test_activation.ml), [`test/runtime/test_native_worker_execution.ml`](../../test/runtime/test_native_worker_execution.ml) | Synthetic parent executions cover start acknowledgement, terminal resolution, start failure, final-before-start, duplicate sequences, and lease retirement. No parent/child result has crossed the live stack. |
-| Workflow and activity dispatch | [`test/unit/test_client_worker.ml`](../../test/unit/test_client_worker.ml), [`test/runtime/test_native_worker_execution.ml`](../../test/runtime/test_native_worker_execution.ml), [`test/runtime/test_native_activity_execution.ml`](../../test/runtime/test_native_activity_execution.ml) | Mock tasks and fake supervisors exercise codec decode, typed implementation calls, completion encoding, unknown registrations, ordinary task failures, and continuation after a task-level error. |
+| Workflow and activity dispatch | [`test/unit/test_client_worker.ml`](../../test/unit/test_client_worker.ml), [`test/runtime/test_native_worker_execution.ml`](../../test/runtime/test_native_worker_execution.ml), [`test/runtime/test_native_activity_execution.ml`](../../test/runtime/test_native_activity_execution.ml) | Mock tasks and fake supervisors exercise codec decode, typed implementation calls, completion encoding, unknown registrations, ordinary task failures, and continuation after a task-level error. The public happy path is additionally covered by the live gate above. |
 | Completion retry and shutdown drainage | [`test/runtime/test_native_worker_lifecycle.ml`](../../test/runtime/test_native_worker_lifecycle.ml), [`test/runtime/test_native_activity_lifecycle.ml`](../../test/runtime/test_native_activity_lifecycle.ml), [`test/sdk_supervisor/test_sdk_supervisor.ml`](../../test/sdk_supervisor/test_sdk_supervisor.ml) | A rejected completion is retained and retried without rerunning user code; shutdown waits for drained leases and remains retryable when transport acknowledgement is unavailable. |
 | Public mock client | [`test/unit/test_client_worker.ml`](../../test/unit/test_client_worker.ml) | `Temporal.Client` start, exact-run handle identity, typed output decoding, validation, and idempotent shutdown are tested against `mock://`; this mock echoes input and does not execute a real workflow. |
 | Mailbox and one-owner supervisor invariants | [`test/mailbox_processor/test_mailbox_processor.ml`](../../test/mailbox_processor/test_mailbox_processor.ml), [`test/sdk_supervisor/test_sdk_supervisor.ml`](../../test/sdk_supervisor/test_sdk_supervisor.ml) | Bounded admission, FIFO calls, reply settlement, close/join, concurrent producers, shutdown races, and one owner Domain are tested. The mailbox is a private implementation unit, not a public actor API. |
 | Observability | [`test/observability/test_logging.ml`](../../test/observability/test_logging.ml), [`test/observability/test_tag_normalization.ml`](../../test/observability/test_tag_normalization.ml) | Structured `logs` events, levels, sources, tags, and privacy-safe diagnostics are tested without logging payload bytes or bridge JSON. |
 
-## Bridge implemented, live path pending
+## Bridge implemented, partly live-tested
 
 The following pieces are implemented below the public API and have bilateral
-or focused evidence. They should be described as **native support under test**,
-not as live SDK features, until the two-binary Compose gate exercises them.
+or focused evidence. The two-binary Compose gate exercises the first complete
+success path; records and variants outside that path remain **native support
+under test**, not live SDK features.
 
-| Native capability | Implemented boundary and evidence | Missing live proof |
+| Native capability | Implemented boundary and evidence | Live boundary |
 | --- | --- | --- |
-| Strict OCaml/Rust JSON control protocol | Closed envelopes, duplicate/unknown-field rejection, bounded numbers and text, UTF-8/base64 handling, canonical re-encoding, and privacy-safe errors are specified in [Core protocol](core-protocol.md), with schemas under [`docs/schemas/bridge/`](../schemas/bridge/) and tests in [`test/bridge/`](../../test/bridge/) plus [`rust/core-bridge/tests/`](../../rust/core-bridge/tests/). | A complete workflow activation and completion has not yet traversed the live worker/client binaries. |
-| Rust/Temporal Core protobuf conversion | Rust owns Core protobuf and gRPC conversion for workflow activations/completions, remote activities, child resolutions, client starts, and exact-run waits. The focused conversion tests are in `rust/core-bridge/tests/`. | A successful live workflow result, activity completion, or child result has not been asserted. |
-| Native client start and exact-run wait | The private [client protocol](client-protocol.md), Rust client bridge tests, supervisor operations, request correlation, bounded waits, terminal outcome mapping, and typed public handles are implemented. | The real client has not started a workflow and waited for its result in Compose. |
-| Native workflow poll and completion | The workflow protocol, [native execution translation](native-execution-translation.md), private worker registry, readiness waits, command validation, activation ordering, timers, cancellation, eviction, and completion retry are implemented and focused-tested. | No live workflow task has been polled, run by an OCaml definition, and completed through Temporal Server. |
-| Native remote-activity poll and completion | The [activity protocol](activity-protocol.md), private activity adapter, copied opaque-token lease, cancellation completion, strict validation, and retryable drain are implemented and focused-tested. | No live activity task has been polled and completed by the OCaml worker. Heartbeats and asynchronous completion remain deferred. |
+| Strict OCaml/Rust JSON control protocol | Closed envelopes, duplicate/unknown-field rejection, bounded numbers and text, UTF-8/base64 handling, canonical re-encoding, and privacy-safe errors are specified in [Core protocol](core-protocol.md), with schemas under [`docs/schemas/bridge/`](../schemas/bridge/) and tests in [`test/bridge/`](../../test/bridge/) plus [`rust/core-bridge/tests/`](../../rust/core-bridge/tests/). | A complete happy-path workflow activation and completion has traversed the live binaries. Rejection and unusual record variants remain focused-test evidence. |
+| Rust/Temporal Core protobuf conversion | Rust owns Core protobuf and gRPC conversion for workflow activations/completions, remote activities, child resolutions, client starts, and exact-run waits. The focused conversion tests are in `rust/core-bridge/tests/`. | Live success results and activity completions are asserted; child conversion and non-success variants remain unexercised live. |
+| Native client start and exact-run wait | The private [client protocol](client-protocol.md), Rust client bridge tests, supervisor operations, request correlation, bounded waits, terminal outcome mapping, and typed public handles are implemented. | The real client starts two workflows and waits for exact results in Compose. Non-success outcomes and continued-as-new remain untested live. |
+| Native workflow poll and completion | The workflow protocol, [native execution translation](native-execution-translation.md), private worker registry, readiness waits, command validation, activation ordering, timers, cancellation, eviction, and completion retry are implemented and focused-tested. | The live worker runs registered OCaml workflows through successful completion. Cancellation, eviction, and recovery behavior remain focused-test evidence. |
+| Native remote-activity poll and completion | The [activity protocol](activity-protocol.md), private activity adapter, copied opaque-token lease, cancellation completion, strict validation, and retryable drain are implemented and focused-tested. | The live worker completes the mock activities used by the two success scenarios. Heartbeats, asynchronous completion, retry, and failure remain deferred or synthetic-only. |
 | Child-workflow two-stage lifecycle | Start commands, start acknowledgements, terminal child resolution, sequence correlation, failure causes, and lease retirement are represented in the semantic protocol and tested in both languages. | No parent workflow has awaited a child result from a real Temporal Server. |
-| Native readiness and lifecycle ownership | Rust readiness lanes, bounded waits that release the OCaml runtime lock, one owner-Domain supervisor, C/Rust response ownership, cleanup, and ABI checks are documented in [Core bridge](core-bridge.md) and covered by bridge, Rust, and supervisor tests. | The live worker loop has not been observed under real task load or live shutdown with outstanding work. |
+| Native readiness and lifecycle ownership | Rust readiness lanes, bounded waits that release the OCaml runtime lock, one owner-Domain supervisor, C/Rust response ownership, cleanup, and ABI checks are documented in [Core bridge](core-bridge.md) and covered by bridge, Rust, and supervisor tests. | The live worker loop runs under the initial task load and shuts down after completion. Live shutdown with outstanding work remains untested. |
 
 For ownership and cleanup guarantees, read [runtime invariants](runtime-invariants.md)
 and the [Core bridge reference](core-bridge.md). For the public authoring
@@ -105,8 +110,7 @@ mistaken for an implemented feature.
 
 | Feature | Status at this baseline | Planned reference |
 | --- | --- | --- |
-| Live two-binary workflow-result acceptance | **Deferred.** The driver/worker scaffold exists, but the Compose job is guarded and does not assert a workflow result. | [Live acceptance coverage](live-acceptance-coverage.md), [roadmap Phase 2](../implementation-roadmap.md#delivery-order) |
-| Live fan-out, timer, activity, failure, cancellation, child, restart, replay, and cache-eviction scenarios | **Deferred as acceptance scenarios.** Synthetic coverage exists for several of these semantics; the real-server assertions remain planned. | [Live acceptance coverage](live-acceptance-coverage.md) |
+| Live failure, retry, cancellation, child, restart, replay, and cache-eviction scenarios | **Deferred as acceptance scenarios.** The two-binary gate covers fan-out, a durable timer, and mock-activity success paths; the listed real-server cases remain planned. | [Live acceptance coverage](live-acceptance-coverage.md) |
 | Signals, queries, updates, validators, conditions, and handler policies | **Not implemented in the public API.** | [Roadmap Phase 5](../implementation-roadmap.md#delivery-order) |
 | Continue-as-new, patches, side effects, versioning, external workflow operations, memo, search attributes, priority, and fairness controls | **Not implemented in the public workflow API.** Some related Core fields are retained by private protocol types, but they are not exposed as executable OCaml operations. | [Roadmap Phase 6](../implementation-roadmap.md#delivery-order) |
 | Local activities, heartbeats, asynchronous activity completion, and interceptors | **Not implemented in the public activity API.** The native activity protocol retains some context for future additive work; the adapter does not expose these controls. | [Native activity execution](native-activity-execution.md), [roadmap Phase 7](../implementation-roadmap.md#delivery-order) |
@@ -123,10 +127,11 @@ make test-unit                  # public definitions, codecs, mock client/worker
 make test-runtime               # scheduler, activations, futures, native adapters
 make test-bridge                # bilateral JSON, ABI, and ownership fixtures
 make verify                     # broad local build, lint, Rust, and bridge gates
-make test-temporal-integration  # real PostgreSQL/Temporal lifecycle only
+make test-temporal-integration  # real PostgreSQL/Temporal + two OCaml binaries
 ```
 
 `make test-temporal-integration` is intentionally the only command in this
-list with a real Temporal Server. A green `make verify` or a green lifecycle
-smoke must not be reported as end-to-end workflow acceptance until a dedicated
-two-binary live assertion exists and passes.
+list with a real Temporal Server. A green `make verify` alone is not live
+workflow evidence; the two-binary gate is the supported success-path
+acceptance evidence, and it must not be generalized to untested terminal or
+recovery scenarios.

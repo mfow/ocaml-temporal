@@ -34,14 +34,14 @@ The remaining reference documents are useful when changing one subsystem:
 - [Local Temporal stack](reference/local-temporal-stack.md) documents the
   PostgreSQL/Temporal Server Compose fixture and Make targets.
 - [Two-OCaml-binary acceptance design](reference/two-ocaml-binary-e2e-acceptance.md)
-  records the planned live driver/worker result test. Its scaffold is not a
-  passing live acceptance test yet.
+  records the live driver/worker result test, its success-path evidence, and
+  the scenarios that still need real-server coverage.
 - [Live acceptance coverage](reference/live-acceptance-coverage.md) separates
-  synthetic evidence, the current real-server lifecycle smoke, and planned
-  two-binary workflow assertions.
+  synthetic evidence from the verified real-server two-binary success path
+  and planned scenario expansion.
 - [Feature coverage and implementation status](reference/feature-coverage.md)
   gives the short status reference and distinguishes live evidence, mock-only
-  tests, native bridge support awaiting live exercise, and deferred features.
+  tests, partly live-tested native bridge support, and deferred features.
 - [Quality and security gates](reference/quality-gates.md) documents pinned
   scanners and the checks run locally and in CI.
 - [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
@@ -77,10 +77,10 @@ opaque bytes with encoding metadata.
 | Layer | Evidence today | Important limit |
 | --- | --- | --- |
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
-| Public native worker | Focused adapter, supervisor, Rust bridge, and lifecycle tests | The live Compose target does not yet run a workflow-result driver and worker |
-| Public native client | Typed start/wait protocol and lifecycle tests | No enabled two-process Compose result assertion yet |
+| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose success path | Live failure, cancellation, child-workflow, replay, and recovery scenarios remain untested |
+| Public native client | Typed start/wait protocol plus a real two-process Compose result assertion | Only the two smoke success outcomes are covered live |
 | Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests | The live Compose acceptance still needs to prove a parent awaiting a child against Temporal Server |
-| Temporal/PostgreSQL stack | `make test-temporal-integration` starts and health-checks real containers | Current assertion is Core client/worker lifecycle, not a workflow result |
+| Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts exact results | The first gate is deliberately narrow and does not yet cover every terminal or recovery path |
 
 This distinction prevents a green local synthetic test from being read as a
 claim that an unimplemented native feature is ready. Features such as signals,

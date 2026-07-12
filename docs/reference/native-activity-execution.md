@@ -102,9 +102,10 @@ and the completion is submitted once; retrying never repeats user work.
 
 This slice implements typed local activity dispatch, failure/cancellation
 completions, strict completion validation, transport retry, and public worker
-wiring. It does not yet expose heartbeats, asynchronous activity completion, or
-activity retry policy decisions. Those features require additional semantic
-protocol fields and remain behind the live Docker Compose acceptance gate.
+wiring. The first local activity success path has been exercised by the live
+Docker Compose gate. Heartbeats, asynchronous activity completion, and
+activity retry policy decisions still require additional semantic protocol
+fields and dedicated live scenarios.
 
 The semantic wire shape already carries the full decoded Temporal activity
 context (headers, heartbeat details, timeouts, retry policy, priority, and

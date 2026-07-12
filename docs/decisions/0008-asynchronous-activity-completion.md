@@ -6,17 +6,23 @@
 
 ## Context
 
-The current activity worker executes an OCaml callback, submits one terminal
-completion through Temporal Core, and invalidates the attempt context before
-dispatch returns. `Temporal.Activity.define` and
-`Temporal.Activity.define_with_context` therefore support synchronous
+The current activity worker invokes one OCaml callback at a time, submits one
+terminal completion through the Temporal Core worker operation, and invalidates
+the attempt context before dispatch returns. If the native completion call is
+temporarily unavailable, the adapter retains an owned copy in its retry ledger
+and retries it without running the callback again. `Temporal.Activity.define`
+and `Temporal.Activity.define_with_context` therefore support synchronous
 activities and heartbeats, but they do not let an activity retain a safe
-completion capability for work that finishes later.
+completion capability for work that finishes later or after the worker lease
+has expired.
 
 The private activity protocol already has a closed
-`will_complete_async` result. This is only a semantic representation today:
+`will_complete_async` result. It is a protocol/Core-conversion variant only:
 the OCaml adapter does not produce it from a public activity definition, and
-the Rust bridge currently sends every completion to the Core worker operation.
+the Rust bridge currently exposes only the Core worker completion path. Every
+completion produced by the current adapter therefore remains a worker-lease
+completion; no public `AsyncActivityHandle` is retained for a later client
+operation.
 
 Temporal Core deliberately treats these two operations differently. Accepting
 `WillCompleteAsync` through the worker tells Core that the worker has handed
@@ -34,9 +40,13 @@ valid workaround: it is intentionally invalidated when the callback returns.
 
 ## Decision
 
-Keep the existing synchronous API unchanged and add an explicit asynchronous
-activity definition with a typed outcome. The exact names may evolve during
-implementation, but the public shape must have these properties:
+Keep the existing synchronous API unchanged. Until this decision is
+implemented, `Temporal.Activity.define` and
+`Temporal.Activity.define_with_context` remain the only executable activity
+definitions, and their callbacks must return terminal results before dispatch
+returns. Then add an explicit asynchronous activity definition with a typed
+outcome. The exact names may evolve during implementation, but the public
+shape must have these properties:
 
 ```ocaml
 type ('output) async_result =
@@ -166,11 +176,13 @@ reviewable:
    shutdown scenarios. These are live feature tests; focused fake-supervisor
    tests must remain separate.
 
-## Current heartbeat boundary
+## Current synchronous boundary and heartbeat limits
 
 The asynchronous handoff described here is not implemented yet. The current
 activity protocol keeps `will_complete_async` so the semantic wire shape is
-closed, but the public adapter emits only synchronous terminal completions.
+closed, but the public adapter emits only synchronous terminal completions
+through the worker path. There is no public async handle, retained activity
+context, or client-side completion operation in the current OCaml/C/Rust ABI.
 Likewise, `heartbeat_timeout` is copied context metadata; the adapter does not
 run a local timeout timer or attempt to recover a completion after Core has
 timed out the lease. Existing context-lifecycle, payload-copying, protocol,
@@ -203,9 +215,14 @@ The existing closed protocol representation is specified in
 `lib/protocol/activity_protocol.ml` and
 `rust/core-bridge/src/activity_protocol.rs`.
 
+The adapter implementation is in
+`lib/runtime/native_activity_execution.ml`; public activity registration is in
+`lib/public/activity.ml`. Neither module exposes asynchronous completion yet.
+
 The worker/client split and one-owner lifecycle are recorded in
 [`ADR 0004`](0004-sdk-instance-supervisor.md). The pinned Temporal Core client
 implementation is
 [`async_activity_handle.rs`](https://github.com/temporalio/sdk-core/blob/95e97686a079dcfe6c42e3254b2f3f5e3d97408f/crates/client/src/async_activity_handle.rs),
 which provides the namespace-bound `AsyncActivityHandle` operations used by
-this decision.
+this decision. It is a design reference for the future bridge; no current
+OCaml/C/Rust operation wraps it.

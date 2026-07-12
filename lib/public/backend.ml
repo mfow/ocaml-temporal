@@ -283,6 +283,31 @@ let failure_info_summary = function
         "activity id=%s type=%s identity=%s scheduled_event_id=%Ld started_event_id=%Ld retry_state=%s"
         activity_id activity_type identity scheduled_event_id started_event_id
         retry_state
+  | Workflow_protocol.Child_workflow
+      {
+        namespace;
+        workflow_id;
+        run_id;
+        workflow_type;
+        initiated_event_id;
+        started_event_id;
+        retry_state;
+      } ->
+      let retry_state =
+        match retry_state with
+        | Workflow_protocol.Unspecified -> "unspecified"
+        | In_progress -> "in_progress"
+        | Non_retryable_failure -> "non_retryable_failure"
+        | Timeout -> "timeout"
+        | Maximum_attempts_reached -> "maximum_attempts_reached"
+        | Retry_policy_not_set -> "retry_policy_not_set"
+        | Internal_server_error -> "internal_server_error"
+        | Cancel_requested -> "cancel_requested"
+      in
+      Printf.sprintf
+        "child_workflow namespace=%s id=%s run_id=%s type=%s initiated_event_id=%Ld started_event_id=%Ld retry_state=%s"
+        namespace workflow_id run_id workflow_type initiated_event_id
+        started_event_id retry_state
 
 (** Collects all application/cancellation detail payloads through a bounded
     failure cause chain. Protocol decoding already applies a depth limit; this
@@ -294,7 +319,8 @@ let failure_details failure =
       | Workflow_protocol.Application { details; _ }
       | Workflow_protocol.Canceled { details; _ } ->
           List.rev_append details reversed
-      | Workflow_protocol.Activity _ -> reversed
+      | Workflow_protocol.Activity _ | Workflow_protocol.Child_workflow _ ->
+          reversed
     in
     match value.cause with
     | Some cause when depth < 128 -> loop (depth + 1) reversed cause
@@ -311,6 +337,16 @@ let workflow_failure_error ?(category = `Workflow)
     | Workflow_protocol.Application { non_retryable; _ } -> non_retryable
     | Workflow_protocol.Canceled _ -> false
     | Workflow_protocol.Activity { retry_state; _ } -> (
+        match retry_state with
+        | Workflow_protocol.Non_retryable_failure
+        | Maximum_attempts_reached -> true
+        | Unspecified
+        | In_progress
+        | Timeout
+        | Retry_policy_not_set
+        | Internal_server_error
+        | Cancel_requested -> false)
+    | Workflow_protocol.Child_workflow { retry_state; _ } -> (
         match retry_state with
         | Workflow_protocol.Non_retryable_failure
         | Maximum_attempts_reached -> true

@@ -70,8 +70,8 @@ val command_to_protocol :
   (Temporal_protocol.Workflow_protocol.completion_command, error) result
 (** Converts one runtime command when every field has an exact protocol
     representation. Activity options are range-checked and payloads are copied;
-    child workflows remain an explicit unsupported boundary until the semantic
-    protocol gains their command record. *)
+    child-workflow commands and their two-stage start/terminal resolutions are
+    translated without fabricating Core fields. *)
 
 val completion_of_commands :
   run_id:string ->

@@ -100,3 +100,13 @@ Workflow-runtime reports also run with the Domain-local workflow context
 temporarily masked. A reporter that calls a workflow API re-entrantly therefore
 receives the normal outside-workflow behavior and cannot append deterministic
 commands to the activation being reported.
+
+## Verification
+
+`test/observability/test_logging.ml` installs an in-memory reporter and checks
+the contract structurally: source names and severity levels remain stable,
+bridge and activation records carry finite non-negative latency tags, and
+neither raw byte payloads nor request JSON appear in message text or rendered
+tags. It also verifies that a reporter exception cannot change a bridge result
+or workflow command batch. Run it with `dune exec ./test/observability/test_logging.exe`
+or use the broader Makefile test target.

@@ -44,9 +44,11 @@ until this validation succeeds.
 
 Jobs are then converted in their original list order. Sequence numbers remain
 `int64` in OCaml and are checked against Core's unsigned 32-bit range before a
-job is created. Duplicate activity or timer sequences are rejected; an unknown
-sequence is rejected later by `Execution`, which emits a non-retryable bridge
-failure rather than silently ignoring a Core event.
+job is created. A child sequence is intentionally allowed twice, once for its
+start acknowledgment and once for its terminal result; duplicate events of
+the same kind and collisions with another operation kind are rejected. An
+unknown sequence is rejected later by `Execution`, which emits a non-retryable
+bridge failure rather than silently ignoring a Core event.
 
 | Protocol job | Runtime job | Information retained by the adapter |
 | --- | --- | --- |
@@ -54,6 +56,10 @@ failure rather than silently ignoring a Core event.
 | `Resolve_activity` with `Completed None` | `Resolve_activity` with the canonical null payload | The absence of a result remains distinguishable from an ordinary payload. |
 | `Resolve_activity` with `Completed (Some payload)` | `Resolve_activity` with a copied runtime payload | Metadata and body bytes are copied before workflow code can observe them. |
 | `Resolve_activity` with `Failed` or `Cancelled` | `Resolve_activity` with a typed `Temporal_base.Error.t` | Application/cancellation category, retryability, details, and a bounded diagnostic of structured failure information are retained. |
+| `Resolve_child_workflow_start` with `Succeeded` | `Resolve_child_workflow_start` with `Ok run_id` | The run ID advances the pending child lifecycle but deliberately does not resolve its future. |
+| `Resolve_child_workflow_start` with `Failed` or `Cancelled` | `Resolve_child_workflow_start` with `Error` | The pending child is retired immediately with a typed child-workflow or cancellation error, so a rejected start cannot remain pending forever. |
+| `Resolve_child_workflow` with `Completed` | `Resolve_child_workflow` with `Ok payload` | The terminal payload (including the canonical null payload) resolves the child only after a successful start acknowledgment. |
+| `Resolve_child_workflow` with `Failed` or `Cancelled` | `Resolve_child_workflow` with `Error` | Child failure identity, retry state, details, cancellation category, and the bounded recursive diagnostic are retained. |
 | `Fire_timer` | `Fire_timer` | The exact sequence is retained. |
 | `Cancel_workflow` | `Cancel_workflow` | The reason is retained in `translated_activation.cancellation_reason`. |
 | `Remove_from_cache` | `Remove_from_cache` | The message and eviction reason are retained in `translated_activation.cache_removal`. |
@@ -86,13 +92,14 @@ the complete result before returning it to the bridge.
 | `Fail_workflow` | `Fail_workflow` with an OCaml application or cancellation failure | Details are copied and the runtime category/retryability are retained. Recursive Core-only fields are represented in a bounded diagnostic until the runtime has a richer error type. |
 | `Cancel_workflow_execution` | `Cancel_workflow_execution` | This is already an exact marker. |
 
-Child starts now have a closed semantic command record and are converted to
-Core without fabricating language-level options. The native worker gates that
-completion before submission because the native runtime still does not
-represent the child-start resolution job; a workflow that waits for a child
-result remains outside this first native execution slice. That missing
-resolution path is intentionally rejected rather than silently treating a
-started child as completed.
+Child starts and both Core child-resolution jobs now have closed semantic
+records. The runtime keeps one child state per sequence: the start
+acknowledgment stores the assigned run ID, a start failure removes the pending
+future, and a terminal result removes it only after a successful start. A
+terminal result received before its start acknowledgment is a bridge defect.
+This two-stage lifecycle mirrors Core's event order and prevents a started
+child from being mistaken for a completed child or a failed start from being
+left suspended indefinitely.
 
 ### Activity command defaults and options
 
@@ -117,11 +124,11 @@ value earlier with `Invalid_argument`, because a negative duration is a
 programmer configuration defect rather than an operational workflow failure.
 
 These errors are a planned compatibility boundary, not a hidden drop path.
-Activity scheduling is enabled because the runtime, protocol, and translator
-now carry the complete Core record. Child-start translation is enabled for the
-fields exposed by the current runtime, while future child options and the
-child-resolution job must be represented in the protocol and tested on both
-sides before the adapter accepts them.
+Activity scheduling and child lifecycle translation are enabled because the
+runtime, protocol, and translator carry every field currently exposed by the
+OCaml API. Future child options remain explicit Core defaults until the public
+OCaml surface models them; a non-default Core value is still rejected rather
+than silently discarded.
 
 ## Error and ownership rules
 
@@ -147,10 +154,10 @@ not share those values between Domains and does not expose native pointers.
 ## Verification
 
 `test/runtime/test_native_execution.ml` covers metadata and job ordering,
-initialization retention, activity success/failure/cancellation, timers,
-eviction, terminal completion, duplicate/unknown sequences, payload
-validation, and explicit unsupported commands. These tests run entirely in
-OCaml. The public native worker now invokes this adapter through the
-owner-Domain supervisor; the live Compose acceptance remains the gate for
-proving the mapping against Temporal Server and for the future two-public-
-binary result test.
+initialization retention, activity success/failure/cancellation, child
+start/terminal ordering and failure propagation, timers, eviction, terminal
+completion, duplicate/unknown sequences, payload validation, and explicit
+unsupported commands. These tests run entirely in OCaml. The public native
+worker now invokes this adapter through the owner-Domain supervisor; the live
+Compose acceptance remains the gate for proving the mapping against Temporal
+Server and for the two-public-binary child result test.

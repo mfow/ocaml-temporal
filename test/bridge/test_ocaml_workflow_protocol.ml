@@ -25,6 +25,23 @@ let require_error = function
   | Error _ -> ()
   | Ok _ -> failwith "expected workflow protocol validation to fail"
 
+(** Requires a malformed activation to return the stable semantic error record.
+    Checking the code, path, and message guards the OCaml side against
+    accidentally leaking parser exceptions or returning an unstructured
+    failure that the Rust bridge could not classify. *)
+let require_invalid_activation name =
+  match
+    Protocol.decode_activation
+      (fixture [ "invalid"; name ^ ".json" ])
+  with
+  | Error error ->
+      let view = Protocol.error_view error in
+      if view.code <> "invalid_message" then
+        failwith (name ^ " returned a non-protocol error code");
+      if view.path = "" then failwith (name ^ " omitted its validation path");
+      if view.message = "" then failwith (name ^ " omitted its safe diagnostic")
+  | Ok _ -> failwith (name ^ " was accepted")
+
 (** Compares normalized JSON output exactly. *)
 let check_string label expected actual =
   if not (String.equal expected actual) then failwith (label ^ " differed")
@@ -44,7 +61,13 @@ let test_valid_activations () =
       in
       check_string name expected (unwrap (Protocol.encode_activation value));
       ignore (unwrap (Protocol.decode_activation expected)))
-    [ "activation"; "eviction"; "realistic-initialize"; "child-initialize" ]
+    [
+      "activation";
+      "eviction";
+      "realistic-initialize";
+      "child-initialize";
+      "child-resolution";
+    ]
 
 (** Verifies every first-slice completion command and command ordering. *)
 let test_valid_completion () =
@@ -106,6 +129,17 @@ let test_invalid_documents () =
       "activation-invalid-base64";
       "activation-missing-field";
       "activation-eviction-mixed";
+    ];
+  List.iter require_invalid_activation
+    [
+      "activation-child-start-missing-run-id";
+      "activation-child-start-empty-run-id";
+      "activation-child-start-invalid-cause";
+      "activation-child-terminal-missing-payload";
+      "activation-child-terminal-missing-failure-info";
+      "activation-child-failure-empty-workflow-id";
+      "activation-child-failure-negative-event-id";
+      "activation-child-unknown-terminal-kind";
     ];
   List.iter
     (fun name ->

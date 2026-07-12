@@ -131,6 +131,13 @@ let process_job execution = function
       match Workflow_context_store.resolve_activity execution.context ~seq result with
       | Ok () -> ()
       | Error error -> fail execution error)
+  | Resolve_child_workflow_start { seq; result } -> (
+      match
+        Workflow_context_store.resolve_child_workflow_start execution.context
+          ~seq result
+      with
+      | Ok () -> ()
+      | Error error -> fail execution error)
   | Resolve_child_workflow { seq; result } -> (
       match
         Workflow_context_store.resolve_child_workflow execution.context ~seq result

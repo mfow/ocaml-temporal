@@ -18,12 +18,13 @@ message immediately would create a large unverified surface.
 Rust and OCaml implement the same closed semantic types and validate all input
 and output. Rust converts only at the official pinned Core protobuf boundary.
 The initial activation surface includes initialization, activity resolution,
-timer firing, cancellation, and eviction. The completion surface includes
-remote activities, child-workflow starts, timers, and terminal workflow
-commands. Child-start fields not exposed by the runtime are represented by
-explicit Core defaults and rejected if non-default values appear on reverse
-conversion; child result-resolution jobs remain a later activation-surface
-addition.
+timer firing, cancellation, eviction, and the two child-workflow resolution
+jobs. The completion surface includes remote activities, child-workflow starts,
+timers, and terminal workflow commands. Child-start fields not exposed by the
+runtime are represented by explicit Core defaults and rejected if non-default
+values appear on reverse conversion. Child start and terminal result are
+intentionally separate jobs sharing one sequence; the OCaml runtime stores the
+start run ID and accepts the terminal result only after that acknowledgment.
 
 Normal first-task initialization preserves headers, identity, parent and root
 execution identity for child workflows, three workflow timeouts, first execution run ID, start time, priority, attempt, arguments, workflow

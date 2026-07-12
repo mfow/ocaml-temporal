@@ -92,6 +92,15 @@ type failure_info =
       activity_id : string;
       retry_state : retry_state;
     }
+  | Child_workflow of {
+      namespace : string;
+      workflow_id : string;
+      run_id : string;
+      workflow_type : string;
+      initiated_event_id : int64;
+      started_event_id : int64;
+      retry_state : retry_state;
+    }
 
 (** Recursive Temporal failure shared by activity resolution and workflow
     failure commands. *)
@@ -109,6 +118,27 @@ type activity_resolution =
   | Completed of payload option
   | Failed of failure
   | Cancelled of failure
+
+(** The start acknowledgment is separate from terminal child completion. A
+    successful start carries a run ID and leaves the child future pending. *)
+type child_workflow_start_failure_cause =
+  | Child_start_unspecified
+  | Child_start_workflow_already_exists
+
+type child_workflow_start_resolution =
+  | Child_start_succeeded of string
+  | Child_start_failed of {
+      workflow_id : string;
+      workflow_type : string;
+      cause : child_workflow_start_failure_cause;
+    }
+  | Child_start_cancelled of failure
+
+(** Terminal result delivered after a child start has succeeded. *)
+type child_workflow_resolution =
+  | Child_completed of payload option
+  | Child_failed of failure
+  | Child_cancelled of failure
 
 (** Exact eviction reasons in the pinned Temporal Core revision. *)
 type eviction_reason =
@@ -135,6 +165,14 @@ type activation_job =
       context : initialize_context option;
     }
   | Resolve_activity of { seq : int64; result : activity_resolution }
+  | Resolve_child_workflow_start of {
+      seq : int64;
+      result : child_workflow_start_resolution;
+    }
+  | Resolve_child_workflow of {
+      seq : int64;
+      result : child_workflow_resolution;
+    }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow of { reason : string }
   | Remove_from_cache of { message : string; reason : eviction_reason }

@@ -26,7 +26,7 @@ The remaining reference documents are useful when changing one subsystem:
 - [OCaml activity protocol adapter](reference/activity-protocol.md) documents
   remote activity tasks, completions, and opaque task-token ownership.
 - [Native workflow execution](reference/native-worker-execution.md) documents
-  the current native worker command slice and its child-workflow gate.
+  the current native worker command slice and two-stage child resolution.
 - [Native activity execution](reference/native-activity-execution.md) documents
   activity dispatch and completion retention.
 - [OCaml SDK logging](reference/observability.md) documents log sources, tags,
@@ -36,6 +36,9 @@ The remaining reference documents are useful when changing one subsystem:
 - [Two-OCaml-binary acceptance design](reference/two-ocaml-binary-e2e-acceptance.md)
   records the planned live driver/worker result test. Its scaffold is not a
   passing live acceptance test yet.
+- [Live acceptance coverage](reference/live-acceptance-coverage.md) separates
+  synthetic evidence, the current real-server lifecycle smoke, and planned
+  two-binary workflow assertions.
 - [Quality and security gates](reference/quality-gates.md) documents pinned
   scanners and the checks run locally and in CI.
 - [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
@@ -73,7 +76,7 @@ opaque bytes with encoding metadata.
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
 | Public native worker | Focused adapter, supervisor, Rust bridge, and lifecycle tests | The live Compose target does not yet run a workflow-result driver and worker |
 | Public native client | Typed start/wait protocol and lifecycle tests | No enabled two-process Compose result assertion yet |
-| Child workflows | Scheduling and command translation in the synthetic/runtime layers | Native parent completion is gated until child-resolution activations are implemented |
+| Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests | The live Compose acceptance still needs to prove a parent awaiting a child against Temporal Server |
 | Temporal/PostgreSQL stack | `make test-temporal-integration` starts and health-checks real containers | Current assertion is Core client/worker lifecycle, not a workflow result |
 
 This distinction prevents a green local synthetic test from being read as a

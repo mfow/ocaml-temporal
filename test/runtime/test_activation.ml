@@ -1,11 +1,20 @@
 module Activation = Temporal_runtime.Activation
 module Execution = Temporal_runtime.Execution
+module Future_store = Temporal_runtime.Future_store
+module Scheduler = Temporal_runtime.Scheduler
+module Workflow_context_store = Temporal_runtime.Workflow_context_store
 
 (** Builds a string payload through the public codec for activation fixtures. *)
 let payload value =
   match Temporal.Codec.encode Temporal.Codec.string value with
   | Ok payload -> payload
   | Error error -> failwith (Temporal.Error.message error)
+
+(** Simulates Core's successful child-start acknowledgment. The run ID is an
+    internal lifecycle fact; tests use a stable value while the public future
+    remains pending until the terminal child result arrives. *)
+let child_started seq =
+  Activation.Resolve_child_workflow_start { seq; result = Ok "child-run" }
 
 (** Remote activity called by the greeting workflow fixture. *)
 let greeting =
@@ -402,6 +411,7 @@ let test_child_workflow_completion () =
     [ Activation.Complete_workflow (payload "Hello Ada") ]
     (Execution.activate execution
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Ok (payload "Hello Ada") };
        ])
@@ -451,6 +461,7 @@ let test_child_workflow_concurrency_and_decoding () =
   expect "one concurrent result leaves parent pending" []
     (Execution.activate execution
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Ok (payload "Hello Ada") };
        ]);
@@ -466,6 +477,7 @@ let test_child_workflow_concurrency_and_decoding () =
   match
     Execution.activate invalid
       [
+        child_started 1L;
         Activation.Resolve_child_workflow
           {
             seq = 1L;
@@ -589,6 +601,7 @@ let test_child_workflow_id_boundary () =
     [ Activation.Complete_workflow (payload "Hello Ada") ]
     (Execution.activate execution
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Ok (payload "Hello Ada") };
        ])
@@ -596,12 +609,40 @@ let test_child_workflow_id_boundary () =
 (** Remote child failures retain their typed error, while unknown or repeated
     sequence numbers become bridge defects and never resolve a future twice. *)
 let test_child_workflow_failures_and_sequence_ownership () =
+  let premature = Execution.start child_parent_workflow "Ada" in
+  ignore (Execution.activate premature [ Activation.Start_workflow ]);
+  (match
+     Execution.activate premature
+       [ Activation.Resolve_child_workflow
+           { seq = 1L; result = Ok (payload "too early") } ]
+   with
+  | [ Activation.Fail_workflow error ] ->
+      expect "child resolved before start" "bridge" (Temporal.Error.kind error)
+  | _ -> failwith "child result was accepted before start acknowledgment");
+  let failed_start = Execution.start child_parent_workflow "Ada" in
+  ignore (Execution.activate failed_start [ Activation.Start_workflow ]);
+  let start_error =
+    Temporal_base.Error.make ~non_retryable:true ~category:`Child_workflow
+      ~message:"child start rejected" ()
+  in
+  (match
+     Execution.activate failed_start
+       [
+         Activation.Resolve_child_workflow_start
+           { seq = 1L; result = Error start_error };
+       ]
+   with
+  | [ Activation.Fail_workflow error ] ->
+      expect "child start failure" "child start rejected"
+        (Temporal.Error.message error)
+  | _ -> failwith "child start failure did not retire the pending child");
   let remote_failure = Execution.start child_parent_workflow "Ada" in
   ignore (Execution.activate remote_failure [ Activation.Start_workflow ]);
   let child_error = Temporal.Error.defect ~message:"child failed" in
   (match
      Execution.activate remote_failure
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Error child_error };
        ]
@@ -626,6 +667,7 @@ let test_child_workflow_failures_and_sequence_ownership () =
   ignore
     (Execution.activate duplicate
        [
+         child_started 1L;
          Activation.Resolve_child_workflow
            { seq = 1L; result = Ok (payload "Hello Ada") };
        ]);
@@ -639,6 +681,122 @@ let test_child_workflow_failures_and_sequence_ownership () =
   | [ Activation.Fail_workflow error ] ->
       expect "duplicate child sequence" "bridge" (Temporal.Error.kind error)
   | _ -> failwith "duplicate child resolution was accepted"
+
+(** Ensures a conflicting second start result cannot consume the child resolver.
+    The context must report a bridge error, leave the future pending, and still
+    accept the legitimate terminal result that follows. *)
+let test_child_start_conflicting_result_keeps_future_pending () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let future =
+    Workflow_context_store.start_child_workflow context ~id:"child-id"
+      ~name:"child-workflow" ~input:(payload "Ada")
+      ~decode:(fun value -> Ok value)
+  in
+  (match
+     Workflow_context_store.resolve_child_workflow_start context ~seq:1L
+       (Ok "child-run")
+   with
+  | Ok () -> ()
+  | Error _ -> failwith "initial child start acknowledgment was rejected");
+  let conflicting_error =
+    Temporal_base.Error.make ~non_retryable:true ~category:`Child_workflow
+      ~message:"conflicting child start" ()
+  in
+  (match
+     Workflow_context_store.resolve_child_workflow_start context ~seq:1L
+       (Error conflicting_error)
+   with
+  | Error error ->
+      expect "conflicting child start kind" "bridge"
+        (Temporal.Error.kind error)
+  | Ok () -> failwith "conflicting child start was accepted");
+  (match Future_store.peek future with
+  | None -> ()
+  | Some _ -> failwith "conflicting child start resolved the child future");
+  (match
+     Workflow_context_store.resolve_child_workflow context ~seq:1L
+       (Ok (payload "Hello Ada"))
+   with
+  | Ok () -> ()
+  | Error _ -> failwith "valid terminal child result was rejected after conflict");
+  match Future_store.peek future with
+  | Some (Ok result) when Bytes.equal result.data (payload "Hello Ada").data ->
+      Workflow_context_store.shutdown context
+  | Some (Error error) ->
+      failwith ("terminal child result failed: " ^ Temporal.Error.message error)
+  | Some (Ok _) -> failwith "terminal child result payload was not preserved"
+  | None -> failwith "terminal child result did not resolve the child future"
+
+(** Proves lifecycle-order and duplicate-resolution defects are non-mutating.
+    A terminal result received before the start acknowledgment leaves its
+    resolver pending; a duplicate start cannot replace the first run ID; and a
+    duplicate terminal result cannot overwrite the already-decoded payload. *)
+let test_child_resolution_rejections_preserve_lifecycle_state () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let future =
+    Workflow_context_store.start_child_workflow context ~id:"ordered-child"
+      ~name:"child-workflow" ~input:(payload "Ada")
+      ~decode:(fun value -> Ok value)
+  in
+  (match
+     Workflow_context_store.resolve_child_workflow context ~seq:1L
+       (Ok (payload "too early"))
+   with
+  | Error error ->
+      expect "terminal-before-start kind" "bridge" (Temporal.Error.kind error)
+  | Ok () -> failwith "terminal-before-start was accepted");
+  (match Future_store.peek future with
+  | None -> ()
+  | Some _ -> failwith "terminal-before-start changed the pending future");
+  (match
+     Workflow_context_store.resolve_child_workflow_start context ~seq:1L
+       (Ok "child-run")
+   with
+  | Ok () -> ()
+  | Error _ -> failwith "valid start acknowledgment was rejected");
+  let conflicting_error =
+    Temporal_base.Error.make ~non_retryable:true ~category:`Child_workflow
+      ~message:"conflicting child start" ()
+  in
+  (match
+     Workflow_context_store.resolve_child_workflow_start context ~seq:1L
+       (Error conflicting_error)
+   with
+  | Error error ->
+      expect "duplicate start kind" "bridge" (Temporal.Error.kind error)
+  | Ok () -> failwith "duplicate start acknowledgment was accepted");
+  (match Future_store.peek future with
+  | None -> ()
+  | Some _ -> failwith "duplicate start changed the pending future");
+  let result = payload "Hello Ada" in
+  (match
+     Workflow_context_store.resolve_child_workflow context ~seq:1L
+       (Ok result)
+   with
+  | Ok () -> ()
+  | Error _ -> failwith "valid terminal result was rejected");
+  (match Future_store.peek future with
+  | Some (Ok value) when Bytes.equal value.data result.data -> ()
+  | Some (Error error) ->
+      failwith ("terminal result failed: " ^ Temporal.Error.message error)
+  | Some (Ok _) -> failwith "terminal result was decoded differently"
+  | None -> failwith "terminal result did not resolve the future");
+  (match
+     Workflow_context_store.resolve_child_workflow context ~seq:1L
+       (Ok (payload "overwritten"))
+   with
+  | Error error ->
+      expect "duplicate terminal kind" "bridge" (Temporal.Error.kind error)
+  | Ok () -> failwith "duplicate terminal result was accepted");
+  (match Future_store.peek future with
+  | Some (Ok value) when Bytes.equal value.data result.data ->
+      Workflow_context_store.shutdown context
+  | Some (Error error) ->
+      failwith ("duplicate terminal changed the result: " ^ Temporal.Error.message error)
+  | Some (Ok _) -> failwith "duplicate terminal overwrote the result"
+  | None -> failwith "duplicate terminal removed the resolved result")
 
 (** Verifies cancellation emits once and cache removal releases blocked state
     without producing a workflow command. *)
@@ -670,4 +828,6 @@ let () =
   test_child_workflow_validation ();
   test_child_workflow_id_boundary ();
   test_child_workflow_failures_and_sequence_ownership ();
+  test_child_start_conflicting_result_keeps_future_pending ();
+  test_child_resolution_rejections_preserve_lifecycle_state ();
   test_cancel_and_evict ()

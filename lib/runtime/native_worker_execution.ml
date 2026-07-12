@@ -108,11 +108,23 @@ type registered_definition =
       registered_definition
 
 (** Bounds diagnostics that may contain application codec messages before they
-    enter Logs or a Temporal failure. The suffix makes truncation explicit. *)
+    enter Logs or a Temporal failure. Invalid UTF-8 is replaced because protocol
+    string fields are strict UTF-8; truncation never splits a multibyte code
+    unit, matching the activity adapter. *)
 let bounded_message value =
   let maximum = 1_024 in
-  if String.length value <= maximum then value
-  else String.sub value 0 (maximum - 3) ^ "..."
+  let fallback = "invalid workflow diagnostic" in
+  if not (Temporal_base.Codec.valid_utf_8 value) then fallback
+  else if String.length value <= maximum then value
+  else
+    let rec prefix length =
+      if length <= 0 then fallback
+      else
+        let candidate = String.sub value 0 length in
+        if Temporal_base.Codec.valid_utf_8 candidate then candidate ^ "..."
+        else prefix (length - 1)
+    in
+    prefix (maximum - 3)
 
 (** Bounds arbitrary source classifications before they reach the stable
     adapter error view. *)

@@ -85,13 +85,15 @@ queued history from being cancelled while looking like a successful replay.
 
 When abandonment is intentional, `dispose` is the separate destructive path.
 It initiates Core shutdown, force-completes queued or leased work, joins the
-poll lane, and attempts terminal finalization twice. It must never be used as
-replay success evidence. A poll-lane failure performs the same
-force-completion cleanup before returning the worker and typed error. If both
-terminal finalization attempts fail, `dispose` returns the worker and a
-`Finalization` error together; the caller must retry disposal or otherwise
-retain that owner. The bridge never silently drops the unfinalized native
-graph.
+poll lane, and attempts terminal finalization twice. Each force-completed
+workflow identity is retired before its asynchronous Core failure is awaited;
+late duplicate workflow polls therefore cannot become new ledger entries in the
+snapshot/queue-drain window. It must never be used as replay success evidence.
+A poll-lane failure performs the same force-completion cleanup before returning
+the worker and typed error. If both terminal finalization attempts fail,
+`dispose` returns the worker and a `Finalization` error together; the caller
+must retry disposal or otherwise retain that owner. The bridge never silently
+drops the unfinalized native graph.
 
 ## Current evidence and limits
 

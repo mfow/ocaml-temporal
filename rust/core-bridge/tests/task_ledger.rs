@@ -1,5 +1,5 @@
 use ocaml_temporal_core_bridge::worker_bridge::{
-    ActivityAdmission, Admission, CompleteError, TaskLedger, bridge_task_types,
+    ActivityAdmission, Admission, AdmitError, CompleteError, TaskLedger, bridge_task_types,
 };
 
 /// A workflow activation is admitted once and remains outstanding until its
@@ -186,9 +186,22 @@ fn post_join_dispose_pass_harvests_late_poll_admissions() {
     assert_eq!(initial_workflows, vec!["initial-run".to_owned()]);
     assert_eq!(initial_activities, vec![initial_token.to_vec()]);
 
-    // A Core poll that was already in flight bypasses the draining admission
-    // check. The post-join pass must collect both task shapes once producers
-    // are known to have stopped.
+    // A same-identity poll racing after the snapshot is rejected before the
+    // lane can enqueue an `Ok` activation. This is why clearing retired
+    // tombstones at the completed join barrier cannot expose a queued
+    // duplicate.
+    assert_eq!(
+        ledger.admit_polled_workflow("initial-run"),
+        Err(AdmitError::Retired)
+    );
+    assert_eq!(
+        ledger.admit_polled_activity(initial_token, ActivityAdmission::Start),
+        Err(AdmitError::Retired)
+    );
+
+    // A Core poll that was already in flight bypasses the first disposal
+    // snapshot. The post-join pass must collect both new task shapes once
+    // producers are known to have stopped.
     assert_eq!(ledger.admit_polled_workflow("late-run"), Ok(Admission::New));
     let late_token = b"late-activity-token";
     assert_eq!(
@@ -200,7 +213,79 @@ fn post_join_dispose_pass_harvests_late_poll_admissions() {
     assert_eq!(late_workflows, vec!["late-run".to_owned()]);
     assert_eq!(late_activities, vec![late_token.to_vec()]);
     assert_eq!(ledger.outstanding(), 0);
+    assert_eq!(
+        ledger.admit_polled_workflow("late-run"),
+        Err(AdmitError::Retired)
+    );
+    assert_eq!(
+        ledger.admit_polled_activity(late_token, ActivityAdmission::Start),
+        Err(AdmitError::Retired)
+    );
     assert!(ledger.can_finalize());
+}
+
+/// A late poll can interleave after the first disposal snapshot but before its
+/// ready queue is drained. The queue reconciliation must retire that identity
+/// before awaiting Core, so a duplicate poll cannot be admitted as a new task
+/// and completed again by the post-join pass.
+#[test]
+fn disposal_snapshot_queue_boundary_retires_workflow_and_activity_once() {
+    let mut ledger = TaskLedger::new();
+    let initial_token = b"initial-dispose-token";
+    assert_eq!(
+        ledger.admit_workflow("initial-dispose-run"),
+        Ok(Admission::New)
+    );
+    assert_eq!(
+        ledger.admit_activity(initial_token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    ledger.begin_draining();
+
+    // Snapshot phase: both initial identities become retired before any late
+    // poll result can be reconciled.
+    let (initial_workflows, initial_activities) = ledger.take_all_outstanding();
+    assert_eq!(initial_workflows, vec!["initial-dispose-run".to_owned()]);
+    assert_eq!(initial_activities, vec![initial_token.to_vec()]);
+    assert_eq!(
+        ledger.admit_polled_workflow("initial-dispose-run"),
+        Err(AdmitError::Retired)
+    );
+    assert_eq!(
+        ledger.admit_polled_activity(initial_token, ActivityAdmission::Start),
+        Err(AdmitError::Retired)
+    );
+
+    // Deterministic boundary injection: these represent poll results that
+    // were admitted and queued after the snapshot, but before queue drain.
+    let late_token = b"late-dispose-token";
+    assert_eq!(
+        ledger.admit_polled_workflow("late-dispose-run"),
+        Ok(Admission::New)
+    );
+    assert_eq!(
+        ledger.admit_polled_activity(late_token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+
+    // Queue reconciliation retires each late identity before its asynchronous
+    // force-failure. Calling it a second time models a duplicate queue entry;
+    // the next poll is still rejected by the tombstone rather than creating a
+    // second Core completion obligation.
+    ledger.retire_workflow_for_dispose("late-dispose-run");
+    ledger.retire_activity_for_dispose(late_token);
+    ledger.retire_workflow_for_dispose("late-dispose-run");
+    ledger.retire_activity_for_dispose(late_token);
+
+    assert_eq!(
+        ledger.admit_polled_workflow("late-dispose-run"),
+        Err(AdmitError::Retired)
+    );
+    assert_eq!(
+        ledger.admit_polled_activity(late_token, ActivityAdmission::Start),
+        Err(AdmitError::Retired)
+    );
+    assert_eq!(ledger.outstanding(), 0);
 }
 
 /// A second lease for the same identity is rejected rather than silently

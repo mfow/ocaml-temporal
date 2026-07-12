@@ -27,7 +27,11 @@ for abandoned work, and any terminal poll-lane failure retains the owner and
 the typed error after best-effort ledger cleanup. Disposal retries Core's
 terminal finalization once and reports the second failure rather than dropping
 the still-owned native graph, so a caller can release a competing owner and
-retry safely. The replay worker owns no OCaml pointer or callback. Focused
+retry safely. The disposal ledger now retires every force-completed workflow
+run ID and activity token before awaiting Core, preventing a late poll from
+being admitted as a new identity between the initial snapshot and ready-queue
+drain. Retired identities remain bounded tombstones until both poll lanes join,
+then are cleared. The replay worker owns no OCaml pointer or callback. Focused
 Rust tests cover round trips, rejection paths, construction, clean shutdown,
 one-history admission/completion, the typed precondition for
 finalize after feeder close but before draining, and retained-owner disposal

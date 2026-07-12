@@ -5,7 +5,7 @@
 //! identity, completion, and worker finalization cannot race through separate
 //! ad-hoc state machines.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use temporalio_common::protos::coresdk::{
@@ -669,6 +669,14 @@ impl PollLanes {
                 )));
             }
         }
+        // Both producer handles are consumed at this point. No future poll
+        // can race the ledger, so disposal tombstones no longer provide a
+        // safety property and must be released even if the caller skips a
+        // redundant post-join force-completion pass.
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear_dispose_retired();
         first_error.map_or(Ok(()), Err)
     }
 
@@ -705,8 +713,6 @@ impl PollLanes {
     /// in flight can publish a task between those two points. Errors from Core
     /// are ignored: dispose must still release the process graph.
     pub async fn force_complete_outstanding_for_dispose(&mut self) {
-        use std::collections::HashSet;
-
         // Complete ledger debt first so Core can finish poll loops that are
         // blocked waiting for outstanding-task permits during shutdown.
         let (workflow_ids, activity_tokens) = self
@@ -714,6 +720,7 @@ impl PollLanes {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take_all_outstanding();
+        let mut completed_workflow_ids: HashSet<String> = workflow_ids.iter().cloned().collect();
         for run_id in &workflow_ids {
             force_fail_undeliverable_workflow(
                 self.worker.as_ref(),
@@ -724,20 +731,27 @@ impl PollLanes {
         }
         let mut completed_activity_tokens: HashSet<Vec<u8>> = HashSet::new();
         for task_token in activity_tokens {
+            completed_activity_tokens.insert(task_token.clone());
             force_fail_undeliverable_activity(
                 self.worker.as_ref(),
                 &task_token,
                 "runtime dispose retired outstanding activity lease",
             )
             .await;
-            completed_activity_tokens.insert(task_token);
         }
 
         while let Some(ready) = self.workflow_signal.take(&mut self.workflow_ready) {
             if let Ok(activation) = ready {
                 // Already force-failed above if the run was still in the
                 // ledger; a second completion for the same run_id is unsafe.
-                if !workflow_ids.iter().any(|id| id == &activation.run_id) {
+                // Retire before awaiting Core so a same-identity poll that
+                // races this queue drain is rejected rather than admitted as
+                // a new obligation for the post-join pass.
+                if Self::claim_dispose_workflow_identity(
+                    &self.ledger,
+                    &mut completed_workflow_ids,
+                    &activation.run_id,
+                ) {
                     force_fail_undeliverable_workflow(
                         self.worker.as_ref(),
                         &activation.run_id,
@@ -752,7 +766,17 @@ impl PollLanes {
                 // Skip pure cancel updates and any token already completed
                 // from the ledger so dispose cannot double-complete Core.
                 let is_cancel = matches!(task.variant, Some(activity_task::Variant::Cancel(_)));
-                if is_cancel || completed_activity_tokens.contains(&task.task_token) {
+                // Cancellation updates do not own a second Core completion.
+                // For starts, retire before awaiting Core for the same reason
+                // as workflows: a duplicate poll cannot become a fresh
+                // admission while this completion is in flight.
+                if is_cancel
+                    || !Self::claim_dispose_activity_identity(
+                        &self.ledger,
+                        &mut completed_activity_tokens,
+                        &task.task_token,
+                    )
+                {
                     continue;
                 }
                 force_fail_undeliverable_activity(
@@ -761,9 +785,48 @@ impl PollLanes {
                     "runtime dispose drained undelivered activity task",
                 )
                 .await;
-                completed_activity_tokens.insert(task.task_token.clone());
             }
         }
+    }
+
+    /// Claims one workflow identity for this disposal pass and marks it
+    /// retired in the shared ledger before any asynchronous Core completion.
+    ///
+    /// The local set prevents duplicate queue entries from causing duplicate
+    /// Core completions in one pass; the ledger tombstone closes the wider
+    /// window in which a poll lane could admit the same identity concurrently.
+    fn claim_dispose_workflow_identity(
+        ledger: &Mutex<TaskLedger>,
+        completed: &mut HashSet<String>,
+        run_id: &str,
+    ) -> bool {
+        if !completed.insert(run_id.to_owned()) {
+            return false;
+        }
+        ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retire_workflow_for_dispose(run_id);
+        true
+    }
+
+    /// Claims one activity start token for this disposal pass and marks it
+    /// retired before its best-effort Core completion is awaited. Cancellation
+    /// updates are filtered by the caller because they do not own completion
+    /// debt of their own.
+    fn claim_dispose_activity_identity(
+        ledger: &Mutex<TaskLedger>,
+        completed: &mut HashSet<Vec<u8>>,
+        task_token: &[u8],
+    ) -> bool {
+        if !completed.insert(task_token.to_vec()) {
+            return false;
+        }
+        ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retire_activity_for_dispose(task_token);
+        true
     }
 
     /// Sends a leased workflow completion to Core, then retires its debt.
@@ -1024,6 +1087,15 @@ async fn run_workflow_lane(
                     return;
                 }
             }
+            Err(error @ AdmitError::Retired) => {
+                // Disposal already force-failed this identity. A second poll
+                // with the same run ID is therefore diagnostic only: dropping
+                // it is safer than sending a duplicate Core completion.
+                drop(activation);
+                if !signal.enqueue(&sender, Err(PollLaneError::Admission(error))) {
+                    return;
+                }
+            }
             Err(error) => {
                 let run_id = activation.run_id.clone();
                 let reason = match error {
@@ -1032,6 +1104,7 @@ async fn run_workflow_lane(
                     AdmitError::UnknownActivityCancellation => {
                         "unexpected activity cancellation during workflow admission"
                     }
+                    AdmitError::Retired => unreachable!("retired workflow handled above"),
                 };
                 // InvalidIdentity / Draining still leave a Core poll debt that
                 // only a completion can retire. Force-fail that undeliverable
@@ -1172,6 +1245,9 @@ pub enum AdmitError {
     InvalidIdentity,
     /// Core supplied cancellation for an activity the bridge does not own.
     UnknownActivityCancellation,
+    /// Disposal already force-completed this identity, so a late duplicate
+    /// poll must be dropped rather than completed a second time.
+    Retired,
 }
 
 /// Converts one poll-lane failure into a bounded diagnostic category for the
@@ -1188,6 +1264,9 @@ pub fn public_poll_lane_error_message(error: &PollLaneError) -> &'static str {
         }
         PollLaneError::Admission(AdmitError::UnknownActivityCancellation) => {
             "Temporal worker poll lane received an unknown activity cancellation"
+        }
+        PollLaneError::Admission(AdmitError::Retired) => {
+            "Temporal worker poll lane received an identity already retired during disposal"
         }
         PollLaneError::DuplicateIdentity => {
             "Temporal worker poll lane received a duplicate task identity"
@@ -1231,6 +1310,14 @@ pub struct TaskLedger {
     phase: Phase,
     workflows: HashMap<String, bool>,
     activities: HashMap<Vec<u8>, ActivityState>,
+    /// Workflow identities force-completed during disposal. The tombstones
+    /// remain until both poll lanes join so a late duplicate result cannot be
+    /// admitted as a fresh completion obligation.
+    retired_workflows: HashSet<String>,
+    /// Activity start tokens force-completed during disposal. Like workflow
+    /// tombstones, these are bounded by the identities seen in one disposal
+    /// window and are cleared after all producers stop.
+    retired_activities: HashSet<Vec<u8>>,
 }
 
 /// Mutable delivery state associated with one activity completion debt.
@@ -1247,6 +1334,8 @@ impl TaskLedger {
             phase: Phase::Open,
             workflows: HashMap::new(),
             activities: HashMap::new(),
+            retired_workflows: HashSet::new(),
+            retired_activities: HashSet::new(),
         }
     }
 
@@ -1271,6 +1360,9 @@ impl TaskLedger {
     fn record_workflow(&mut self, run_id: &str) -> Result<Admission, AdmitError> {
         if run_id.is_empty() || run_id.len() > MAX_RUN_ID_BYTES {
             return Err(AdmitError::InvalidIdentity);
+        }
+        if self.retired_workflows.contains(run_id) {
+            return Err(AdmitError::Retired);
         }
         match self.workflows.entry(run_id.to_owned()) {
             Entry::Vacant(entry) => {
@@ -1319,6 +1411,9 @@ impl TaskLedger {
     ) -> Result<Admission, AdmitError> {
         if task_token.is_empty() || task_token.len() > MAX_TASK_TOKEN_BYTES {
             return Err(AdmitError::InvalidIdentity);
+        }
+        if self.retired_activities.contains(task_token) {
+            return Err(AdmitError::Retired);
         }
         match (kind, self.activities.get_mut(task_token)) {
             (ActivityAdmission::Start, Some(_)) => Ok(Admission::Duplicate),
@@ -1514,14 +1609,42 @@ impl TaskLedger {
         self.activities.remove(task_token);
     }
 
+    /// Removes one workflow identity and records that disposal has already
+    /// completed it. This operation is performed while the ledger mutex is
+    /// held, before the asynchronous Core failure is awaited, closing the
+    /// late-poll admission window without holding a lock across I/O.
+    pub fn retire_workflow_for_dispose(&mut self, run_id: &str) {
+        self.workflows.remove(run_id);
+        self.retired_workflows.insert(run_id.to_owned());
+    }
+
+    /// Removes one activity token and records that disposal has already
+    /// completed it. Cancellation-only notifications are filtered by the poll
+    /// lane before this method is called because they do not own a completion.
+    pub fn retire_activity_for_dispose(&mut self, task_token: &[u8]) {
+        self.activities.remove(task_token);
+        self.retired_activities.insert(task_token.to_vec());
+    }
+
+    /// Clears disposal tombstones after both poll producers have joined.
+    ///
+    /// No producer can admit another identity after that barrier, so retaining
+    /// these sets would only leak memory across repeated worker lifecycles.
+    fn clear_dispose_retired(&mut self) {
+        self.retired_workflows.clear();
+        self.retired_activities.clear();
+    }
+
     /// Takes every outstanding identity so dispose can force-fail each once.
     pub fn take_all_outstanding(&mut self) -> (Vec<String>, Vec<Vec<u8>>) {
-        let workflows = self.workflows.drain().map(|(run_id, _)| run_id).collect();
-        let activities = self
+        let workflows: Vec<String> = self.workflows.drain().map(|(run_id, _)| run_id).collect();
+        self.retired_workflows.extend(workflows.iter().cloned());
+        let activities: Vec<Vec<u8>> = self
             .activities
             .drain()
             .map(|(task_token, _)| task_token)
             .collect();
+        self.retired_activities.extend(activities.iter().cloned());
         (workflows, activities)
     }
 

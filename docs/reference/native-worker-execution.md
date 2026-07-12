@@ -154,13 +154,14 @@ and input fields represented by the protocol. Core child options not yet
 exposed by the OCaml runtime remain explicit defaults, but the two child
 resolution activations are decoded and validated losslessly. Start and
 terminal events share one Core sequence; only that exact pair is accepted. The
-live Compose gate includes the initial workflow/activity success path and one
-parent awaiting a successful child result, while child failure/cancellation and
-the remaining terminal/recovery scenarios still require real-server evidence.
-Activity commands are accepted
-only when their required identifiers, payloads, timeout policies, and
-cancellation options are present; a missing field is rejected in the same
-typed way.
+live Compose gate includes the initial workflow/activity success path, one
+parent awaiting a successful child result, one server-managed activity retry,
+and one typed non-retryable workflow-failure path. Exact-run cancellation,
+heartbeat and timeout behavior, child failure/cancellation, and the remaining
+terminal/recovery scenarios still require real-server evidence.
+Activity commands are accepted only when their required identifiers, payloads,
+timeout policies, and cancellation options are present; a missing field is
+rejected in the same typed way.
 
 ## Verification
 

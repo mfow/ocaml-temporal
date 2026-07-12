@@ -43,6 +43,9 @@ The remaining reference documents are useful when changing one subsystem:
   specifies the next controlled worker-replacement scenario, its exact
   assertions, diagnostic evidence, and fresh-volume cleanup rules. It is a
   design document, not live verification.
+- [Worker restart/replay diagnostic contract](reference/worker-restart-replay-diagnostics.md)
+  defines the payload-free normalized history and generation/replay records
+  used by the offline contract gate before the live controller exists.
 - [Feature coverage and implementation status](reference/feature-coverage.md)
   gives the short status reference and distinguishes live evidence, mock-only
   tests, partly live-tested native bridge support, and deferred features.
@@ -107,6 +110,7 @@ make test-runtime
 make verify
 make quality
 make license-check
+make test-temporal-worker-restart
 make test-temporal-integration
 ```
 
@@ -121,6 +125,11 @@ empty by default so CI keeps its normal parallelism.
 For the real server smoke, the Makefile owns Compose project selection,
 readiness checks, failure logs, and volume cleanup; do not run the fixture's
 Compose file from the repository root.
+
+`make test-temporal-worker-restart` is deliberately different from the live
+integration command: it uses no Docker and validates only the normalized
+history/replay diagnostic contract and its rejection paths. It must not be
+used as evidence that a worker was restarted or that Temporal replay occurred.
 
 ## Terms used in this project
 

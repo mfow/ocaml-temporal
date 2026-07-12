@@ -37,7 +37,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -199,6 +199,17 @@ test-temporal-integration: test-temporal-config
 # without reading the broader integration target. It shares the same isolated
 # lifecycle and therefore cannot leave a second Temporal stack behind.
 test-temporal-two-binary: test-temporal-integration
+
+# The live restart/replay Compose scenario is intentionally not enabled until
+# the worker exposes activation replay metadata and a strict Temporal history
+# adapter exists. Keep this public target useful in the meantime by running
+# the Docker-free contract gate; it validates the exact normalized documents
+# and rejection cases that the eventual controller will consume, without
+# claiming that a worker was restarted or that replay occurred.
+test-temporal-worker-restart: test-temporal-worker-restart-contract
+
+test-temporal-worker-restart-contract:
+	sh test/integration/temporal/scripts/test-restart-replay-contract.sh
 
 test-unit:
 	$(RUN) dune runtest test/unit test/smoke

@@ -15,7 +15,10 @@ use std::sync::mpsc::{
 };
 use std::time::Duration;
 use temporalio_client::{Connection, ConnectionOptions};
-use temporalio_common::protos::coresdk::ActivityHeartbeat as CoreActivityHeartbeat;
+use temporalio_common::protos::coresdk::{
+    ActivityHeartbeat as CoreActivityHeartbeat,
+    activity_task::{self, ActivityTask as CoreActivityTask},
+};
 use temporalio_sdk_core::{
     CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, WorkerConfig,
     WorkerVersioningStrategy,
@@ -927,7 +930,7 @@ impl Runtime {
         let semantic = match activity_protocol::task_from_core(&task) {
             Ok(semantic) => semantic,
             Err(error) => {
-                self.reject_activity_delivery(&task.task_token)?;
+                self.reject_unrepresentable_activity(&task)?;
                 return Err(core_conversion_failure(error));
             }
         };
@@ -937,9 +940,27 @@ impl Runtime {
                 Ok(encoded.into_bytes())
             }
             Err(error) => {
-                self.reject_activity_delivery(&task.task_token)?;
+                self.reject_unrepresentable_activity(&task)?;
                 Err(protocol_failure(error))
             }
+        }
+    }
+
+    /// Rejects an activity task that cannot cross the semantic protocol.
+    ///
+    /// Core's Start variant owns the activity's single completion debt and
+    /// must be failed so an unrepresentable task cannot block shutdown. A
+    /// Cancel variant is only an update to that Start; it has no independent
+    /// completion to fail, so dropping a malformed update preserves the
+    /// in-flight Start lease for the activity implementation.
+    fn reject_unrepresentable_activity(
+        &self,
+        task: &CoreActivityTask,
+    ) -> std::result::Result<(), Failure> {
+        if activity_task_owns_completion_debt(task) {
+            self.reject_activity_delivery(&task.task_token)
+        } else {
+            Ok(())
         }
     }
 
@@ -1157,6 +1178,16 @@ impl Runtime {
             None => STATUS_OK,
         }
     }
+}
+
+/// Reports whether a Core activity task owns the single completion debt for
+/// its opaque token. Cancellation notifications are deliberately excluded:
+/// they share the Start lease and must never be failed as a second completion.
+fn activity_task_owns_completion_debt(task: &CoreActivityTask) -> bool {
+    matches!(
+        task.variant.as_ref(),
+        Some(activity_task::activity_task::Variant::Start(_))
+    )
 }
 
 /// Drops Core away from OCaml's collector and reports completion when asked.

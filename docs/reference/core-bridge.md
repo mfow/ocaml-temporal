@@ -372,10 +372,13 @@ There is one deliberate pre-handoff exception. If a leased Core value cannot
 be converted to the closed semantic JSON protocol, OCaml never receives its
 run ID or task token and therefore cannot complete it. Rust generates exactly
 one workflow-task or activity failure for Core and retires the inaccessible
-lease on every outcome. A rejected generated completion remains a fatal worker
-error, but it cannot also leave a fabricated language-side debt that blocks
-shutdown forever. Regression tests cover this rule independently for workflow
-and activity conversion failures.
+lease on every outcome. For an activity cancellation, however, the task is an
+update to a previously leased Start and does not own another completion debt;
+an unrepresentable cancellation is dropped without completing the shared
+token. A rejected generated completion remains a fatal worker error, but it
+cannot also leave a fabricated language-side debt that blocks shutdown
+forever. Regression tests cover this rule independently for workflow and
+activity conversion failures, including the cancellation classification.
 
 There is also a post-handoff decode-failure path for version or implementation
 drift between the two strict decoders. OCaml preserves its original protocol

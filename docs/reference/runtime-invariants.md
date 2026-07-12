@@ -120,6 +120,11 @@ and bridge, read the [documentation guide](../README.md) first.
   lease. Only a cancellation that arrives after the start has completed is
   stale and may be discarded. This keeps cancellation delivery observable
   without allowing duplicate-token completion races.
+- If a Core activity task cannot be converted or encoded before it reaches the
+  OCaml adapter, Rust fails only an unrepresentable `Start`, because that is
+  the task that owns the completion debt. An unrepresentable `Cancel` is
+  dropped as an update; failing it through the activity-completion API would
+  consume the still-needed Start lease.
 - If OCaml cannot decode a successful poll, it returns the exact untouched
   Rust document to the private rejection ABI. Rust requires full semantic
   equality with retained handoff state before retiring the lease; changed IDs,

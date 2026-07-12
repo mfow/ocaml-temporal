@@ -3,6 +3,8 @@ use crate::activity_protocol::{
     ActivityCancel, ActivityCancelReason, ActivityStart, ActivityTask, ActivityTaskVariant,
 };
 use crate::workflow_protocol::{Activation, Timestamp, WorkflowExecution};
+use temporalio_common::protos::coresdk::activity_task as core_activity_task;
+use temporalio_common::protos::coresdk::activity_task::ActivityTask as CoreActivityTask;
 
 /// Builds the smallest ordinary activation needed to test retained identity
 /// without involving Temporal Core or a network worker.
@@ -205,4 +207,40 @@ fn cancellation_rejection_preserves_shared_start_document() {
         .expect("the shared start remains leased");
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0], start);
+}
+
+/// Conversion failures from the native poll path classify Cancel as a
+/// non-owning update, while an unrepresentable Start still owns the lease that
+/// must be failed before the worker can shut down.
+#[test]
+fn conversion_failure_classifies_cancel_without_start_completion_debt() {
+    let malformed_cancel = CoreActivityTask {
+        task_token: vec![0, 1, 2],
+        variant: Some(core_activity_task::activity_task::Variant::Cancel(
+            core_activity_task::Cancel {
+                reason: i32::MAX,
+                details: None,
+            },
+        )),
+    };
+    assert!(
+        activity_protocol::task_from_core(&malformed_cancel).is_err(),
+        "unknown cancellation reasons must fail semantic conversion"
+    );
+    assert!(!activity_task_owns_completion_debt(&malformed_cancel));
+
+    let unrepresentable_start = CoreActivityTask {
+        task_token: vec![0, 1, 2],
+        variant: Some(core_activity_task::activity_task::Variant::Start(
+            core_activity_task::Start {
+                is_local: true,
+                ..Default::default()
+            },
+        )),
+    };
+    assert!(
+        activity_protocol::task_from_core(&unrepresentable_start).is_err(),
+        "local activity tasks must fail semantic conversion"
+    );
+    assert!(activity_task_owns_completion_debt(&unrepresentable_start));
 }

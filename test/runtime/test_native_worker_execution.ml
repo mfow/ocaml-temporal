@@ -79,12 +79,24 @@ type source_error = { code : string; message : string }
     mutable fields are accessed by the adapter's serialized poll call in these
     tests. *)
 type fake_supervisor = {
+  (* Activations waiting to be leased in producer order. *)
   queue : Protocol.activation Queue.t;
+  (* Run IDs currently leased by the fake source and therefore requiring one
+     acknowledged completion. *)
   leased : (string, unit) Hashtbl.t;
+  (* Completions accepted by the fake source, newest first for assertions. *)
   completions : Protocol.completion list ref;
+  (* Optional source error returned by the next poll, modelling a lower-layer
+     semantic rejection whose lease has already been retired. *)
   poll_error : source_error option ref;
+  (* Number of poll errors observed; tests use this to prove the source-side
+     rejection path ran exactly once. *)
   rejected_poll_count : int ref;
+  (* One-shot completion rejection used to verify retained-completion retry
+     without rerunning workflow code. *)
   reject_next_completion : bool ref;
+  (* One-shot completion exception used to verify the adapter's cleanup guard
+     and explicit failure-completion fallback. *)
   raise_next_completion : bool ref;
 }
 

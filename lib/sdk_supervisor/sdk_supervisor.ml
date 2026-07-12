@@ -44,10 +44,11 @@ module Make (Backend : Backend) = struct
     | Shutdown_admission_failed of (unit, error) result
     | Shutdown_finished of (unit, error) result
 
-  (** Shared instance state. [shutdown_mutex] serializes terminal submission,
-      joining, and updates to [shutdown_progress]. [shutdown_finished] lets the
-      finalizer avoid spawning redundant cleanup after explicit closure. All
-      native graph access remains in [mailbox]. *)
+  (** Shared instance state. [shutdown_mutex] serializes only admission and
+      progress transitions; it must never be held across [Mailbox.await] or
+      [Mailbox.join], so [initiate_shutdown] cannot block behind full teardown.
+      [shutdown_finished] lets the finalizer skip redundant cleanup after
+      explicit closure. All native graph access remains in [mailbox]. *)
   type t = {
     mailbox : Mailbox.t;
     shutdown_mutex : Mutex.t;
@@ -147,46 +148,74 @@ module Make (Backend : Backend) = struct
         ()
 
   (** Closes operation admission synchronously without waiting for backend
-      teardown. This seam remains in the private supervisor library so tests
-      and future lifecycle orchestration can observe the linearization point. *)
+      teardown. Holds [shutdown_mutex] only for the short admission mutation so
+      a concurrent full [shutdown] cannot stall this call for the graceful
+      period. This seam remains in the private supervisor library so tests and
+      future lifecycle orchestration can observe the linearization point. *)
   let initiate_shutdown supervisor =
     with_mutex supervisor.shutdown_mutex (fun () ->
         initiate_shutdown_locked supervisor)
 
-  (** Performs shutdown, closes admissions, and joins exactly once. The mutex
-      covers the blocking sequence because concurrent shutdown callers must
-      await one admitted terminal request and observe one cached result rather
-      than attempt multiple Domain joins. *)
-  let shutdown supervisor =
+  (** Publishes one finished terminal result under the mutex. Concurrent
+      finishers may race after await; the first write wins and later callers
+      observe the same cached value. *)
+  let finish_shutdown supervisor result =
     with_mutex supervisor.shutdown_mutex (fun () ->
-        initiate_shutdown_locked supervisor;
+        (match supervisor.shutdown_progress with
+        | Shutdown_finished _ -> ()
+        | _ ->
+            supervisor.shutdown_progress <- Shutdown_finished result;
+            Atomic.set supervisor.shutdown_finished true);
         match supervisor.shutdown_progress with
-        | Shutdown_submitted pending ->
-            let result =
-              match Mailbox.await pending with
-              | Ok result -> result
-              | Error failure -> Error (mailbox_failure failure)
-            in
-            ignore (Mailbox.join supervisor.mailbox);
-            supervisor.shutdown_progress <- Shutdown_finished result;
-            Atomic.set supervisor.shutdown_finished true;
-            result
-        | Shutdown_admission_failed result ->
-            ignore (Mailbox.join supervisor.mailbox);
-            supervisor.shutdown_progress <- Shutdown_finished result;
-            Atomic.set supervisor.shutdown_finished true;
-            result
-        | Shutdown_finished result -> result
-        | Shutdown_open ->
-            invalid_arg "SDK supervisor shutdown did not submit a terminal request")
+        | Shutdown_finished finished -> finished
+        | _ -> result)
+
+  (** Snapshot of work still required after admission, taken only under the
+      mutex so await/join run with the lock released. *)
+  type shutdown_work =
+    | Shutdown_work_done of (unit, error) result
+    | Shutdown_work_await of (unit, error) result Mailbox.pending
+    | Shutdown_work_join of (unit, error) result
+
+  (** Performs shutdown, closes admissions, and joins exactly once. Concurrent
+      callers share one admitted reply ([Mailbox.await] supports multiple
+      waiters) and one idempotent [Mailbox.join]; the mutex is not held across
+      those waits so [initiate_shutdown] stays non-blocking. *)
+  let shutdown supervisor =
+    let work =
+      with_mutex supervisor.shutdown_mutex (fun () ->
+          initiate_shutdown_locked supervisor;
+          match supervisor.shutdown_progress with
+          | Shutdown_finished result -> Shutdown_work_done result
+          | Shutdown_submitted pending -> Shutdown_work_await pending
+          | Shutdown_admission_failed result -> Shutdown_work_join result
+          | Shutdown_open ->
+              invalid_arg
+                "SDK supervisor shutdown did not submit a terminal request")
+    in
+    match work with
+    | Shutdown_work_done result -> result
+    | Shutdown_work_await pending ->
+        let result =
+          match Mailbox.await pending with
+          | Ok result -> result
+          | Error failure -> Error (mailbox_failure failure)
+        in
+        ignore (Mailbox.join supervisor.mailbox);
+        finish_shutdown supervisor result
+    | Shutdown_work_join result ->
+        ignore (Mailbox.join supervisor.mailbox);
+        finish_shutdown supervisor result
 
   (** Schedules forgotten-instance cleanup on a system thread. A finalizer must
       not block while waiting for mailbox capacity or the owner Domain. The
       detached thread uses the ordinary serialized shutdown path. If creating
-      that thread is impossible, the finalizer runs [shutdown] inline as a last
-      resort: blocking the finalizer is preferable to [Mailbox.close] alone,
-      which never admits the terminal Backend.shutdown request and would leave
-      the native runtime/client/worker graph unreclaimed. *)
+      that thread is impossible, the finalizer only admits terminal shutdown
+      (non-blocking relative to owner join); it never takes the mailbox mutex
+      via [Mailbox.close], which would contradict the finalizer contract and
+      can raise [Sys_error] on an error-checking mutex already held by this
+      Domain. The runtime custom-block finalizer remains the last-resort native
+      reclaim path if the owner never drains. *)
   let cleanup_abandoned supervisor =
     if not (Atomic.get supervisor.shutdown_finished) then
       match
@@ -195,14 +224,8 @@ module Make (Backend : Backend) = struct
           supervisor
       with
       | _thread -> ()
-      | exception _ ->
-          (* Never block the finalizer Domain waiting on the mailbox owner
-             (which may be this Domain). Admit terminal shutdown without
-             awaiting, then close so an idle owner can drain and exit. The
-             runtime custom-block finalizer remains the last-resort native
-             reclaim path if the owner never joins. *)
-          (try initiate_shutdown supervisor with _ -> ());
-          Mailbox.close supervisor.mailbox
+      | exception _ -> (
+          try initiate_shutdown supervisor with _ -> ())
 
   (** Starts the mailbox first so backend construction itself occurs on the
       owner Domain. Failed initialization stops and joins that Domain before

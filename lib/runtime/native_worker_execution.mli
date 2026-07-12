@@ -93,10 +93,11 @@ module Make (Supervisor : SUPERVISOR) : sig
 
   (** Polls at most one activation, applies it to the deterministic execution
       selected by its run ID, and submits exactly one completion. Empty native
-      lanes return [Ok Not_ready]. Unsupported child-workflow commands, unknown
-      run IDs, and invalid initialization inputs are converted to typed
-      non-retryable workflow failures and reported as [Ok (Rejected _)] after
-      their lease is retired. *)
+      lanes return [Ok Not_ready]. Unknown run IDs and invalid initialization
+      inputs are converted to typed non-retryable workflow failures and
+      reported as [Ok (Rejected _)] after their lease is retired. Child-start
+      commands are translated to Core; child result resolution remains outside
+      this first worker-loop slice. *)
   val poll : t -> (outcome, error_view) result
 
   (** Retries all completions whose native acknowledgement previously failed.

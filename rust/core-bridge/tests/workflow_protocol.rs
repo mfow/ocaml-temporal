@@ -59,6 +59,71 @@ fn accepts_and_normalizes_workflow_completion() {
     workflow_protocol::decode_completion(expected.trim()).unwrap();
 }
 
+/// Proves the minimal child-workflow start command survives JSON, semantic
+/// validation, and the official Core command conversion without losing its
+/// operation identity or input payload.
+#[test]
+fn converts_start_child_workflow_command() {
+    let input = workflow_protocol::Payload {
+        metadata: [("encoding".to_owned(), b"binary/null".to_vec())].into(),
+        data: Vec::new(),
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "parent-run".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::StartChildWorkflow {
+            seq: 2,
+            workflow_id: "child/1".to_owned(),
+            workflow_type: "child".to_owned(),
+            input: vec![input.clone()],
+        }],
+    };
+    let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+    assert!(encoded.contains("\"kind\":\"start_child_workflow\""));
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        completion
+    );
+
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("child completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::StartChildWorkflowExecution(child)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("child command must map to Core's start-child variant");
+    };
+    assert_eq!(child.seq, 2);
+    assert_eq!(child.workflow_id, "child/1");
+    assert_eq!(child.workflow_type, "child");
+    assert_eq!(child.input.len(), 1);
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+
+    let mut unsupported = core;
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        unsupported.status.as_mut()
+    else {
+        panic!("child completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::StartChildWorkflowExecution(child)) =
+        success.commands[0].variant.as_mut()
+    else {
+        panic!("child command must map to Core's start-child variant");
+    };
+    child.task_queue = "child-queue".to_owned();
+    assert_eq!(
+        workflow_protocol::completion_from_core(&unsupported)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::Unsupported
+    );
+}
+
 /// Proves semantic exactness and range rules independently of JSON structure.
 #[test]
 fn rejects_malformed_workflow_documents() {

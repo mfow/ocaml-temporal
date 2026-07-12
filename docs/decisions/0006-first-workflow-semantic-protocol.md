@@ -8,8 +8,8 @@
 
 ADR 0002 chose strict JSON instead of exposing Temporal Core protobuf to
 OCaml. The first worker slice now needs an exact bilateral contract for normal
-workflow initialization, activity and timer progress, cache eviction, and the
-matching completion commands. Silently omitting a Core field would make replay
+workflow initialization, activity and timer progress, cache eviction, child
+workflow starts, and the matching completion commands. Silently omitting a Core field would make replay
 or scheduling behavior depend on adapter accidents, while mirroring every Core
 message immediately would create a large unverified surface.
 
@@ -19,7 +19,11 @@ Rust and OCaml implement the same closed semantic types and validate all input
 and output. Rust converts only at the official pinned Core protobuf boundary.
 The initial activation surface includes initialization, activity resolution,
 timer firing, cancellation, and eviction. The completion surface includes
-remote activities, timers, and terminal workflow commands.
+remote activities, child-workflow starts, timers, and terminal workflow
+commands. Child-start fields not exposed by the runtime are represented by
+explicit Core defaults and rejected if non-default values appear on reverse
+conversion; child result-resolution jobs remain a later activation-surface
+addition.
 
 Normal first-task initialization preserves headers, identity, parent and root
 execution identity for child workflows, three workflow timeouts, first execution run ID, start time, priority, attempt, arguments, workflow

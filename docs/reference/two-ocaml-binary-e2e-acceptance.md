@@ -393,14 +393,16 @@ two-binary topology rather than adding a separate pseudo-worker test:
 
 * activity failure/retry and timeout;
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
-* child workflow start/completion after its command schema is implemented;
+* child workflow start/completion after child resolution is represented by the
+  activation schema and wired into the worker;
 * worker restart, replay, sticky-cache eviction, and continued execution; and
 * cancellation and graceful shutdown while work is outstanding.
 
-Child workflows are not claimed by the first slice because the current
-semantic completion protocol does not yet translate child-workflow commands.
-Adding them requires a closed bilateral schema, deterministic runtime support,
-and live tests before they join this acceptance suite.
+Child-start commands now have a closed bilateral completion schema and Core
+translation, but the first live slice still does not claim child completion:
+the activation protocol needs a child-resolution job and the worker needs to
+route that result back into the deterministic runtime. Those pieces and live
+tests must land before child workflows join this acceptance suite.
 
 ## Completion criteria for this design
 

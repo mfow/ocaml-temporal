@@ -78,6 +78,7 @@ the complete result before returning it to the bridge.
 | --- | --- | --- |
 | `Request_cancel_activity` | `Request_cancel_activity` | The sequence is range-checked. |
 | `Schedule_activity` | `Schedule_activity` | Activity ID, type, task queue, argument payloads, timeout policies, cancellation policy, and eager-execution flag are validated and copied. Defaults are applied by the workflow context before this boundary; the translator never invents them. |
+| `Start_child_workflow` | `Start_child_workflow` | The sequence, child workflow ID and type, and one copied input payload are retained. The current runtime does not expose namespace, task queue, timeout, policy, retry, header, memo, search-attribute, versioning, or priority options, so the Rust Core command receives those fields at their documented defaults and rejects non-default values on the reverse conversion. |
 | `Start_timer` | `Start_timer` | Non-negative milliseconds are split into exact seconds and nanoseconds; no floating-point conversion is used. |
 | `Cancel_timer` | `Cancel_timer` | The sequence is range-checked. |
 | `Complete_workflow` with the canonical unit/null payload | `Complete_workflow { result = None }` | The nullable protocol result is preserved. |
@@ -85,12 +86,13 @@ the complete result before returning it to the bridge.
 | `Fail_workflow` | `Fail_workflow` with an OCaml application or cancellation failure | Details are copied and the runtime category/retryability are retained. Recursive Core-only fields are represented in a bounded diagnostic until the runtime has a richer error type. |
 | `Cancel_workflow_execution` | `Cancel_workflow_execution` | This is already an exact marker. |
 
-One command intentionally returns a typed `Unsupported` error today:
-
-- `Start_child_workflow` exists in the synthetic runtime, but the first
-  semantic protocol has no child-workflow command variant. Returning
-  `Unsupported` is safer than emitting a different command or pretending that
-  a child was scheduled.
+Child starts now have a closed semantic command record and are converted to
+Core without fabricating language-level options. The native worker gates that
+completion before submission because the native runtime still does not
+represent the child-start resolution job; a workflow that waits for a child
+result remains outside this first native execution slice. That missing
+resolution path is intentionally rejected rather than silently treating a
+started child as completed.
 
 ### Activity command defaults and options
 
@@ -116,9 +118,10 @@ programmer configuration defect rather than an operational workflow failure.
 
 These errors are a planned compatibility boundary, not a hidden drop path.
 Activity scheduling is enabled because the runtime, protocol, and translator
-now carry the complete Core record. The same rule applies to a future
-child-workflow command or resolution job: it must be represented in the
-protocol and tested on both sides before the adapter accepts it.
+now carry the complete Core record. Child-start translation is enabled for the
+fields exposed by the current runtime, while future child options and the
+child-resolution job must be represented in the protocol and tested on both
+sides before the adapter accepts them.
 
 ## Error and ownership rules
 

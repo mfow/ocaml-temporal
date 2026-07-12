@@ -15,13 +15,22 @@ type ('input, 'output) handle
     flow exceptions. The outer [result] of [wait] is reserved for bridge or
     payload transport errors. *)
 type 'output terminal_result =
+  (* The terminal payload decoded using the workflow definition's output codec. *)
   | Completed of 'output
+  (* Temporal reported a workflow failure as a terminal value. *)
   | Failed of Error.t
+  (* The exact run reached the cancellation state. *)
   | Cancelled of Error.t
+  (* The exact run was terminated by an operator or another client. *)
   | Terminated of Error.t
+  (* The exact run reached a Temporal timeout state. *)
   | Timed_out of Error.t
+  (* The run continued as new; the caller decides whether to wait on the
+     returned successor identity. *)
   | Continued_as_new of {
+      (* Durable workflow ID of the successor execution. *)
       workflow_id : string;
+      (* Server-issued run ID of the successor execution. *)
       run_id : string;
     }
 
@@ -79,5 +88,6 @@ val workflow_id : ('input, 'output) handle -> string
 val run_id : ('input, 'output) handle -> string
 
 (** Shuts down the client graph. Repeated calls are idempotent and return the
-    same successful result after resources have been released. *)
+    same cached result, including a terminal teardown error, after the first
+    shutdown request has consumed or invalidated the backend resources. *)
 val shutdown : t -> (unit, Error.t) result

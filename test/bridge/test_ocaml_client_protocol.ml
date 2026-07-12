@@ -1,3 +1,6 @@
+(* Keep the fixture code focused on the two protocol modules under test; these
+   aliases also make every assertion explicit about which JSON vocabulary it
+   exercises. *)
 module Protocol = Temporal_protocol.Client_protocol
 module Workflow = Temporal_protocol.Workflow_protocol
 
@@ -17,6 +20,8 @@ let require_error = function
     coupling this test to association-list member ordering. *)
 let require_fragment label fragment value =
   let fragment_length = String.length fragment in
+  (* Search all byte offsets instead of assuming JSON member ordering or UTF-8
+     character boundaries; the fixture marker is intentionally structural. *)
   let rec contains offset =
     if offset + fragment_length > String.length value then false
     else if String.sub value offset fragment_length = fragment then true
@@ -325,6 +330,7 @@ let run name test =
     Printf.eprintf "FAIL %s: %s\n%!" name (Printexc.to_string exn);
     exit 1
 
+(** Runs every client-protocol encoder/decoder assertion as one bridge test. *)
 let () =
   run "client terminal outcomes" test_terminal_outcomes;
   run "client successor identity" test_successor_identity_validation;

@@ -228,12 +228,15 @@ again; callers never supply a guessed run ID or task token. A workflow document
 must equal the complete semantic activation retained at handoff. An activity
 document must equal one complete semantic task retained under its canonical
 opaque token; cancellation updates using the same token are retained alongside
-the earlier task rather than overwriting it. Those documents still represent
-one ledger obligation per token, so successful completion or rejection retires
-that obligation and clears every retained document for the token. Changed identity or content is a
-protocol failure and cannot retire the real lease. The malformed-byte case is
-defensive: successful Rust poll encoding cannot produce malformed JSON, but
-both language decoders and both rejection entry points still validate it.
+the earlier task rather than overwriting it. A rejected Start owns the one
+ledger obligation for that token, so its rejection reports a bridge failure to
+Core and clears every retained document for the token. A rejected Cancel is
+only a malformed or unsupported update; Rust drops that one retained document
+without touching the Start's native lease, allowing the original activity
+owner to complete normally. Changed identity or content is a protocol failure
+and cannot retire the real lease. The malformed-byte case is defensive:
+successful Rust poll encoding cannot produce malformed JSON, but both language
+decoders and both rejection entry points still validate it.
 
 `Sdk_supervisor.Native` is the private OCaml adapter for these ABI version 1
 operations. It exposes a typed GADT rather than raw JSON bytes:
@@ -378,10 +381,14 @@ There is also a post-handoff decode-failure path for version or implementation
 drift between the two strict decoders. OCaml preserves its original protocol
 error, returns the exact Rust-produced bytes to the private rejection ABI, and
 never reflects those bytes in diagnostics. Rust accepts rejection only after
-full semantic equality with retained handoff state. It then generates the Core
-failure and retires both the ledger debt and retained semantic state even if
-Core reports that generated failure as unsuccessful. This prevents shutdown
-from waiting forever while keeping the original decode failure primary.
+full semantic equality with retained handoff state. For a Start, it then
+generates the Core failure and retires both the ledger debt and retained
+semantic state even if Core reports that generated failure as unsuccessful.
+For a Cancel update, it retires only that retained semantic state: the shared
+Start debt remains owned by the activity implementation. This prevents
+shutdown from waiting forever without turning a malformed cancellation into a
+spurious `UnknownActivity` completion failure, while keeping the original
+decode failure primary.
 
 Shutdown first closes ledger admission and both readiness signals, then asks
 Core to wake both polls and joins the lane tasks. Existing ready and leased

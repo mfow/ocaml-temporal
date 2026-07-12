@@ -124,8 +124,11 @@ and bridge, read the [documentation guide](../README.md) first.
   Rust document to the private rejection ABI. Rust requires full semantic
   equality with retained handoff state before retiring the lease; changed IDs,
   tokens, or content cannot consume real outstanding work. Rejection cleanup
-  removes ledger and semantic ownership together even when Core reports an
-  error, while the original OCaml protocol failure remains the primary result.
+  for a retained Start removes ledger and semantic ownership together even
+  when Core reports an error, while the original OCaml protocol failure
+  remains the primary result. A retained Cancel is different: it is only an
+  update to the Start's shared token, so rejecting that document removes the
+  one semantic update without retiring the Start's native completion debt.
 - Native `Not_ready` is represented as `Ok None`. ABI version 1 also exposes
   bounded `Wait_workflow` and `Wait_activity` readiness operations. Only the
   owner-Domain supervisor may invoke them; the C boundary releases the OCaml

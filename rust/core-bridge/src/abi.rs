@@ -1063,15 +1063,34 @@ impl Runtime {
         Ok(Vec::new())
     }
 
-    /// Revalidates Rust-produced task JSON and retires the exact opaque token
-    /// when OCaml cannot represent the task after lease handoff.
+    /// Revalidates Rust-produced task JSON and removes only the rejected
+    /// semantic handoff after OCaml cannot represent it.
+    ///
+    /// A start task owns the one Core completion debt for an activity token,
+    /// so rejecting that task must generate the bridge failure and retire the
+    /// native lease. A cancellation is only an update attached to the same
+    /// token. If its JSON cannot be decoded, dropping that one update must not
+    /// retire the start lease that another OCaml call still has to complete.
     fn reject_polled_activity(&mut self, input: &[u8]) -> Operation {
-        let task_token = activity_rejection_token(&self.activity_tasks, input)?;
-        // reject_activity_delivery retires the ledger even when Core rejects
-        // the generated failure. Clear semantic correlation on the same path.
-        let rejection = self.reject_activity_delivery(&task_token);
-        retire_activity_semantics(&mut self.activity_tasks, &task_token);
-        rejection?;
+        let rejection = activity_rejection_task(&self.activity_tasks, input)?;
+        let owns_completion_debt = matches!(
+            &rejection.task.variant,
+            activity_protocol::ActivityTaskVariant::Start(_)
+        );
+        // Only a Start represents an inaccessible leased Core completion. A
+        // Cancel has no independent completion to reject; removing just its
+        // retained document preserves the shared Start debt.
+        let native_rejection = if owns_completion_debt {
+            self.reject_activity_delivery(&rejection.task_token)
+        } else {
+            Ok(())
+        };
+        retire_activity_semantic(
+            &mut self.activity_tasks,
+            &rejection.task_token,
+            &rejection.task,
+        );
+        native_rejection?;
         Ok(Vec::new())
     }
 
@@ -1381,18 +1400,57 @@ fn retire_activity_semantics(
     pending.remove(task_token);
 }
 
-/// Extracts the canonical opaque activity token only when the complete task
-/// document matches one retained at a successful Rust-to-OCaml handoff.
-fn activity_rejection_token(
+/// Removes one exact semantic task document while preserving any other
+/// handoffs associated with the same opaque activity token.
+///
+/// A token can have one Start document and any number of Cancel updates. The
+/// Start's completion debt is retired only after its own completion or
+/// rejection; a malformed Cancel must not erase that document from the
+/// ownership ledger.
+fn retire_activity_semantic(
+    pending: &mut HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
+    task_token: &[u8],
+    task: &activity_protocol::ActivityTask,
+) {
+    let remove_token = if let Some(tasks) = pending.get_mut(task_token) {
+        if let Some(index) = tasks.iter().position(|candidate| candidate == task) {
+            tasks.remove(index);
+        }
+        tasks.is_empty()
+    } else {
+        false
+    };
+    if remove_token {
+        pending.remove(task_token);
+    }
+}
+
+/// Retained semantic task and its canonical opaque token for rejection.
+///
+/// Keeping both values avoids decoding the document twice and lets rejection
+/// distinguish a Start from a Cancel before it mutates the ownership ledger.
+struct ActivityRejection {
+    /// Canonical token used by the native worker's completion ledger.
+    task_token: Vec<u8>,
+    /// Exact retained task document that matched the rejected bytes.
+    task: activity_protocol::ActivityTask,
+}
+
+/// Extracts the retained semantic task only when the complete document
+/// matches one successful Rust-to-OCaml handoff under its canonical token.
+fn activity_rejection_task(
     pending: &HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
     input: &[u8],
-) -> std::result::Result<Vec<u8>, Failure> {
+) -> std::result::Result<ActivityRejection, Failure> {
     let text = decode_semantic_input(input)?;
     let semantic = activity_protocol::decode_task(text).map_err(protocol_failure)?;
     let task_token =
         activity_protocol::decode_token(&semantic.task_token).map_err(protocol_failure)?;
     match pending.get(&task_token) {
-        Some(tasks) if tasks.contains(&semantic) => Ok(task_token),
+        Some(tasks) if tasks.contains(&semantic) => Ok(ActivityRejection {
+            task_token,
+            task: semantic,
+        }),
         Some(_) => Err(Failure {
             status: STATUS_PROTOCOL,
             message: "activity rejection does not match a leased task".to_owned(),
@@ -1402,6 +1460,16 @@ fn activity_rejection_token(
             message: "activity rejection does not match a leased task token".to_owned(),
         }),
     }
+}
+
+/// Extracts the canonical opaque activity token only when the complete task
+/// document matches one retained at a successful Rust-to-OCaml handoff.
+#[cfg(test)]
+fn activity_rejection_token(
+    pending: &HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
+    input: &[u8],
+) -> std::result::Result<Vec<u8>, Failure> {
+    activity_rejection_task(pending, input).map(|rejection| rejection.task_token)
 }
 
 impl WorkerConfigInput {

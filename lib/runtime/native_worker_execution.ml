@@ -417,6 +417,9 @@ module Make (Supervisor : SUPERVISOR) = struct
           Protocol.Complete_workflow { result = Option.map copy_payload result }
       | Protocol.Fail_workflow { failure } ->
           Protocol.Fail_workflow { failure = copy_failure failure }
+      | Protocol.Start_child_workflow command ->
+          Protocol.Start_child_workflow
+            { command with input = List.map copy_payload command.input }
       | Protocol.Request_cancel_activity _ as command -> command
       | Protocol.Start_timer _ as command -> command
       | Protocol.Cancel_timer _ as command -> command

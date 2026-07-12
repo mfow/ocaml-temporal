@@ -8,40 +8,16 @@ recent entries supersede older package names, dependency counts, and build
 details. For a concise statement of what users can run today, see the project
 [README](../README.md).
 
-## 2026-07-12: Public worker routing through the native supervisor
-
-Status: focused public-worker, supervisor, runtime, and bridge tests pass on
-the representative host toolchain; the two-public-binary Temporal Compose
-workflow-result acceptance remains follow-up work.
-
-`Temporal.Worker` now selects the deterministic in-memory backend only for
-`mock://` targets. HTTP(S) targets construct the OCaml-owned supervisor,
-connect the Rust Temporal Core client, start one workflow/remote-activity
-worker, and register typed OCaml workflow and activity functions through the
-private adapters. The run loop drains both lanes, alternates bounded native
-readiness waits when they are empty, and completes task-level failures before
-continuing. Native waits run behind the C boundary with the OCaml runtime lock
-released, so a concurrent shutdown can reach the one supervisor owner Domain.
-
-The public lifecycle remains typed and opaque: no Rust handle, JSON document,
-effect constructor, or Core type appears in the public API. Registration
-failures, transport errors, and unacknowledged leases return `Temporal.Error.t`
-values; acknowledged task failures are submitted to Core and do not terminate
-the worker. Activity scheduling is translated end to end. Child-workflow
-commands remain an explicit typed rejection until their complete Core fields
-and replay behavior are represented.
-
-Evidence: `dune build --root . lib/public/temporal.cma`, focused unit,
-supervisor, and runtime tests, the full Dune test suite, installation smoke
-tests, and repository quality checks pass locally on the representative host
-toolchain. The live Compose target currently exercises the lower-level native
-lifecycle; a later milestone will launch separate public OCaml starter and
-worker binaries against Temporal Server and PostgreSQL.
+Entries marked "Historical snapshot" preserve the status at an earlier
+milestone. Their follow-up wording is not a claim about the current
+implementation when a later entry documents that work as complete. The
+two-binary Temporal acceptance path remains pending unless an entry explicitly
+records a successful live run.
 
 ## 2026-07-12: Complete native activity command translation
 
 Status: focused runtime, worker-adapter, and native translation tests pass
-locally; live two-public-binary Compose workflow-result acceptance remains
+locally; native public-worker wiring and live Compose acceptance remain
 follow-up work.
 
 The deterministic runtime now emits complete Temporal activity commands. A
@@ -150,6 +126,11 @@ mapping and ownership rules.
 
 ## 2026-07-12: Typed supervisor worker operations
 
+Historical snapshot: This milestone predates the wakeable readiness seam
+documented above. The readiness follow-up described below records the state at
+this commit; it does not mean that the current ABI lacks the readiness
+operation.
+
 Status: focused native-supervisor and protocol tests verified locally; a
 wakeable readiness ABI and production worker loop remain follow-up work.
 
@@ -189,6 +170,10 @@ activity tokens, changed same-identity content, duplicate poll preservation,
 rejection cleanup, and shutdown drainage.
 
 ## 2026-07-12: Raw client start and exact-run wait adapter
+
+Historical snapshot: This milestone predates the public client routing
+milestone below. Its status and live-path follow-up describe what remained at
+this commit, not the current public `Temporal.Client` implementation.
 
 Status: Rust and OCaml protocol, ABI, formatting, and warnings-as-errors checks
 pass locally; public client wiring and live Temporal integration remain

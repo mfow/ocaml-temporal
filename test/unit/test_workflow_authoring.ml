@@ -15,6 +15,26 @@ let render =
   Temporal.Workflow.remote ~name:"render" ~input:Temporal.Codec.string
     ~output:Temporal.Codec.bytes
 
+(** Tracks whether a user codec was invoked while an activity request was
+    already known to be invalid. The counter makes validation ordering visible
+    without requiring a running workflow scheduler or native backend. *)
+let tracked_activity_encode_calls = ref 0
+
+(** A codec with observable encoding lets the regression test distinguish
+    option validation from conversion side effects. *)
+let tracked_activity_codec =
+  Temporal.Codec.make ~encoding:"test/tracked-activity"
+    ~encode:(fun value ->
+      incr tracked_activity_encode_calls;
+      Ok (Bytes.of_string value))
+    ~decode:(fun bytes -> Ok (Bytes.to_string bytes))
+
+(** A remote activity using the tracked codec is sufficient because the
+    invalid request must be rejected before a workflow context is consulted. *)
+let tracked_activity =
+  Temporal.Activity.remote ~name:"tracked_activity"
+    ~input:tracked_activity_codec ~output:Temporal.Codec.string
+
 (** Starts each ordinary function before aggregating its result. The helper is
     independent of Temporal definitions and can wrap activities, child
     workflows, or additional application helpers with the same future type. *)
@@ -36,6 +56,17 @@ let expect_detached label future =
   | Some (Ok _) -> failwith (label ^ " unexpectedly succeeded")
   | None -> failwith (label ^ " unexpectedly remained pending")
 
+(** Invalid activity options are rejected before a caller's input codec runs.
+    This preserves deterministic workflow authoring: malformed command fields
+    cannot trigger user conversion work or side effects before the typed
+    defect is returned. *)
+let test_activity_option_validation_precedes_encoding () =
+  tracked_activity_encode_calls := 0;
+  expect_detached "invalid activity queue"
+    (Temporal.Activity.start ~task_queue:"" tracked_activity "document");
+  if !tracked_activity_encode_calls <> 0 then
+    failwith "invalid activity option invoked the input codec"
+
 (** Compile-checks that partial application and higher-order wrappers retain
     normal OCaml function composition for all and heterogeneous race. *)
 let test_ordinary_helper_composition () =
@@ -45,5 +76,7 @@ let test_ordinary_helper_composition () =
   let render = Temporal.Child_workflow.start ~id:"render-1" render in
   expect_detached "heterogeneous race" (fastest summarize render "document")
 
-(** Executes the standalone compile-and-behavior check. *)
-let () = test_ordinary_helper_composition ()
+(** Executes the standalone authoring and validation checks. *)
+let () =
+  test_ordinary_helper_composition ();
+  test_activity_option_validation_precedes_encoding ()

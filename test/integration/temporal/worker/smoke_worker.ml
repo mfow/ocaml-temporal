@@ -10,6 +10,13 @@ module Worker = Temporal.Worker
 module Error = Temporal.Error
 module Definitions = Smoke_definitions
 
+(** Records a worker-process phase using metadata only. This executable never
+    logs workflow/activity payloads; the markers exist to show whether a live
+    acceptance stall occurred during construction, readiness publication, or
+    the long-running worker loop. *)
+let phase operation status =
+  Printf.eprintf "two-binary worker phase=%s status=%s\n%!" operation status
+
 (** Reads a required environment setting as a typed configuration error. *)
 let required_env name =
   match Sys.getenv_opt name with
@@ -67,6 +74,7 @@ let run_with_signal_shutdown worker =
   in
   let run_result =
     try
+      phase "worker_run" "begin";
       Fun.protect
         ~finally:(fun () -> Atomic.set watcher_finished true)
         (fun () -> Worker.run worker)
@@ -80,7 +88,12 @@ let run_with_signal_shutdown worker =
   Domain.join watcher;
   Sys.set_signal Sys.sigterm previous_term;
   Sys.set_signal Sys.sigint previous_int;
+  phase "worker_shutdown" "begin";
   let shutdown_result = Worker.shutdown worker in
+  phase "worker_run"
+    (match run_result with Ok () -> "stopped" | Error _ -> "error");
+  phase "worker_shutdown"
+    (match shutdown_result with Ok () -> "ok" | Error _ -> "error");
   let open Temporal.Result_syntax in
   let* () = run_result in
   shutdown_result
@@ -100,6 +113,7 @@ let require_live_gate () =
 (** Reports a structured SDK error without exposing bridge JSON or payload bytes
     in process logs. *)
 let fail operation error =
+  phase operation ("error:" ^ Error.kind error);
   Printf.eprintf "%s failed (%s): %s\n" operation (Error.kind error)
     (Error.message error);
   1
@@ -113,7 +127,7 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* ready_file = required_env "SMOKE_WORKER_READY_FILE" in
-      let* worker =
+      let worker_result =
         Worker.create ~target_url ~namespace
           ~identity:"ocaml-temporal-two-binary-worker"
           ~task_queue:Definitions.task_queue
@@ -125,11 +139,26 @@ let run () =
           ~activities:[ Worker.activity Definitions.mock_transform ]
           ()
       in
+      let* worker =
+        match worker_result with
+        | Ok worker ->
+            phase "worker_create" "ok";
+            Ok worker
+        | Error error ->
+            phase "worker_create" ("error:" ^ Error.kind error);
+            Error error
+      in
       Fun.protect
         ~finally:(fun () -> clear_ready ready_file)
         (fun () ->
-          let* () = publish_ready ready_file in
-          run_with_signal_shutdown worker)
+          phase "worker_ready" "begin";
+          match publish_ready ready_file with
+          | Error error ->
+              phase "worker_ready" ("error:" ^ Error.kind error);
+              Error error
+          | Ok () ->
+              phase "worker_ready" "published";
+              run_with_signal_shutdown worker)
 
 (** Reports the final typed result and converts it to a process exit code. *)
 let () =

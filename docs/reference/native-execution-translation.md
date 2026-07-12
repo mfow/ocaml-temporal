@@ -149,5 +149,7 @@ not share those values between Domains and does not expose native pointers.
 initialization retention, activity success/failure/cancellation, timers,
 eviction, terminal completion, duplicate/unknown sequences, payload
 validation, and explicit unsupported commands. These tests run entirely in
-OCaml; the live Compose acceptance suite will exercise the same mapping after
-the native worker loop is connected.
+OCaml. The public native worker now invokes this adapter through the
+owner-Domain supervisor; the live Compose acceptance remains the gate for
+proving the mapping against Temporal Server and for the future two-public-
+binary result test.

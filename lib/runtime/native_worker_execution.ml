@@ -62,6 +62,29 @@ type run =
 (** At most one run can be leased for each Temporal run ID. *)
 module Run_map = Map.Make (String)
 
+(** A completion retained after the native call did not acknowledge it. The
+    completion is kept together with the bookkeeping that must happen only
+    after acknowledgement, so retrying cannot execute the workflow twice or
+    remove its run state prematurely. *)
+type pending_result =
+  | Pending_completed of {
+      command_count : int;
+      terminal : bool;
+      evicted : bool;
+    }
+  | Pending_rejected of {
+      error : error_view;
+      remove_run : bool;
+    }
+
+(** The protocol value is owned by this adapter until the supervisor accepts
+    it. Its binary payloads are copied before the value enters mutable state. *)
+type pending_completion = {
+  run_id : string;
+  completion : Protocol.completion;
+  result : pending_result;
+}
+
 (** One worker-loop result. *)
 type outcome =
   | Not_ready
@@ -318,6 +341,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     task_queue : string;
     definitions : registered_definition Run_map.t;
     mutable runs : run Run_map.t;
+    mutable pending : pending_completion Run_map.t;
     mutex : Mutex.t;
   }
 
@@ -337,8 +361,71 @@ module Make (Supervisor : SUPERVISOR) = struct
         task_queue;
         definitions;
         runs = Run_map.empty;
+        pending = Run_map.empty;
         mutex = Mutex.create ();
       }
+
+  (** Copies a payload without retaining a mutable buffer owned by an earlier
+      execution step. Metadata keys are immutable strings; metadata and body
+      bytes are the only mutable protocol values. *)
+  let copy_payload (payload : Protocol.payload) : Protocol.payload =
+    {
+      metadata =
+        List.map (fun (key, value) -> (key, Bytes.copy value)) payload.metadata;
+      data = Bytes.copy payload.data;
+    }
+
+  (** Copies a failure recursively, including nested causes and detail
+      payloads. Failure text is immutable, while every payload buffer is owned
+      by the retained completion. *)
+  let rec copy_failure (failure : Protocol.failure) : Protocol.failure =
+    let info =
+      match failure.info with
+      | Protocol.Application { type_name; non_retryable; details } ->
+          Protocol.Application
+            {
+              type_name;
+              non_retryable;
+              details = List.map copy_payload details;
+            }
+      | Protocol.Canceled { details; identity } ->
+          Protocol.Canceled
+            { details = List.map copy_payload details; identity }
+      | Protocol.Activity _ as info -> info
+    in
+    {
+      message = failure.message;
+      source = failure.source;
+      stack_trace = failure.stack_trace;
+      encoded_attributes = Option.map copy_payload failure.encoded_attributes;
+      cause = Option.map copy_failure failure.cause;
+      info;
+    }
+
+  (** Copies every payload-bearing command in a workflow completion. Keeping
+      this operation explicit makes the ownership boundary auditable without a
+      JSON round trip or an alias to a workflow implementation's buffer. *)
+  let copy_completion (completion : Protocol.completion) : Protocol.completion =
+    let copy_command = function
+      | Protocol.Schedule_activity command ->
+          Protocol.Schedule_activity
+            {
+              command with
+              arguments = List.map copy_payload command.arguments;
+            }
+      | Protocol.Complete_workflow { result } ->
+          Protocol.Complete_workflow { result = Option.map copy_payload result }
+      | Protocol.Fail_workflow { failure } ->
+          Protocol.Fail_workflow { failure = copy_failure failure }
+      | Protocol.Request_cancel_activity _ as command -> command
+      | Protocol.Start_timer _ as command -> command
+      | Protocol.Cancel_timer _ as command -> command
+      | Protocol.Cancel_workflow_execution as command -> command
+    in
+    {
+      run_id = completion.run_id;
+      commands = List.map copy_command completion.commands;
+    }
 
   (** Distinguishes an ordinary source rejection from an exception raised while
       completing. The latter is allowed to reach [process_one]'s cleanup guard:
@@ -375,6 +462,57 @@ module Make (Supervisor : SUPERVISOR) = struct
       (Printf.sprintf "supervisor completion raised: %s"
          (exception_error exception_).message)
 
+  (** Applies bookkeeping only after the supervisor acknowledges a retained
+      completion. This is the single release point for both normal and
+      adapter-generated failure completions. *)
+  let accepted_pending adapter pending =
+    adapter.pending <- Run_map.remove pending.run_id adapter.pending;
+    match pending.result with
+    | Pending_completed { command_count; terminal; evicted } ->
+        if terminal || evicted then
+          adapter.runs <- Run_map.remove pending.run_id adapter.runs;
+        report Logs.Debug ~operation:"workflow_activation_completed" ();
+        Ok
+          (Completed
+             {
+               run_id = pending.run_id;
+               command_count;
+               terminal;
+             })
+    | Pending_rejected { error; remove_run } ->
+        if remove_run then
+          adapter.runs <- Run_map.remove pending.run_id adapter.runs;
+        report Logs.Warning ~operation:"workflow_activation_rejected"
+          ~error_kind:error.code ();
+        Ok
+          (Rejected
+             {
+               run_id = Some pending.run_id;
+               error;
+               lease_retired = true;
+             })
+
+  (** Attempts one retained completion. A rejected or raised native call leaves
+      the same value in [pending], preserving the only safe retry path. *)
+  let finish_pending adapter pending =
+    match attempt_completion adapter.supervisor pending.completion with
+    | Accepted -> accepted_pending adapter pending
+    | Rejected_by_supervisor error -> Error error
+    | Raised_by_supervisor exception_ ->
+        Error (completion_exception_error exception_)
+
+  (** Records a completion before its first native attempt. This ordering is
+      intentional: even an exception from the native binding leaves an exact
+      owned completion available for a later poll or shutdown drain. *)
+  let enqueue_pending adapter pending =
+    if Run_map.mem pending.run_id adapter.pending then
+      Error
+        (make_error ~path:"$.run_id" "duplicate_pending_completion"
+           "a workflow run already has an unacknowledged completion")
+    else (
+      adapter.pending <- Run_map.add pending.run_id pending adapter.pending;
+      finish_pending adapter pending)
+
   (** Encodes and submits an adapter-level failure. A successful submission is
       the lease-retirement proof for the activation; a failed submission
       preserves a source error rather than claiming the lease was retired.
@@ -389,54 +527,51 @@ module Make (Supervisor : SUPERVISOR) = struct
           [ Protocol.Fail_workflow { failure = failure_of_error error } ];
       }
     in
-    match attempt_completion adapter.supervisor completion with
-    | Accepted ->
-        if remove_run then
-          adapter.runs <- Run_map.remove activation.run_id adapter.runs;
-        report Logs.Warning ~operation:"workflow_activation_rejected"
-          ~error_kind:error.code ();
-        Ok
-          (Rejected
-             {
-               run_id = Some activation.run_id;
-               error;
-               lease_retired = true;
-             })
-    | Rejected_by_supervisor error -> Error error
-    | Raised_by_supervisor exception_ ->
-        Error (completion_exception_error exception_)
+    let pending =
+      {
+        run_id = activation.run_id;
+        completion = copy_completion completion;
+        result = Pending_rejected { error; remove_run };
+      }
+    in
+    enqueue_pending adapter pending
 
   (** Produces a typed completion for a successfully executed activation and
       updates the registry only after the supervisor confirms retirement. *)
   let submit_completion adapter activation completion ~run_id =
-    match attempt_completion adapter.supervisor completion with
-    | Rejected_by_supervisor error -> Error error
-    | Raised_by_supervisor exception_ -> raise exception_
-    | Accepted ->
-        (* The native lease is already retired at this point. Keep the
-           post-acknowledgement bookkeeping inside a typed guard so an
-           unexpected local exception cannot trigger a second completion. *)
-        begin
-          try
-            let terminal = is_terminal completion in
-            let evicted =
-              List.exists
-                (function Protocol.Remove_from_cache _ -> true | _ -> false)
-                activation.Protocol.jobs
-            in
-            if terminal || evicted then
-              adapter.runs <- Run_map.remove run_id adapter.runs;
-            report Logs.Debug ~operation:"workflow_activation_completed" ();
-            Ok
-              (Completed
-                 {
-                   run_id;
-                   command_count = List.length completion.commands;
-                   terminal;
-                 })
-          with exception_ ->
-            Error (exception_error ~path:"$.completion.bookkeeping" exception_)
-        end
+    let pending =
+      {
+        run_id;
+        completion = copy_completion completion;
+        result =
+          Pending_completed
+            {
+              command_count = List.length completion.commands;
+              terminal = is_terminal completion;
+              evicted =
+                List.exists
+                  (function Protocol.Remove_from_cache _ -> true | _ -> false)
+                  activation.Protocol.jobs;
+            };
+      }
+    in
+    if Run_map.mem pending.run_id adapter.pending then
+      Error
+        (make_error ~path:"$.run_id" "duplicate_pending_completion"
+           "a workflow run already has an unacknowledged completion")
+    else begin
+      adapter.pending <- Run_map.add pending.run_id pending adapter.pending;
+      match attempt_completion adapter.supervisor pending.completion with
+      | Accepted -> accepted_pending adapter pending
+      | Rejected_by_supervisor error -> Error error
+      | Raised_by_supervisor exception_ ->
+          (* Preserve the historical cleanup contract for a binding exception:
+             remove this uncertain ordinary completion before the outer guard
+             submits one explicit failure completion. If that fallback also
+             fails, [retire_with_failure] records its own retryable lease. *)
+          adapter.pending <- Run_map.remove pending.run_id adapter.pending;
+          raise exception_
+    end
 
   (** Applies one activation while the adapter mutex is held. No source call or
       map mutation is performed after an error that has not been acknowledged
@@ -502,6 +637,24 @@ module Make (Supervisor : SUPERVISOR) = struct
         ~remove_run:(Run_map.mem activation.run_id adapter.runs)
         adapter activation error
 
+  (** Retries every retained workflow completion while the adapter mutex is
+      held. Shutdown uses this operation before closing Rust so an
+      acknowledged lease is never left behind by a prior transport failure. *)
+  let drain adapter : (unit, error_view) result =
+    Mutex.lock adapter.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock adapter.mutex)
+      (fun () ->
+        let rec loop () =
+          match Run_map.min_binding_opt adapter.pending with
+          | None -> Ok ()
+          | Some (_, pending) -> (
+              match finish_pending adapter pending with
+              | Ok _ -> loop ()
+              | Error error -> Error error)
+        in
+        loop ())
+
   (** Serializes one poll/execute/complete transaction. A mutex is required in
       addition to supervisor serialization because the run map and scheduler
       state are OCaml values owned by this adapter, not by Rust. *)
@@ -510,22 +663,25 @@ module Make (Supervisor : SUPERVISOR) = struct
     Fun.protect
       ~finally:(fun () -> Mutex.unlock adapter.mutex)
       (fun () ->
-        let polled =
-          try Ok (Supervisor.try_poll_workflow adapter.supervisor)
-          with exception_ -> Error (exception_error ~path:"$.poll" exception_)
-        in
-        let* polled = polled in
-        match polled with
-        | Error source_error ->
-            Error
-              (supervisor_error ~path:"$.poll"
-                 ~error_code:Supervisor.error_code
-                 ~error_message:Supervisor.error_message source_error)
-        | Ok None ->
-            report Logs.Debug ~operation:"workflow_poll_not_ready" ();
-            Ok Not_ready
-        | Ok (Some activation) ->
-            process_one adapter activation)
+        match Run_map.min_binding_opt adapter.pending with
+        | Some (_, pending) -> finish_pending adapter pending
+        | None ->
+            let polled =
+              try Ok (Supervisor.try_poll_workflow adapter.supervisor)
+              with exception_ -> Error (exception_error ~path:"$.poll" exception_)
+            in
+            let* polled = polled in
+            match polled with
+            | Error source_error ->
+                Error
+                  (supervisor_error ~path:"$.poll"
+                     ~error_code:Supervisor.error_code
+                     ~error_message:Supervisor.error_message source_error)
+            | Ok None ->
+                report Logs.Debug ~operation:"workflow_poll_not_ready" ();
+                Ok Not_ready
+            | Ok (Some activation) ->
+                process_one adapter activation)
 end
 
 (** Exposes registration without exposing its existential constructor. *)

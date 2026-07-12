@@ -15,11 +15,15 @@ try_poll_workflow : supervisor -> (activation option, error) result
 complete_workflow : supervisor -> completion -> (unit, error) result
 ```
 
-The concrete `Sdk_supervisor.Native` module will instantiate this signature
-with its owner-Domain operations. The adapter intentionally does not mention a
-readiness-wait symbol: the current bridge exposes a nonblocking poll, while a
-future readiness mechanism can be added to the supervisor without changing
-the run registry or deterministic translation.
+The concrete `Sdk_supervisor.Native` module instantiates this signature with
+operations on its owner Domain. The public worker loop also uses two private,
+bounded readiness operations (`Wait_workflow` and `Wait_activity`). They do not
+consume a task; they only let the Rust/Core lane sleep until work is likely to
+be available. The C boundary releases the OCaml runtime lock during that wait,
+and the 100 ms bound lets the supervisor admit shutdown even when no task
+arrives. Keeping waits outside this adapter means the registry remains usable
+with deterministic fake sources and the execution translation does not depend
+on a particular scheduling primitive.
 
 The supervisor remains the sole owner of the Rust runtime, client, worker, and
 native task ledger. It must decode and semantically validate the JSON returned
@@ -33,13 +37,17 @@ The adapter owns only OCaml values:
 - an immutable map from workflow type name to an existentially typed local
   definition;
 - a mutable map from Temporal run ID to its matching typed `Execution.t`;
+- a mutable map of workflow completions whose native acknowledgement has not
+  yet been proven, with every payload buffer copied into adapter-owned storage;
 - one mutex that serializes polling, execution, and completion submission.
 
-No native pointer, Rust future, continuation, or payload buffer is stored in
-the maps. The mutex protects OCaml scheduler state in addition to the
-supervisor's own owner-Domain serialization, so two ordinary producer Domains
-cannot execute the same run concurrently. Workflow fibers must not call the
-adapter directly because supervisor operations may block their producer Domain.
+No native pointer, Rust future, or continuation is stored in the maps. The
+pending completion map owns copied protocol bytes until acknowledgement and
+then releases them with the ordinary OCaml value lifetime. The mutex protects
+OCaml scheduler state in addition to the supervisor's own owner-Domain
+serialization, so two ordinary producer Domains cannot execute the same run
+concurrently. Workflow fibers must not call the adapter directly because
+supervisor operations may block their producer Domain.
 
 ## Worker configuration validation
 
@@ -79,11 +87,12 @@ already been accepted.
    Core child options that the current OCaml runtime does not expose stay at
    explicit defaults; child result resolution is not yet represented by the
    activation protocol.
-7. The completion is submitted through the same supervisor. The run entry is
-   removed only after the supervisor confirms completion retirement. Terminal
-   commands remove the run; a cache-removal activation also removes it after
-   its required empty acknowledgement. Pending timer/activity work keeps the
-   run entry.
+7. The completion is copied into an adapter-owned pending record before it is
+   submitted through the same supervisor. The run entry is removed only after
+   the supervisor confirms completion retirement. Terminal commands remove the
+   run; a cache-removal activation also removes it after its required empty
+   acknowledgement. Pending timer, activity, and child work keeps the run
+   entry.
 
 Activations without initialization must identify a run already in the map.
 Unknown run IDs are completed with a non-retryable bridge failure, which
@@ -95,8 +104,10 @@ An activation that is valid JSON but cannot be represented by the current
 runtime receives a typed `Fail_workflow` completion. `poll` returns
 `Ok (Rejected ...)` only after that completion has been accepted, and marks
 `lease_retired = true`. If the native completion operation fails, `poll` returns
-an error and leaves the run entry in place so the caller can retry or shut down
-without a false claim of retirement.
+an error and leaves the exact completion in the pending map so the caller can
+retry or shut down without a false claim of retirement. A retry never reruns
+the workflow implementation. `drain` retries every pending completion while
+holding the adapter mutex and returns `Ok ()` only after the map is empty.
 
 Malformed JSON or a malformed semantic activation is rejected below this
 module by the supervisor's protocol adapter. That lower layer owns the raw
@@ -112,6 +123,39 @@ acknowledgement also fails, it returns an error and does not claim retirement.
 The mutex is still released by `Fun.protect`, so a producer Domain cannot lose
 the registry lock or strand a second caller.
 
+## Public worker wiring
+
+`Temporal.Worker.create` validates all registration definitions before opening a
+native resource. A `mock://` target selects the deterministic in-memory backend
+used by unit tests; an `http://` or `https://` target creates one private
+supervisor, connects the Core client, starts one workflow/remote-activity
+worker, and installs the two typed adapters described above. The application
+still owns the final executable: Rust remains a static implementation detail
+behind the private supervisor and no native handle is exposed through the
+public API.
+
+`Temporal.Worker.run` first drains both nonblocking lanes. When both are empty,
+it alternates the bounded workflow and activity waits so an activity-only load
+cannot starve behind workflow readiness (or the reverse). A task-level
+workflow/activity failure is completed through Core and then the loop
+continues; a transport, protocol, or lifecycle error returns a typed
+`Temporal.Error.t`. `shutdown` closes admission, waits for an active loop to
+leave the adapters, drains both pending completion maps, and only then
+releases worker, client, and Rust runtime state in reverse ownership order. If
+either drain fails, native teardown is not started and shutdown remains
+retryable. Repeated successful shutdown calls are idempotent.
+
+The native workflow adapter accepts child-start commands with the workflow
+identity and input fields represented by the semantic protocol. Core child
+options not yet exposed by the OCaml runtime remain explicit defaults, and a
+reverse conversion rejects non-default values rather than dropping them.
+Child result-resolution jobs are not yet represented by the activation schema,
+so the live Compose acceptance remains the gate for proving complete
+workflow/activity/child behavior end to end. Activity commands are accepted
+only when their required identifiers, payloads, timeout policies, and
+cancellation options are present; a missing field is rejected in the same
+typed way.
+
 ## Verification
 
 `test/runtime/test_native_worker_execution.ml` uses a fake semantic queue to
@@ -121,6 +165,10 @@ verify:
 - durable timer suspension and resumption through a matching sequence;
 - cancellation and cache-eviction removal of suspended runs;
 - complete activity-command scheduling and lease retirement;
+- child-start command translation while child result resolution remains
+  explicitly pending;
+- retention and retry of a rejected workflow completion without rerunning the
+  workflow, including an explicit adapter drain;
 - unknown run rejection and lease retirement;
 - typed cleanup when completion raises, including the unacknowledged-lease
   path when the failure completion itself raises;
@@ -129,6 +177,7 @@ verify:
 - rejection of empty, NUL-containing, oversized, and non-UTF-8 worker queues
   before worker publication.
 
-The fake tests do not claim live Temporal compatibility. The Compose
-acceptance suite remains the gate for the concrete supervisor wiring and real
-Temporal Server behavior.
+The fake tests do not claim live Temporal compatibility. Focused supervisor and
+bridge tests cover readiness and lifecycle ownership; the Compose acceptance
+suite remains the gate for real Temporal Server behavior and for the remaining
+activity/child-workflow command support.

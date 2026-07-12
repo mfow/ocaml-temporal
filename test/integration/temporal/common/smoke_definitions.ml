@@ -20,7 +20,8 @@ let mock_transform =
 
 (** Starts two independent activity commands before awaiting either result.
     [Future.all] preserves input order, making this scenario test both fan-out
-    and deterministic aggregation once the native worker loop is connected. *)
+    and deterministic aggregation when the live worker path exercises the
+    complete activity command fields. *)
 let fan_out =
   Temporal.Workflow.define ~name:"smoke.fan_out" ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string (fun seed ->
@@ -32,7 +33,7 @@ let fan_out =
 
 (** Waits for a short durable timer before scheduling one activity. The timer is
     an SDK command rather than an OCaml sleep, so replay can resolve it from
-    Temporal history when this definition is eventually run by Core. *)
+    Temporal history when this definition is run by Core. *)
 let timer_then_activity =
   Temporal.Workflow.define ~name:"smoke.timer_then_activity"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->

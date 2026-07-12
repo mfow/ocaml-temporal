@@ -100,6 +100,13 @@ module Make (Supervisor : SUPERVISOR) : sig
       this first worker-loop slice. *)
   val poll : t -> (outcome, error_view) result
 
+  (** Retries all completions whose native acknowledgement previously failed.
+      The adapter mutex remains held while this operation runs, so no new
+      activation can overtake an older lease. [Ok ()] proves that the pending
+      map is empty; [Error _] leaves the exact completion in place for a later
+      retry and must prevent native worker teardown. *)
+  val drain : t -> (unit, error_view) result
+
 end
 
 (** Wraps a public workflow definition in the private existential registration

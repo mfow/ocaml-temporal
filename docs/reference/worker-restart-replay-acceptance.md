@@ -107,12 +107,20 @@ The implementation should use this bounded sequence:
    within its configured graceful-shutdown bound. It records the container ID
    and worker logs before replacing the container. The driver must still be
    waiting and the workflow must still be open.
-6. The controller starts generation 2 with the same task queue and
-   registrations, a fresh readiness marker, and a distinct diagnostic worker
-   identity (for example, a generation suffix). It waits for
-   `Worker.create` readiness before allowing the driver to finish.
-7. The controller waits for a replay marker from generation 2 and for the
-   follow-up activity marker. Only then does it collect the driver's exit code.
+6. The controller removes the stopped generation-1 container with
+   `docker compose rm --force smoke-worker` and asserts that no stopped
+   `smoke-worker` container remains. This removal is required: Compose
+   `stop`/`up` can otherwise reuse the same container filesystem and its old
+   `/tmp/ocaml-temporal-two-binary-worker.ready` marker. The controller then
+   starts generation 2 with the same task queue and registrations using
+   `docker compose up --detach --build --force-recreate --wait smoke-worker`,
+   a fresh readiness marker, and a distinct diagnostic worker identity (for
+   example, a generation suffix). If a platform-specific equivalent is used,
+   it must both remove or generation-check the old marker and prove that a new
+   worker process reached `Worker.create` readiness; a reused container without
+   that proof is a test failure.
+7. The controller waits for generation-2 readiness before allowing the driver
+   to finish, then waits for a replay marker and the follow-up activity marker.
    The marker is diagnostic evidence; the driver's exact result remains the
    acceptance oracle.
 8. On success, the controller verifies the ordered history and the exact
@@ -166,6 +174,8 @@ The acceptance command may exit zero only when all of the following are true:
 - the exact run's history contained `TimerStarted` before generation 1 stopped;
 - generation 1 stopped through the public worker shutdown path within the
   grace period, with no second worker overlapping it on the same test queue;
+- the generation-1 container was removed before generation 2 started, so its
+  readiness marker and writable process state could not be reused;
 - generation 2 became healthy and emitted the same run ID with
   `is_replaying=true` before the timer-result activity completed;
 - the history contains the ordered timer firing, activity scheduling and
@@ -200,6 +210,7 @@ guessing:
 | --- | --- |
 | No `TimerStarted` before stop | Initial worker dispatch or completion failed. |
 | Timer exists, but generation 1 does not stop | Worker shutdown/drain or native wait lifecycle bug. |
+| Generation-1 container remains, its ID is reused, or its readiness marker is present before `Worker.create` | Replacement orchestration is invalid; generation 2 must not be accepted. |
 | Generation 2 is healthy, but no `is_replaying=true` marker | Replacement worker did not receive/replay the pending execution, or replay instrumentation is missing. |
 | Replay marker exists, but no activity completion | Timer resolution, activity scheduling, or generation-2 dispatch failed. |
 | Activity completes, but driver reports a non-completed/mismatched result | Workflow determinism, payload decoding, or exact-run waiting failed. |

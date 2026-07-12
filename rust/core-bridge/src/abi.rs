@@ -1,3 +1,4 @@
+use crate::replay_bridge::{ReplayWorker, ReplayWorkerError};
 use crate::worker_bridge::{
     PollLaneError, PollLanes, ReadinessWait, WorkerBridgeError, public_poll_lane_error_message,
     public_worker_error_message,
@@ -215,6 +216,9 @@ pub struct Runtime {
     core: Option<CoreRuntime>,
     client: Option<Connection>,
     worker: Option<PollLanes>,
+    /// Optional workflow-only replay graph. It is mutually exclusive with the
+    /// live worker and remains owned by this runtime's supervisor Domain.
+    replay_worker: Option<ReplayWorker>,
     workflow_activations: HashMap<String, workflow_protocol::Activation>,
     activity_tasks: HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
     pending_starts: HashMap<String, PendingStart>,
@@ -266,6 +270,7 @@ struct RuntimeCleanup {
     core: CoreRuntime,
     client: Option<Connection>,
     worker: Option<PollLanes>,
+    replay_worker: Option<ReplayWorker>,
     /// Aborted asynchronous-start tasks whose join handles must be awaited
     /// before the Core runtime and its connection clones are dropped.  The
     /// non-blocking OCaml finalizer transfers these handles here instead of
@@ -312,6 +317,7 @@ impl Runtime {
             core: Some(core),
             client: None,
             worker: None,
+            replay_worker: None,
             workflow_activations: HashMap::new(),
             activity_tasks: HashMap::new(),
             pending_starts: HashMap::new(),
@@ -712,6 +718,12 @@ impl Runtime {
                 message: "Temporal workflow worker is already running".to_owned(),
             });
         }
+        if self.replay_worker.is_some() {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal replay worker is already running".to_owned(),
+            });
+        }
         let client = self.client.as_ref().cloned().ok_or_else(|| Failure {
             status: STATUS_INVALID_STATE,
             message: "Temporal client is not connected".to_owned(),
@@ -755,6 +767,32 @@ impl Runtime {
             });
         }
         self.worker = Some(PollLanes::start(worker, &handle));
+        Ok(Vec::new())
+    }
+
+    /// Constructs the workflow-only Core replay worker without requiring a
+    /// Temporal client connection. A runtime admits at most one worker graph:
+    /// replay and live workers cannot overlap or compete for Core shutdown.
+    fn start_replay_worker(&mut self, config: WorkerConfigInput) -> Operation {
+        if self.worker.is_some() {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal workflow worker is already running".to_owned(),
+            });
+        }
+        if self.replay_worker.is_some() {
+            return Err(Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal replay worker is already running".to_owned(),
+            });
+        }
+        let worker_config = config.into_core()?;
+        let core = self.core.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal runtime is already closed".to_owned(),
+        })?;
+        let replay = ReplayWorker::start(core, worker_config).map_err(replay_worker_failure)?;
+        self.replay_worker = Some(replay);
         Ok(Vec::new())
     }
 
@@ -848,6 +886,58 @@ impl Runtime {
         Ok(encoded.into_bytes())
     }
 
+    /// Takes one replay activation, applies the same strict semantic
+    /// conversion as the live worker, and retains its lease until completion.
+    fn try_poll_replay_workflow(&mut self) -> Operation {
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle()
+            .clone();
+        let activation = {
+            let worker = self.replay_worker.as_mut().ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal replay worker is not running".to_owned(),
+            })?;
+            worker
+                .try_take_workflow(&handle)
+                .ok_or_else(not_ready)?
+                .map_err(poll_lane_failure)?
+        };
+        let semantic = match workflow_protocol::activation_from_core(&activation) {
+            Ok(semantic) => semantic,
+            Err(error) => {
+                self.reject_replay_workflow_delivery(
+                    &activation.run_id,
+                    "semantic replay activation conversion failed",
+                )?;
+                return Err(core_conversion_failure(error));
+            }
+        };
+        let encoded = match workflow_protocol::encode_activation(&semantic) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                self.reject_replay_workflow_delivery(
+                    &activation.run_id,
+                    "semantic replay activation JSON encoding failed",
+                )?;
+                return Err(protocol_failure(error));
+            }
+        };
+        if let Err(error) = retain_workflow_activation(&mut self.workflow_activations, semantic) {
+            self.reject_replay_workflow_delivery(
+                &activation.run_id,
+                "replay workflow activation lease was duplicated",
+            )?;
+            return Err(error);
+        }
+        Ok(encoded.into_bytes())
+    }
+
     /// Waits for workflow-lane readiness without consuming the queued task.
     ///
     /// The native C stub invokes this while the OCaml runtime lock is released.
@@ -869,6 +959,179 @@ impl Runtime {
                 message: "Temporal workflow readiness wait ended during worker shutdown".to_owned(),
             }),
             ReadinessWait::Error(error) => Err(poll_lane_failure(error)),
+        }
+    }
+
+    /// Waits for replay activation readiness and records the terminal shutdown
+    /// observation needed by the normal replay finalizer.
+    fn wait_replay_workflow(&mut self) -> Operation {
+        let worker = self.replay_worker.as_mut().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal replay worker is not running".to_owned(),
+        })?;
+        match worker.wait_workflow() {
+            ReadinessWait::Ready => Ok(Vec::new()),
+            ReadinessWait::TimedOut => Err(Failure {
+                status: STATUS_NOT_READY,
+                message: "Temporal replay readiness wait timed out; retry".to_owned(),
+            }),
+            ReadinessWait::Shutdown => Ok(Vec::new()),
+            ReadinessWait::Error(error) => Err(poll_lane_failure(error)),
+        }
+    }
+
+    /// Queues one strictly validated replay history in Core's bounded feeder.
+    fn feed_replay_history_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle()
+            .clone();
+        let worker = self.replay_worker.as_mut().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal replay worker is not running".to_owned(),
+        })?;
+        worker
+            .feed_json(&handle, text)
+            .map_err(replay_worker_failure)
+            .map(|()| Vec::new())
+    }
+
+    /// Closes the bounded replay input stream. Repetition is idempotent when a
+    /// replay worker is still present; the absent graph is already closed.
+    fn finish_replay_input(&mut self) -> Operation {
+        if let Some(worker) = self.replay_worker.as_mut() {
+            worker.finish_input();
+        }
+        Ok(Vec::new())
+    }
+
+    /// Completes one replay activation after strict semantic validation and
+    /// removes its one-shot lease only after Core accepts the completion.
+    fn complete_replay_workflow(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let semantic = workflow_protocol::decode_completion(text).map_err(protocol_failure)?;
+        let activation = self
+            .workflow_activations
+            .get(&semantic.run_id)
+            .ok_or_else(|| Failure {
+                status: STATUS_PROTOCOL,
+                message: "replay workflow completion does not match a leased activation".to_owned(),
+            })?;
+        let completion =
+            workflow_protocol::completion_to_core_for_activation(activation, &semantic)
+                .map_err(core_conversion_failure)?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle()
+            .clone();
+        let worker = self.replay_worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal replay worker is not running".to_owned(),
+        })?;
+        handle
+            .block_on(worker.complete_workflow(completion))
+            .map_err(replay_worker_failure)?;
+        self.workflow_activations.remove(&semantic.run_id);
+        Ok(Vec::new())
+    }
+
+    /// Retires a replay activation that could not be decoded by OCaml while
+    /// retaining the exact semantic lease check used by live workers.
+    fn reject_replay_workflow(&mut self, input: &[u8]) -> Operation {
+        let run_id = workflow_rejection_run_id(&self.workflow_activations, input)?;
+        self.reject_replay_workflow_delivery(
+            &run_id,
+            "semantic replay activation conversion failed",
+        )?;
+        self.workflow_activations.remove(&run_id);
+        Ok(Vec::new())
+    }
+
+    /// Uses the replay worker's Rust-owned completion path for a failed
+    /// semantic handoff; this never exposes a Core or Tokio handle to OCaml.
+    fn reject_replay_workflow_delivery(
+        &self,
+        run_id: &str,
+        reason: &'static str,
+    ) -> std::result::Result<(), Failure> {
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle()
+            .clone();
+        let worker = self.replay_worker.as_ref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal replay worker is not running".to_owned(),
+        })?;
+        handle
+            .block_on(worker.reject_workflow_delivery(run_id, reason))
+            .map_err(replay_worker_failure)
+    }
+
+    /// Finalizes a naturally drained replay and retains it on every failure.
+    fn finalize_replay(&mut self) -> Operation {
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle()
+            .clone();
+        let worker = self.replay_worker.take().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal replay worker is not running".to_owned(),
+        })?;
+        match handle.block_on(worker.finalize(&handle)) {
+            Ok(()) => Ok(Vec::new()),
+            Err((worker, error)) => {
+                self.replay_worker = Some(worker);
+                Err(replay_worker_failure(error))
+            }
+        }
+    }
+
+    /// Explicitly abandons a replay, force-completing its native debts and
+    /// retaining the worker if Core cannot finalize it yet.
+    fn dispose_replay(&mut self) -> Operation {
+        if self.replay_worker.is_none() {
+            return Ok(Vec::new());
+        }
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle()
+            .clone();
+        let worker = self
+            .replay_worker
+            .take()
+            .expect("replay worker was checked before disposal");
+        match handle.block_on(worker.dispose(&handle)) {
+            Ok(()) => Ok(Vec::new()),
+            Err((worker, error)) => {
+                self.replay_worker = Some(worker);
+                Err(replay_worker_failure(error))
+            }
         }
     }
 
@@ -1179,6 +1442,7 @@ impl Runtime {
             core,
             client: self.client.take(),
             worker: self.worker.take(),
+            replay_worker: self.replay_worker.take(),
             pending_start_tasks,
             completed,
         };
@@ -1192,6 +1456,7 @@ impl Runtime {
                 message.core,
                 message.client,
                 message.worker,
+                message.replay_worker,
                 message.pending_start_tasks,
             );
             RUNTIMES_CLEANED.fetch_add(1, Ordering::Release);
@@ -1226,11 +1491,12 @@ fn run_runtime_cleanup(receiver: Receiver<RuntimeCleanup>) {
         core,
         client,
         worker,
+        replay_worker,
         pending_start_tasks,
         completed,
     } = message;
     let status = if catch_unwind(AssertUnwindSafe(|| {
-        drop_runtime_graph(core, client, worker, pending_start_tasks)
+        drop_runtime_graph(core, client, worker, replay_worker, pending_start_tasks)
     }))
     .is_ok()
     {
@@ -1254,6 +1520,7 @@ fn drop_runtime_graph(
     core: CoreRuntime,
     client: Option<Connection>,
     worker: Option<PollLanes>,
+    replay_worker: Option<ReplayWorker>,
     pending_start_tasks: Vec<JoinHandle<()>>,
 ) {
     let handle = core.tokio_handle();
@@ -1290,6 +1557,23 @@ fn drop_runtime_graph(
             }
         }
     }
+    if let Some(worker) = replay_worker {
+        // GC fallback cannot report a typed replay error to OCaml. It still
+        // performs the same bounded force-completion and join protocol as an
+        // explicit dispose, then retries once before releasing the retained
+        // owner as the last-resort cleanup path.
+        let mut retained = Some(worker);
+        for _ in 0..2 {
+            let worker = retained
+                .take()
+                .expect("replay cleanup retains the worker after a failed attempt");
+            match handle.block_on(worker.dispose(&handle)) {
+                Ok(()) => break,
+                Err((returned, _error)) => retained = Some(returned),
+            }
+        }
+        drop(retained);
+    }
     drop(client);
     drop(core);
 }
@@ -1304,6 +1588,37 @@ fn worker_bridge_failure(error: WorkerBridgeError) -> Failure {
     Failure {
         status,
         message: public_worker_error_message(&error).to_owned(),
+    }
+}
+
+/// Maps replay lifecycle errors to the same closed ABI categories used by live
+/// worker operations. Replay input and Core diagnostics are intentionally
+/// reduced to stable messages before they cross the C/OCaml boundary.
+fn replay_worker_failure(error: ReplayWorkerError) -> Failure {
+    let (status, message) = match error {
+        ReplayWorkerError::FeederClosed => (
+            STATUS_INVALID_STATE,
+            "Temporal replay history feeder is closed",
+        ),
+        ReplayWorkerError::ReplayNotDrained { .. } => (
+            STATUS_OUTSTANDING_TASKS,
+            "Temporal replay worker has not drained all input",
+        ),
+        ReplayWorkerError::InvalidHistory(_) => (
+            STATUS_PROTOCOL,
+            "Temporal replay history failed strict validation",
+        ),
+        ReplayWorkerError::CoreInitialization => {
+            (STATUS_WORKER, "Temporal replay worker construction failed")
+        }
+        ReplayWorkerError::PollLane(_) => (STATUS_WORKER, "Temporal replay poll lane failed"),
+        ReplayWorkerError::Finalization(_) => {
+            (STATUS_WORKER, "Temporal replay worker finalization failed")
+        }
+    };
+    Failure {
+        status,
+        message: message.to_owned(),
     }
 }
 
@@ -2162,6 +2477,237 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_start_json(
             })?;
             let config = decode_config::<WorkerConfigInput>(input, input_len)?;
             runtime.start_worker(config)
+        })
+    }
+}
+
+/// Start one workflow-only Core replay worker from strict worker settings.
+/// Replay does not require a Temporal client because histories are supplied by
+/// the caller through the bounded feeder.
+///
+/// # Safety
+///
+/// The runtime, input, and output contracts match
+/// [`ocaml_temporal_core_v1_worker_start_json`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_start_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let runtime = runtime.as_mut().ok_or_else(|| Failure {
+                status: STATUS_INVALID_ARGUMENT,
+                message: "runtime pointer is null".to_owned(),
+            })?;
+            let config = decode_config::<WorkerConfigInput>(input, input_len)?;
+            runtime.start_replay_worker(config)
+        })
+    }
+}
+
+/// Feed one strict replay-history JSON document to the bounded Core feeder.
+///
+/// # Safety
+///
+/// The runtime and output contracts match the workflow poll operation. The
+/// input span is borrowed only for this synchronous call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_feed_history_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .feed_replay_history_json(input)
+        })
+    }
+}
+
+/// Close the replay history feeder. Repeating this operation is harmless.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output` must
+/// satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_finish_input(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .finish_replay_input()
+        })
+    }
+}
+
+/// Non-blockingly take one validated replay activation JSON document.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output` must
+/// satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_try_poll_workflow(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .try_poll_replay_workflow()
+        })
+    }
+}
+
+/// Wait for replay workflow readiness with the same bounded lock-release
+/// contract as the live workflow wait.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output` must
+/// satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_wait_workflow(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .wait_replay_workflow()
+        })
+    }
+}
+
+/// Validate and submit one replay workflow completion JSON document.
+///
+/// # Safety
+///
+/// The runtime, input, and output contracts match
+/// [`ocaml_temporal_core_v1_worker_complete_workflow_json`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_complete_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .complete_replay_workflow(input)
+        })
+    }
+}
+
+/// Reject one replay activation that OCaml could not decode.
+///
+/// # Safety
+///
+/// The runtime, input, and output contracts match
+/// [`ocaml_temporal_core_v1_worker_reject_workflow_json`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_reject_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .reject_replay_workflow(input)
+        })
+    }
+}
+
+/// Finalize a replay only after its feeder is closed and Core has naturally
+/// drained all activations. A failure retains the worker for another attempt.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output` must
+/// satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_finalize(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .finalize_replay()
+        })
+    }
+}
+
+/// Explicitly abandon replay, force-completing owned Core debts and retaining
+/// the worker if terminal finalization cannot yet succeed.
+///
+/// # Safety
+///
+/// `runtime` must be a live exclusively owned runtime handle and `output` must
+/// satisfy the standard initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_replay_worker_dispose(
+    runtime: *mut Runtime,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .dispose_replay()
         })
     }
 }

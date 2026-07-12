@@ -27,7 +27,7 @@
  (package temporal-sdk)
  (no_dynlink)
  (modules native_bridge)
- (libraries temporal_base yojson)
+ (libraries temporal_base temporal_protocol yojson)
  (foreign_archives temporal_native_stubs ocaml_temporal_core_bridge)
  (c_library_flags
   (:include rust_static_link_flags.sexp)))

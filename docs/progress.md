@@ -14,6 +14,21 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Replay worker ABI and supervisor operation
+
+The bounded replay worker is now reachable through the private C ABI and the
+single-domain OCaml supervisor. The supervisor validates each closed replay
+history document before sending it to Rust, repeats the validation at the
+native boundary, and serializes start, feed, poll, completion, rejection,
+finalization, and disposal operations with the other runtime lifecycle calls.
+Malformed histories and completions are rejected without retaining a feeder or
+workflow lease. Focused Rust ABI tests cover null-handle and missing-worker
+status paths, malformed input, and idempotent cleanup. The OCaml bridge suite
+covers sender-side canonical-payload validation and replay disposal. This is
+still library-level replay plumbing: live two-generation restart/replay
+Compose acceptance remains planned. Local targeted Rust and Dune builds passed;
+queued GitHub Actions are not treated as evidence for this milestone.
+
 ## 2026-07-13: Bounded native replay worker plumbing
 
 The private Rust bridge now accepts a closed replay-history JSON document,
@@ -38,10 +53,11 @@ finalize after feeder close but before draining, and retained-owner disposal
 recovery for both shared-Core and poll-lane failures. The document format is
 specified by
 [`docs/reference/replay-bridge.md`](reference/replay-bridge.md) and its JSON
-Schema. This is unit-tested native plumbing only: the public OCaml replay
-operation and live two-generation restart/replay Compose acceptance remain
-planned. Local Rust tests passed; queued GitHub Actions are not treated as
-evidence for this milestone.
+Schema. This entry records the native portion of the implementation; the
+follow-up ABI and supervisor entry above records the OCaml operation layer.
+Live two-generation restart/replay Compose acceptance remains planned. Local
+Rust tests passed; queued GitHub Actions are not treated as evidence for this
+milestone.
 
 ## 2026-07-13: Retained activity completion worker-loop resilience
 

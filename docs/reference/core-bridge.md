@@ -170,6 +170,10 @@ an error can reach the public worker API or its logs. Consequently Core/gRPC
 status text, endpoint details, task identifiers, and payload data cannot cross
 the Rust/C/OCaml boundary. This is intentionally a discard, not a redacted
 copy: the current logging policy does not expose those private diagnostics.
+Lifecycle configuration parser failures follow the same fail-closed rule. Rust
+returns only `invalid lifecycle configuration JSON`; Serde's syntax, location,
+and unknown-field details are kept inside Rust so application-controlled input
+cannot become a diagnostic at the C/OCaml boundary.
 
 All client-operation identifiers are nonempty and NUL-free. The schemas state the
 65,536-character necessary bound, while the bilateral runtime validators apply

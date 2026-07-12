@@ -154,9 +154,10 @@ and input fields represented by the protocol. Core child options not yet
 exposed by the OCaml runtime remain explicit defaults, but the two child
 resolution activations are decoded and validated losslessly. Start and
 terminal events share one Core sequence; only that exact pair is accepted. The
-live Compose gate now proves the initial workflow/activity success path, while
-child behavior and the remaining terminal/recovery scenarios still require
-real-server evidence. Activity commands are accepted
+live Compose gate includes the initial workflow/activity success path and one
+parent awaiting a successful child result, while child failure/cancellation and
+the remaining terminal/recovery scenarios still require real-server evidence.
+Activity commands are accepted
 only when their required identifiers, payloads, timeout policies, and
 cancellation options are present; a missing field is rejected in the same
 typed way.
@@ -193,6 +194,7 @@ completion transport failure safely.
 
 The fake tests do not by themselves claim live Temporal compatibility. Focused
 supervisor and bridge tests cover readiness and lifecycle ownership, while the
-Compose acceptance suite now verifies timer and remote-activity success paths
-against a real Temporal Server. It remains the gate for child workflows and
-the remaining activity, terminal, and recovery cases.
+Compose acceptance suite now verifies timer, remote-activity, and one
+parent/child success path against a real Temporal Server. It remains the gate
+for child failure/cancellation and the remaining activity, terminal, and
+recovery cases.

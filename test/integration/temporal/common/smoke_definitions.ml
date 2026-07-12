@@ -1,4 +1,4 @@
-(** Definitions shared by the future two-process Temporal acceptance test.
+(** Definitions shared by the live two-process Temporal acceptance test.
 
     Keeping the workflow and activity values in one private test library makes
     the driver and worker compile against exactly the same names and codecs. The
@@ -40,3 +40,26 @@ let timer_then_activity =
       match Temporal.Workflow.sleep (Temporal.Duration.of_ms 10L) with
       | Error error -> Error error
       | Ok () -> Temporal.Activity.execute mock_transform (seed ^ ":timer"))
+
+(** A child workflow that waits on a short durable timer before deriving its
+    result entirely from its input. The timer is deliberately inside the child
+    rather than the parent so the live scenario exercises child start and
+    terminal resolution as well as a child-owned timer activation. *)
+let child_after_timer =
+  Temporal.Workflow.define ~name:"smoke.child_after_timer"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match Temporal.Workflow.sleep (Temporal.Duration.of_ms 10L) with
+      | Error error -> Error error
+      | Ok () -> Ok (String.uppercase_ascii (seed ^ ":child")))
+
+(** Starts [child_after_timer] with an identity derived only from the parent
+    input, then waits through the public direct-style child helper. The fixed
+    prefix keeps this fixture's child execution distinct from the driver's
+    top-level workflow IDs, while deriving the suffix deterministically keeps
+    the child command stable when Temporal replays the parent. *)
+let parent_awaits_child =
+  Temporal.Workflow.define ~name:"smoke.parent_awaits_child"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      Temporal.Child_workflow.execute
+        ~id:("two-binary-parent-child-" ^ seed)
+        child_after_timer seed)

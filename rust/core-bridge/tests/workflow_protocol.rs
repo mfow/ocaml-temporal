@@ -2,8 +2,9 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use ocaml_temporal_core_bridge::workflow_protocol;
 use temporalio_protos::coresdk::{
-    common as core_common, workflow_activation as core_activation,
-    workflow_commands as core_commands, workflow_completion as core_completion,
+    child_workflow as core_child_workflow, common as core_common,
+    workflow_activation as core_activation, workflow_commands as core_commands,
+    workflow_completion as core_completion,
 };
 
 /// Locates one language-neutral semantic fixture in the repository.
@@ -143,6 +144,80 @@ fn converts_start_child_workflow_command() {
             .code,
         workflow_protocol::CoreConversionErrorCode::Unsupported
     );
+}
+
+/// Proves every child cancellation policy survives the JSON semantic protocol
+/// and the official Core command representation without relying on a numeric
+/// enum value at the OCaml/Rust boundary.  The policy is durable workflow
+/// history: dropping one variant here would change how cancellation races are
+/// replayed by a parent workflow.
+#[test]
+fn converts_all_child_cancellation_policies() {
+    let input = workflow_protocol::Payload {
+        metadata: [("encoding".to_owned(), b"binary/null".to_vec())].into(),
+        data: Vec::new(),
+    };
+    let policies = [
+        (
+            workflow_protocol::ChildWorkflowCancellationType::TryCancel,
+            core_child_workflow::ChildWorkflowCancellationType::TryCancel,
+            "try_cancel",
+        ),
+        (
+            workflow_protocol::ChildWorkflowCancellationType::WaitCancellationCompleted,
+            core_child_workflow::ChildWorkflowCancellationType::WaitCancellationCompleted,
+            "wait_cancellation_completed",
+        ),
+        (
+            workflow_protocol::ChildWorkflowCancellationType::Abandon,
+            core_child_workflow::ChildWorkflowCancellationType::Abandon,
+            "abandon",
+        ),
+        (
+            workflow_protocol::ChildWorkflowCancellationType::WaitCancellationRequested,
+            core_child_workflow::ChildWorkflowCancellationType::WaitCancellationRequested,
+            "wait_cancellation_requested",
+        ),
+    ];
+
+    for (policy, core_policy, wire_name) in policies {
+        let completion = workflow_protocol::Completion {
+            run_id: "parent-run".to_owned(),
+            commands: vec![workflow_protocol::CompletionCommand::StartChildWorkflow {
+                seq: 2,
+                workflow_id: "child/1".to_owned(),
+                workflow_type: "child".to_owned(),
+                input: vec![input.clone()],
+                cancellation_type: policy,
+            }],
+        };
+        let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+        assert!(
+            encoded.contains(&format!("\"cancellation_type\":\"{wire_name}\"")),
+            "semantic JSON omitted child policy {wire_name}: {encoded}"
+        );
+        assert_eq!(
+            workflow_protocol::decode_completion(&encoded).unwrap(),
+            completion
+        );
+
+        let core = workflow_protocol::completion_to_core(&completion).unwrap();
+        let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+            core.status.as_ref()
+        else {
+            panic!("child completion must be successful");
+        };
+        let Some(core_commands::workflow_command::Variant::StartChildWorkflowExecution(child)) =
+            success.commands[0].variant.as_ref()
+        else {
+            panic!("child command must map to Core's start-child variant");
+        };
+        assert_eq!(child.cancellation_type, core_policy as i32);
+        assert_eq!(
+            workflow_protocol::completion_from_core(&core).unwrap(),
+            completion
+        );
+    }
 }
 
 /// Proves an explicit child cancellation retains its sequence and reason when

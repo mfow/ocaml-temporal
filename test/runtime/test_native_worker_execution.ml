@@ -624,6 +624,208 @@ let test_child_command_and_resolution_lifecycle () =
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "child lifecycle left a native lease outstanding"
 
+(** A terminal child result is invalid until Core has acknowledged the child
+    start. The execution turns that bridge defect into one terminal failure
+    completion and the native adapter discards the parent execution so a later
+    activation cannot resume corrupted state. *)
+let test_child_terminal_before_start_retires_parent_lease () =
+  let supervisor = fake_supervisor () in
+  let child =
+    Temporal.Workflow.remote ~name:"native_worker_child_before_start"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_child_before_start_parent"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let pending =
+          Temporal.Child_workflow.start ~id:"child-before-start" child ()
+        in
+        Temporal.Future.await pending)
+  in
+  let run_id = "run-child-before-start" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id
+           ~workflow_type:"native_worker_child_before_start_parent" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  begin
+    match Worker.poll worker with
+    | Ok (Adapter.Completed { terminal = false; command_count = 1; _ }) -> ()
+    | Ok _ -> failwith "child-before-start setup did not suspend"
+    | Error error ->
+        failwith ("child-before-start setup failed: " ^ error.message)
+  end;
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow
+           { seq = 1L; result = Protocol.Child_completed None };
+       ]);
+  begin
+    match Worker.poll worker with
+    | Ok (Adapter.Completed { terminal = true; command_count = 1; _ }) -> ()
+    | Ok _ -> failwith "terminal-before-start activation did not fail the workflow"
+    | Error error ->
+        failwith ("terminal-before-start failure was not acknowledged: " ^ error.message)
+  end;
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Fail_workflow _ ] -> ()
+    | _ -> failwith "terminal-before-start did not submit a failure completion"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "terminal-before-start left a native lease outstanding";
+  match Worker.poll worker with
+  | Ok Adapter.Not_ready -> ()
+  | Ok _ -> failwith "terminal-before-start retained stale execution work"
+  | Error error ->
+      failwith ("terminal-before-start cleanup poll failed: " ^ error.message)
+
+(** A second start acknowledgment for one child sequence is a protocol defect,
+    even when it carries a different run ID. The adapter must not let that
+    conflicting value overwrite the first acknowledgment or leave a leased
+    activation unacknowledged. *)
+let test_duplicate_child_start_acknowledgment_retires_parent_lease () =
+  let supervisor = fake_supervisor () in
+  let child =
+    Temporal.Workflow.remote ~name:"native_worker_duplicate_child_start"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_duplicate_child_start_parent"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let pending =
+          Temporal.Child_workflow.start ~id:"duplicate-child-start" child ()
+        in
+        Temporal.Future.await pending)
+  in
+  let run_id = "run-duplicate-child-start" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id
+           ~workflow_type:"native_worker_duplicate_child_start_parent" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow_start
+           { seq = 1L; result = Protocol.Child_start_succeeded "first-run" };
+       ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow_start
+           { seq = 1L; result = Protocol.Child_start_succeeded "second-run" };
+       ]);
+  begin
+    match Worker.poll worker with
+    | Ok (Adapter.Completed { terminal = true; command_count = 1; _ }) -> ()
+    | Ok _ -> failwith "duplicate child start acknowledgment did not fail the workflow"
+    | Error error ->
+        failwith ("duplicate child start failure was not acknowledged: " ^ error.message)
+  end;
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Fail_workflow _ ] -> ()
+    | _ -> failwith "duplicate child start did not submit a failure completion"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "duplicate child start left a native lease outstanding";
+  match Worker.poll worker with
+  | Ok Adapter.Not_ready -> ()
+  | Ok _ -> failwith "duplicate child start retained stale execution work"
+  | Error error ->
+      failwith ("duplicate child start cleanup poll failed: " ^ error.message)
+
+(** A duplicate terminal child result is rejected while the parent is still
+    live and waiting on an unrelated timer. This distinguishes resolver
+    ownership from the simpler unknown-run case: the first terminal result is
+    valid, but the repeated result must not resolve any future twice or allow
+    the parent to continue with inconsistent state. *)
+let test_duplicate_child_terminal_while_parent_pending () =
+  let supervisor = fake_supervisor () in
+  let child =
+    Temporal.Workflow.remote ~name:"native_worker_duplicate_child_terminal"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_duplicate_child_terminal_parent"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let child_future =
+          Temporal.Child_workflow.start ~id:"duplicate-child-terminal" child ()
+        in
+        let timer_future = Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 25L) in
+        match Temporal.Future.await (Temporal.Future.both child_future timer_future) with
+        | Ok ((), ()) -> Ok ()
+        | Error error -> Error error)
+  in
+  let run_id = "run-duplicate-child-terminal" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id
+           ~workflow_type:"native_worker_duplicate_child_terminal_parent" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  let timer_seq =
+    match
+      List.find_map
+        (function
+          | Protocol.Start_timer { seq; _ } -> Some seq
+          | _ -> None)
+        (latest_completion supervisor).commands
+    with
+    | Some seq -> seq
+    | None -> failwith "duplicate-terminal setup did not emit a timer"
+  in
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow_start
+           { seq = 1L; result = Protocol.Child_start_succeeded "child-run" };
+       ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow
+           { seq = 1L; result = Protocol.Child_completed None };
+       ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "valid child terminal resolution left a native lease outstanding";
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow
+           { seq = 1L; result = Protocol.Child_completed None };
+       ]);
+  begin
+    match Worker.poll worker with
+    | Ok (Adapter.Completed { terminal = true; command_count = 1; _ }) -> ()
+    | Ok _ -> failwith "duplicate child terminal did not fail the workflow"
+    | Error error ->
+        failwith ("duplicate child terminal failure was not acknowledged: " ^ error.message)
+  end;
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Fail_workflow _ ] -> ()
+    | _ -> failwith "duplicate child terminal did not submit a failure completion"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "duplicate child terminal left a native lease outstanding";
+  (* The timer remains pending in the discarded parent, so there must be no
+     later attempt to resume it after the bridge rejection retires the run. *)
+  enqueue supervisor
+    (activation ~run_id [ Protocol.Fire_timer { seq = timer_seq } ]);
+  match Worker.poll worker with
+  | Ok (Adapter.Rejected { error; lease_retired = true; _ })
+    when String.equal error.code "unknown_run_id" -> ()
+  | Ok _ -> failwith "duplicate child terminal retained stale parent state"
+  | Error error ->
+      failwith ("duplicate child terminal cleanup poll failed: " ^ error.message)
+
 (** Checks the error observed by a parent when Core rejects a child start. The
     workflow deliberately inspects the same future after [await]: a successful
     rejection path must make the future ready, preserve the typed error, and
@@ -884,6 +1086,75 @@ let test_child_terminal_failure () =
   | Error error ->
       failwith ("terminal child failure cleanup poll failed: " ^ error.message)
 
+(** Reuses the child-failure shape with a retryable Core state. The public
+    error view must preserve that [Timeout] is retryable even though the same
+    child-workflow category is non-retryable for [Non_retryable_failure]. *)
+let test_retryable_child_failure_preserves_retryability () =
+  let retryable_failure =
+    match child_terminal_failure.info with
+    | Protocol.Child_workflow info ->
+        {
+          child_terminal_failure with
+          info = Protocol.Child_workflow { info with retry_state = Protocol.Timeout };
+        }
+    | Protocol.Application _ | Protocol.Canceled _ | Protocol.Activity _ ->
+        failwith "child terminal failure fixture lost its child-workflow info"
+  in
+  let child =
+    Temporal.Workflow.remote ~name:"native_worker_retryable_child_failure_target"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_retryable_child_failure"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let pending =
+          Temporal.Child_workflow.start ~id:"retryable-child-failure" child ()
+        in
+        match Temporal.Future.await pending with
+        | Ok () ->
+            Error
+              (Temporal.Error.defect
+                 ~message:"retryable child failure unexpectedly succeeded")
+        | Error error ->
+            let view = Temporal.Error.view error in
+            if view.category = `Child_workflow && not view.non_retryable then Ok ()
+            else
+              Error
+                (Temporal.Error.defect
+                   ~message:
+                     "retryable child failure was incorrectly marked non-retryable"))
+  in
+  let run_id = "run-retryable-child-failure" in
+  let supervisor = fake_supervisor () in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_retryable_child_failure" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (activation ~run_id
+       [
+         Protocol.Resolve_child_workflow_start
+           { seq = 1L; result = Protocol.Child_start_succeeded "child-run" };
+       ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (activation ~run_id
+       [ Protocol.Resolve_child_workflow { seq = 1L; result = Protocol.Child_failed retryable_failure } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Complete_workflow { result = None } ] -> ()
+    | _ -> failwith "retryable child failure did not complete the parent"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "retryable child failure left a native lease outstanding";
+  match Worker.poll worker with
+  | Ok Adapter.Not_ready -> ()
+  | Ok _ -> failwith "retryable child failure retained stale execution work"
+  | Error error ->
+      failwith ("retryable child failure cleanup poll failed: " ^ error.message)
+
 (** An activation for a run not present in the existential registry is rejected
     and completed as a non-retryable bridge failure. *)
 let test_unknown_run_retires_lease () =
@@ -978,12 +1249,16 @@ let () =
   test_resumed_failure_removes_run ();
   test_activity_command_retires_lease ();
   test_child_command_and_resolution_lifecycle ();
+  test_child_terminal_before_start_retires_parent_lease ();
+  test_duplicate_child_start_acknowledgment_retires_parent_lease ();
+  test_duplicate_child_terminal_while_parent_pending ();
   test_child_start_rejection_case ~label:"exists"
     ~cause:Protocol.Child_start_workflow_already_exists
     ~expected_cause:"workflow_already_exists" ();
   test_child_start_rejection_case ~label:"unspecified"
     ~cause:Protocol.Child_start_unspecified ~expected_cause:"unspecified" ();
   test_child_terminal_failure ();
+  test_retryable_child_failure_preserves_retryability ();
   test_unknown_run_retires_lease ();
   test_malformed_activation_error_is_typed ();
   test_registration_validation ();

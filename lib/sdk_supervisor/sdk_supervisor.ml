@@ -288,6 +288,29 @@ module Protocol_adapter = struct
             view.message;
       }
 
+  (** Replaces native worker diagnostics with the closed categories promised by
+      the public supervisor API.
+
+      The Rust bridge already applies this rule before returning a C result.
+      Repeating it here protects the OCaml-facing boundary if an older native
+      library, a test double, or a future C-stub change supplies a worker
+      status with unexpected prose. Client [Connection] errors are deliberately
+      not handled here: client operations carry closed JSON documents that the
+      client codecs must decode rather than replace. *)
+  let sanitize_native_worker_error ({ Bridge.status; _ } as error) =
+    match status with
+    | Worker ->
+        {
+          error with
+          message = "native worker operation failed";
+        }
+    | Outstanding_tasks ->
+        {
+          error with
+          message = "native worker has outstanding tasks";
+        }
+    | _ -> error
+
   (** Strictly validates one workflow activation copied from Rust. *)
   let decode_workflow_activation input =
     match Workflow.decode_activation (Bytes.to_string input) with
@@ -295,8 +318,10 @@ module Protocol_adapter = struct
     | Error error -> workflow_error "workflow activation decoding" error
 
   (** Keeps the original protocol failure primary while recording a native
-      rejection failure with bounded structural status and diagnostic text. *)
+      rejection failure with its bounded structural status and constant
+      diagnostic category. *)
   let rejection_failed (protocol_error : Bridge.error) rejection_error =
+    let rejection_error = sanitize_native_worker_error rejection_error in
     let status =
       match rejection_error.Bridge.status with
       | Invalid_argument -> "invalid_argument"
@@ -332,7 +357,7 @@ module Protocol_adapter = struct
             | Error rejection_error ->
                 Error (rejection_failed protocol_error rejection_error)))
     | Error { Bridge.status = Not_ready; _ } -> Ok None
-    | Error _ as error -> error
+    | Error error -> Error (sanitize_native_worker_error error)
 
   (** Canonically serializes and reparses one workflow completion before it
       can be submitted across the C boundary. *)
@@ -359,7 +384,7 @@ module Protocol_adapter = struct
             | Error rejection_error ->
                 Error (rejection_failed protocol_error rejection_error)))
     | Error { Bridge.status = Not_ready; _ } -> Ok None
-    | Error _ as error -> error
+    | Error error -> Error (sanitize_native_worker_error error)
 
   (** Canonically serializes and reparses one activity completion before it
       can be submitted across the C boundary. *)

@@ -201,9 +201,16 @@ let native_status_name = function
 (** Converts a supervisor failure to the public bridge/defect vocabulary.
     Backend errors are expected operational failures; a supervisor exception
     is an internal invariant failure and is therefore deliberately marked
-    non-retryable. *)
+    non-retryable. Worker statuses are normalized here as a final defense
+    against Core/gRPC diagnostic prose escaping through a client callsite. *)
 let native_supervisor_error = function
   | Native.Backend { Bridge.status; message } ->
+      let message =
+        match status with
+        | Bridge.Worker -> "native worker operation failed"
+        | Bridge.Outstanding_tasks -> "native worker has outstanding tasks"
+        | _ -> message
+      in
       bridge_error
         (Printf.sprintf "native client bridge %s: %s" (native_status_name status)
            message)

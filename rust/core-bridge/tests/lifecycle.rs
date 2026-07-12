@@ -137,10 +137,7 @@ fn connection_failure_is_structured_and_rolls_back_state() {
     let config = br#"{"target_url":"http://127.0.0.1:1","identity":"worker"}"#;
     for _ in 0..2 {
         let message = consume(connect(runtime, config), STATUS_CONNECTION);
-        assert!(
-            message.contains("Temporal client connection failed"),
-            "{message}"
-        );
+        assert_eq!(message, "Temporal client connection failed");
     }
     // SAFETY: Failed constructors retained no child resource, and the runtime
     // slot is exclusively owned by this test.

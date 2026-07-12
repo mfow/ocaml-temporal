@@ -25,13 +25,15 @@ Current events use these levels:
   tasks to finish.
 - `Error` records bridge and workflow failures.
 
-An empty non-blocking worker poll lane and an exact-run client wait whose
-100 ms interval elapsed are reported at `Debug` as `not ready`; both are
-expected scheduling states and are not failures. Protocol, lifecycle,
-configuration, and native bridge failures remain `Error` records. This level
-split keeps a healthy worker or waiting client from producing error-volume
-logs while retaining actionable diagnostics for conditions that require
-intervention.
+An empty non-blocking worker poll lane, an exact-run client wait whose 100 ms
+interval elapsed, or an asynchronous start-ticket poll/wait that is still
+pending is reported at `Debug` as `not ready`; each is an expected scheduling
+state rather than a failure. Protocol, lifecycle, configuration, and native
+bridge failures remain `Error` records. This level split keeps a healthy worker
+or waiting client from producing error-volume logs while retaining actionable
+diagnostics for conditions that require intervention. These level assignments
+describe the SDK's current reporting callsites; applications may use the
+generic `Observability.report` helper for additional application events.
 
 The SDK never logs at `App`, which is reserved for the application.
 
@@ -88,7 +90,11 @@ Events contain operation names, counts, type names, stable error categories,
 and latency. They do not contain payload bytes, workflow inputs or outputs,
 credentials, Rust diagnostic strings, or arbitrary remote failure detail.
 User-controlled string tags are capped at 256 bytes, and current message prose
-is constant and bounded.
+is constant and bounded. The Rust bridge reduces Core/gRPC worker and
+poll-lane failures to those constant categories before they reach C; the OCaml
+worker adapter repeats the check before reporting or returning an error. The
+private diagnostic text is discarded because this logging policy has no path
+that is allowed to expose it.
 
 Every SDK report passes through one exception shield. If an application
 reporter or formatter raises, the SDK discards that record and returns the

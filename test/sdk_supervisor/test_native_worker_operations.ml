@@ -67,8 +67,27 @@ let test_nonblocking_readiness_results () =
     (Supervisor.Protocol_adapter.activity_poll_result ~reject
        (Error { Bridge.status = Not_ready; message = "lane empty" }));
   let failure = { Bridge.status = Worker; message = "poll lane stopped" } in
-  expect "workflow poll failure" (Error failure)
-    (Supervisor.Protocol_adapter.workflow_poll_result ~reject (Error failure))
+  let sanitized_failure =
+    { Bridge.status = Worker; message = "native worker operation failed" }
+  in
+  expect "workflow poll failure" (Error sanitized_failure)
+    (Supervisor.Protocol_adapter.workflow_poll_result ~reject (Error failure));
+  let hostile_failure =
+    {
+      Bridge.status = Worker;
+      message = "tonic::Status { message: secret-core-diagnostic }";
+    }
+  in
+  (match
+     Supervisor.Protocol_adapter.activity_poll_result ~reject
+       (Error hostile_failure)
+   with
+  | Error { Bridge.status = Worker; message } ->
+      if contains_substring message "secret-core-diagnostic" then
+        failwith "activity worker error exposed Core diagnostic";
+      expect "sanitized activity worker error" "native worker operation failed"
+        message
+  | _ -> failwith "hostile activity worker error changed status")
 
 (** If OCaml rejects bytes that Rust already leased, the adapter returns those
     exact bytes to the native rejection path before exposing the protocol
@@ -98,8 +117,10 @@ let test_decode_failure_retires_native_lease () =
        (Ok (Bytes.of_string {|{"task_token":"c2VjcmV0"}|}))
    with
   | Error { Bridge.status = Protocol; message } ->
-      if not (contains_substring message "native rejection failed safely")
-      then failwith "activity rejection failure was omitted";
+      if contains_substring message "native rejection failed safely" then
+        failwith "activity rejection failure exposed native prose";
+      if not (contains_substring message "native worker operation failed") then
+        failwith "activity rejection failure was not categorized";
       if contains_substring message "c2VjcmV0"
       then failwith "activity rejection error exposed task bytes"
   | _ -> failwith "activity decode/rejection failure lost Protocol status")

@@ -44,11 +44,22 @@ let bridge_status = function
 
 (** Converts the supervisor's opaque error into a bounded worker diagnostic.
     [Supervisor_failed] is an internal defect; it is still represented as a
-    result so callers do not need to catch an exception during shutdown. *)
+    result so callers do not need to catch an exception during shutdown.
+
+    Worker and outstanding-task statuses are closed categories at the public
+    boundary. The Rust bridge normally supplies constant messages for them,
+    but repeating the mapping here also protects callers from a stale native
+    library or a malformed test double that still carries Core/gRPC prose. *)
 let native_error_view (error : Native.error) =
   match error with
   | Native.Backend ({ Bridge.status; message } : Bridge.error) ->
-      (bridge_status status, bounded_message message)
+      let message =
+        match status with
+        | Bridge.Worker -> "native worker operation failed"
+        | Bridge.Outstanding_tasks -> "native worker has outstanding tasks"
+        | _ -> bounded_message message
+      in
+      (bridge_status status, message)
   | Native.Closed -> ("closed", "native supervisor is shut down")
   | Native.Supervisor_failed exception_ ->
       let message =

@@ -1,4 +1,7 @@
-use crate::worker_bridge::{PollLaneError, PollLanes, ReadinessWait, WorkerBridgeError};
+use crate::worker_bridge::{
+    PollLaneError, PollLanes, ReadinessWait, WorkerBridgeError, public_poll_lane_error_message,
+    public_worker_error_message,
+};
 use crate::{activity_protocol, client_protocol, workflow_protocol};
 use serde::Deserialize;
 use std::collections::{HashMap, hash_map::Entry};
@@ -337,9 +340,12 @@ impl Runtime {
         let connection = core
             .tokio_handle()
             .block_on(Connection::connect(options))
-            .map_err(|error| Failure {
+            .map_err(|_error| Failure {
                 status: STATUS_CONNECTION,
-                message: format!("Temporal client connection failed: {error}"),
+                // Core's connection error can contain gRPC status details or
+                // server-provided text.  Only the closed ABI category may
+                // cross into OCaml; detailed diagnostics stay inside Rust.
+                message: "Temporal client connection failed".to_owned(),
             })?;
         self.client = Some(connection);
         Ok(Vec::new())
@@ -713,12 +719,15 @@ impl Runtime {
             let _runtime_guard = handle.enter();
             temporalio_sdk_core::init_worker(core, worker_config, client)
         }
-        .map_err(|error| Failure {
+        .map_err(|_error| Failure {
             status: STATUS_WORKER,
-            message: format!("Temporal workflow worker construction failed: {error}"),
+            // Worker construction errors originate in Core and may include
+            // endpoint or server details.  Do not serialize that text into
+            // the public result buffer.
+            message: "Temporal workflow worker construction failed".to_owned(),
         })?;
 
-        if let Err(error) = handle.block_on(worker.validate()) {
+        if handle.block_on(worker.validate()).is_err() {
             {
                 // Core's synchronous shutdown initiation spawns its server
                 // deregistration task, so it needs the same runtime context
@@ -729,7 +738,9 @@ impl Runtime {
             handle.block_on(worker.finalize_shutdown());
             return Err(Failure {
                 status: STATUS_WORKER,
-                message: format!("Temporal workflow worker validation failed: {error}"),
+                // Validation performs Core/Server work, so its diagnostic is
+                // subject to the same closed-category boundary as creation.
+                message: "Temporal workflow worker validation failed".to_owned(),
             });
         }
         self.worker = Some(PollLanes::start(worker, &handle));
@@ -1173,13 +1184,13 @@ fn drop_runtime_graph(
 
 /// Maps private worker state-machine errors to stable ABI failures.
 fn worker_bridge_failure(error: WorkerBridgeError) -> Failure {
-    let status = match error {
+    let status = match &error {
         WorkerBridgeError::OutstandingTasks(_) => STATUS_OUTSTANDING_TASKS,
         _ => STATUS_WORKER,
     };
     Failure {
         status,
-        message: format!("Temporal worker bridge failed: {error:?}"),
+        message: public_worker_error_message(&error).to_owned(),
     }
 }
 
@@ -1202,7 +1213,7 @@ fn client_operation_failure(error: client_protocol::ClientOperationError) -> Fai
 fn poll_lane_failure(error: PollLaneError) -> Failure {
     Failure {
         status: STATUS_WORKER,
-        message: format!("Temporal worker poll lane failed: {error:?}"),
+        message: public_poll_lane_error_message(&error).to_owned(),
     }
 }
 
@@ -1233,6 +1244,9 @@ fn protocol_failure(_error: crate::protocol::ProtocolError) -> Failure {
 
 /// Converts protobuf-boundary failures to a privacy-safe protocol status.
 fn core_conversion_failure(error: workflow_protocol::CoreConversionError) -> Failure {
+    // `CoreConversionError::message` is an &'static str created by the
+    // bilateral conversion table, never copied from a protobuf or server
+    // value. It is therefore safe to retain as the closed protocol category.
     Failure {
         status: STATUS_PROTOCOL,
         message: format!(
@@ -1712,15 +1726,20 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_runtime_new(
         invoke(output, || {
             let options = RuntimeOptions::builder()
                 .build()
-                .map_err(|message| Failure {
+                .map_err(|_message| Failure {
                     status: STATUS_INTERNAL,
-                    message: format!("could not configure Temporal Core runtime: {message}"),
+                    // Core runtime-option validation may change with the
+                    // linked Core revision; expose only its stable category.
+                    message: "could not configure Temporal Core runtime".to_owned(),
                 })?;
             let core =
-                CoreRuntime::new(options, TokioRuntimeBuilder::default()).map_err(|error| {
+                CoreRuntime::new(options, TokioRuntimeBuilder::default()).map_err(|_error| {
                     Failure {
                         status: STATUS_INTERNAL,
-                        message: format!("could not create Temporal Core runtime: {error}"),
+                        // Runtime construction errors can contain Core or Tokio
+                        // diagnostics. Keep the C result a closed category just
+                        // like worker construction and poll failures.
+                        message: "could not create Temporal Core runtime".to_owned(),
                     }
                 })?;
             let owned = Box::into_raw(Box::new(Runtime::new(core)?));

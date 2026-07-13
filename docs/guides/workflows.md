@@ -663,6 +663,30 @@ that ID only for the same logical start. As with the worker, expected failures
 are `result` values. Exceptions are reserved for programmer defects and are
 contained at the worker boundary.
 
+When the result is `Continued_as_new successor`, use
+`Temporal.Client.follow` to make an exact-run handle for that successor:
+
+```ocaml
+let open Temporal.Result_syntax in
+match Temporal.Client.wait handle with
+| Ok (Temporal.Client.Continued_as_new successor) ->
+    let* successor_handle =
+      Temporal.Client.follow client ~workflow:summarize_workflow successor
+    in
+    Temporal.Client.wait successor_handle
+| Ok (Temporal.Client.Completed output) -> Ok (Temporal.Client.Completed output)
+| Ok terminal -> Ok terminal
+| Error error -> Error error
+```
+
+`follow` is local handle construction; it does not start a workflow, perform a
+second server lookup, or silently choose the latest run. It validates the
+successor's workflow and run IDs, retains the original client's ownership and
+the supplied workflow's codecs, and returns a typed error if the client has
+already been shut down or the identity is malformed. The caller therefore
+chooses explicitly whether to observe one successor, build a loop over a chain,
+or stop after the original run.
+
 ## 10. Validate locally
 
 From the repository root, the focused Make targets are:

@@ -479,6 +479,69 @@ let test_public_query_handler_registration () =
     (activation ~run_id [ Protocol.Fire_timer { seq = timer_seq } ]);
   expect_completed ~terminal:true (Result.get_ok (Worker.poll worker))
 
+(** Adapter-level failures happen before the normal execution path can
+    validate a completion. A query lease still needs one result per query ID;
+    sending [Fail_workflow] here would be rejected by Core and leave the lease
+    pending forever. This covers both an unknown run and a translation error,
+    the two early-rejection paths that previously shared that invalid command. *)
+let test_query_adapter_failure_uses_query_results () =
+  let query_job ~query_id ~query_type : Protocol.activation_job =
+    Protocol.Query_workflow
+      { query_id; query_type; arguments = []; headers = [] }
+  in
+  let query_activation ~run_id ~query_id ~query_type =
+    activation ~run_id [ query_job ~query_id ~query_type ]
+  in
+  let expect_query_failure ~label ~expected_code supervisor worker activation
+      expected_query_ids =
+    enqueue supervisor activation;
+    begin
+      match Worker.poll worker with
+      | Ok (Adapter.Rejected { lease_retired = true; error; _ }) ->
+          if not (String.equal error.code expected_code) then
+            failwith
+              (label ^ " returned the wrong rejection code: " ^ error.code)
+      | Ok _ -> failwith (label ^ " was not rejected")
+      | Error error -> failwith (label ^ " failed to retire its lease: " ^ error.message)
+    end;
+    begin
+      match (latest_completion supervisor).commands with
+      | commands ->
+          let actual_query_ids =
+            List.map
+              (function
+                | Protocol.Query_result
+                    { query_id; result = Protocol.Query_failed _ } ->
+                    query_id
+                | Protocol.Fail_workflow _ ->
+                    failwith (label ^ " emitted an invalid workflow-failure command")
+                | _ -> failwith (label ^ " emitted a non-query failure command"))
+              commands
+          in
+          if
+            List.sort String.compare actual_query_ids
+            <> List.sort String.compare expected_query_ids
+          then failwith (label ^ " did not emit one failed query result per query ID")
+    end;
+    if Hashtbl.length supervisor.leased <> 0 then
+      failwith (label ^ " left a native query lease outstanding")
+  in
+  let unknown_supervisor = fake_supervisor () in
+  let unknown_worker = worker unknown_supervisor [] in
+  expect_query_failure ~label:"unknown query run" ~expected_code:"unknown_run_id"
+    unknown_supervisor unknown_worker
+    (activation ~run_id:"run-query-unknown"
+       [ query_job ~query_id:"query-unknown-a" ~query_type:"current-status";
+         query_job ~query_id:"query-unknown-b" ~query_type:"current-status" ])
+    [ "query-unknown-a"; "query-unknown-b" ];
+  let translation_supervisor = fake_supervisor () in
+  let translation_worker = worker translation_supervisor [] in
+  expect_query_failure ~label:"query translation failure"
+    ~expected_code:"invalid_message" translation_supervisor translation_worker
+    (query_activation ~run_id:"run-query-translation"
+       ~query_id:"query-translation" ~query_type:"")
+    [ "query-translation" ]
+
 (** A SignalWorkflow with no matching registration fails the workflow
     non-retryably. Silently acknowledging an unknown signal would make replay
     diverge from the worker's observable state, so the run is removed only
@@ -1471,6 +1534,7 @@ let () =
   test_cancellation ();
   test_signal_handler_runs_on_scheduler ();
   test_public_query_handler_registration ();
+  test_query_adapter_failure_uses_query_results ();
   test_unhandled_signal_fails_closed ();
   test_eviction ();
   test_eviction_after_terminal_completion ();

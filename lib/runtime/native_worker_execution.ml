@@ -651,6 +651,32 @@ module Make (Supervisor : SUPERVISOR) = struct
       adapter.pending <- Run_map.add pending.run_id pending adapter.pending;
       finish_pending adapter pending)
 
+  (** Builds the completion for an adapter-level failure. Query activations are
+      read-only requests, so Core rejects a workflow-failure command for them;
+      each query ID must instead receive a failed query result. Ordinary and
+      mixed envelopes keep the existing workflow-failure path. The source
+      decoder guarantees query IDs are valid and unique before this helper is
+      reached. *)
+  let failure_commands (activation : Protocol.activation) error =
+    let failure = failure_of_error error in
+    let query_ids =
+      List.filter_map
+        (function
+          | Protocol.Query_workflow { query_id; _ } -> Some query_id
+          | _ -> None)
+        activation.Protocol.jobs
+    in
+    let query_only =
+      query_ids <> [] && List.length query_ids = List.length activation.Protocol.jobs
+    in
+    if query_only then
+      List.map
+        (fun query_id ->
+          Protocol.Query_result
+            { query_id; result = Protocol.Query_failed failure })
+        query_ids
+    else [ Protocol.Fail_workflow { failure } ]
+
   (** Encodes and submits an adapter-level failure. A successful submission is
       the lease-retirement proof for the activation; a failed submission
       preserves a source error rather than claiming the lease was retired.
@@ -661,8 +687,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     let completion : Protocol.completion =
       {
         run_id = activation.Protocol.run_id;
-        commands =
-          [ Protocol.Fail_workflow { failure = failure_of_error error } ];
+        commands = failure_commands activation error;
       }
     in
     let pending =

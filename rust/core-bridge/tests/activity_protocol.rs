@@ -2,9 +2,11 @@ use ocaml_temporal_core_bridge::activity_protocol::{
     ActivityCancel, ActivityCancelReason, ActivityCompletion, ActivityCompletionResult,
     ActivityHeartbeat, ActivityTask, ActivityTaskVariant, completion_to_core, decode_completion,
     decode_heartbeat, decode_task, encode_completion, encode_heartbeat, encode_task,
+    task_from_core,
 };
 use ocaml_temporal_core_bridge::workflow_protocol::Payload;
 use std::collections::BTreeMap;
+use temporalio_protos::coresdk::activity_task as core_activity_task;
 
 /// A complete start-task fixture exercises every nullable field, the retry
 /// policy, priority, headers, and both payload collection shapes.
@@ -147,6 +149,97 @@ fn activity_cancellation_task_round_trips() {
 
     let encoded = encode_task(&task).expect("task should encode");
     assert_eq!(decode_task(&encoded), Ok(task));
+}
+
+/// Core reports the primary cancellation reason and the independent facts in
+/// one asynchronous `ActivityTask::Cancel`.  This fixture exercises each fact
+/// that can be set by a heartbeat response, then crosses the exact Core -> Rust
+/// conversion and the Rust -> OCaml JSON handoff.  Keeping the assertions on
+/// the typed value (rather than only matching JSON text) catches field swaps or
+/// accidental derivation of one flag from another.
+#[test]
+fn activity_cancellation_details_survive_core_to_json_round_trip() {
+    let cases = [
+        (
+            core_activity_task::ActivityCancelReason::Cancelled,
+            ActivityCancelReason::Cancelled,
+            core_activity_task::ActivityCancellationDetails {
+                is_not_found: false,
+                is_cancelled: true,
+                is_paused: false,
+                is_timed_out: false,
+                is_worker_shutdown: false,
+                is_reset: false,
+            },
+        ),
+        (
+            core_activity_task::ActivityCancelReason::Paused,
+            ActivityCancelReason::Paused,
+            core_activity_task::ActivityCancellationDetails {
+                is_not_found: false,
+                is_cancelled: false,
+                is_paused: true,
+                is_timed_out: false,
+                is_worker_shutdown: false,
+                is_reset: false,
+            },
+        ),
+        (
+            core_activity_task::ActivityCancelReason::Reset,
+            ActivityCancelReason::Reset,
+            core_activity_task::ActivityCancellationDetails {
+                is_not_found: false,
+                is_cancelled: false,
+                is_paused: false,
+                is_timed_out: false,
+                is_worker_shutdown: false,
+                is_reset: true,
+            },
+        ),
+        (
+            core_activity_task::ActivityCancelReason::Cancelled,
+            ActivityCancelReason::Cancelled,
+            core_activity_task::ActivityCancellationDetails {
+                is_not_found: false,
+                is_cancelled: true,
+                is_paused: true,
+                is_timed_out: false,
+                is_worker_shutdown: false,
+                is_reset: true,
+            },
+        ),
+    ];
+
+    for (reason, expected_reason, details) in cases {
+        let core = core_activity_task::ActivityTask {
+            task_token: vec![0, 1, 2, 254, 255],
+            variant: Some(core_activity_task::activity_task::Variant::Cancel(
+                core_activity_task::Cancel {
+                    reason: reason as i32,
+                    details: Some(details),
+                },
+            )),
+        };
+        let expected_details =
+            ocaml_temporal_core_bridge::activity_protocol::ActivityCancellationDetails {
+                is_not_found: details.is_not_found,
+                is_cancelled: details.is_cancelled,
+                is_paused: details.is_paused,
+                is_timed_out: details.is_timed_out,
+                is_worker_shutdown: details.is_worker_shutdown,
+                is_reset: details.is_reset,
+            };
+
+        let semantic = task_from_core(&core).expect("Core cancellation should convert");
+        let ActivityTaskVariant::Cancel(cancel) = &semantic.variant else {
+            panic!("Core cancellation should remain a Cancel task");
+        };
+        assert_eq!(cancel.reason, expected_reason);
+        assert_eq!(cancel.details, Some(expected_details));
+
+        let encoded = encode_task(&semantic).expect("cancellation task should encode");
+        assert_eq!(decode_task(&encoded), Ok(semantic));
+    }
 }
 
 /// A fully populated start task can cross both directions without changing

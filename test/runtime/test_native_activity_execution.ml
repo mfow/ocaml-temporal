@@ -511,7 +511,31 @@ let test_cancellation () =
   let token = Bytes.of_string "\000cancel\255" in
   enqueue supervisor (cancel_task token);
   let worker = worker supervisor [] in
-  expect_completed Adapter.Cancelled (Worker.poll worker);
+  begin
+    match Worker.poll worker with
+    | Ok
+        (Adapter.Completed
+          {
+            kind = Adapter.Cancelled;
+            cancellation_details = Some details;
+            _;
+          }) ->
+        if
+          not
+            (details.is_cancelled
+            && not details.is_not_found
+            && not details.is_paused
+            && not details.is_timed_out
+            && not details.is_worker_shutdown
+            && not details.is_reset)
+        then failwith "cancellation flags were not retained on the OCaml outcome"
+    | Ok (Adapter.Completed _) ->
+        failwith "cancellation outcome did not retain Core cancellation details"
+    | Ok Adapter.Not_ready -> failwith "cancellation task was not polled"
+    | Ok (Adapter.Rejected { error; _ }) ->
+        failwith ("cancellation task was rejected: " ^ error.message)
+    | Error error -> failwith ("cancellation poll failed: " ^ error.message)
+  end;
   if !(supervisor.leased) <> [] then
     failwith "cancellation lease remained active";
   let completion = latest_completion supervisor in

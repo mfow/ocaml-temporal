@@ -300,7 +300,9 @@ module Native : sig
             the namespace-bound client path. *)
     | Record_activity_heartbeat :
         Temporal_protocol.Activity_protocol.heartbeat -> unit operation
-        (** Records progress for a leased activity without retiring it. *)
+        (** Records progress for a leased activity without retiring it. The
+            operation is acknowledgement-only; cancellation, pause, and reset
+            flags arrive later as an activity Cancel task from Core. *)
     | Record_async_activity_heartbeat :
         Temporal_protocol.Activity_protocol.heartbeat -> unit operation
         (** Records progress for an admitted asynchronous activity. *)

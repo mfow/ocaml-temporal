@@ -87,9 +87,15 @@ type registered_activity
 (** Kind of a completion accepted by the native supervisor. *)
 type completion_kind = Succeeded | Failed | Cancelled | Deferred
 
+(** Independent cancellation facts copied from Core with a [Cancelled]
+    completion. They are retained as private outcome metadata and never
+    fabricated from an acknowledgement-only heartbeat call. *)
+type cancellation_details = Temporal_protocol.Activity_protocol.cancellation_details
+
 (** Result of one serialized poll/execute/complete transaction.
 
-    [Completed] deliberately reports only non-sensitive summary information;
+    [Completed] reports only non-sensitive summary information plus the
+    independent cancellation facts that Core supplied with a [Cancel] task;
     callers that need the opaque token for diagnostics should use the native
     supervisor's own correlation logging rather than copying it into OCaml
     state. [Rejected] means the task was acknowledged with a failure completion.
@@ -97,7 +103,11 @@ type completion_kind = Succeeded | Failed | Cancelled | Deferred
     unproven. *)
 type outcome =
   | Not_ready
-  | Completed of { activity_type : string option; kind : completion_kind }
+  | Completed of {
+      activity_type : string option;
+      kind : completion_kind;
+      cancellation_details : cancellation_details option;
+    }
   | Rejected of {
       activity_type : string option;
       error : error_view;

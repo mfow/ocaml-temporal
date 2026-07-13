@@ -108,13 +108,20 @@ The token must be the canonical padded base64 representation of the currently
 leased activity token. Details preserve their order and use the same binary
 payload representation as task inputs and completion outputs. The OCaml and
 Rust validators reject unknown or duplicate object members, malformed base64,
-empty tokens, and payloads outside the shared size and metadata rules. The Rust
-The Rust worker bridge checks a normal task token against its outstanding-task
+empty tokens, and payloads outside the shared size and metadata rules. The
+Rust worker bridge checks a normal task token against its outstanding-task
 ledger before handing a heartbeat to Temporal Core; it does not retire that
-lease. An asynchronous heartbeat instead uses the namespace-bound client path
-and is checked by Core's async activity handle. Neither heartbeat operation is
-terminal. The corresponding adapter must later submit a terminal completion,
-including a `Cancelled` result when it receives a cancellation task.
+lease. The pinned Core `record_activity_heartbeat` API is fire-and-forget, so
+the normal worker operation returns only an acknowledgement. If Core reports
+`cancel_requested`, `activity_paused`, or `activity_reset`, the worker lane
+delivers those facts asynchronously in a later `ActivityTask::Cancel`; no
+synchronous status is invented at the heartbeat call boundary. The normal
+adapter must later submit a terminal completion, including a `Cancelled`
+result when it receives that cancellation task, and only that terminal path
+removes the worker token from its ledger. An asynchronous heartbeat instead
+uses the namespace-bound client path and is checked by Core's async activity
+handle; its separate async lease remains non-terminal until an async terminal
+operation is accepted.
 
 The schema is [`activity-heartbeat.schema.json`](../schemas/bridge/activity-heartbeat.schema.json).
 The focused bilateral tests are
@@ -142,9 +149,10 @@ activity merely because submission failed.
 
 A task with `variant.kind = "cancel"` does not invoke user activity code. The
 adapter maps its stable reason to a `Cancelled` completion with the standard
-Temporal `Canceled` failure. The independent cancellation flags remain task
-metadata and are not copied into an application payload. A heartbeat is
-non-terminal and therefore cannot acknowledge cancellation or completion by
+Temporal `Canceled` failure and retains the independent flags on its private
+OCaml outcome metadata for instrumentation. The flags are not copied into an
+application payload or derived from the heartbeat acknowledgement. A heartbeat
+is non-terminal and therefore cannot acknowledge cancellation or completion by
 itself.
 
 Cancellation is an update on the start task's token, not a second completion

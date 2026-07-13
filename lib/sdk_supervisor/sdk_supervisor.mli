@@ -296,7 +296,9 @@ module Native : sig
         (** Validates and submits one typed remote activity completion. *)
     | Record_activity_heartbeat :
         Temporal_protocol.Activity_protocol.heartbeat -> unit operation
-        (** Records progress for a leased activity without retiring it. *)
+        (** Records progress for a leased activity without retiring it. The
+            operation is acknowledgement-only; cancellation, pause, and reset
+            flags arrive later as an activity Cancel task from Core. *)
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation
 

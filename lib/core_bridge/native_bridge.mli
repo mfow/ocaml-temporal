@@ -187,7 +187,9 @@ val worker_complete_activity_json :
   runtime -> bytes -> (unit, error) result
 
 (** Validates and submits progress for a currently leased remote activity. The
-    task remains outstanding for its later terminal completion. *)
+    task remains outstanding for its later terminal completion. The result is
+    acknowledgement-only; pinned Temporal Core delivers cancellation, pause,
+    and reset flags asynchronously in a later Cancel task. *)
 val worker_record_activity_heartbeat_json :
   runtime -> bytes -> (unit, error) result
 

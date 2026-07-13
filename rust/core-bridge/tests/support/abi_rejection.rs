@@ -209,6 +209,46 @@ fn cancellation_rejection_preserves_shared_start_document() {
     assert_eq!(retained[0], start);
 }
 
+/// A retained cancellation update is the ABI handoff that carries heartbeat
+/// response state to OCaml.  Matching the complete document here proves that
+/// cancel, pause, and reset facts remain independently observable while the
+/// update shares the Start task's single completion debt.
+#[test]
+fn cancellation_rejection_retains_all_heartbeat_flags() {
+    let cancellation = ActivityTask {
+        task_token: "AAEC".to_owned(),
+        variant: ActivityTaskVariant::Cancel(ActivityCancel {
+            reason: ActivityCancelReason::Cancelled,
+            details: Some(crate::activity_protocol::ActivityCancellationDetails {
+                is_not_found: false,
+                is_cancelled: true,
+                is_paused: true,
+                is_timed_out: false,
+                is_worker_shutdown: false,
+                is_reset: true,
+            }),
+        }),
+    };
+    let mut pending = HashMap::new();
+    retain_activity_task(&mut pending, vec![0, 1, 2], cancellation.clone());
+
+    let encoded = activity_protocol::encode_task(&cancellation)
+        .expect("flagged cancellation update encodes");
+    let rejection = activity_rejection_task(&pending, encoded.as_bytes())
+        .expect("flagged cancellation update correlates");
+    assert_eq!(rejection.task, cancellation);
+    let ActivityTaskVariant::Cancel(cancel) = rejection.task.variant else {
+        panic!("retained cancellation must remain a Cancel variant");
+    };
+    let details = cancel.details.expect("Core flags must remain present");
+    assert!(details.is_cancelled);
+    assert!(details.is_paused);
+    assert!(details.is_reset);
+    assert!(!details.is_not_found);
+    assert!(!details.is_timed_out);
+    assert!(!details.is_worker_shutdown);
+}
+
 /// Conversion failures from the native poll path classify Cancel as a
 /// non-owning update, while an unrepresentable Start still owns the lease that
 /// must be failed before the worker can shut down.

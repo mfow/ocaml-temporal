@@ -36,6 +36,25 @@ Local evidence for this entry: `opam exec -- dune build @install
 test/unit/test_interactions.exe`, `opam exec -- dune exec
 ./test/unit/test_interactions.exe`, and `git diff --check`.
 
+## 2026-07-13: Docker-free heartbeat acceptance contract
+
+Status: locally verified; no live Temporal Server acceptance is claimed. The
+dedicated Actions integration job may remain pending while the repository
+quota is exhausted.
+
+The two-binary heartbeat slice now has a focused Docker-free contract in
+addition to the existing native protocol tests. The source contract protects
+the separate driver/worker roles, worker registration, start-before-wait
+ordering, exact heartbeat retry result, and marker cleanup. A Dune test invokes
+the exact shared context-aware activity twice with in-memory contexts: the
+first attempt must encode one progress detail and return a retryable error,
+the second must receive that copied detail and the 500 ms timeout before it can
+return, and an invalidated first context must reject a later heartbeat. The
+test deliberately does not claim that the fake context observed server-managed
+retry delivery. Focused Dune tests, the heartbeat contract script, shell
+syntax, and `git diff --check` pass locally. A real PostgreSQL/Temporal Compose
+run remains required for live heartbeat evidence.
+
 ## 2026-07-13: Replay/Core disposal lifecycle hardening
 
 Status: locally verified; no live Temporal Server acceptance is claimed, and

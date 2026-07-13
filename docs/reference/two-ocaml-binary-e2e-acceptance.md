@@ -25,6 +25,19 @@ non-retryable failure, and one exact-run cancellation. Only the five
 baseline executions are currently backed by live CI evidence; the heartbeat and
 cancellation assertions remain local-only until a green live run verifies them.
 
+The heartbeat assertion has a Docker-free contract in addition to the live
+driver and worker. `test/smoke/test_temporal_heartbeat_contract.sh` checks the
+source-level role boundary, registration, start-before-wait ordering, exact
+retry result, and marker cleanup. The Dune test in
+`test/integration/temporal/common/marker_test/test_smoke_definitions.ml` then
+invokes the same context-aware activity callback with an in-memory context: it
+checks the first typed heartbeat and retryable failure, copies the heartbeat
+detail into a second attempt with the 500 ms timeout, requires the exact
+success value, and proves that the completed first context rejects a later
+heartbeat. These local checks are deliberately not described as Temporal
+Server evidence; they make a missing registration, changed payload, lost
+timeout, or context-lifetime regression fail before an expensive Compose run.
+
 `temporal-start-worker` force-recreates the worker container before waiting, so
 the readiness marker in the container's `/tmp` cannot be inherited from a
 stopped container. `smoke-worker` then removes any prior readiness marker after
@@ -536,7 +549,10 @@ claims become live evidence:
    activity attempt failed and Temporal scheduled the second attempt;
 8. `smoke.activity_heartbeat_retry` recorded one typed progress detail with a
    500 ms heartbeat timeout, then returned `SMOKE:HEARTBEAT:RETRIED:SMOKE` only
-   after the retrying attempt received that detail and timeout;
+   after the retrying attempt received that detail and timeout. The local
+   heartbeat contract also checks the encoded detail, retryable first failure,
+   worker/driver registration boundary, and post-completion context
+   invalidation before any live claim is made;
 9. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
    completed its own durable timer;
 10. `smoke.parent_awaits_failed_child` returned a non-retryable

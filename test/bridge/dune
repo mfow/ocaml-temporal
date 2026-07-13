@@ -29,3 +29,7 @@
 (test
  (name test_ocaml_client_protocol)
  (libraries temporal_protocol))
+
+(test
+ (name test_failure_diagnostic)
+ (libraries temporal_protocol))

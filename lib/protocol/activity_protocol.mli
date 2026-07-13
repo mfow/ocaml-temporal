@@ -43,6 +43,14 @@ type retry_state = Workflow_protocol.retry_state =
   | Internal_server_error
   | Cancel_requested
 
+(** Timeout policy retained by Core's structured timeout failure info. *)
+type timeout_type = Workflow_protocol.timeout_type =
+  | Timeout_unspecified
+  | Timeout_start_to_close
+  | Timeout_schedule_to_start
+  | Timeout_schedule_to_close
+  | Timeout_heartbeat
+
 (** Supported closed set of structured Temporal failure details. *)
 type failure_info = Workflow_protocol.failure_info =
   | Application of {
@@ -67,6 +75,10 @@ type failure_info = Workflow_protocol.failure_info =
       initiated_event_id : int64;
       started_event_id : int64;
       retry_state : retry_state;
+    }
+  | Timeout_failure of {
+      timeout_type : timeout_type;
+      last_heartbeat_details : payload list;
     }
 
 (** Recursive Temporal failure shared with workflow activation semantics. *)

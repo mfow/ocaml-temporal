@@ -164,41 +164,71 @@ boundary and cleanup behavior.
 
 ## A small workflow example
 
-Workflow code is direct-style OCaml. A future represents a result that may
-arrive in a later Temporal activation; `Future.await` suspends only the current
-workflow fiber. Expected operational failures are values, so helpers compose
-with `result` rather than using exceptions for control flow.
+Workflow code is direct-style OCaml. This example turns one name into a short
+two-line message: it asks a separate activity worker to render a greeting and
+a next step, records a durable pause, and returns their results together. A
+future represents a result that may arrive in a later Temporal activation;
+`Future.await` suspends only the current workflow fiber. Expected operational
+failures are values, so helpers compose with `result` rather than using
+exceptions for control flow.
 
 ```ocaml
-let summarize =
+let render_message =
   Temporal.Activity.remote
-    ~name:"summarize"
+    ~name:"ocaml-temporal-example.render-message"
     ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
 
-let summarize_document document =
+let compose_message name =
   let open Temporal.Result_syntax in
-  let summary = Temporal.Activity.start summarize document in
-  let timer = Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 10L) in
-  let* summary, () =
-    Temporal.Future.await (Temporal.Future.both summary timer)
-  in
-  Ok summary
+  let name = String.trim name in
+  if String.equal name "" then
+    Error (Temporal.Error.defect ~message:"a name is required")
+  else
+    let greeting =
+      Temporal.Activity.start render_message ("greeting:" ^ name)
+    in
+    let next_step =
+      Temporal.Activity.start render_message ("next-step:" ^ name)
+    in
+    let pause =
+      Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 250L)
+    in
+    let* messages, () =
+      Temporal.Future.await
+        (Temporal.Future.both (Temporal.Future.all [ greeting; next_step ])
+           pause)
+    in
+    Ok (String.concat "\n" messages)
 
-let summarize_workflow =
+let compose_message_workflow =
   Temporal.Workflow.define
-    ~name:"summarize_document"
+    ~name:"ocaml-temporal-example.compose-message"
     ~input:Temporal.Codec.string
     ~output:Temporal.Codec.string
-    summarize_document
+    compose_message
 ```
 
-The activity is started before the timer is awaited, so independent work can
-be in flight together. `summarize_document` and ordinary helpers it calls are
-just OCaml functions. Only explicit SDK operations such as activity scheduling
-or a durable timer create Temporal history commands. This example is covered
-by the deterministic runtime and the current native activity/timer command
-slice; it is not a claim that every future Temporal feature is complete.
+Both activities and the timer are started before anything is awaited, so
+Temporal can make independent progress while replay always sees the same command
+order. `compose_message` and its ordinary helpers are just OCaml functions;
+only explicit SDK operations such as activity scheduling or a durable timer
+create Temporal history commands. This example is covered by the deterministic
+runtime and the current native activity/timer command slice; it is not a claim
+that every future Temporal feature is complete.
+
+The complete, buildable version is split the way a real deployment often is:
+
+- [Workflow worker](examples/workflow_worker/workflow_worker.ml) registers the
+  deterministic workflow and shuts down gracefully on `SIGINT` or `SIGTERM`.
+- [Activity worker](examples/activity_worker/activity_worker.ml) registers the
+  activity implementation, the appropriate boundary for external work.
+- [Client](examples/client/client.ml) connects, starts one exact workflow run,
+  waits for its typed terminal result, prints it, and releases the connection.
+
+See the [examples guide](examples/README.md) for the startup order, connection
+settings, and commands. CI compiles all three executables on every Docker and
+native build without running them.
 
 See [Writing Workflows in OCaml](docs/guides/workflows.md) for codecs, worker
 registration, client handles, child-workflow boundaries, futures, and

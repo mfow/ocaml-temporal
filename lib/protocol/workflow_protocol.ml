@@ -48,6 +48,17 @@ type retry_state =
   | Internal_server_error
   | Cancel_requested
 
+(** The timeout policy that Temporal reports as having elapsed.  This is kept
+    separate from [retry_state]'s [Timeout] constructor: retry state describes
+    the outer activity/child wrapper, while this value preserves Core's
+    TimeoutFailureInfo metadata. *)
+type timeout_type =
+  | Timeout_unspecified
+  | Timeout_start_to_close
+  | Timeout_schedule_to_start
+  | Timeout_schedule_to_close
+  | Timeout_heartbeat
+
 type failure_info =
   | Application of {
       type_name : string;
@@ -71,6 +82,10 @@ type failure_info =
       initiated_event_id : int64;
       started_event_id : int64;
       retry_state : retry_state;
+    }
+  | Timeout_failure of {
+      timeout_type : timeout_type;
+      last_heartbeat_details : payload list;
     }
 
 type failure = {
@@ -105,6 +120,7 @@ let failure_non_retryable failure =
         | Retry_policy_not_set | Unspecified -> nested ()
         | In_progress | Timeout | Internal_server_error | Cancel_requested ->
             false)
+    | Timeout_failure _ -> nested ()
   in
   loop 0 failure
 
@@ -564,6 +580,23 @@ let retry_state_string = function
   | Internal_server_error -> "internal_server_error"
   | Cancel_requested -> "cancel_requested"
 
+(** Decodes Core's exact timeout-policy spelling and rejects future values. *)
+let timeout_type path = function
+  | "unspecified" -> Ok Timeout_unspecified
+  | "start_to_close" -> Ok Timeout_start_to_close
+  | "schedule_to_start" -> Ok Timeout_schedule_to_start
+  | "schedule_to_close" -> Ok Timeout_schedule_to_close
+  | "heartbeat" -> Ok Timeout_heartbeat
+  | _ -> Error (invalid path "unknown timeout type")
+
+(** Renders a timeout policy using the stable lowercase protocol spelling. *)
+let timeout_type_string = function
+  | Timeout_unspecified -> "unspecified"
+  | Timeout_start_to_close -> "start_to_close"
+  | Timeout_schedule_to_start -> "schedule_to_start"
+  | Timeout_schedule_to_close -> "schedule_to_close"
+  | Timeout_heartbeat -> "heartbeat"
+
 (** Decodes the supported closed failure-info union. *)
 let failure_info path json =
   let* entries =
@@ -676,6 +709,19 @@ let failure_info path json =
              started_event_id;
              retry_state;
            })
+  | "timeout" ->
+      let* entries =
+        exact_object path [ "kind"; "timeout_type"; "last_heartbeat_details" ]
+          json
+      in
+      let* timeout_type_json = field path "timeout_type" entries in
+      let* timeout_type_name = string (path ^ ".timeout_type") timeout_type_json in
+      let* timeout_type = timeout_type (path ^ ".timeout_type") timeout_type_name in
+      let* details_json = field path "last_heartbeat_details" entries in
+      let* last_heartbeat_details =
+        list (path ^ ".last_heartbeat_details") payload details_json
+      in
+      Ok (Timeout_failure { timeout_type; last_heartbeat_details })
   | _ -> Error (invalid (path ^ ".kind") "unsupported failure info kind")
 
 (** Decodes a recursive failure. JSON depth limits bound cause recursion before
@@ -762,6 +808,15 @@ let rec failure_info_json = function
             ("initiated_event_id", `Intlit (Int64.to_string initiated_event_id));
             ("started_event_id", `Intlit (Int64.to_string started_event_id));
             ("retry_state", `String (retry_state_string retry_state));
+          ])
+  | Timeout_failure { timeout_type; last_heartbeat_details } ->
+      let* last_heartbeat_details = payloads_json last_heartbeat_details in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "timeout");
+            ("timeout_type", `String (timeout_type_string timeout_type));
+            ("last_heartbeat_details", last_heartbeat_details);
           ])
 
 (** Encodes a payload list in source order. *)

@@ -1080,11 +1080,15 @@ impl Runtime {
     /// retaining the exact semantic lease check used by live workers.
     fn reject_replay_workflow(&mut self, input: &[u8]) -> Operation {
         let run_id = workflow_rejection_run_id(&self.workflow_activations, input)?;
-        self.reject_replay_workflow_delivery(
+        // Match live reject_polled_workflow: retire the semantic handoff even
+        // when Core returns an error, so a failed reject cannot leave a stale
+        // run_id that blocks later work on this runtime.
+        let rejection = self.reject_replay_workflow_delivery(
             &run_id,
             "semantic replay activation conversion failed",
-        )?;
+        );
         self.workflow_activations.remove(&run_id);
+        rejection?;
         Ok(Vec::new())
     }
 

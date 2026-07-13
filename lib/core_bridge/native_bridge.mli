@@ -110,6 +110,16 @@ val client_wait_start_workflow_json : runtime -> bytes -> (bytes, error) result
     implicitly. *)
 val client_wait_workflow_json : runtime -> bytes -> (bytes, error) result
 
+(** Completes an activity already handed off with [WillCompleteAsync] through
+    the namespace-bound Temporal client. This does not touch the worker's
+    outstanding-task ledger. *)
+val client_complete_async_activity_json : runtime -> bytes -> (unit, error) result
+
+(** Records a heartbeat for an admitted asynchronous activity through the
+    namespace-bound client. *)
+val client_record_async_activity_heartbeat_json :
+  runtime -> bytes -> (unit, error) result
+
 (** Constructs a workflow-only worker and completes Core namespace validation
     before publishing it into the owned graph. *)
 val worker_start : runtime -> worker_config -> (unit, error) result

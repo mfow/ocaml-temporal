@@ -11,6 +11,26 @@ type context = Temporal_base.Activity_context.t
 type ('input, 'output) contextual_implementation =
   context -> 'input -> ('output, Error.t) result
 
+(** Opaque capability retained by an asynchronous activity after it returns
+    [Will_complete_async]. *)
+type 'output async_handle =
+  'output Temporal_base.Async_activity.handle
+
+(** Attempt-scoped context used to obtain an asynchronous completion handle. *)
+type 'output async_context =
+  'output Temporal_base.Async_activity.context
+
+(** Explicit callback outcome for asynchronous activities. *)
+type 'output async_result =
+  | Completed of 'output
+  | Failed of Error.t
+  | Will_complete_async of 'output async_handle
+
+(** Callback form for an activity that may complete after worker dispatch has
+    returned. *)
+type ('input, 'output) async_implementation =
+  'output async_context -> 'input -> 'output async_result
+
 (** A description of an activity and the OCaml types it accepts and returns.
     The definition stores the activity's Temporal name and its input and output
     codecs. It contains either a plain local implementation, a context-aware
@@ -35,6 +55,17 @@ val define_with_context :
   input:'input Codec.t ->
   output:'output Codec.t ->
   ('input, 'output) contextual_implementation ->
+  ('input, 'output) t
+
+(** Creates a local activity whose callback may return a retained completion
+    handle. The callback must return exactly one of [Completed], [Failed], or
+    [Will_complete_async]; the handle becomes usable only after the worker has
+    accepted the handoff. *)
+val define_async :
+  name:string ->
+  input:'input Codec.t ->
+  output:'output Codec.t ->
+  ('input, 'output) async_implementation ->
   ('input, 'output) t
 
 (** Creates a typed reference to an activity run by another worker. The name
@@ -67,6 +98,38 @@ val implementation :
 val implementation_with_context :
   ('input, 'output) t ->
   ('input, 'output) contextual_implementation option
+
+(** Returns the asynchronous callback, if present. *)
+val implementation_async :
+  ('input, 'output) t ->
+  ('input, 'output) async_implementation option
+
+(** Operations on the opaque asynchronous completion capability. *)
+module Async_handle : sig
+  (** The handle type paired with one asynchronous activity output. *)
+  type 'output t = 'output async_handle
+
+  (** Completes the activity with a typed output. *)
+  val complete : 'output t -> 'output -> (unit, Error.t) result
+
+  (** Fails the activity with a structured error. *)
+  val fail : 'output t -> Error.t -> (unit, Error.t) result
+
+  (** Reports cancellation and optional detail payloads. *)
+  val cancel : 'output t -> Payload.t list -> (unit, Error.t) result
+
+  (** Sends heartbeat detail payloads. *)
+  val heartbeat : 'output t -> Payload.t list -> (unit, Error.t) result
+end
+
+(** Access to the capability carried by an asynchronous callback context. *)
+module Async_context : sig
+  (** The context type passed to an asynchronous implementation. *)
+  type 'output t = 'output async_context
+
+  (** Returns the opaque handle that can be retained after the callback. *)
+  val handle : 'output t -> 'output Async_handle.t
+end
 
 (** Encodes and submits one typed heartbeat value for the current activity. The
     payload is copied before crossing into the private runtime, and stale or

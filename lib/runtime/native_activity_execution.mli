@@ -32,11 +32,20 @@ module type SUPERVISOR = sig
   (** Submits a semantic completion. [Ok ()] is the only proof that the native
       side accepted and retired the task-token lease. *)
 
+  val complete_async_activity :
+    t -> Temporal_protocol.Activity_protocol.completion -> (unit, error) result
+  (** Submits a completion for a task already handed off with
+      [WillCompleteAsync] through the namespace-bound client path. *)
+
   val record_activity_heartbeat :
     t -> Temporal_protocol.Activity_protocol.heartbeat -> (unit, error) result
   (** Records progress for the currently leased task without retiring its
       lease. The supervisor must serialize this call with completion and
       shutdown operations. *)
+
+  val record_async_activity_heartbeat :
+    t -> Temporal_protocol.Activity_protocol.heartbeat -> (unit, error) result
+  (** Records heartbeat details for an admitted asynchronous activity. *)
 
   val error_code : error -> string
   (** Stable classification for a native failure. *)
@@ -76,7 +85,7 @@ type registered_activity
     allowing one registry to contain activities with different OCaml types. *)
 
 (** Kind of a completion accepted by the native supervisor. *)
-type completion_kind = Succeeded | Failed | Cancelled
+type completion_kind = Succeeded | Failed | Cancelled | Deferred
 
 (** Result of one serialized poll/execute/complete transaction.
 
@@ -143,3 +152,12 @@ val register :
     existential constructor used by [Make]. Definitions made with
     [Temporal.Activity.remote] are accepted here only so [create] can return a
     precise configuration error instead of silently dropping them. *)
+
+val register_async :
+  ( 'input,
+    'output,
+    'output Temporal_base.Async_activity.context ->
+    'input -> 'output Temporal_base.Async_activity.async_result )
+  Temporal_base.Definition.t ->
+  registered_activity
+(** Wraps an asynchronous activity definition for deferred completion. *)

@@ -15,11 +15,12 @@ use std::sync::mpsc::{
     Receiver, RecvTimeoutError, SyncSender, TryRecvError, channel, sync_channel,
 };
 use std::time::Duration;
-use temporalio_client::{Connection, ConnectionOptions};
+use temporalio_client::{ActivityIdentifier, Client, ClientOptions, Connection, ConnectionOptions};
 use temporalio_common::protos::coresdk::{
     ActivityHeartbeat as CoreActivityHeartbeat,
     activity_task::{self, ActivityTask as CoreActivityTask},
 };
+use temporalio_common::protos::{TaskToken, temporal::api::common::v1 as api_common};
 use temporalio_sdk_core::{
     CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, WorkerConfig,
     WorkerVersioningStrategy,
@@ -1448,6 +1449,141 @@ impl Runtime {
         worker
             .record_activity_heartbeat(heartbeat)
             .map_err(worker_bridge_failure)?;
+        Ok(Vec::new())
+    }
+
+    /// Creates a namespace-bound official client for an activity that was
+    /// handed off with `WillCompleteAsync`.
+    ///
+    /// Async activity completion is deliberately separate from the worker
+    /// ledger above. Core's client API identifies the task by its opaque token
+    /// and sends the terminal RPC directly to Temporal. Reusing the worker
+    /// completion path would make a retained async handle depend on a poll
+    /// task that has already been retired.
+    fn async_activity_client(&self) -> std::result::Result<Client, Failure> {
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let namespace = self.worker_namespace.clone().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal worker namespace is not available".to_owned(),
+        })?;
+        Client::new(connection, ClientOptions::new(namespace).build()).map_err(|_| Failure {
+            status: STATUS_CONNECTION,
+            message: "Temporal asynchronous activity client could not be created".to_owned(),
+        })
+    }
+
+    /// Converts ordered semantic payloads into the optional protobuf collection
+    /// accepted by Core's asynchronous activity handle.
+    fn async_payloads(
+        values: &[workflow_protocol::Payload],
+    ) -> std::result::Result<Option<api_common::Payloads>, Failure> {
+        if values.is_empty() {
+            return Ok(None);
+        }
+        let payloads = values
+            .iter()
+            .map(workflow_protocol::payload_to_core)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(core_conversion_failure)?;
+        Ok(Some(api_common::Payloads { payloads }))
+    }
+
+    /// Completes a previously accepted asynchronous activity through Core's
+    /// namespace-bound client API.
+    ///
+    /// The semantic decoder is intentionally shared with worker completions,
+    /// but this endpoint rejects `will_complete_async`: that marker is the
+    /// worker-to-client handoff, not a terminal client operation. No entry in
+    /// `self.activity_tasks` is read or retired here; the OCaml async lease
+    /// owns the capability until Core accepts a terminal request.
+    fn complete_async_activity(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let semantic = activity_protocol::decode_completion(text).map_err(protocol_failure)?;
+        let task_token =
+            activity_protocol::decode_token(&semantic.task_token).map_err(protocol_failure)?;
+        let client = self.async_activity_client()?;
+        let activity =
+            client.get_async_activity_handle(ActivityIdentifier::TaskToken(TaskToken(task_token)));
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+        let operation = match &semantic.result {
+            activity_protocol::ActivityCompletionResult::Completed { result } => {
+                let payloads = result
+                    .as_ref()
+                    .map(|payload| Self::async_payloads(std::slice::from_ref(payload)))
+                    .transpose()?
+                    .flatten();
+                handle.block_on(activity.complete(payloads))
+            }
+            activity_protocol::ActivityCompletionResult::Failed { failure } => {
+                let failure =
+                    workflow_protocol::failure_to_core(failure).map_err(core_conversion_failure)?;
+                handle.block_on(activity.fail(failure, None))
+            }
+            activity_protocol::ActivityCompletionResult::Cancelled { failure } => {
+                let details = match &failure.info {
+                    workflow_protocol::FailureInfo::Canceled { details, .. } => {
+                        Self::async_payloads(details)?
+                    }
+                    _ => {
+                        return Err(Failure {
+                            status: STATUS_PROTOCOL,
+                            message:
+                                "asynchronous activity cancellation must use a canceled failure"
+                                    .to_owned(),
+                        });
+                    }
+                };
+                handle.block_on(activity.report_cancelation(details))
+            }
+            activity_protocol::ActivityCompletionResult::WillCompleteAsync => {
+                return Err(Failure {
+                    status: STATUS_PROTOCOL,
+                    message: "asynchronous activity completion cannot defer again".to_owned(),
+                });
+            }
+        };
+        operation.map_err(|_| Failure {
+            status: STATUS_CONNECTION,
+            message: "Temporal asynchronous activity operation failed".to_owned(),
+        })?;
+        Ok(Vec::new())
+    }
+
+    /// Records a heartbeat for an asynchronously completed activity through
+    /// the same namespace-bound client handle used for terminal operations.
+    fn record_async_activity_heartbeat(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let semantic = activity_protocol::decode_heartbeat(text).map_err(protocol_failure)?;
+        let task_token =
+            activity_protocol::decode_token(&semantic.task_token).map_err(protocol_failure)?;
+        let details = Self::async_payloads(&semantic.details)?;
+        let client = self.async_activity_client()?;
+        let activity =
+            client.get_async_activity_handle(ActivityIdentifier::TaskToken(TaskToken(task_token)));
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+        handle
+            .block_on(activity.heartbeat(details))
+            .map_err(|_| Failure {
+                status: STATUS_CONNECTION,
+                message: "Temporal asynchronous activity heartbeat failed".to_owned(),
+            })?;
         Ok(Vec::new())
     }
 
@@ -3046,6 +3182,64 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_record_activity_heartbeat
                     message: "runtime pointer is null".to_owned(),
                 })?
                 .record_activity_heartbeat(input)
+        })
+    }
+}
+
+/// Complete an activity that previously accepted asynchronous completion.
+///
+/// Unlike the worker completion endpoint, this operation uses the connected
+/// namespace-bound Temporal client and does not consult the worker task ledger.
+///
+/// # Safety
+///
+/// The runtime and output contracts match the activity poll operation. A
+/// nonzero input length requires that many readable bytes for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_complete_async_activity_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .complete_async_activity(input)
+        })
+    }
+}
+
+/// Record a heartbeat for an activity that previously accepted asynchronous
+/// completion.
+///
+/// # Safety
+///
+/// The runtime and output contracts match the activity poll operation. A
+/// nonzero input length requires that many readable bytes for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_record_async_activity_heartbeat_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .record_async_activity_heartbeat(input)
         })
     }
 }

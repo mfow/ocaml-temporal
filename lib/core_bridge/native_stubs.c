@@ -145,13 +145,17 @@ static void finalize_response(value response) {
 static void finalize_runtime(value runtime) {
   owned_runtime *owned = Runtime_val(runtime);
   ocaml_temporal_core_runtime *native_runtime = detach_runtime(owned);
-  /* The custom block is still rooted by this finalizer invocation. Waiting is
-   * therefore safe here; normal OCaml calls release their borrow before the
-   * value can become unreachable. */
+  /* Finalizers run while the OCaml runtime lock is held. A concurrently
+   * admitted native call may have released that lock and still need to
+   * reacquire it before decrementing [active_calls]. Entering a blocking
+   * section here is therefore required for progress: waiting while retaining
+   * the lock would deadlock finalization against that normal completion path. */
+  caml_enter_blocking_section();
   wait_for_runtime_calls(owned);
   if (native_runtime != NULL) {
     (void)ocaml_temporal_core_v1_runtime_dispose(&native_runtime);
   }
+  caml_leave_blocking_section();
 }
 
 /* Custom operations deliberately use identity/default behavior; responses are
@@ -451,6 +455,24 @@ CAMLprim value ocaml_temporal_client_wait_workflow_json(value runtime,
                                                         value input) {
   return invoke_runtime_json(
       runtime, input, ocaml_temporal_core_v1_client_wait_workflow_json);
+}
+
+/* Complete an activity that has already returned WillCompleteAsync. Rust
+ * routes this JSON through the namespace-bound client, not the worker ledger. */
+CAMLprim value
+ocaml_temporal_client_complete_async_activity_json(value runtime, value input) {
+  return invoke_runtime_json(
+      runtime, input,
+      ocaml_temporal_core_v1_client_complete_async_activity_json);
+}
+
+/* Record progress for an admitted asynchronous activity through the same
+ * namespace-bound client path. */
+CAMLprim value ocaml_temporal_client_record_async_activity_heartbeat_json(
+    value runtime, value input) {
+  return invoke_runtime_json(
+      runtime, input,
+      ocaml_temporal_core_v1_client_record_async_activity_heartbeat_json);
 }
 
 /* Construct and validate the workflow-only Core worker. Network validation

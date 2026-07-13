@@ -143,10 +143,20 @@ module Activity_source = struct
   let complete_activity supervisor completion =
     Native.perform supervisor (Native.Complete_activity completion)
 
+  (** Completes an admitted asynchronous activity through the namespace-bound
+      client path, never the worker task-token ledger. *)
+  let complete_async_activity supervisor completion =
+    Native.perform supervisor (Native.Complete_async_activity completion)
+
   (** Records progress for the currently leased activity through the same
       supervisor mailbox as polling and completion. *)
   let record_activity_heartbeat supervisor heartbeat =
     Native.perform supervisor (Native.Record_activity_heartbeat heartbeat)
+
+  (** Records progress for an admitted asynchronous activity. *)
+  let record_async_activity_heartbeat supervisor heartbeat =
+    Native.perform supervisor
+      (Native.Record_async_activity_heartbeat heartbeat)
 
   (** Returns the stable classification used in adapter diagnostics. *)
   let error_code error = fst (native_error_view error)
@@ -236,6 +246,12 @@ let register_workflow ?(signals = []) ?(queries = []) definition =
 
 (** Packs an activity definition for [Activity.create]. *)
 let register_activity definition = Activity_adapter.register definition
+
+(** Packs an asynchronous activity definition for the deferred-completion
+    adapter. Keeping this constructor separate prevents a synchronous callback
+    from accidentally returning a handle that has no accepted lease. *)
+let register_async_activity definition =
+  Activity_adapter.register_async definition
 
 (** Default native worker resource settings. They are deliberately explicit and
     stable so every worker has bounded Core resource usage even before a richer

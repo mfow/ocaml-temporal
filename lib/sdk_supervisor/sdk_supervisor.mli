@@ -294,9 +294,16 @@ module Native : sig
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
         (** Validates and submits one typed remote activity completion. *)
+    | Complete_async_activity :
+        Temporal_protocol.Activity_protocol.completion -> unit operation
+        (** Completes an activity after a [WillCompleteAsync] handoff through
+            the namespace-bound client path. *)
     | Record_activity_heartbeat :
         Temporal_protocol.Activity_protocol.heartbeat -> unit operation
         (** Records progress for a leased activity without retiring it. *)
+    | Record_async_activity_heartbeat :
+        Temporal_protocol.Activity_protocol.heartbeat -> unit operation
+        (** Records progress for an admitted asynchronous activity. *)
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation
 

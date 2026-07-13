@@ -106,10 +106,13 @@ let handle scheduler thunk =
                   Future_store.add_waiter future continuation)
           | Abort_workflow ->
               Some
-                (fun (_continuation : (result, unit) Effect.Deep.continuation) ->
-                  (* A terminal command has already been buffered. Do not run
-                     sibling fibers that could append commands after it. *)
-                  scheduler.abort_requested <- true)
+                (fun (continuation : (result, unit) Effect.Deep.continuation) ->
+                  (* A terminal command has already been buffered. Stop sibling
+                     fibers from appending further commands, then settle this
+                     one-shot continuation so Fun.protect cleanups still run. *)
+                  scheduler.abort_requested <- true;
+                  try Effect.Deep.discontinue continuation Future_store.Scheduler_shutdown
+                  with Future_store.Scheduler_shutdown -> ())
           | _ -> None);
     }
 

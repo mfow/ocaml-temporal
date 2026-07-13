@@ -48,7 +48,8 @@ val create :
     be stranded, but releasing that lock does not make [run] non-blocking. *)
 val run : t -> (unit, Error.t) result
 
-(** Initiates graceful worker shutdown. Repeated calls are safe and idempotent;
-    a native teardown error closes the worker permanently because the private
-    supervisor has already linearized its terminal request. *)
+(** Initiates graceful worker shutdown. Repeated calls are safe and return the
+    same cached terminal result. A permanent native teardown error is retained
+    so later callers observe [Error] rather than a spurious [Ok]. Retryable
+    failures leave the worker open for another attempt. *)
 val shutdown : t -> (unit, Error.t) result

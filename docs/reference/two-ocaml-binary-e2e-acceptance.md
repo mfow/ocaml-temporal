@@ -246,6 +246,13 @@ worker logs on failure, then tear the project down. The explicit alias
 acceptance name. Native Windows and macOS jobs do not run this Linux Compose
 acceptance test.
 
+The one-shot driver has a bounded 300-second process timeout. This leaves
+enough headroom for a temporary PostgreSQL checkpoint or other host I/O stall
+without allowing a lost native request to consume the CI job's full timeout.
+When the bound is reached, Compose sends `TERM` and waits a further 10 seconds
+before sending `KILL`; `TEMPORAL_DRIVER_TIMEOUT_SECONDS` can override the
+default for unusually slow local machines.
+
 ## The two OCaml programs
 
 ### Worker executable

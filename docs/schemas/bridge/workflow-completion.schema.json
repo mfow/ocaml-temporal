@@ -26,6 +26,21 @@
     },
     "nullable_duration": {"oneOf": [{"$ref": "#/$defs/duration"}, {"type": "null"}]},
     "nullable_payload": {"oneOf": [{"$ref": "#/$defs/payload"}, {"type": "null"}]},
+    "query_result": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "payload"],
+          "properties": {"kind": {"const": "succeeded"}, "payload": {"$ref": "#/$defs/payload"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {"kind": {"const": "failed"}, "failure": {"$ref": "#/$defs/failure"}}
+        }
+      ],
+      "description": "A successful or failed answer to a synchronous query. A failed query does not fail the workflow execution."
+    },
     "retry_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -120,6 +135,16 @@
           "type": "object", "additionalProperties": false,
           "required": ["kind", "seq"],
           "properties": {"kind": {"const": "cancel_timer"}, "seq": {"$ref": "#/$defs/u32"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "query_id", "result"],
+          "properties": {
+            "kind": {"const": "query_result"},
+            "query_id": {"$ref": "#/$defs/identifier"},
+            "result": {"$ref": "#/$defs/query_result"}
+          },
+          "description": "Answers one query. Query completions contain only query_result commands and preserve the exact Core query IDs, including the legacy ID."
         },
         {
           "type": "object", "additionalProperties": false,

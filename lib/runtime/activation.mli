@@ -18,6 +18,13 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  (** A synchronous query request delivered outside workflow-future ordering. *)
+  | Query_workflow of {
+      query_id : string;
+      query_type : string;
+      arguments : Temporal_base.Codec.payload list;
+      headers : (string * Temporal_base.Codec.payload) list;
+    }
   (** A signal delivered by Core. It carries no command sequence because it is
       an incoming event rather than a completion of an earlier command. The
       execution runtime resolves its name against the workflow's private
@@ -91,6 +98,12 @@ type command =
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; milliseconds : int64 }
   | Cancel_timer of { seq : int64 }
+  (** A query answer. A failed result is returned to the query caller and does
+      not fail the workflow execution. *)
+  | Query_result of {
+      query_id : string;
+      result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
+    }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t
   (** Replaces the current run with a new run of the same workflow type. The

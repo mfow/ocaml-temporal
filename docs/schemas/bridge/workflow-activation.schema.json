@@ -159,6 +159,18 @@
         }
       ]
     },
+    "query_workflow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "query_id", "query_type", "arguments", "headers"],
+      "properties": {
+        "kind": {"const": "query_workflow"},
+        "query_id": {"$ref": "#/$defs/identifier"},
+        "query_type": {"$ref": "#/$defs/identifier"},
+        "arguments": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}},
+        "headers": {"type": "object", "maxProperties": 201326592, "additionalProperties": {"$ref": "#/$defs/payload"}}
+      },
+      "description": "A synchronous read-only query request. Core may send several query jobs together; the runtime answers them without running ordinary workflow continuations."
+    },
     "job": {
       "oneOf": [
         {
@@ -189,6 +201,7 @@
           "required": ["kind", "seq", "result"],
           "properties": {"kind": {"const": "resolve_child_workflow"}, "seq": {"$ref": "#/$defs/u32"}, "result": {"$ref": "#/$defs/child_workflow_resolution"}}
         },
+        {"$ref": "#/$defs/query_workflow"},
         {
           "type": "object", "additionalProperties": false,
           "required": ["kind", "signal_name", "input", "identity", "headers"],

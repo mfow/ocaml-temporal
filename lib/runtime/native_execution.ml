@@ -469,6 +469,33 @@ let runtime_job path = function
       Ok
         ( Activation.Resolve_child_workflow { seq; result }, None, None, None,
           Some (Child_result, seq) )
+  | Protocol.Query_workflow { query_id; query_type; arguments; headers } ->
+      (* Query payloads are copied into runtime-owned values, retaining every
+         repeated argument and sorted header. The public adapter may reject
+         arguments later, but this layer never drops them silently. *)
+      let* () = validate_identifier (path ^ ".query_id") query_id in
+      let* () = validate_identifier (path ^ ".query_type") query_type in
+      let rec payloads_loop index reversed = function
+        | [] -> Ok (List.rev reversed)
+        | payload :: rest ->
+            let* payload =
+              runtime_payload
+                (Printf.sprintf "%s.arguments[%d]" path index)
+                payload
+            in
+            payloads_loop (index + 1) (payload :: reversed) rest
+      in
+      let rec headers_loop reversed = function
+        | [] -> Ok (List.rev reversed)
+        | (key, payload) :: rest ->
+            let* () = validate_identifier (path ^ ".headers.key") key in
+            let* payload = runtime_payload (path ^ ".headers." ^ key) payload in
+            headers_loop ((key, payload) :: reversed) rest
+      in
+      let* arguments = payloads_loop 0 [] arguments in
+      let* headers = headers_loop [] headers in
+      Ok (Activation.Query_workflow { query_id; query_type; arguments; headers }, None,
+          None, None, None)
   | Protocol.Signal_workflow { signal_name; input; identity; headers } ->
       let* () = validate_identifier (path ^ ".signal_name") signal_name in
       let* () = validate_bounded_text (path ^ ".identity") identity in
@@ -834,6 +861,18 @@ let command_to_protocol command =
   | Activation.Cancel_timer { seq } ->
       let* () = validate_sequence "$.command.seq" seq in
       Ok (Protocol.Cancel_timer { seq })
+  | Activation.Query_result { query_id; result } ->
+      let* () = validate_identifier "$.command.query_id" query_id in
+      let* result =
+        match result with
+        | Ok payload ->
+            let* payload = protocol_payload "$.command.result.payload" payload in
+            Ok (Protocol.Query_succeeded payload)
+        | Error error ->
+            let* failure = protocol_failure "$.command.result.failure" error in
+            Ok (Protocol.Query_failed failure)
+      in
+      Ok (Protocol.Query_result { query_id; result })
   | Activation.Complete_workflow payload ->
       let* payload = protocol_payload "$.command.result" payload in
       let result =
@@ -866,6 +905,59 @@ let completion_of_commands ~run_id commands =
   | Ok _ -> Ok completion
   | Error error -> Error (protocol_error error)
 
+(** Checks that query answers belong to the activation being acknowledged.
+
+    Rust repeats this check before handing a completion to Temporal Core, but
+    the OCaml boundary performs it first so a malformed in-process completion
+    cannot cross the supervisor boundary. Query activations must return one
+    answer for every query ID and no ordinary workflow command; ordinary
+    activations must not contain a query answer at all. Sorting copies only
+    bounded identifiers and gives duplicate/missing/extra IDs one deterministic
+    comparison without retaining payload bytes. *)
+let validate_completion_for_activation activation completion =
+  let query_ids =
+    List.filter_map
+      (function
+        | Protocol.Query_workflow { query_id; _ } -> Some query_id
+        | _ -> None)
+      activation.Protocol.jobs
+  in
+  let result_ids =
+    List.filter_map
+      (function
+        | Protocol.Query_result { query_id; _ } -> Some query_id
+        | _ -> None)
+      completion.Protocol.commands
+  in
+  let rec has_duplicate seen = function
+    | [] -> false
+    | id :: rest -> List.mem id seen || has_duplicate (id :: seen) rest
+  in
+  if query_ids = [] then
+    if result_ids = [] then Ok ()
+    else
+      Error
+        (invalid "$.commands"
+           "query result command requires a query activation")
+  else if List.length query_ids <> List.length activation.Protocol.jobs then
+    Error
+      (invalid "$.jobs"
+         "query activation cannot contain ordinary workflow jobs")
+  else if has_duplicate [] query_ids then
+    Error (invalid "$.jobs" "query activation contains a duplicate query ID")
+  else if has_duplicate [] result_ids then
+    Error
+      (invalid "$.commands"
+         "query completion contains a duplicate query ID")
+  else if
+    List.length result_ids <> List.length completion.Protocol.commands
+    || List.sort String.compare query_ids <> List.sort String.compare result_ids
+  then
+    Error
+      (invalid "$.commands"
+         "query completion identifiers must exactly match the activation")
+  else Ok ()
+
 (** Applies one protocol activation to a pre-created deterministic execution.
     Initialization data remains available from [translate_activation] for the
     caller that constructs the typed [Execution.t]; this function only feeds the
@@ -879,6 +971,7 @@ let activate execution activation =
   Execution.set_activation_timestamp execution translated.timestamp;
   let commands = Execution.activate execution translated.jobs in
   let* completion = completion_of_commands ~run_id:translated.run_id commands in
+  let* () = validate_completion_for_activation activation completion in
   match translated.cache_removal with
   | Some _ when completion.commands <> [] ->
       Error

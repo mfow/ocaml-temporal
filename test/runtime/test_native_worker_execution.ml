@@ -82,8 +82,13 @@ let base_workflow (definition : ('input, 'output) Temporal.Workflow.t) =
 module Adapter = struct
   include Raw_adapter
 
-  let register ?(signal_handlers = []) definition =
-    Raw_adapter.register ~signal_handlers (base_workflow definition)
+  (** Keeps both interaction kinds available to the fake native worker. The
+      production public adapter performs the same conversion before calling
+      this private registry; keeping the optional query list here lets this
+      test exercise the owner-Domain query path without a native handle. *)
+  let register ?(signal_handlers = []) ?(query_handlers = []) definition =
+    Raw_adapter.register ~signal_handlers ~query_handlers
+      (base_workflow definition)
 end
 
 (** Keeps workflow fixture sequencing on the same typed-result path as the
@@ -387,6 +392,88 @@ let test_signal_handler_runs_on_scheduler () =
         ()
     | Some _ -> failwith "signal handler lost deterministic signal metadata"
     | None -> failwith "signal activation did not run its registered handler"
+  end;
+  enqueue supervisor
+    (activation ~run_id [ Protocol.Fire_timer { seq = timer_seq } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker))
+
+(** A public output-only query handler is converted into the private native
+    registration without exposing its existential type. Query delivery runs
+    synchronously on the execution owner Domain, emits one result with the
+    original query ID, and never resumes the suspended workflow scheduler.
+    The second query also proves that the current public API rejects arguments
+    as a typed query failure instead of silently ignoring them. *)
+let test_public_query_handler_registration () =
+  let supervisor = fake_supervisor () in
+  let query =
+    Temporal.Query.define ~name:"current-status" ~output:Temporal.Codec.string
+  in
+  let public_handler =
+    Temporal.Query.Handler.make query (fun () -> Ok "ready")
+  in
+  let query_handler =
+    Raw_adapter.make_query_handler ~name:(Temporal.Query.name query)
+      ~dispatch:(fun native_query ->
+        match Raw_adapter.query_arguments native_query with
+        | [] ->
+            Temporal.Query.Handler.dispatch public_handler
+            |> Result.map base_payload |> Result.map_error base_error
+        | _ ->
+            Error
+              (Temporal_base.Error.make ~non_retryable:true ~category:`Workflow
+                 ~message:"query arguments are not supported by this handler" ()))
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_query"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-public-query" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_query" ]);
+  let worker =
+    worker supervisor
+      [ Adapter.register ~query_handlers:[ query_handler ] workflow ]
+  in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  let timer_seq =
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_timer { seq; _ } ] -> seq
+    | _ -> failwith "query workflow did not emit its initial timer"
+  in
+  let query_activation query_id arguments =
+    activation ~run_id
+      [ Protocol.Query_workflow
+          {
+            query_id;
+            query_type = "current-status";
+            arguments;
+            headers = [ ("trace", encoded_protocol Temporal.Codec.string "q") ];
+          } ]
+  in
+  enqueue supervisor (query_activation "query-1" []);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Query_result
+          { query_id = "query-1"; result = Query_succeeded payload } ] ->
+        let expected = encoded_protocol Temporal.Codec.string "ready" in
+        if payload <> expected then
+          failwith "public query handler returned an unexpected payload"
+    | _ -> failwith "public query handler did not return a successful result"
+  end;
+  enqueue supervisor
+    (query_activation "query-2"
+       [ encoded_protocol Temporal.Codec.string "unexpected" ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Query_result
+          { query_id = "query-2"; result = Query_failed failure } ]
+      when Protocol.failure_non_retryable failure ->
+        ()
+    | _ -> failwith "query arguments were not rejected as a typed failure"
   end;
   enqueue supervisor
     (activation ~run_id [ Protocol.Fire_timer { seq = timer_seq } ]);
@@ -1383,6 +1470,7 @@ let () =
   test_timer_suspension_and_resume ();
   test_cancellation ();
   test_signal_handler_runs_on_scheduler ();
+  test_public_query_handler_registration ();
   test_unhandled_signal_fails_closed ();
   test_eviction ();
   test_eviction_after_terminal_completion ();

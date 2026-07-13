@@ -19,6 +19,7 @@ type activity_registration
     workflow scheduler when native SignalWorkflow activations arrive. *)
 val register_workflow :
   ?signals:Signal.Handler.t list ->
+  ?queries:Query.Handler.t list ->
   ('input, 'output,
    'input -> ('output, Temporal_base.Error.t) result)
   Temporal_base.Definition.t ->

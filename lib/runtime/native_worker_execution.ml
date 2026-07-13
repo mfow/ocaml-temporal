@@ -469,6 +469,12 @@ module Make (Supervisor : SUPERVISOR) = struct
             { details = List.map copy_payload details; identity }
       | Protocol.Activity _ as info -> info
       | Protocol.Child_workflow _ as info -> info
+      | Protocol.Timeout_failure { timeout_type; last_heartbeat_details } ->
+          Protocol.Timeout_failure
+            {
+              timeout_type;
+              last_heartbeat_details = List.map copy_payload last_heartbeat_details;
+            }
     in
     {
       message = failure.message;

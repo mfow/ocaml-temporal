@@ -76,6 +76,20 @@ type retry_state =
   | Internal_server_error
   | Cancel_requested
 
+(** Timeout policy that Temporal reports as having elapsed.  This is distinct
+    from [retry_state]'s [Timeout] wrapper state and preserves Core's
+    TimeoutFailureInfo enum. *)
+type timeout_type =
+  | Timeout_unspecified
+  | Timeout_start_to_close
+  | Timeout_schedule_to_start
+  | Timeout_schedule_to_close
+  | Timeout_heartbeat
+
+(** Stable JSON spelling of a timeout policy, used by diagnostics as well as
+    the private protocol encoder. *)
+val timeout_type_string : timeout_type -> string
+
 (** Supported structured Temporal failure-info variants. *)
 type failure_info =
   | Application of {
@@ -100,6 +114,10 @@ type failure_info =
       initiated_event_id : int64;
       started_event_id : int64;
       retry_state : retry_state;
+    }
+  | Timeout_failure of {
+      timeout_type : timeout_type;
+      last_heartbeat_details : payload list;
     }
 
 (** Recursive Temporal failure shared by activity resolution and workflow

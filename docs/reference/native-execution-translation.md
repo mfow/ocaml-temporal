@@ -68,7 +68,7 @@ bridge failure rather than silently ignoring a Core event.
 | `Initialize_workflow` | `Start_workflow` | Workflow ID, type, arguments, randomness seed, attempt, and initialization context are retained in `translated_activation.initialization`. |
 | `Resolve_activity` with `Completed None` | `Resolve_activity` with the canonical null payload | The absence of a result remains distinguishable from an ordinary payload. |
 | `Resolve_activity` with `Completed (Some payload)` | `Resolve_activity` with a copied runtime payload | Metadata and body bytes are copied before workflow code can observe them. |
-| `Resolve_activity` with `Failed` or `Cancelled` | `Resolve_activity` with a typed `Temporal_base.Error.t` | Application/cancellation category, retryability, details, and a bounded diagnostic of structured failure information are retained. |
+| `Resolve_activity` with `Failed` or `Cancelled` | `Resolve_activity` with a typed `Temporal_base.Error.t` | Application/cancellation category, retryability, details, and a bounded diagnostic of structured failure information are retained. Timeout failures retain the exact timeout policy and last heartbeat payloads. |
 | `Resolve_child_workflow_start` with `Succeeded` | `Resolve_child_workflow_start` with `Ok run_id` | The translation preserves the run ID; `Workflow_context_store` records it and deliberately does not resolve the child's future yet. |
 | `Resolve_child_workflow_start` with `Failed` or `Cancelled` | `Resolve_child_workflow_start` with `Error` | The translation produces a typed child-workflow or cancellation error; `Workflow_context_store` removes the pending child so a rejected start cannot remain suspended forever. |
 | `Resolve_child_workflow` with `Completed` | `Resolve_child_workflow` with `Ok payload` | The translation preserves the terminal payload (including canonical null); `Workflow_context_store` resolves the child only after a successful start acknowledgment. |
@@ -179,7 +179,9 @@ retry states remain retryable. `RetryPolicyNotSet` and `Unspecified` do not
 override the nested application flag, which is how Core reports a child that
 failed non-retryably without having its own child retry policy. The bounded
 walk preserves this distinction without making malformed recursive causes
-unbounded.
+unbounded. A `Timeout` failure-info record has no independent retryability flag;
+it inherits the nested cause, if any, while retaining its timeout policy and
+heartbeat details for diagnostics and activity error payloads.
 
 The adapter itself has no mutable global state. A worker may keep the returned
 `Execution.t` and translated records in its owner Domain, but this module does

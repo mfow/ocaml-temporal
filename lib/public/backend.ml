@@ -333,6 +333,10 @@ let failure_info_summary = function
         "child_workflow namespace=%s id=%s run_id=%s type=%s initiated_event_id=%Ld started_event_id=%Ld retry_state=%s"
         namespace workflow_id run_id workflow_type initiated_event_id
         started_event_id retry_state
+  | Workflow_protocol.Timeout_failure { timeout_type; last_heartbeat_details } ->
+      Printf.sprintf "timeout type=%s last_heartbeat_details=%d"
+        (Workflow_protocol.timeout_type_string timeout_type)
+        (List.length last_heartbeat_details)
 
 (** Collects all application/cancellation detail payloads through a bounded
     failure cause chain. Protocol decoding already applies a depth limit; this
@@ -346,6 +350,8 @@ let failure_details failure =
           List.rev_append details reversed
       | Workflow_protocol.Activity _ | Workflow_protocol.Child_workflow _ ->
           reversed
+      | Workflow_protocol.Timeout_failure { last_heartbeat_details; _ } ->
+          List.rev_append last_heartbeat_details reversed
     in
     match value.cause with
     | Some cause when depth < 128 -> loop (depth + 1) reversed cause

@@ -266,6 +266,10 @@ let failure_info_summary = function
          started_event_id=%Ld retry_state=%s"
         namespace workflow_id run_id workflow_type initiated_event_id
         started_event_id retry_state
+  | Protocol.Timeout_failure { timeout_type; last_heartbeat_details } ->
+      Printf.sprintf "timeout type=%s last_heartbeat_details=%d"
+        (Protocol.timeout_type_string timeout_type)
+        (List.length last_heartbeat_details)
 
 (** Flattens a bounded failure chain into one deterministic diagnostic. The JSON
     protocol already limits nesting; the depth guard also protects callers that
@@ -313,6 +317,8 @@ let failure_details (failure : Protocol.failure) =
       | Protocol.Application { details; _ } | Protocol.Canceled { details; _ }
         ->
           List.rev_append details reversed
+      | Protocol.Timeout_failure { last_heartbeat_details; _ } ->
+          List.rev_append last_heartbeat_details reversed
       | Protocol.Activity _ | Protocol.Child_workflow _ -> reversed
     in
     match value.cause with

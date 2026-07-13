@@ -170,7 +170,7 @@ pub struct ActivityHeartbeat {
 
 /// Supported activity completion outcomes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActivityCompletionResult {
     Completed {
         /// Optional Temporal payload returned by the activity.

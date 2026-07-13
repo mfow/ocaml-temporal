@@ -56,16 +56,26 @@ module Handler = struct
   let name (Handler { definition; _ }) = definition.name
 
   (** Decodes and invokes one signal payload, converting callback exceptions to
-      non-retryable defects at the same boundary as workflow dispatch. *)
+      non-retryable defects at the same boundary as workflow dispatch. A
+      raising codec is contained the same way: user/codec decoders must not
+      escape dispatch half-applied. *)
   let dispatch (Handler { definition; implementation }) payload =
     match Codec.decode definition.input payload with
-    | Error error -> Error error
-    | Ok input -> (
-        try implementation input with
-        | exception_ ->
-            Error
-              (Error.defect
-                 ~message:
-                   (Printf.sprintf "signal handler raised: %s"
-                      (Printexc.to_string exception_))))
+    | result -> (
+        match result with
+        | Error error -> Error error
+        | Ok input -> (
+            try implementation input with
+            | exception_ ->
+                Error
+                  (Error.defect
+                     ~message:
+                       (Printf.sprintf "signal handler raised: %s"
+                          (Printexc.to_string exception_)))))
+    | exception exception_ ->
+        Error
+          (Error.defect
+             ~message:
+               (Printf.sprintf "signal input codec raised: %s"
+                  (Printexc.to_string exception_)))
 end

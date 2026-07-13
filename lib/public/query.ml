@@ -53,7 +53,9 @@ module Handler = struct
   let name (Handler { definition; _ }) = definition.name
 
   (** Runs the query callback and encodes its output. Callback exceptions are
-      converted to defects so they cannot tear down the dispatcher. *)
+      converted to defects so they cannot tear down the dispatcher; a raising
+      output codec is contained the same way so it cannot escape dispatch
+      half-applied. *)
   let dispatch (Handler { definition; implementation }) =
     let result =
       try implementation () with
@@ -66,5 +68,13 @@ module Handler = struct
     in
     match result with
     | Error _ as error -> error
-    | Ok value -> Codec.encode definition.output value
+    | Ok value -> (
+        match Codec.encode definition.output value with
+        | result -> result
+        | exception exception_ ->
+            Error
+              (Error.defect
+                 ~message:
+                   (Printf.sprintf "query output codec raised: %s"
+                      (Printexc.to_string exception_))))
 end

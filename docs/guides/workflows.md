@@ -172,7 +172,28 @@ built-in codecs are:
 - `Temporal.Codec.bytes`, using `binary/plain`;
 - `Temporal.Codec.unit`, using `binary/null`; and
 - `Temporal.Codec.option codec`, which uses the nested codec for `Some` and
-  `binary/null` for `None`.
+  `binary/null` for `None`. When the nested codec would itself produce a
+  `binary/null` payload — as `unit` and a nested `option`'s own `None` do — the
+  `Some` value is wrapped in a distinct `binary/x-ocaml-optional` envelope so that
+  `Some ()`, `Some None`, and `None` remain distinguishable on decode. Ordinary
+  values such as `Some "text"` keep their interoperable encoding untouched.
+
+`Codec.option` is deliberately *injective*: decoding always recovers the exact
+value that was encoded. For every option type that another-language SDK can
+represent — `string option`, `int option`, and so on — this is also the fully
+interoperable representation (`None` is the standard `binary/null` nil; `Some v`
+is the inner codec's own encoding). The private `binary/x-ocaml-optional`
+envelope appears only for `unit option` and nested `option`, types that have no
+counterpart in most other SDKs; a non-OCaml worker or client that received one
+would report an unknown-encoding error rather than silently reading it as `None`.
+
+If you instead need an option that collapses onto a foreign *nullable* — for
+example an OCaml activity result read by a Go worker, where you accept that a
+present-but-empty value is indistinguishable from absent — do not reach for
+`Codec.option`. Build that exact wire representation with `Codec.make`, which
+lets you choose the encoding name and byte layout the non-OCaml counterpart
+expects. Keeping the collapse out of `Codec.option` means the default anyone
+picks stays round-trip-safe.
 
 Payload metadata is object-like on the Temporal wire, so each metadata name
 must occur at most once. The public and private codecs reject duplicate names

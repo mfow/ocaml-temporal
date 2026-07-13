@@ -28,11 +28,26 @@ let encoding_metadata metadata =
   in
   loop None metadata
 
+(** Encoding name reserved for the envelope that {!option} uses to keep [None]
+    distinct from an inner value whose own encoding is [binary/null]. The name
+    is deliberately namespaced ([x-ocaml-]) so it cannot clash with a standard
+    Temporal encoding, and {!make} refuses to build a user codec that claims it,
+    guaranteeing the [option] combinator owns the marker exclusively. *)
+let optional_wrapper_encoding = "binary/x-ocaml-optional"
+
 (** Builds a codec that writes one exact encoding name and validates that name
     before invoking the decoder. User conversion failures remain typed errors,
     so malformed data never escapes as an exception. Duplicate metadata names
-    are rejected before the callback runs, matching the strict bridge protocol. *)
+    are rejected before the callback runs, matching the strict bridge protocol.
+
+    Claiming {!optional_wrapper_encoding} is a programmer error: that name is
+    reserved for the [option] combinator, so [make] raises [Invalid_argument]
+    rather than letting a user payload masquerade as an option envelope. *)
 let make ~encoding ~encode ~decode =
+  if String.equal encoding optional_wrapper_encoding then
+    invalid_arg
+      (Printf.sprintf "Codec.make: encoding %S is reserved for Codec.option"
+         optional_wrapper_encoding);
   let encode_payload value =
     Result.map
       (fun data -> { metadata = [ ("encoding", encoding) ]; data })
@@ -103,16 +118,111 @@ let unit =
       if Bytes.length data = 0 then Ok ()
       else Error (Error.codec ~message:"unit payload must be empty"))
 
+(** Serializes a payload into a self-describing byte buffer used by the option
+    wrapper. Framing is a [u32] metadata count, then each entry as a [u32]
+    length-prefixed key and a [u32] length-prefixed value, then a [u32]
+    length-prefixed data segment. All integers are unsigned 32-bit big-endian.
+    Capturing the full metadata and data keeps the wrapper injective for
+    arbitrarily nested options. *)
+let serialize_payload payload =
+  let buffer = Buffer.create 64 in
+  let add_u32 length =
+    let bytes = Bytes.create 4 in
+    Bytes.set_int32_be bytes 0 (Int32.of_int length);
+    Buffer.add_bytes buffer bytes
+  in
+  let add_field value =
+    add_u32 (String.length value);
+    Buffer.add_string buffer value
+  in
+  add_u32 (List.length payload.metadata);
+  List.iter
+    (fun (key, value) ->
+      add_field key;
+      add_field value)
+    payload.metadata;
+  add_u32 (Bytes.length payload.data);
+  Buffer.add_bytes buffer payload.data;
+  Buffer.to_bytes buffer
+
+(** Reverses {!serialize_payload}. Any truncation, negative length, or trailing
+    bytes is reported as a typed codec error so a corrupted envelope never
+    raises to workflow code. *)
+let deserialize_payload data =
+  let length = Bytes.length data in
+  let read_u32 position =
+    if position + 4 > length then None
+    else Some (Int32.to_int (Bytes.get_int32_be data position), position + 4)
+  in
+  let read_field position =
+    match read_u32 position with
+    | None -> None
+    | Some (size, position) ->
+        if size < 0 || position + size > length then None
+        else Some (Bytes.sub_string data position size, position + size)
+  in
+  let rec read_metadata remaining position acc =
+    if remaining = 0 then Some (List.rev acc, position)
+    else
+      match read_field position with
+      | None -> None
+      | Some (key, position) -> (
+          match read_field position with
+          | None -> None
+          | Some (value, position) ->
+              read_metadata (remaining - 1) position ((key, value) :: acc))
+  in
+  let malformed = Error (Error.codec ~message:"malformed optional payload") in
+  match read_u32 0 with
+  | None -> malformed
+  | Some (count, position) ->
+      if count < 0 then malformed
+      else (
+        match read_metadata count position [] with
+        | None -> malformed
+        | Some (metadata, position) -> (
+            match read_u32 position with
+            | None -> malformed
+            | Some (data_length, position) ->
+                if data_length < 0 || position + data_length <> length then
+                  malformed
+                else Ok { metadata; data = Bytes.sub data position data_length }))
+
 (** Uses a null payload for [None] and delegates [Some] values to the supplied
-    codec. The complete callback representation is retained instead of
-    assuming that one option codec has one fixed encoding name. *)
+    codec. When the inner codec would encode a value as [binary/null] (the
+    marker reserved for [None]) or as the option wrapper itself, the inner
+    payload is wrapped in an {!optional_wrapper_encoding} envelope so that
+    decoding stays injective. This keeps [Some ()] and [Some None] distinct from
+    [None] while leaving ordinary values such as [Some "text"] in their
+    interoperable encoding. The complete callback representation is retained
+    instead of assuming that one option codec has one fixed encoding name. *)
 let option codec =
   {
     encode_payload =
       (function
       | None ->
           Ok { metadata = [ ("encoding", "binary/null") ]; data = Bytes.empty }
-      | Some value -> encode codec value);
+      | Some value -> (
+          match encode codec value with
+          | Error _ as error -> error
+          | Ok payload -> (
+              match encoding_metadata payload.metadata with
+              | Error _ as error -> error
+              | Ok encoding ->
+                  let collides =
+                    match encoding with
+                    | Some name ->
+                        String.equal name "binary/null"
+                        || String.equal name optional_wrapper_encoding
+                    | None -> false
+                  in
+                  if collides then
+                    Ok
+                      {
+                        metadata = [ ("encoding", optional_wrapper_encoding) ];
+                        data = serialize_payload payload;
+                      }
+                  else Ok payload)));
     decode_payload =
       (fun payload ->
         match encoding_metadata payload.metadata with
@@ -120,5 +230,9 @@ let option codec =
         | Ok (Some "binary/null") when Bytes.length payload.data = 0 -> Ok None
         | Ok (Some "binary/null") ->
             Error (Error.codec ~message:"null payload must be empty")
+        | Ok (Some name) when String.equal name optional_wrapper_encoding -> (
+            match deserialize_payload payload.data with
+            | Error error -> Error error
+            | Ok inner -> Result.map Option.some (decode codec inner))
         | Ok _ -> Result.map Option.some (decode codec payload));
   }

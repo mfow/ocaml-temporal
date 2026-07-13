@@ -1387,6 +1387,39 @@ let test_continue_as_new_terminal () =
   expect "continue-as-new ignores cancellation" []
     (Execution.activate execution [ Activation.Cancel_workflow ])
 
+
+(** A continue-as-new whose successor input cannot be encoded must still seal
+    the execution: the failure command is terminal, and a later cancellation
+    must not emit a second terminal command. *)
+let test_continue_as_new_encode_failure_is_terminal () =
+  let bad_input =
+    Temporal.Codec.make ~encoding:"json/plain"
+      ~encode:(fun () ->
+        Error (Temporal.Error.codec ~message:"successor input rejected"))
+      ~decode:(fun _ -> Error (Temporal.Error.codec ~message:"unused"))
+  in
+  let successor =
+    Temporal.Workflow.remote ~name:"continuation_target" ~input:bad_input
+      ~output:Temporal.Codec.unit
+  in
+  let source =
+    Temporal.Workflow.define ~name:"continuation_encode_fail"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let continue : unit -> (unit, Temporal.Error.t) result =
+          Temporal.Workflow.continue_as_new successor
+        in
+        continue ())
+  in
+  let execution = Execution.start source () in
+  (match Execution.activate execution [ Activation.Start_workflow ] with
+  | [ Activation.Fail_workflow _ ] -> ()
+  | commands ->
+      failwith
+        ("expected one Fail_workflow, got "
+        ^ string_of_int (List.length commands)));
+  expect "encode-failed continue-as-new seals the execution" []
+    (Execution.activate execution [ Activation.Cancel_workflow ])
+
 let () =
   test_commands_and_completion ();
   test_activity_options_and_queue ();
@@ -1415,4 +1448,5 @@ let () =
   test_child_cancel_after_start_failure_is_noop ();
   test_child_resolution_rejections_preserve_lifecycle_state ();
   test_cancel_and_evict ();
-  test_continue_as_new_terminal ()
+  test_continue_as_new_terminal ();
+  test_continue_as_new_encode_failure_is_terminal ()

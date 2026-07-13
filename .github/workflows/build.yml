@@ -76,7 +76,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
       - name: Run the live two-OCaml-binary Temporal Compose smoke
-        run: make test-temporal-integration
+        run: |
+          make test-temporal-integration
+          make test-temporal-worker-restart
 
   verify:
     name: OCaml ${{ matrix.ocaml }} / ${{ matrix.runner }}

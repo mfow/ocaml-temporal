@@ -278,6 +278,81 @@ let test_terminal_workflow () =
   | _ -> failwith "empty queue did not report Not_ready"
   end
 
+(** The private replay observer receives only metadata after strict activation
+    translation. This test proves that workflow identity, replay state, and the
+    64-bit history length are delivered without exposing the activation payload
+    or changing the ordinary completion path. *)
+let test_activation_metadata_hook () =
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_activation_hook"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () -> Ok ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-hook"
+       [ initialize ~run_id:"run-hook" ~workflow_type:"native_worker_activation_hook" ]);
+  let seen = ref None in
+  let worker =
+    match
+      Worker.create
+        ~on_activation:(fun info -> seen := Some info)
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          (Printf.sprintf "activation hook worker creation failed: %s" error.message)
+  in
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  match !seen with
+  | Some
+      {
+        Raw_adapter.run_id = "run-hook";
+        workflow_id = Some "workflow-run-hook";
+        is_replaying = true;
+        history_length = 1L;
+      } -> ()
+  | None -> failwith "activation metadata hook was not called"
+  | Some _ -> failwith "activation metadata hook received incorrect metadata"
+
+(** A diagnostic callback is outside workflow code and must not be able to
+    escape the worker poll with an unretired lease. The adapter converts its
+    exception to a typed rejection and submits the normal failure completion. *)
+let test_activation_metadata_hook_failure_is_typed () =
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_activation_hook_failure"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () -> Ok ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-hook-failure"
+       [ initialize ~run_id:"run-hook-failure"
+           ~workflow_type:"native_worker_activation_hook_failure" ]);
+  let worker =
+    match
+      Worker.create
+        ~on_activation:(fun _ -> failwith "diagnostic sink failed")
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          (Printf.sprintf "activation hook failure worker creation failed: %s"
+             error.message)
+  in
+  begin match Worker.poll worker with
+  | Ok (Adapter.Rejected { lease_retired = true; error; _ }) ->
+      if not (String.equal error.path "$.activation.replay_metadata") then
+        failwith
+          (Printf.sprintf
+             "activation hook exception had the wrong diagnostic path: %s (%s)"
+             error.path error.code)
+  | Ok _ -> failwith "activation hook exception was not rejected"
+  | Error _ -> failwith "activation hook exception escaped as a supervisor error"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "activation hook exception left a native lease outstanding"
+
 (** A workflow that sleeps first remains in the run registry after its timer
     command, then completes when the matching timer job is delivered. *)
 let test_timer_suspension_and_resume () =
@@ -1584,6 +1659,8 @@ let test_task_queue_validation () =
 (** Runs all native worker adapter assertions. *)
 let () =
   test_terminal_workflow ();
+  test_activation_metadata_hook ();
+  test_activation_metadata_hook_failure_is_typed ();
   test_timer_suspension_and_resume ();
   test_cancellation ();
   test_signal_handler_runs_on_scheduler ();

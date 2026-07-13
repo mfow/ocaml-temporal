@@ -46,6 +46,18 @@ end
     and intentionally excludes payload bytes and native handles. *)
 type error_view = { code : string; path : string; message : string }
 
+type activation_info = {
+  run_id : string;
+  workflow_id : string option;
+  is_replaying : bool;
+  history_length : int64;
+}
+(** Metadata observed after one activation has passed strict protocol
+    translation. The callback receives no payloads, continuations, or native
+    handles. It runs on the worker's serialized OCaml owner Domain, before
+    workflow code is entered, so a diagnostic sink can prove replay without
+    introducing an asynchronous cross-language callback. *)
+
 (** One workflow definition registered with the worker. The existential
     wrapper preserves the input/output codec relationship while allowing one
     registry to contain heterogeneous workflow functions. *)
@@ -128,6 +140,7 @@ module Make (Supervisor : SUPERVISOR) : sig
       to the same queue as its workflow worker. No native operation is
       performed and no workflow function is called during creation. *)
   val create :
+    ?on_activation:(activation_info -> unit) ->
     ?task_queue:string ->
     supervisor:Supervisor.t ->
     workflows:registered_workflow list ->

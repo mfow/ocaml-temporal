@@ -538,3 +538,20 @@ let long_running_cancellation =
       match Temporal.Future.await (Temporal.Future.both timer marker) with
       | Error error -> Error error
       | Ok ((), ()) -> Ok (String.uppercase_ascii (token ^ ":finished")))
+
+(** Keeps one workflow run outstanding across a worker replacement. The timer
+    is long enough for the controller to observe [TimerStarted] and stop the
+    first worker before the server delivers [TimerFired]. Once the replacement
+    worker replays the pending timer, the workflow schedules the ordinary
+    mock activity and returns a stable marker that the restart driver asserts. *)
+let worker_restart_replay =
+  Temporal.Workflow.define ~name:"smoke.worker_restart_replay"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun _seed ->
+      match Temporal.Workflow.sleep (Temporal.Duration.of_ms 60_000L) with
+      | Error error -> Error error
+      | Ok () ->
+          let open Temporal.Result_syntax in
+          let* transformed =
+            Temporal.Activity.execute mock_transform "after-replay"
+          in
+          Ok ("SMOKE:" ^ transformed))

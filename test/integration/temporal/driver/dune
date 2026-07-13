@@ -1,3 +1,7 @@
 (executable
  (name smoke_driver)
  (libraries temporal-sdk temporal_two_binary_smoke_common unix))
+
+(executable
+ (name restart_driver)
+ (libraries temporal-sdk temporal_two_binary_smoke_common unix))

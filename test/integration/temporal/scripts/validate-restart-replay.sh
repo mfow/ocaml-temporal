@@ -1,15 +1,13 @@
 #!/bin/sh
 set -eu
 
-# Validates the small, payload-free documents exchanged by the future
-# restart/replay controller. The Temporal CLI does not currently provide the
-# normalized history shape consumed here, so this script deliberately accepts
-# a file rather than scraping human-formatted CLI output. A future adapter can
-# call it for an initial timer boundary and then again for the terminal
-# history without changing the acceptance assertions. Terminal validation also
-# requires the initial snapshot: checking the two documents independently
-# would allow an adapter bug to replace the workflow's history between the
-# restart boundary and completion.
+# Validates the small, payload-free documents exchanged by the live
+# restart/replay controller. The Temporal CLI does not provide the normalized
+# history shape consumed here, so this script accepts the JSON projection
+# written by [normalize-history.sh] rather than scraping human-formatted CLI
+# output. Terminal validation also requires the initial snapshot: checking the
+# two documents independently would allow an adapter bug to replace the
+# workflow's history between the restart boundary and completion.
 
 # Prints the command-line contract and exits with the conventional usage code.
 usage() {

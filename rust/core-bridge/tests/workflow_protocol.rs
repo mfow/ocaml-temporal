@@ -545,22 +545,33 @@ fn converts_pinned_core_values_losslessly() {
         completion
     );
 
-    let mut unsupported_activation = activation.clone();
-    unsupported_activation.jobs[0].variant = Some(Variant::InitializeWorkflow(
+    let mut continuation_activation = activation.clone();
+    continuation_activation.jobs[0].variant = Some(Variant::InitializeWorkflow(
         core_activation::InitializeWorkflow {
             workflow_type: "workflow".to_owned(),
             workflow_id: "workflow-1".to_owned(),
             randomness_seed: 1,
             attempt: 1,
+            first_execution_run_id: "first-run".to_owned(),
             continued_from_execution_run_id: "previous-run".to_owned(),
+            continued_initiator: 1,
             ..Default::default()
         },
     ));
+    let continuation = workflow_protocol::activation_from_core(&continuation_activation)
+        .expect("continuation metadata should be represented")
+        .jobs
+        .into_iter()
+        .find_map(|job| match job {
+            workflow_protocol::ActivationJob::InitializeWorkflow { context, .. } => context,
+            _ => None,
+        })
+        .and_then(|context| context.continuation)
+        .expect("continuation metadata should be retained");
+    assert_eq!(continuation.continued_from_execution_run_id, "previous-run");
     assert_eq!(
-        workflow_protocol::activation_from_core(&unsupported_activation)
-            .unwrap_err()
-            .code,
-        workflow_protocol::CoreConversionErrorCode::Unsupported
+        continuation.initiator,
+        workflow_protocol::ContinueAsNewInitiator::Workflow
     );
 
     let mut malformed_payload_activation = activation;
@@ -595,6 +606,67 @@ fn converts_pinned_core_values_losslessly() {
     assert_eq!(
         workflow_protocol::completion_from_core(&unsupported_completion)
             .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::Unsupported
+    );
+}
+
+/// Proves Core's inherited continuation options do not make a valid successor
+/// activation fail admission. The first protocol slice has no OCaml fields
+/// for these options yet, so they are accepted only when continuation
+/// provenance is present; an ordinary root activation still rejects the same
+/// unrepresented metadata instead of silently dropping it.
+#[test]
+fn accepts_inherited_initialize_options_on_continuation() {
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::temporal::api::common::v1::{Memo, RetryPolicy, SearchAttributes};
+
+    let inherited = core_activation::InitializeWorkflow {
+        workflow_type: "workflow".to_owned(),
+        workflow_id: "workflow-1".to_owned(),
+        randomness_seed: 1,
+        attempt: 1,
+        first_execution_run_id: "first-run".to_owned(),
+        continued_from_execution_run_id: "previous-run".to_owned(),
+        continued_initiator: 1,
+        retry_policy: Some(RetryPolicy::default()),
+        cron_schedule: "0 * * * * *".to_owned(),
+        workflow_execution_expiration_time: Some(prost_wkt_types::Timestamp {
+            seconds: 1,
+            nanos: 2,
+        }),
+        cron_schedule_to_schedule_interval: Some(prost_wkt_types::Duration {
+            seconds: 3,
+            nanos: 4,
+        }),
+        memo: Some(Memo::default()),
+        search_attributes: Some(SearchAttributes::default()),
+        ..Default::default()
+    };
+    let activation = core_activation::WorkflowActivation {
+        run_id: "run-1".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::InitializeWorkflow(inherited.clone())),
+        }],
+        ..Default::default()
+    };
+
+    workflow_protocol::activation_from_core(&activation)
+        .expect("inherited continuation options should be compatibility metadata");
+
+    let mut root = inherited;
+    root.continued_from_execution_run_id.clear();
+    root.continued_initiator = 0;
+    let root_activation = core_activation::WorkflowActivation {
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::InitializeWorkflow(root)),
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        workflow_protocol::activation_from_core(&root_activation)
+            .expect_err("root metadata must not be silently discarded")
             .code,
         workflow_protocol::CoreConversionErrorCode::Unsupported
     );
@@ -1099,6 +1171,97 @@ fn preserves_realistic_first_workflow_activation() {
     // Keep the imported pinned enum exercised so an upstream name drift is a
     // compile-time failure in this boundary test.
     assert_eq!(EvictionReason::CacheFull as i32, 1);
+}
+
+/// Proves a successor activation preserves Core's continuation failure and
+/// completion payloads in addition to the previous run identity. These fields
+/// explain why a run was continued and must not be discarded at the bridge.
+#[test]
+fn preserves_continuation_terminal_metadata() {
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::temporal::api::{
+        common::v1::{Payload, Payloads},
+        failure::v1::{ApplicationFailureInfo, Failure, failure::FailureInfo},
+    };
+
+    let continuation_failure = Failure {
+        message: "previous run failed".to_owned(),
+        source: "core".to_owned(),
+        stack_trace: "stack".to_owned(),
+        failure_info: Some(FailureInfo::ApplicationFailureInfo(
+            ApplicationFailureInfo {
+                r#type: "example".to_owned(),
+                non_retryable: false,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    };
+    let initialize = core_activation::InitializeWorkflow {
+        workflow_type: "workflow".to_owned(),
+        workflow_id: "workflow-1".to_owned(),
+        randomness_seed: 1,
+        attempt: 1,
+        first_execution_run_id: "first-run".to_owned(),
+        continued_from_execution_run_id: "previous-run".to_owned(),
+        continued_initiator: 1,
+        continued_failure: Some(continuation_failure),
+        last_completion_result: Some(Payloads {
+            payloads: vec![Payload {
+                data: b"last-result".to_vec(),
+                ..Default::default()
+            }],
+        }),
+        ..Default::default()
+    };
+    let activation = core_activation::WorkflowActivation {
+        run_id: "run-1".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::InitializeWorkflow(initialize)),
+        }],
+        ..Default::default()
+    };
+
+    let semantic = workflow_protocol::activation_from_core(&activation)
+        .expect("continuation terminal metadata should convert");
+    let continuation = match &semantic.jobs[0] {
+        workflow_protocol::ActivationJob::InitializeWorkflow {
+            context: Some(context),
+            ..
+        } => context
+            .continuation
+            .as_ref()
+            .expect("continuation context")
+            .clone(),
+        _ => panic!("expected initialize workflow job"),
+    };
+    assert_eq!(
+        continuation.initiator,
+        workflow_protocol::ContinueAsNewInitiator::Workflow
+    );
+    assert_eq!(
+        continuation
+            .continued_failure
+            .as_ref()
+            .expect("continuation failure")
+            .message,
+        "previous run failed"
+    );
+    assert_eq!(
+        continuation
+            .last_completion_result
+            .as_ref()
+            .expect("last completion result")[0]
+            .data,
+        b"last-result"
+    );
+    let encoded = workflow_protocol::encode_activation(&semantic)
+        .expect("continuation metadata should encode");
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
 }
 
 /// Proves a child activation retains both its namespaced parent and the root
@@ -2099,6 +2262,7 @@ fn rejects_omitted_required_nullable_fields() {
         "start_time",
         "root_workflow",
         "priority",
+        "continuation",
     ] {
         assert!(
             workflow_protocol::decode_activation(&fixture_without_field(

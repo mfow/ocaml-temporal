@@ -86,15 +86,17 @@ essential-feature tests:
 - A separate OCaml test-client container links the same library, starts each
   test workflow, waits for its result, and checks the expected outcome.
 
-The smoke suite now contains nine top-level scenarios: fan-out, timer/activity,
-ordinary activity retry, heartbeat-detail activity retry, successful
-parent/child execution, propagated child failure, child cancellation, typed
-non-retryable workflow failure, and marker-guarded exact-run cancellation. The
-current driver starts all nine before waiting, asserts each expected terminal
-outcome, and records bounded operation-phase and shutdown diagnostics. Every
-subsequent essential capability adds scenarios to that same suite. It is not
-considered complete while an essential SDK capability is exercised only by the
-synthetic interpreter.
+The smoke suite now contains ten top-level scenarios: fan-out, timer/activity,
+continue-as-new successor following, ordinary activity retry, heartbeat-detail
+activity retry, successful parent/child execution, propagated child failure,
+child cancellation, typed non-retryable workflow failure, and marker-guarded
+exact-run cancellation. The current driver starts all ten before waiting,
+asserts each expected terminal outcome, and records bounded operation-phase and
+shutdown diagnostics. The first nine scenarios have live evidence in PR #210;
+the continue-as-new scenario is included in the next live gate and remains
+pending until that run passes. Every subsequent essential capability adds
+scenarios to the same suite. It is not considered complete while an essential
+SDK capability is exercised only by the synthetic interpreter.
 
 ## Dependency and licensing gate
 

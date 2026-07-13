@@ -245,6 +245,31 @@ let timer_then_activity =
       | Error error -> Error error
       | Ok () -> Temporal.Activity.execute mock_transform (seed ^ ":timer"))
 
+(** Command-only reference used by the executable continuation below. Keeping
+    this reference separate avoids a recursive OCaml value: the workflow
+    definition that the worker registers remains local and executable, while
+    the continue-as-new command only needs the successor type name and input
+    codec. Both values therefore describe the same Temporal workflow type. *)
+let continue_as_new_target =
+  Temporal.Workflow.remote ~name:"smoke.continue_as_new"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+
+(** Continues exactly once so the live driver can verify both sides of the
+    exact-run boundary. The first run emits a terminal continue-as-new command
+    with fresh input; the successor run returns a normal typed result. Any
+    unexpected input is a deterministic workflow defect, which prevents a
+    malformed test request from looking like a successful continuation. *)
+let continue_as_new =
+  Temporal.Workflow.define ~name:"smoke.continue_as_new"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (function
+    | "first" -> Temporal.Workflow.continue_as_new continue_as_new_target "second"
+    | "second" -> Ok "SMOKE:CONTINUED:SECOND"
+    | input ->
+        Error
+          (Temporal.Error.defect
+             ~message:
+               (Printf.sprintf "unexpected continue-as-new input %S" input)))
+
 (** Schedules the transient activity with an explicit two-attempt retry policy.
     The activity itself fails once and then succeeds, so a live terminal result
     ending in [ATTEMPT:2] proves that Temporal Server and Core delivered a

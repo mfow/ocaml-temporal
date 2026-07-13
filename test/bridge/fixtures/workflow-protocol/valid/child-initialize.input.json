@@ -20,7 +20,8 @@
       "first_execution_run_id": "child-first-run",
       "start_time": null,
       "root_workflow": {"workflow_id": "root-1", "run_id": "root-run"},
-      "priority": null
+      "priority": null,
+      "continuation": null
     }
   }]
 }

@@ -117,6 +117,25 @@ let test_activation_metadata_and_order () =
 let test_retained_payloads_are_copied () =
   let argument = protocol_payload "input" in
   let header = protocol_payload "header" in
+  let continuation_attributes = protocol_payload "attributes" in
+  let continuation_detail = protocol_payload "detail" in
+  let continuation_result = protocol_payload "result" in
+  let continuation_failure : Protocol.failure =
+    {
+      message = "continued failure";
+      source = "core";
+      stack_trace = "stack";
+      encoded_attributes = Some continuation_attributes;
+      cause = None;
+      info =
+        Protocol.Application
+          {
+            type_name = "continued";
+            non_retryable = false;
+            details = [ continuation_detail ];
+          };
+    }
+  in
   let context : Protocol.initialize_context =
     {
       headers = [ ("request", header) ];
@@ -129,6 +148,14 @@ let test_retained_payloads_are_copied () =
       start_time = None;
       root_workflow = None;
       priority = None;
+      continuation =
+        Some
+          {
+            continued_from_execution_run_id = "previous-run";
+            initiator = Protocol.Continue_as_new_workflow;
+            continued_failure = Some continuation_failure;
+            last_completion_result = Some [ continuation_result ];
+          };
     }
   in
   let translated =
@@ -149,6 +176,9 @@ let test_retained_payloads_are_copied () =
   in
   Bytes.set argument.data 0 'X';
   Bytes.set header.data 0 'Y';
+  Bytes.set continuation_attributes.data 0 'X';
+  Bytes.set continuation_detail.data 0 'X';
+  Bytes.set continuation_result.data 0 'X';
   match translated.initialization with
   | Some { arguments = [ argument_copy ]; context = Some context_copy; _ } ->
       let header_copy =
@@ -159,7 +189,26 @@ let test_retained_payloads_are_copied () =
       if Bytes.to_string argument_copy.data <> "input" then
         failwith "initialization argument retained caller-owned bytes";
       if Bytes.to_string header_copy.data <> "header" then
-        failwith "initialization context retained caller-owned bytes"
+        failwith "initialization context retained caller-owned bytes";
+      begin match context_copy.continuation with
+      | Some
+          {
+            continued_failure =
+              Some
+                {
+                  encoded_attributes = Some attributes;
+                  info = Protocol.Application { details = [ detail ]; _ };
+                  _;
+                };
+            last_completion_result = Some [ result ];
+            _;
+          }
+        when Bytes.to_string attributes.data = "attributes"
+             && Bytes.to_string detail.data = "detail"
+             && Bytes.to_string result.data = "result" ->
+          ()
+      | _ -> failwith "continuation metadata retained caller-owned bytes"
+      end
   | _ -> failwith "initialization payload copies were not retained"
 
 (** Confirms that application details survive the common Temporal shape where an

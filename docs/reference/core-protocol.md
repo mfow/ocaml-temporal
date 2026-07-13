@@ -249,6 +249,15 @@ older synthetic fixtures, but when present their nested shapes are closed.
 Other Core initialization fields outside this first slice are rejected as
 `unsupported`; they are never discarded silently.
 
+When Core starts a successor run, `context.continuation` is a
+required-nullable nested object. It preserves the previous execution run ID,
+the closed `initiator` enum (`unspecified`, `workflow`, `retry`, or
+`cron_schedule`), and independent nullable values for the previous run's
+failure and completion payloads. Ordinary first-run initialization encodes
+`continuation: null`. The bridge validates and deep-copies these fields before
+the workflow runtime retains them, so a continuation's terminal metadata
+cannot be lost or alias native payload storage.
+
 A child resolution is deliberately split into two activation jobs. A
 `resolve_child_workflow_start` job carries either the assigned run ID, a typed
 start cause (`workflow_already_exists` or `unspecified`), or a cancellation

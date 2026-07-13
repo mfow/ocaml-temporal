@@ -41,7 +41,7 @@
     "initialize_context": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["headers", "identity", "parent_workflow", "workflow_execution_timeout", "workflow_run_timeout", "workflow_task_timeout", "first_execution_run_id", "start_time", "root_workflow", "priority"],
+      "required": ["headers", "identity", "parent_workflow", "workflow_execution_timeout", "workflow_run_timeout", "workflow_task_timeout", "first_execution_run_id", "start_time", "root_workflow", "priority", "continuation"],
       "properties": {
         "headers": {"type": "object", "maxProperties": 201326592, "additionalProperties": {"$ref": "#/$defs/payload"}},
         "identity": {"type": "string", "maxLength": 65536},
@@ -52,7 +52,8 @@
         "first_execution_run_id": {"$ref": "#/$defs/identifier"},
         "start_time": {"oneOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "root_workflow": {"oneOf": [{"$ref": "#/$defs/workflow_execution"}, {"type": "null"}]},
-        "priority": {"oneOf": [{"$ref": "#/$defs/workflow_priority"}, {"type": "null"}]}
+        "priority": {"oneOf": [{"$ref": "#/$defs/workflow_priority"}, {"type": "null"}]},
+        "continuation": {"oneOf": [{"$ref": "#/$defs/continuation"}, {"type": "null"}]}
       }
     },
     "workflow_execution": {
@@ -72,6 +73,17 @@
         "priority_key": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
         "fairness_key": {"type": "string", "maxLength": 64},
         "fairness_weight_bits": {"$ref": "#/$defs/u32"}
+      }
+    },
+    "continuation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["continued_from_execution_run_id", "initiator", "continued_failure", "last_completion_result"],
+      "properties": {
+        "continued_from_execution_run_id": {"$ref": "#/$defs/identifier"},
+        "initiator": {"enum": ["unspecified", "workflow", "retry", "cron_schedule"]},
+        "continued_failure": {"oneOf": [{"$ref": "#/$defs/failure"}, {"type": "null"}]},
+        "last_completion_result": {"oneOf": [{"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}}, {"type": "null"}]}
       }
     },
     "deployment_version": {

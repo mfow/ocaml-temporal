@@ -3,6 +3,8 @@
 (** The client state is intentionally opaque in the public interface. A single
     backend value owns all native resources for this SDK instance. *)
 type t = {
+  (* The validated Temporal namespace used for every operation on this client. *)
+  namespace : string;
   (* The backend owns the transport and native supervisor graph; no other
      client field retains a native handle. *)
   backend : Backend.client;
@@ -32,6 +34,20 @@ type ('input, 'output) handle = {
   run_id : string;
 }
 
+(** Identifies a successor execution returned by Temporal after a workflow
+    continues as new. The pair is intentionally kept separate from a typed
+    [handle]: callers must supply the original workflow definition when they
+    turn this wire-level identity back into a handle, so the output codec is
+    never guessed from an untyped run ID. *)
+type execution = {
+  (* Namespace that owns the successor execution. *)
+  namespace : string;
+  (* Durable workflow identity shared by the original and successor runs. *)
+  workflow_id : string;
+  (* Server-issued identity of the successor run. *)
+  run_id : string;
+}
+
 (** Terminal outcomes mirror the backend while replacing payload bytes with the
     definition's typed output. *)
 type 'output terminal_result =
@@ -46,12 +62,7 @@ type 'output terminal_result =
   (* The exact run reached a Temporal timeout terminal state. *)
   | Timed_out of Error.t
   (* The run continued as a new execution; callers choose whether to follow it. *)
-  | Continued_as_new of {
-      (* Durable workflow identity of the successor execution. *)
-      workflow_id : string;
-      (* Server-issued run identity of the successor execution. *)
-      run_id : string;
-    }
+  | Continued_as_new of execution
 
 (** The default identity is stable and descriptive without using process-global
     randomness, which keeps client construction straightforward in tests. *)
@@ -87,6 +98,7 @@ let create ?(identity = default_identity) ~target_url ~namespace () =
           Result.map
             (fun backend ->
               {
+                namespace;
                 backend;
                 closed = Atomic.make false;
                 shutdown_mutex = Mutex.create ();
@@ -158,6 +170,34 @@ let start client ?request_id ~workflow ~task_queue ~id ~input () =
                       run_id = response.run_id;
                     }))
 
+(** Rebuilds a typed handle for a successor run without starting another
+    execution. Temporal returns a continuation's workflow/run identity in the
+    terminal result for the original run; this operation validates that
+    identity at the same boundary as [start], retains the caller's client and
+    supplied workflow codecs, and leaves the exact-run choice explicit to the
+    caller. Namespace equality is checked before constructing a handle so an
+    execution returned by one client cannot be waited through another client's
+    namespace. *)
+let follow client ~workflow ({ namespace; workflow_id; run_id } : execution) =
+  if Atomic.get client.closed then
+    Error
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else
+    match validate_name "successor namespace" namespace with
+    | Error error -> Error error
+    | Ok () -> (
+        if not (String.equal namespace client.namespace) then
+          Error
+            (Error.defect
+               ~message:"successor execution belongs to a different namespace")
+        else
+          match validate_name "successor workflow id" workflow_id with
+          | Error error -> Error error
+          | Ok () -> (
+              match validate_name "successor run id" run_id with
+              | Error error -> Error error
+              | Ok () -> Ok { client; workflow; workflow_id; run_id }))
+
 (** Decodes a completed payload and maps terminal failures without exposing the
     private backend constructors. *)
 let wait handle =
@@ -178,7 +218,9 @@ let wait handle =
       | Backend.Terminated error -> Ok (Terminated error)
       | Backend.Timed_out error -> Ok (Timed_out error)
       | Backend.Continued_as_new { workflow_id; run_id } ->
-          Ok (Continued_as_new { workflow_id; run_id }))
+          Ok
+            (Continued_as_new
+               { namespace = handle.client.namespace; workflow_id; run_id }))
 
 (** Validates cancellation metadata before it reaches the backend. The length
     limit protects the JSON bridge and matches the Rust-side bound; NUL is
@@ -203,7 +245,7 @@ let validate_cancel_fields ~request_id ~reason =
     provide one. Hashing the exact execution identity makes repeated calls on
     the same handle represent one idempotent control operation without keeping
     another mutable counter in the client state. *)
-let generated_cancel_request_id handle =
+let generated_cancel_request_id (handle : ('input, 'output) handle) =
   "ocaml-client-cancel-"
   ^ Digest.to_hex
       (Digest.string (handle.workflow_id ^ "\000" ^ handle.run_id))
@@ -235,10 +277,10 @@ let cancel ?request_id ?(reason = "") handle =
         Backend.client_cancel handle.client.backend request
 
 (** Returns the durable workflow identity retained by a handle. *)
-let workflow_id handle = handle.workflow_id
+let workflow_id (handle : ('input, 'output) handle) = handle.workflow_id
 
 (** Returns the exact server run identity retained by a handle. *)
-let run_id handle = handle.run_id
+let run_id (handle : ('input, 'output) handle) = handle.run_id
 
 (** Closes backend resources once and returns the same cached result to later
     shutdown callers.

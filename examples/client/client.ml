@@ -43,7 +43,7 @@ let display_terminal = function
   | Temporal.Client.Timed_out error ->
       Printf.eprintf "Workflow timed out: %s\n%!" (Temporal.Error.message error);
       Error error
-  | Temporal.Client.Continued_as_new { workflow_id; run_id } ->
+  | Temporal.Client.Continued_as_new { workflow_id; run_id; _ } ->
       Printf.printf "Workflow continued as new: workflow_id=%s run_id=%s\n%!"
         workflow_id run_id;
       Error

@@ -241,6 +241,96 @@ let test_typed_start_and_wait_handle () =
     (Temporal.Client.start client ~workflow:echo_workflow
        ~task_queue:"unit-test" ~id:"after-shutdown" ~input:"ignored" ())
 
+(** A continuation identity can be turned back into a typed exact-run handle
+    without starting a second execution. Using the mock ledger's existing run
+    proves the returned handle retained the workflow's output codec: [wait]
+    decodes the payload through [echo_workflow] after [follow] rebuilt it. *)
+let test_follow_continued_as_new_handle () =
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let started =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"unit-follow" ~input:"continued" ())
+  in
+  let continuation : string Temporal.Client.terminal_result =
+    Temporal.Client.Continued_as_new
+      {
+        namespace = "unit-test";
+        workflow_id = Temporal.Client.workflow_id started;
+        run_id = Temporal.Client.run_id started;
+      }
+  in
+  let execution =
+    match continuation with
+    | Temporal.Client.Continued_as_new execution -> execution
+    | _ -> failwith "constructed continuation was not a continuation result"
+  in
+  let followed =
+    unwrap (Temporal.Client.follow client ~workflow:echo_workflow execution)
+  in
+  assert (Temporal.Client.workflow_id followed = "unit-follow");
+  assert (Temporal.Client.run_id followed = Temporal.Client.run_id started);
+  (match Temporal.Client.wait followed with
+  | Ok (Temporal.Client.Completed "continued") -> ()
+  | Ok _ -> failwith "followed handle returned an unexpected terminal result"
+  | Error error -> failwith (Temporal.Error.message error));
+  unwrap (Temporal.Client.shutdown client)
+
+(** A successor identity is validated before it can become a typed handle. The
+    same checks cover empty, NUL-containing, and oversized values so malformed
+    continuation metadata cannot reach a backend wait or cancellation call. *)
+let test_follow_rejects_malformed_successor_identity () =
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let expect_defect execution =
+    expect_error "defect"
+      (Temporal.Client.follow client ~workflow:echo_workflow execution)
+  in
+  expect_defect { namespace = "unit-test"; workflow_id = ""; run_id = "run-1" };
+  expect_defect { namespace = "unit-test"; workflow_id = "workflow-1"; run_id = "" };
+  expect_defect
+    { namespace = "unit-test"; workflow_id = "workflow\0001"; run_id = "run-1" };
+  expect_defect
+    { namespace = "unit-test"; workflow_id = "workflow-1"; run_id = "run\0001" };
+  let oversized = String.make 65_537 'x' in
+  expect_defect
+    { namespace = "unit-test"; workflow_id = oversized; run_id = "run-1" };
+  expect_defect
+    { namespace = "unit-test"; workflow_id = "workflow-1"; run_id = oversized };
+  unwrap (Temporal.Client.shutdown client);
+  (* Handle construction observes the same closed-client admission rule as
+     [start], [wait], and [cancel]; it must not retain a client graph after
+     teardown has begun. *)
+  expect_error "bridge"
+    (Temporal.Client.follow client ~workflow:echo_workflow
+       { namespace = "unit-test"; workflow_id = "workflow-1"; run_id = "run-1" })
+
+(** A continuation identity from another namespace is rejected before a typed
+    handle is constructed. This closes the namespace-confusion gap where a
+    caller could combine a client for one Temporal namespace with a successor
+    execution returned by another client. *)
+let test_follow_rejects_cross_namespace_execution () =
+  let client_a =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"namespace-a" ())
+  in
+  expect_error_message_contains "defect" "different namespace"
+    (Temporal.Client.follow client_a ~workflow:echo_workflow
+       {
+         namespace = "namespace-b";
+         workflow_id = "workflow-1";
+         run_id = "run-1";
+       });
+  unwrap (Temporal.Client.shutdown client_a)
+
 (** Cancellation is acknowledged separately from waiting. The mock transport
     records the exact run cancellation, makes repeated requests idempotent,
     and exposes the eventual [Cancelled] value through the ordinary wait API. *)
@@ -392,6 +482,9 @@ let () =
   test_worker_registration_and_dispatch ();
   test_worker_continues_after_task_failure ();
   test_typed_start_and_wait_handle ();
+  test_follow_continued_as_new_handle ();
+  test_follow_rejects_malformed_successor_identity ();
+  test_follow_rejects_cross_namespace_execution ();
   test_exact_run_cancellation ();
   test_completed_mock_run_is_immutable ();
   test_client_validation_errors ();

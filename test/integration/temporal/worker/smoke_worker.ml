@@ -200,6 +200,7 @@ let run () =
             [
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;
+              Worker.workflow Definitions.continue_as_new;
               Worker.workflow Definitions.activity_retry;
               Worker.workflow Definitions.activity_heartbeat_retry;
               Worker.workflow Definitions.activity_timeout_retry;

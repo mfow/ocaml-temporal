@@ -137,7 +137,43 @@ let copy_protocol_payload (value : Protocol.payload) : Protocol.payload =
       data = Bytes.copy value.data;
     }
 
-(** Copies the payload-bearing part of initialization context. The remaining
+(** Copies payload lists while retaining their order. *)
+let copy_payloads values = List.map copy_protocol_payload values
+
+(** Deep-copies a protocol failure so continuation metadata cannot retain
+    caller-owned payload bytes through encoded attributes, details, or causes. *)
+let rec copy_failure (value : Protocol.failure) : Protocol.failure =
+  let info =
+    match value.info with
+    | Protocol.Application ({ details; _ } as info) ->
+        Protocol.Application { info with details = copy_payloads details }
+    | Protocol.Canceled ({ details; _ } as info) ->
+        Protocol.Canceled { info with details = copy_payloads details }
+    | Protocol.Timeout_failure ({ last_heartbeat_details; _ } as info) ->
+        Protocol.Timeout_failure
+          { info with last_heartbeat_details = copy_payloads last_heartbeat_details }
+    | Protocol.Activity _ as info -> info
+    | Protocol.Child_workflow _ as info -> info
+  in
+  Protocol.
+    {
+      value with
+      encoded_attributes = Option.map copy_protocol_payload value.encoded_attributes;
+      cause = Option.map copy_failure value.cause;
+      info;
+    }
+
+(** Copies continuation metadata, including optional failure and completion
+    payloads, before it is retained by the runtime execution. *)
+let copy_continuation (value : Protocol.continuation) : Protocol.continuation =
+  Protocol.
+    {
+      value with
+      continued_failure = Option.map copy_failure value.continued_failure;
+      last_completion_result = Option.map copy_payloads value.last_completion_result;
+    }
+
+(** Copies every payload-bearing part of initialization context. The remaining
     context fields are immutable strings, options, integers, and small records,
     so a record copy is sufficient for them. *)
 let copy_initialize_context (value : Protocol.initialize_context) =
@@ -148,6 +184,7 @@ let copy_initialize_context (value : Protocol.initialize_context) =
         List.map
           (fun (key, payload) -> (key, copy_protocol_payload payload))
           value.headers;
+      continuation = Option.map copy_continuation value.continuation;
     }
 
 (** Converts one protocol payload into the runtime payload type. Runtime codecs

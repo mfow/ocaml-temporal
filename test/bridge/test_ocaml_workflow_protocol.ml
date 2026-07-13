@@ -84,6 +84,76 @@ let test_valid_activations () =
       "child-cancellation-before-start";
     ]
 
+(** Proves continuation initialization metadata remains typed through the OCaml
+    encoder and decoder, including a nested terminal failure and the previous
+    run's completion payload. This exercises the fields Core sends only for a
+    successor execution rather than relying solely on the ordinary null case
+    in shared fixtures. *)
+let test_continuation_initialize_metadata () =
+  let initialized =
+    unwrap
+      (Protocol.decode_activation
+         (fixture [ "valid"; "realistic-initialize.input.json" ]))
+  in
+  let payload : Protocol.payload =
+    {
+      metadata = [ ("encoding", Bytes.of_string "json/plain") ];
+      data = Bytes.of_string "\"previous-result\"";
+    }
+  in
+  let continued_failure : Protocol.failure =
+    {
+      message = "previous run failed";
+      source = "core";
+      stack_trace = "stack";
+      encoded_attributes = None;
+      cause = None;
+      info =
+        Application
+          { type_name = "example"; non_retryable = false; details = [] };
+    }
+  in
+  let continuation : Protocol.continuation =
+    {
+      continued_from_execution_run_id = "previous-run";
+      initiator = Continue_as_new_workflow;
+      continued_failure = Some continued_failure;
+      last_completion_result = Some [ payload ];
+    }
+  in
+  let jobs =
+    List.map
+      (function
+        | Protocol.Initialize_workflow
+            {
+              workflow_id;
+              workflow_type;
+              arguments;
+              randomness_seed;
+              attempt;
+              context = Some context;
+            } ->
+            Protocol.Initialize_workflow
+              {
+                workflow_id;
+                workflow_type;
+                arguments;
+                randomness_seed;
+                attempt;
+                context = Some { context with continuation = Some continuation };
+              }
+        | _ -> failwith "realistic fixture did not contain initialization")
+      initialized.jobs
+  in
+  let value = { initialized with jobs } in
+  let encoded = unwrap (Protocol.encode_activation value) in
+  if
+    not
+      (contains_substring ~needle:"continued_from_execution_run_id" encoded)
+  then failwith "continuation run identity was omitted";
+  let decoded = unwrap (Protocol.decode_activation encoded) in
+  if decoded <> value then failwith "continuation metadata did not round-trip"
+
 (** Verifies every first-slice completion command and command ordering. *)
 let test_valid_completion () =
   let value =
@@ -929,6 +999,7 @@ let run name test =
 
 let () =
   run "workflow activations" test_valid_activations;
+  run "continuation initialization metadata" test_continuation_initialize_metadata;
   run "workflow completion" test_valid_completion;
   run "query protocol slice" test_query_protocol_slice;
   run "start child workflow command" test_start_child_workflow_command;

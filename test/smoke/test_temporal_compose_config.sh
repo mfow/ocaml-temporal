@@ -59,8 +59,8 @@ require_text 'SMOKE_WORKER_READY_FILE'
 require_text 'test -s /tmp/ocaml-temporal-two-binary-worker.ready'
 require_text 'stop_grace_period: 30s'
 
-# The two-binary fixture must keep the heartbeat scenario in the shared
-# definitions module and must preserve the two process roles. These
+# The two-binary fixture must keep the heartbeat and timeout-retry scenarios in
+# the shared definitions module and must preserve the two process roles. These
 # source-level assertions are intentionally small: they catch an accidentally
 # removed registration, client assertion, worker loop, or executable definition
 # without requiring Docker, Temporal Server, or a built native bridge. The
@@ -133,6 +133,19 @@ require_source_text "$driver" 'two-binary-activity-heartbeat-retry'
 require_source_text "$driver" 'SMOKE:HEARTBEAT:RETRIED:SMOKE'
 require_source_text "$worker" 'Worker.workflow Definitions.activity_heartbeat_retry'
 require_source_text "$worker" 'Worker.activity Definitions.heartbeat_retry_activity'
+
+require_source_text "$definitions" 'let timeout_retry_start_to_close_timeout ='
+require_source_text "$definitions" \
+  'Temporal.Activity.define ~name:"smoke.timeout_retry"'
+require_source_text "$definitions" 'Unix.sleepf timeout_retry_first_attempt_sleep_seconds'
+require_source_text "$definitions" 'let activity_timeout_retry ='
+require_source_text "$definitions" \
+  '~start_to_close_timeout:timeout_retry_start_to_close_timeout'
+require_source_text "$definitions" '~do_not_eagerly_execute:true'
+require_source_text "$driver" 'two-binary-activity-timeout-retry'
+require_source_text "$driver" 'SMOKE:TIMEOUT:RETRIED:SMOKE'
+require_source_text "$worker" 'Worker.workflow Definitions.activity_timeout_retry'
+require_source_text "$worker" 'Worker.activity Definitions.timeout_retry_activity'
 
 # Child failure and cancellation are intentionally separate parent workflows.
 # The source contract keeps both cases in the two-binary fixture without

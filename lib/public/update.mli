@@ -2,10 +2,11 @@
 
     An update is a named, durable request that validates input, changes
     workflow state, and returns a typed result. Validation is run before the
-    update callback and must not mutate state or emit commands. The native
-    activation/completion transport is not part of this initial slice; the
-    deterministic dispatcher provides the same codec and ordering contract for
-    local tests. *)
+    update callback and must not mutate state or emit commands. Native workers
+    use the same dispatcher after the Rust/Core bridge decodes a [DoUpdate]
+    activation. The first native slice requires one input payload and a
+    non-suspending handler; suspended update continuations are reserved for a
+    later runtime milestone. *)
 
 (** A validated update name paired with input and output codecs. *)
 type ('input, 'output) definition
@@ -51,6 +52,9 @@ module Handler : sig
   (** Returns the update name used to index an interaction registry. *)
   val name : t -> string
 
-  (** Decodes input, validates it, runs the update, and encodes the result. *)
-  val dispatch : t -> Payload.t -> (Payload.t, Error.t) result
+  (** Decodes input, optionally validates it, runs the update, and encodes the
+      result. Native replay passes [~run_validator:false] because validation
+      is a live-request check and must not run against historical input. *)
+  val dispatch :
+    ?run_validator:bool -> t -> Payload.t -> (Payload.t, Error.t) result
 end

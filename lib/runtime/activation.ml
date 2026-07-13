@@ -24,6 +24,20 @@ type job =
       arguments : Temporal_base.Codec.payload list;
       headers : (string * Temporal_base.Codec.payload) list;
     }
+  (** An update request retained in activation order. Core uses the protocol
+      instance for responses; the workflow-visible ID is canonicalized from
+      the top-level update identifier by the native bridge even when Core
+      stripped its duplicate nested metadata field. *)
+  | Do_update of {
+      id : string;
+      protocol_instance_id : string;
+      name : string;
+      input : Temporal_base.Codec.payload list;
+      headers : (string * Temporal_base.Codec.payload) list;
+      identity : string;
+      update_id : string;
+      run_validator : bool;
+    }
   (** A validated incoming signal. The runtime keeps the complete event while
       the execution resolves its name against the private handler registry;
       missing or invalid public handlers fail closed rather than dropping the
@@ -107,6 +121,16 @@ type command =
   | Query_result of {
       query_id : string;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
+    }
+  (** Acknowledges one update protocol phase. The polymorphic variant keeps
+      the runtime command private while mirroring the semantic protocol's
+      accepted, rejected, and completed cases. *)
+  | Update_response of {
+      protocol_instance_id : string;
+      response :
+        [ `Accepted
+        | `Rejected of Temporal_base.Error.t
+        | `Completed of Temporal_base.Codec.payload ];
     }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t

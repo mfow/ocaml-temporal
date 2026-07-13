@@ -19,6 +19,73 @@ let runtime_unit_payload () =
   | Ok payload -> payload
   | Error error -> failwith (Temporal_base.Error.message error)
 
+(** Copies a public payload into the private representation consumed by the
+    execution fixture. The native execution tests otherwise stay below the
+    public worker adapter, so this explicit copy makes ownership at that seam
+    visible and prevents a test from accidentally retaining mutable caller
+    bytes. *)
+let base_payload (payload : Temporal.Payload.t) : Temporal_base.Codec.payload =
+  {
+    Temporal_base.Payload.metadata =
+      List.map (fun (key, value) -> (key, value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
+(** Copies a private payload back into the public record required by a codec.
+    Keeping this conversion next to [base_payload] makes the test's ownership
+    boundary symmetric in both directions. *)
+let public_payload (payload : Temporal_base.Codec.payload) : Temporal.Payload.t =
+  {
+    Temporal.Payload.metadata =
+      List.map (fun (key, value) -> (key, value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
+(** Converts a public structured error for a private test definition, copying
+    every detail payload before it enters the low-level runtime. *)
+let base_error (error : Temporal.Error.t) : Temporal_base.Error.t =
+  let view = Temporal.Error.view error in
+  Temporal_base.Error.make ~non_retryable:view.non_retryable
+    ~details:(List.map base_payload view.details) ~category:view.category
+    ~message:view.message ()
+
+(** Adapts a public codec to the private codec record expected by
+    [Temporal_runtime.Execution]. Codec failures are translated to the same
+    base error type as the production public/private adapter. *)
+let base_codec (codec : 'a Temporal.Codec.t) : 'a Temporal_base.Codec.t =
+  Temporal_base.Codec.of_payload
+    ~encode:(fun value ->
+      match Temporal.Codec.encode codec value with
+      | Ok payload -> Ok (base_payload payload)
+      | Error error -> Error (base_error error))
+    ~decode:(fun payload ->
+      match Temporal.Codec.decode codec (public_payload payload) with
+      | Ok value -> Ok value
+      | Error error -> Error (base_error error))
+
+(** Rebuilds a public workflow as the private definition accepted by the
+    low-level execution fixture. This helper is test-only; production callers
+    use the opaque public worker registration path instead. *)
+let base_workflow (definition : ('input, 'output) Temporal.Workflow.t) =
+  let implementation =
+    Option.map
+      (fun implementation input ->
+        Result.map_error base_error (implementation input))
+      (Temporal.Workflow.implementation definition)
+  in
+  Temporal_base.Definition.make ~name:(Temporal.Workflow.name definition)
+    ~input:(base_codec (Temporal.Workflow.input definition))
+    ~output:(base_codec (Temporal.Workflow.output definition)) ~implementation
+
+(** Returns a protocol payload using the standard JSON string encoding. Native
+    update tests use this instead of an untagged byte payload so the public
+    codec can prove that the input and output encoding names match. *)
+let json_protocol_payload text : Protocol.payload =
+  {
+    Protocol.metadata = [ ("encoding", Bytes.of_string "json/plain") ];
+    data = Bytes.of_string (Yojson.Safe.to_string (`String text));
+  }
+
 (** Fails with the stable translation diagnostic when a result was expected. *)
 let unwrap label = function
   | Ok value -> value
@@ -496,6 +563,170 @@ let test_query_workflow_translation_and_activation () =
                } ];
        })
 
+(** Proves a native update is translated with its Core correlation fields and
+    dispatched through the scheduler boundary. The two jobs exercise
+    both validator modes: replay asks the handler to skip validation, while a
+    live-style job requests it. The runtime must emit one accepted response and
+    one completed response for each update, preserving protocol IDs and output
+    payload bytes in source order. *)
+let test_update_workflow_translation_and_activation () =
+  let validator_runs = ref [] in
+  let workflow =
+    Temporal_base.Definition.make ~name:"native_update"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:(Some (fun () -> Ok ()))
+  in
+  let handler =
+    Execution.make_update_handler ~name:"set_status"
+      ~dispatch:(fun ~run_validator update ->
+        validator_runs := (update.id, run_validator) :: !validator_runs;
+        match update.input with
+        | [ payload ] -> (
+            match Temporal_base.Codec.decode Temporal_base.Codec.string payload with
+            | Error error -> Error error
+            | Ok value ->
+                Temporal_base.Codec.encode Temporal_base.Codec.string
+                  (String.uppercase_ascii value))
+        | _ ->
+            Error
+              (Temporal_base.Error.make ~non_retryable:true ~category:`Workflow
+                 ~message:"update input arity was not one" ()))
+  in
+  let execution = Execution.start ~update_handlers:[ handler ] workflow () in
+  let update ~id ~protocol_instance_id ~run_validator =
+    Protocol.Do_update
+      {
+        id;
+        protocol_instance_id;
+        name = "set_status";
+        input = [ json_protocol_payload "ready" ];
+        headers = [ ("trace", json_protocol_payload "header") ];
+        meta = { Protocol.identity = "client"; update_id = id };
+        run_validator;
+      }
+  in
+  let completion =
+    unwrap "update activation"
+      (Native_execution.activate execution
+         (activation
+            [ update ~id:"update-live" ~protocol_instance_id:"protocol-live"
+                ~run_validator:true;
+              update ~id:"update-replay" ~protocol_instance_id:"protocol-replay"
+                ~run_validator:false ]))
+  in
+  let expected_payload = json_protocol_payload "READY" in
+  begin match completion.commands with
+  | [ Protocol.Update_response
+        { protocol_instance_id = "protocol-live"; response = Update_accepted };
+      Protocol.Update_response
+        {
+          protocol_instance_id = "protocol-live";
+          response = Update_completed live_payload;
+        };
+      Protocol.Update_response
+        { protocol_instance_id = "protocol-replay"; response = Update_accepted };
+      Protocol.Update_response
+        {
+          protocol_instance_id = "protocol-replay";
+          response = Update_completed replay_payload;
+        } ]
+    when live_payload = expected_payload && replay_payload = expected_payload ->
+      ()
+  | _ -> failwith "update handler did not emit ordered accepted/completed pairs"
+  end;
+  let observed = List.sort compare !validator_runs in
+  if observed <> [ ("update-live", true); ("update-replay", false) ] then
+    failwith "update validator replay flag was not forwarded exactly"
+
+(** Proves that an update is queued behind a resolver that appeared earlier in
+    the same activation. The workflow resumes from its first activity, records
+    that progress, and parks on a second activity; the update handler must then
+    observe that progress and a live workflow context. Inline dispatch would
+    see [resumed = false] and would run outside [Workflow_context]. *)
+let test_update_dispatch_preserves_activation_order () =
+  let resumed = ref false in
+  let handler_saw_context = ref false in
+  let activity =
+    Temporal.Activity.remote ~name:"native_ordering_activity"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_update_order"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let open Temporal.Result_syntax in
+        let first = Temporal.Activity.start activity () in
+        let* () = Temporal.Future.await first in
+        resumed := true;
+        let second = Temporal.Activity.start activity () in
+        let* () = Temporal.Future.await second in
+        Ok ())
+  in
+  let handler =
+    Execution.make_update_handler ~name:"observe_order"
+      ~dispatch:(fun ~run_validator:_ _update ->
+        handler_saw_context := Temporal.Workflow_context.is_active ();
+        Temporal_base.Codec.encode Temporal_base.Codec.string "handled")
+  in
+  let execution =
+    Execution.start ~update_handlers:[ handler ] (base_workflow workflow) ()
+  in
+  let initial =
+    unwrap "ordering workflow start"
+      (Native_execution.activate execution
+         (activation
+            [ Protocol.Initialize_workflow
+                {
+                  workflow_id = "workflow-order";
+                  workflow_type = "native_update_order";
+                  arguments = [];
+                  randomness_seed = "1";
+                  attempt = 1;
+                  context = None;
+                } ]))
+  in
+  begin match initial.commands with
+  | [ Protocol.Schedule_activity { seq = 1L; activity_type; _ } ]
+    when String.equal activity_type "native_ordering_activity" ->
+      ()
+  | _ -> failwith "ordering workflow did not schedule its first activity"
+  end;
+  if !resumed then failwith "workflow resumed before its first activity resolved";
+  let update =
+    Protocol.Do_update
+      {
+        id = "update-order";
+        protocol_instance_id = "protocol-order";
+        name = "observe_order";
+        input = [];
+        headers = [];
+        meta = { Protocol.identity = "client"; update_id = "update-order" };
+        run_validator = true;
+      }
+  in
+  let next =
+    unwrap "ordering workflow resolution"
+      (Native_execution.activate execution
+         (activation
+            [ Protocol.Resolve_activity { seq = 1L; result = Protocol.Completed None };
+              update ]))
+  in
+  if not !resumed then
+    failwith "resolver continuation did not run before the update handler";
+  if not !handler_saw_context then
+    failwith "update handler ran outside the workflow context";
+  begin match next.commands with
+  | [ Protocol.Schedule_activity { seq = 2L; _ };
+      Protocol.Update_response
+        { protocol_instance_id = "protocol-order"; response = Update_accepted };
+      Protocol.Update_response
+        {
+          protocol_instance_id = "protocol-order";
+          response = Update_completed _;
+        } ] ->
+      ()
+  | _ -> failwith "resolver and update commands were not emitted in order"
+  end
+
 (** Confirms that both malformed identity forms are rejected before a signal
     can become runtime state.  OCaml strings may contain arbitrary bytes, so
     this exercises the boundary that JSON received from Rust cannot express
@@ -959,6 +1190,8 @@ let () =
   test_child_resolution_translation ();
   test_signal_workflow_translation_and_activation ();
   test_query_workflow_translation_and_activation ();
+  test_update_workflow_translation_and_activation ();
+  test_update_dispatch_preserves_activation_order ();
   test_signal_identity_validation ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();

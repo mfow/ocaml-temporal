@@ -7,6 +7,10 @@ type workflow_execution = { workflow_id : string; run_id : string }
 type namespaced_workflow_execution = { namespace : string; workflow_id : string; run_id : string }
 type workflow_priority = { priority_key : int; fairness_key : string; fairness_weight_bits : int64 }
 
+(** Requester metadata attached to a workflow update. The nested update ID is
+    retained so strict validation can compare it with the enclosing ID. *)
+type update_meta = { identity : string; update_id : string }
+
 type worker_deployment_version = { deployment_name : string; build_id : string }
 
 type suggest_continue_as_new_reason =
@@ -202,6 +206,17 @@ type activation_job =
       arguments : payload list;
       headers : (string * payload) list;
     }
+  (** Delivers one workflow update request. Core supplies both an enclosing
+      ID and a metadata ID; the decoder proves they refer to the same update. *)
+  | Do_update of {
+      id : string;
+      protocol_instance_id : string;
+      name : string;
+      input : payload list;
+      headers : (string * payload) list;
+      meta : update_meta;
+      run_validator : bool;
+    }
   (** Delivers one signal received by this workflow. Signal jobs have no
       sequence number: Core replays their name, payloads, sender identity, and
       headers as one ordinary workflow activation job. *)
@@ -255,6 +270,12 @@ type query_result =
   | Query_succeeded of payload
   | Query_failed of failure
 
+(** The first-phase decision or final value for one workflow update. *)
+type update_response =
+  | Update_accepted
+  | Update_rejected of failure
+  | Update_completed of payload
+
 type completion_command =
   | Schedule_activity of {
       seq : int64;
@@ -286,6 +307,12 @@ type completion_command =
       exactly, including Core's legacy-query identifier, because Core uses it
       to choose its legacy response path. *)
   | Query_result of { query_id : string; result : query_result }
+  (** Answers one update protocol instance. An accepted or rejected response
+      is a decision; a completed response carries the handler result. *)
+  | Update_response of {
+      protocol_instance_id : string;
+      response : update_response;
+    }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
   | Continue_as_new of { workflow_type : string; input : payload list }
@@ -984,6 +1011,61 @@ let query_result_json = function
       let* failure = failure_json failure in
       Ok (`Assoc [ ("kind", `String "failed"); ("failure", failure) ])
 
+(** Decodes metadata attached to one update request. Temporal repeats the
+    update identifier in the enclosing message and in this nested object;
+    comparing them is done by the enclosing activation-job decoder. *)
+let update_meta path json =
+  let* entries = exact_object path [ "identity"; "update_id" ] json in
+  let* identity_json = field path "identity" entries in
+  let* identity = bounded_text (path ^ ".identity") identity_json in
+  let* update_id_json = field path "update_id" entries in
+  let* update_id = identifier (path ^ ".update_id") update_id_json in
+  Ok { identity; update_id }
+
+(** Encodes update metadata with its stable field names and no extension
+    members, matching the strict bridge schema. *)
+let update_meta_json { identity; update_id } =
+  Ok
+    (`Assoc
+      [ ("identity", `String identity); ("update_id", `String update_id) ])
+
+(** Decodes one update response phase. The accepted response carries no
+    payload; rejected and completed responses carry exactly one value. *)
+let update_response path json =
+  let* entries =
+    match json with
+    | `Assoc entries -> Ok entries
+    | _ -> Error (invalid path "expected JSON object")
+  in
+  let* kind_json = field path "kind" entries in
+  let* kind = string (path ^ ".kind") kind_json in
+  match kind with
+  | "accepted" ->
+      let* _ = exact_object path [ "kind" ] json in
+      Ok Update_accepted
+  | "rejected" ->
+      let* entries = exact_object path [ "kind"; "failure" ] json in
+      let* failure_json = field path "failure" entries in
+      let* failure = failure (path ^ ".failure") failure_json in
+      Ok (Update_rejected failure)
+  | "completed" ->
+      let* entries = exact_object path [ "kind"; "payload" ] json in
+      let* payload_json = field path "payload" entries in
+      let* payload = payload (path ^ ".payload") payload_json in
+      Ok (Update_completed payload)
+  | _ -> Error (invalid (path ^ ".kind") "unknown update response kind")
+
+(** Encodes one update response phase without silently dropping a failure or
+    completion payload. *)
+let update_response_json = function
+  | Update_accepted -> Ok (`Assoc [ ("kind", `String "accepted") ])
+  | Update_rejected failure ->
+      let* failure = failure_json failure in
+      Ok (`Assoc [ ("kind", `String "rejected"); ("failure", failure) ])
+  | Update_completed payload ->
+      let* payload = payload_json payload in
+      Ok (`Assoc [ ("kind", `String "completed"); ("payload", payload) ])
+
 (** Decodes the initial child-workflow start result. A successful start carries
     only the run identity; the child remains pending until a later terminal
     child resolution is delivered. *)
@@ -1439,6 +1521,32 @@ let activation_job path json =
       let* headers_json = field path "headers" entries in
       let* headers = payload_map (path ^ ".headers") headers_json in
       Ok (Query_workflow { query_id; query_type; arguments; headers })
+  | "do_update" ->
+      let* entries =
+        exact_object path
+          [ "kind"; "id"; "protocol_instance_id"; "name"; "input"; "headers";
+            "meta"; "run_validator" ]
+          json
+      in
+      let* id_json = field path "id" entries in
+      let* id = identifier (path ^ ".id") id_json in
+      let* protocol_json = field path "protocol_instance_id" entries in
+      let* protocol_instance_id =
+        identifier (path ^ ".protocol_instance_id") protocol_json
+      in
+      let* name_json = field path "name" entries in
+      let* name = identifier (path ^ ".name") name_json in
+      let* input_json = field path "input" entries in
+      let* input = list (path ^ ".input") payload input_json in
+      let* headers_json = field path "headers" entries in
+      let* headers = payload_map (path ^ ".headers") headers_json in
+      let* meta_json = field path "meta" entries in
+      let* meta = update_meta (path ^ ".meta") meta_json in
+      let* run_validator_json = field path "run_validator" entries in
+      let* run_validator = bool (path ^ ".run_validator") run_validator_json in
+      if not (String.equal id meta.update_id) then
+        Error (invalid (path ^ ".meta.update_id") "must match update id")
+      else Ok (Do_update { id; protocol_instance_id; name; input; headers; meta; run_validator })
   | "signal_workflow" ->
       let* entries =
         exact_object path [ "kind"; "signal_name"; "input"; "identity"; "headers" ]
@@ -1528,6 +1636,20 @@ let activation_job_json = function
             ("arguments", arguments);
             ("headers", headers);
           ])
+  | Do_update { id; protocol_instance_id; name; input; headers; meta; run_validator } ->
+      let* input = payloads_json input in
+      let* headers = payload_map_json "$.headers" headers in
+      let* meta = update_meta_json meta in
+      Ok
+        (`Assoc
+          [ ("kind", `String "do_update");
+            ("id", `String id);
+            ("protocol_instance_id", `String protocol_instance_id);
+            ("name", `String name);
+            ("input", input);
+            ("headers", headers);
+            ("meta", meta);
+            ("run_validator", `Bool run_validator) ])
   | Signal_workflow { signal_name; input; identity; headers } ->
       let* input = payloads_json input in
       let* headers = payload_map_json "$.headers" headers in
@@ -1609,6 +1731,25 @@ let validate_query_jobs path jobs =
     in
     loop [] jobs
 
+(** Ensures each update protocol instance is answered at most once per
+    activation and that Core's two update identifiers remain unique. Updates
+    may appear alongside ordinary jobs because they can resume a workflow
+    handler; unlike queries they are not a query-only activation. *)
+let validate_update_jobs path jobs =
+  let rec loop seen_ids seen_protocols = function
+    | [] -> Ok ()
+    | Do_update { id; protocol_instance_id; meta; _ } :: rest ->
+        if List.mem id seen_ids then
+          Error (invalid (path ^ ".id") "duplicate update ID")
+        else if List.mem protocol_instance_id seen_protocols then
+          Error (invalid (path ^ ".protocol_instance_id") "duplicate update protocol ID")
+        else if not (String.equal id meta.update_id) then
+          Error (invalid (path ^ ".meta.update_id") "must match update id")
+        else loop (id :: seen_ids) (protocol_instance_id :: seen_protocols) rest
+    | _ :: rest -> loop seen_ids seen_protocols rest
+  in
+  loop [] [] jobs
+
 (** Accepts a missing activation timestamp only for Core's synthetic eviction
     activation, whose official constructor deliberately sets [timestamp] to
     [None]. *)
@@ -1641,6 +1782,7 @@ let activation_from_json json =
   let* () = validate_eviction_jobs "$.jobs" jobs in
   let* () = validate_initialize_jobs "$.jobs" jobs in
   let* () = validate_query_jobs "$.jobs" jobs in
+  let* () = validate_update_jobs "$.jobs" jobs in
   let* () = validate_activation_timestamp "$.timestamp" timestamp jobs in
   let* metadata =
     if has_metadata then
@@ -2025,6 +2167,17 @@ let completion_command path json =
       let* result_json = field path "result" entries in
       let* result = query_result (path ^ ".result") result_json in
       Ok (Query_result { query_id; result })
+  | "update_response" ->
+      let* entries =
+        exact_object path [ "kind"; "protocol_instance_id"; "response" ] json
+      in
+      let* protocol_json = field path "protocol_instance_id" entries in
+      let* protocol_instance_id =
+        identifier (path ^ ".protocol_instance_id") protocol_json
+      in
+      let* response_json = field path "response" entries in
+      let* response = update_response (path ^ ".response") response_json in
+      Ok (Update_response { protocol_instance_id; response })
   | "complete_workflow" ->
       let* entries = exact_object path [ "kind"; "result" ] json in
       let* result_json = field path "result" entries in
@@ -2132,6 +2285,13 @@ let completion_command_json = function
             ("query_id", `String query_id);
             ("result", result);
           ])
+  | Update_response { protocol_instance_id; response } ->
+      let* response = update_response_json response in
+      Ok
+        (`Assoc
+          [ ("kind", `String "update_response");
+            ("protocol_instance_id", `String protocol_instance_id);
+            ("response", response) ])
   | Complete_workflow { result } ->
       let* result = match result with None -> Ok `Null | Some value -> payload_json value in
       Ok (`Assoc [ ("kind", `String "complete_workflow"); ("result", result) ])
@@ -2190,6 +2350,50 @@ let validate_query_results path commands =
     in
     loop [] commands
 
+(** Ensures a completion does not emit two decisions for the same update
+    protocol instance in one activation. Accepted, rejected, and completed
+    responses may coexist with ordinary workflow commands. *)
+let validate_update_responses path commands =
+  let rec loop phases = function
+    | [] -> Ok ()
+    | Update_response { protocol_instance_id; response } :: rest ->
+        let accepted, terminal =
+          match List.assoc_opt protocol_instance_id phases with
+          | None -> false, false
+          | Some phases -> phases
+        in
+        let invalid_phase message =
+          Error (invalid (path ^ ".protocol_instance_id") message)
+        in
+        begin match response with
+        | Update_accepted when accepted || terminal ->
+            invalid_phase
+              "update acceptance must be the first response and may appear once"
+        | Update_accepted ->
+            loop
+              ((protocol_instance_id, (true, terminal))
+              :: List.remove_assoc protocol_instance_id phases)
+              rest
+        | Update_rejected _ when terminal ->
+            invalid_phase
+              "update rejection may appear once and must be terminal"
+        | Update_rejected _ ->
+            loop
+              ((protocol_instance_id, (accepted, true))
+              :: List.remove_assoc protocol_instance_id phases)
+              rest
+        | Update_completed _ when terminal ->
+            invalid_phase "update completion may appear once"
+        | Update_completed _ ->
+            loop
+              ((protocol_instance_id, (accepted, true))
+              :: List.remove_assoc protocol_instance_id phases)
+              rest
+        end
+    | _ :: rest -> loop phases rest
+  in
+  loop [] commands
+
 (** Converts a strict completion object to typed values. *)
 let completion_from_json json =
   let* entries = exact_object "$" [ "run_id"; "commands" ] json in
@@ -2199,6 +2403,7 @@ let completion_from_json json =
   let* commands = list "$.commands" completion_command commands_json in
   let* () = validate_terminal_order "$.commands" commands in
   let* () = validate_query_results "$.commands" commands in
+  let* () = validate_update_responses "$.commands" commands in
   Ok { run_id; commands }
 
 (** Strictly decodes one completion through the shared JSON foundation. *)

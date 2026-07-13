@@ -41,7 +41,7 @@ The remaining reference documents are useful when changing one subsystem:
 - [Native workflow interactions](design/native-interactions.md) specifies the
   Core-to-Rust-to-OCaml mapping for signals, queries, and updates, including
   response timing, replay rules, validation, the implemented signal boundary,
-  and the current query/update unsupported boundary.
+  the immediate update boundary, and the remaining suspended-update work.
 - [OCaml SDK logging](reference/observability.md) documents log sources, tags,
   levels, privacy, and Domain behavior.
 - [Local Temporal stack](reference/local-temporal-stack.md) documents the
@@ -115,9 +115,11 @@ claim that an unimplemented native feature is ready. Continue-as-new and
 context-aware activity heartbeats are implemented and focused-tested at the
 OCaml/native bridge, but neither has live Temporal Server acceptance yet.
 Native signal delivery is implemented at the scheduler-owned activation
-boundary but still needs live Temporal Server acceptance. Native query/update
-delivery, plus versioning, local activities, Nexus, and the remaining SDK
-parity work are tracked as later milestones. The typed definitions and
+boundary but still needs live Temporal Server acceptance. Native output-only
+query delivery and immediate one-input update dispatch are implemented at the
+bridge boundary but still need live Temporal Server acceptance; suspended
+updates, versioning, local activities, Nexus, and the remaining SDK parity work
+are tracked as later milestones. The typed definitions and
 deterministic local dispatcher are documented in the [interactive workflow
 reference](reference/interactive-workflows.md).
 

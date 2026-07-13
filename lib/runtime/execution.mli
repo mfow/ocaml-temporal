@@ -23,6 +23,23 @@ type query = {
 (** A synchronous, non-suspending query callback owned by one execution. *)
 type query_handler
 
+(** The complete request delivered to an update handler. The repeated input
+    list and metadata are retained so unsupported public arity is rejected
+    explicitly rather than silently truncating Core data. *)
+type update = {
+  id : string;
+  protocol_instance_id : string;
+  name : string;
+  input : Temporal_base.Codec.payload list;
+  headers : (string * Temporal_base.Codec.payload) list;
+  identity : string;
+  update_id : string;
+}
+
+(** A private synchronous update callback. [run_validator] is false during
+    replay and tells the public adapter to skip its validator. *)
+type update_handler
+
 (** Creates a handler for one validated signal name. The callback receives the
     complete runtime signal and returns a typed workflow error when delivery
     should fail the execution. *)
@@ -43,6 +60,17 @@ val make_query_handler :
 (** Returns the stable query name used by registration validation. *)
 val query_handler_name : query_handler -> string
 
+(** Builds an update handler invoked on the execution owner Domain. *)
+val make_update_handler :
+  name:string ->
+  dispatch:
+    (run_validator:bool -> update ->
+     (Temporal_base.Codec.payload, Temporal_base.Error.t) result) ->
+  update_handler
+
+(** Returns the stable update name used by registration validation. *)
+val update_handler_name : update_handler -> string
+
 (** The in-memory state for one running workflow. It contains the workflow's
     scheduler and the activities and timers whose results are still pending. *)
 type ('input, 'output) t
@@ -55,6 +83,7 @@ val start :
   ?task_queue:string ->
   ?signal_handlers:signal_handler list ->
   ?query_handlers:query_handler list ->
+  ?update_handlers:update_handler list ->
   ( 'input,
     'output,
     'input -> ('output, Temporal_base.Error.t) result )

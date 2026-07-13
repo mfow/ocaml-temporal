@@ -82,6 +82,32 @@ type failure = {
   info : failure_info;
 }
 
+(** Computes the public retryability flag without discarding an application
+    failure nested inside a Core activity or child-workflow wrapper. Explicit
+    retry states are authoritative: a timeout or in-progress retry remains
+    retryable, while Core's non-retryable and attempt-exhausted states do not.
+    [Retry_policy_not_set] and [Unspecified] carry no retryability decision of
+    their own, so the nested cause is consulted. The depth limit matches the
+    protocol's bounded recursive failure representation. *)
+let failure_non_retryable failure =
+  let rec loop depth (value : failure) =
+    let nested () =
+      match value.cause with
+      | Some cause when depth < 128 -> loop (depth + 1) cause
+      | None | Some _ -> false
+    in
+    match value.info with
+    | Application { non_retryable; _ } -> non_retryable
+    | Canceled _ -> false
+    | Activity { retry_state; _ } | Child_workflow { retry_state; _ } -> (
+        match retry_state with
+        | Non_retryable_failure | Maximum_attempts_reached -> true
+        | Retry_policy_not_set | Unspecified -> nested ()
+        | In_progress | Timeout | Internal_server_error | Cancel_requested ->
+            false)
+  in
+  loop 0 failure
+
 type activity_resolution =
   | Completed of payload option
   | Failed of failure

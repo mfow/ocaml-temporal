@@ -170,6 +170,17 @@ metadata is validated as UTF-8 before it becomes protocol bytes. Failure causes
 are traversed with a fixed depth limit so malformed recursive values cannot
 consume unbounded stack or memory.
 
+Retryability is derived by the shared `Workflow_protocol.failure_non_retryable`
+rule used by both the worker and client terminal-result paths. An application
+failure contributes its own `non_retryable` flag. An activity or child-workflow
+wrapper uses `NonRetryableFailure` or `MaximumAttemptsReached` when Core gives
+one of those explicit states; `Timeout`, `InProgress`, and the other explicit
+retry states remain retryable. `RetryPolicyNotSet` and `Unspecified` do not
+override the nested application flag, which is how Core reports a child that
+failed non-retryably without having its own child retry policy. The bounded
+walk preserves this distinction without making malformed recursive causes
+unbounded.
+
 The adapter itself has no mutable global state. A worker may keep the returned
 `Execution.t` and translated records in its owner Domain, but this module does
 not share those values between Domains and does not expose native pointers.

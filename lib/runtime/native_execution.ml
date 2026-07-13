@@ -319,23 +319,7 @@ let runtime_error_of_failure path ~category (failure : Protocol.failure) =
   in
   let details = failure_details failure in
   let* details = details_loop [] details in
-  let non_retryable =
-    match failure.info with
-    | Protocol.Application { non_retryable; _ } -> non_retryable
-    | Protocol.Canceled _ -> false
-    | Protocol.Activity { retry_state; _ } -> (
-        match retry_state with
-        | Protocol.Non_retryable_failure | Maximum_attempts_reached -> true
-        | Unspecified | In_progress | Timeout | Retry_policy_not_set
-        | Internal_server_error | Cancel_requested ->
-            false)
-    | Protocol.Child_workflow { retry_state; _ } -> (
-        match retry_state with
-        | Protocol.Non_retryable_failure | Maximum_attempts_reached -> true
-        | Unspecified | In_progress | Timeout | Retry_policy_not_set
-        | Internal_server_error | Cancel_requested ->
-            false)
-  in
+  let non_retryable = Protocol.failure_non_retryable failure in
   Ok
     (Temporal_base.Error.make ~non_retryable ~details ~category
        ~message:(failure_diagnostic failure)

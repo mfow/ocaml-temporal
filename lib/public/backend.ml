@@ -357,31 +357,7 @@ let failure_details failure =
     retaining retryability, structured details, and a bounded diagnostic. *)
 let workflow_failure_error ?(category = `Workflow)
     (failure : Workflow_protocol.failure) =
-  let non_retryable =
-    match failure.info with
-    | Workflow_protocol.Application { non_retryable; _ } -> non_retryable
-    | Workflow_protocol.Canceled _ -> false
-    | Workflow_protocol.Activity { retry_state; _ } -> (
-        match retry_state with
-        | Workflow_protocol.Non_retryable_failure
-        | Maximum_attempts_reached -> true
-        | Unspecified
-        | In_progress
-        | Timeout
-        | Retry_policy_not_set
-        | Internal_server_error
-        | Cancel_requested -> false)
-    | Workflow_protocol.Child_workflow { retry_state; _ } -> (
-        match retry_state with
-        | Workflow_protocol.Non_retryable_failure
-        | Maximum_attempts_reached -> true
-        | Unspecified
-        | In_progress
-        | Timeout
-        | Retry_policy_not_set
-        | Internal_server_error
-        | Cancel_requested -> false)
-  in
+  let non_retryable = Workflow_protocol.failure_non_retryable failure in
   let context =
     [
       bounded_text ~limit:2048 failure.message;

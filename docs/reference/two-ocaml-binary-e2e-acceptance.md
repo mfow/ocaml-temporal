@@ -262,7 +262,10 @@ registers these local definitions with the public SDK:
   `smoke.child_non_retryable_failure` through the same direct-style helper and
   intentionally propagates the child's non-retryable terminal error. The
   driver checks the public `Child_workflow` error category and retryability,
-  not Core's verbose failure-info text.
+  not Core's verbose failure-info text. Core represents this case as a child
+  wrapper with `retry_policy_not_set` plus a nested application failure whose
+  `non_retryable` flag is true; the OCaml client must retain that nested flag
+  rather than treating the wrapper's state as a retryable result.
 * `smoke.parent_cancels_child`: retains a child handle, requests cancellation
   with `Wait_cancellation_requested`, and awaits the child future. It returns
   `SMOKE:CHILD:CANCELLED` only after the typed cancellation result arrives;

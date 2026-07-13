@@ -177,6 +177,22 @@ pub struct WorkflowPriority {
     pub fairness_weight_bits: u32,
 }
 
+/// Metadata attached to a workflow update request.
+///
+/// Core removes the workflow-scoped update ID from this nested protobuf
+/// message and exposes it on the update job. Keeping both values in the
+/// semantic record lets the bilateral validators prove that the duplicated
+/// identity remains consistent instead of silently dropping the metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateMeta {
+    /// Identity supplied by the requester.  It is history-derived text and
+    /// therefore must be copied before OCaml retains it.
+    pub identity: String,
+    /// Workflow-scoped identifier repeated for consistency checking.
+    pub update_id: String,
+}
+
 /// Why Temporal Core created a successor workflow run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -490,6 +506,20 @@ pub enum ActivationJob {
         arguments: Vec<Payload>,
         headers: BTreeMap<String, Payload>,
     },
+    /// Requests validation and execution of one workflow update.
+    ///
+    /// Core may place update jobs beside ordinary workflow jobs.  The update
+    /// response command is correlated by [protocol_instance_id], not by the
+    /// workflow-visible [id], so both identifiers are retained exactly.
+    DoUpdate {
+        id: String,
+        protocol_instance_id: String,
+        name: String,
+        input: Vec<Payload>,
+        headers: BTreeMap<String, Payload>,
+        meta: UpdateMeta,
+        run_validator: bool,
+    },
     FireTimer {
         seq: u32,
     },
@@ -633,6 +663,13 @@ pub enum CompletionCommand {
         query_id: String,
         result: QueryResult,
     },
+    /// Acknowledges validation or returns the terminal result of one update
+    /// handler.  Core accepts the first response and later expects either a
+    /// completed payload or a structured rejection for the same protocol ID.
+    UpdateResponse {
+        protocol_instance_id: String,
+        response: UpdateResponseResult,
+    },
 }
 
 /// Outcome of one synchronous read-only workflow query.
@@ -644,6 +681,18 @@ pub enum QueryResult {
     /// Query handler could not produce a value; Core receives this failure
     /// without failing the workflow execution itself.
     Failed { failure: Failure },
+}
+
+/// The closed set of responses accepted by Core for one workflow update.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UpdateResponseResult {
+    /// Validator passed, or Core requested replay without re-running it.
+    Accepted,
+    /// Validator or handler rejected the update.
+    Rejected { failure: Failure },
+    /// Handler completed successfully with one encoded payload.
+    Completed { payload: Payload },
 }
 
 /// Successful activation completion for one workflow run.
@@ -1067,6 +1116,8 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
             ));
         }
     }
+    let mut update_ids = BTreeSet::new();
+    let mut update_protocol_ids = BTreeSet::new();
     for job in &value.jobs {
         match job {
             ActivationJob::InitializeWorkflow {
@@ -1223,6 +1274,41 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                     identifier(key, "$.jobs.headers")?;
                 }
             }
+            ActivationJob::DoUpdate {
+                id,
+                protocol_instance_id,
+                name,
+                headers,
+                meta,
+                ..
+            } => {
+                identifier(id, "$.jobs.id")?;
+                identifier(protocol_instance_id, "$.jobs.protocol_instance_id")?;
+                identifier(name, "$.jobs.name")?;
+                if !update_ids.insert(id) {
+                    return Err(ProtocolError::invalid(
+                        "$.jobs.id",
+                        "update identifiers must be unique within one activation",
+                    ));
+                }
+                if !update_protocol_ids.insert(protocol_instance_id) {
+                    return Err(ProtocolError::invalid(
+                        "$.jobs.protocol_instance_id",
+                        "update protocol identifiers must be unique within one activation",
+                    ));
+                }
+                if meta.update_id.as_str() != id.as_str() {
+                    return Err(ProtocolError::invalid(
+                        "$.jobs.meta.update_id",
+                        "update metadata ID must match the update ID",
+                    ));
+                }
+                identifier(&meta.update_id, "$.jobs.meta.update_id")?;
+                bounded_text(&meta.identity, "$.jobs.meta.identity")?;
+                for key in headers.keys() {
+                    identifier(key, "$.jobs.headers")?;
+                }
+            }
             ActivationJob::CancelWorkflow { reason } => bounded_text(reason, "$.jobs.reason")?,
             ActivationJob::RemoveFromCache { message, .. } => {
                 bounded_text(message, "$.jobs.message")?
@@ -1372,7 +1458,78 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                     }
                 }
             }
+            CompletionCommand::UpdateResponse {
+                protocol_instance_id,
+                response,
+            } => {
+                identifier(protocol_instance_id, "$.commands.protocol_instance_id")?;
+                match response {
+                    UpdateResponseResult::Accepted => {}
+                    UpdateResponseResult::Rejected { failure } => {
+                        validate_failure(failure, "$.commands.response.failure")?
+                    }
+                    UpdateResponseResult::Completed { payload } => {
+                        if payload.data.len() > MAX_PAYLOAD_BYTES {
+                            return Err(ProtocolError::invalid(
+                                "$.commands.response.payload",
+                                "payload exceeds the byte limit",
+                            ));
+                        }
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+    // An immediate update completion is represented by two commands with the
+    // same protocol ID: acceptance followed by the final value. A later
+    // activation may contain only the final command, after Core has recorded
+    // acceptance in history. Reject duplicate phases while allowing that
+    // documented two-phase shape.
+    let mut update_phases: BTreeMap<&str, (bool, bool)> = BTreeMap::new();
+    for command in &value.commands {
+        let CompletionCommand::UpdateResponse {
+            protocol_instance_id,
+            response,
+        } = command
+        else {
+            continue;
+        };
+        let phases = update_phases
+            .entry(protocol_instance_id.as_str())
+            .or_insert((false, false));
+        match response {
+            UpdateResponseResult::Accepted => {
+                if phases.0 || phases.1 {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.protocol_instance_id",
+                        "update acceptance must be the first response and may appear once",
+                    ));
+                }
+                phases.0 = true;
+            }
+            UpdateResponseResult::Rejected { .. } => {
+                if phases.1 {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.protocol_instance_id",
+                        "update rejection may appear once and must be terminal",
+                    ));
+                }
+                phases.1 = true;
+            }
+            UpdateResponseResult::Completed { .. } => {
+                // A completed-only response is valid after a prior acceptance
+                // was persisted by Core; an accepted+completed pair is also
+                // valid in one activation. Track the terminal phase so a
+                // second completion cannot be emitted accidentally.
+                if phases.1 {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.protocol_instance_id",
+                        "update completion may appear once",
+                    ));
+                }
+                phases.1 = true;
+            }
         }
     }
     Ok(())
@@ -2175,6 +2332,37 @@ pub fn activation_from_core(
                         .map(|(key, payload)| Ok((key.clone(), payload_from_core(payload)?)))
                         .collect::<Result<BTreeMap<_, _>, CoreConversionError>>()?,
                 }),
+                Variant::DoUpdate(value) => {
+                    let meta = value
+                        .meta
+                        .as_ref()
+                        .ok_or_else(|| invalid_core("Core update metadata is absent"))?;
+                    if meta.update_id != value.id {
+                        return Err(invalid_core(
+                            "Core update metadata ID does not match update ID",
+                        ));
+                    }
+                    Ok(ActivationJob::DoUpdate {
+                        id: value.id.clone(),
+                        protocol_instance_id: value.protocol_instance_id.clone(),
+                        name: value.name.clone(),
+                        input: value
+                            .input
+                            .iter()
+                            .map(payload_from_core)
+                            .collect::<Result<_, _>>()?,
+                        headers: value
+                            .headers
+                            .iter()
+                            .map(|(key, payload)| Ok((key.clone(), payload_from_core(payload)?)))
+                            .collect::<Result<BTreeMap<_, _>, CoreConversionError>>()?,
+                        meta: UpdateMeta {
+                            identity: meta.identity.clone(),
+                            update_id: meta.update_id.clone(),
+                        },
+                        run_validator: value.run_validator,
+                    })
+                }
                 Variant::FireTimer(value) => Ok(ActivationJob::FireTimer { seq: value.seq }),
                 Variant::CancelWorkflow(value) => Ok(ActivationJob::CancelWorkflow {
                     reason: value.reason.clone(),
@@ -2483,6 +2671,25 @@ fn command_to_core(
                 variant: Some(variant),
             })
         }
+        CompletionCommand::UpdateResponse {
+            protocol_instance_id,
+            response,
+        } => {
+            use core_commands::update_response::Response;
+            let response = match response {
+                UpdateResponseResult::Accepted => Response::Accepted(()),
+                UpdateResponseResult::Rejected { failure } => {
+                    Response::Rejected(failure_to_core(failure)?)
+                }
+                UpdateResponseResult::Completed { payload } => {
+                    Response::Completed(payload_to_core(payload)?)
+                }
+            };
+            Variant::UpdateResponse(core_commands::UpdateResponse {
+                protocol_instance_id: protocol_instance_id.clone(),
+                response: Some(response),
+            })
+        }
     };
     Ok(core_commands::WorkflowCommand {
         variant: Some(variant),
@@ -2668,6 +2875,26 @@ fn command_from_core(
             Ok(CompletionCommand::QueryResult {
                 query_id: value.query_id.clone(),
                 result,
+            })
+        }
+        Variant::UpdateResponse(value) => {
+            use core_commands::update_response::Response;
+            let response = match value
+                .response
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core update response variant is absent"))?
+            {
+                Response::Accepted(_) => UpdateResponseResult::Accepted,
+                Response::Rejected(failure) => UpdateResponseResult::Rejected {
+                    failure: failure_from_core(failure)?,
+                },
+                Response::Completed(payload) => UpdateResponseResult::Completed {
+                    payload: payload_from_core(payload)?,
+                },
+            };
+            Ok(CompletionCommand::UpdateResponse {
+                protocol_instance_id: value.protocol_instance_id.clone(),
+                response,
             })
         }
         _ => Err(unsupported("Core workflow command kind is not supported")),

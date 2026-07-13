@@ -65,7 +65,8 @@ module Handler = struct
       Both codec calls are contained the same way as the validator and
       implementation callbacks, so a raising codec cannot escape dispatch
       half-applied. *)
-  let dispatch (Handler { definition; validator; implementation }) payload =
+  let dispatch ?(run_validator = true)
+      (Handler { definition; validator; implementation }) payload =
     match Codec.decode definition.input payload with
     | exception exception_ ->
         Error
@@ -76,16 +77,18 @@ module Handler = struct
     | Error error -> Error error
     | Ok input -> (
         let validation_result =
-          match validator with
-          | None -> Ok ()
-          | Some validate -> (
-              try validate input with
-              | exception_ ->
-                  Error
-                    (Error.defect
-                       ~message:
-                         (Printf.sprintf "update validator raised: %s"
-                            (Printexc.to_string exception_))))
+          if not run_validator then Ok ()
+          else
+            match validator with
+            | None -> Ok ()
+            | Some validate -> (
+                try validate input with
+                | exception_ ->
+                    Error
+                      (Error.defect
+                         ~message:
+                           (Printf.sprintf "update validator raised: %s"
+                              (Printexc.to_string exception_))))
         in
         match validation_result with
         | Error _ as error -> error

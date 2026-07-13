@@ -19,6 +19,15 @@ let runtime_unit_payload () =
   | Ok payload -> payload
   | Error error -> failwith (Temporal_base.Error.message error)
 
+(** Returns a protocol payload using the standard JSON string encoding. Native
+    update tests use this instead of an untagged byte payload so the public
+    codec can prove that the input and output encoding names match. *)
+let json_protocol_payload text : Protocol.payload =
+  {
+    Protocol.metadata = [ ("encoding", Bytes.of_string "json/plain") ];
+    data = Bytes.of_string (Yojson.Safe.to_string (`String text));
+  }
+
 (** Fails with the stable translation diagnostic when a result was expected. *)
 let unwrap label = function
   | Ok value -> value
@@ -496,6 +505,81 @@ let test_query_workflow_translation_and_activation () =
                } ];
        })
 
+(** Proves a native update is translated with its Core correlation fields and
+    dispatched through the synchronous handler boundary. The two jobs exercise
+    both validator modes: replay asks the handler to skip validation, while a
+    live-style job requests it. The runtime must emit one accepted response and
+    one completed response for each update, preserving protocol IDs and output
+    payload bytes in source order. *)
+let test_update_workflow_translation_and_activation () =
+  let validator_runs = ref [] in
+  let workflow =
+    Temporal_base.Definition.make ~name:"native_update"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:(Some (fun () -> Ok ()))
+  in
+  let handler =
+    Execution.make_update_handler ~name:"set_status"
+      ~dispatch:(fun ~run_validator update ->
+        validator_runs := (update.id, run_validator) :: !validator_runs;
+        match update.input with
+        | [ payload ] -> (
+            match Temporal_base.Codec.decode Temporal_base.Codec.string payload with
+            | Error error -> Error error
+            | Ok value ->
+                Temporal_base.Codec.encode Temporal_base.Codec.string
+                  (String.uppercase_ascii value))
+        | _ ->
+            Error
+              (Temporal_base.Error.make ~non_retryable:true ~category:`Workflow
+                 ~message:"update input arity was not one" ()))
+  in
+  let execution = Execution.start ~update_handlers:[ handler ] workflow () in
+  let update ~id ~protocol_instance_id ~run_validator =
+    Protocol.Do_update
+      {
+        id;
+        protocol_instance_id;
+        name = "set_status";
+        input = [ json_protocol_payload "ready" ];
+        headers = [ ("trace", json_protocol_payload "header") ];
+        meta = { Protocol.identity = "client"; update_id = id };
+        run_validator;
+      }
+  in
+  let completion =
+    unwrap "update activation"
+      (Native_execution.activate execution
+         (activation
+            [ update ~id:"update-live" ~protocol_instance_id:"protocol-live"
+                ~run_validator:true;
+              update ~id:"update-replay" ~protocol_instance_id:"protocol-replay"
+                ~run_validator:false ]))
+  in
+  let expected_payload = json_protocol_payload "READY" in
+  begin match completion.commands with
+  | [ Protocol.Update_response
+        { protocol_instance_id = "protocol-live"; response = Update_accepted };
+      Protocol.Update_response
+        {
+          protocol_instance_id = "protocol-live";
+          response = Update_completed live_payload;
+        };
+      Protocol.Update_response
+        { protocol_instance_id = "protocol-replay"; response = Update_accepted };
+      Protocol.Update_response
+        {
+          protocol_instance_id = "protocol-replay";
+          response = Update_completed replay_payload;
+        } ]
+    when live_payload = expected_payload && replay_payload = expected_payload ->
+      ()
+  | _ -> failwith "update handler did not emit ordered accepted/completed pairs"
+  end;
+  let observed = List.sort compare !validator_runs in
+  if observed <> [ ("update-live", true); ("update-replay", false) ] then
+    failwith "update validator replay flag was not forwarded exactly"
+
 (** Confirms that both malformed identity forms are rejected before a signal
     can become runtime state.  OCaml strings may contain arbitrary bytes, so
     this exercises the boundary that JSON received from Rust cannot express
@@ -959,6 +1043,7 @@ let () =
   test_child_resolution_translation ();
   test_signal_workflow_translation_and_activation ();
   test_query_workflow_translation_and_activation ();
+  test_update_workflow_translation_and_activation ();
   test_signal_identity_validation ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();

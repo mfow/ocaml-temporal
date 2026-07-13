@@ -58,6 +58,8 @@ type signal = Execution.signal
 type signal_handler = Execution.signal_handler
 type query = Execution.query
 type query_handler = Execution.query_handler
+type update = Execution.update
+type update_handler = Execution.update_handler
 
 (** Builds a private handler that is invoked only on its workflow scheduler. *)
 val make_signal_handler :
@@ -93,6 +95,20 @@ val query_headers : query -> (string * Temporal_base.Codec.payload) list
 
 (** Returns a query handler's stable registration name. *)
 val query_handler_name : query_handler -> string
+
+(** Builds an update handler that runs on the execution owner Domain. *)
+val make_update_handler :
+  name:string ->
+  dispatch:
+    (run_validator:bool -> update ->
+     (Temporal_base.Codec.payload, Temporal_base.Error.t) result) ->
+  update_handler
+
+(** Returns a handler's stable update registration name. *)
+val update_handler_name : update_handler -> string
+
+(** Returns all payloads carried by an update activation. *)
+val update_input : update -> Temporal_base.Codec.payload list
 
 (** One worker-loop outcome. [Rejected] means a valid lease was completed with
     a non-retryable bridge failure, so the caller can log the typed rejection
@@ -167,6 +183,7 @@ end
 val register :
   ?signal_handlers:signal_handler list ->
   ?query_handlers:query_handler list ->
+  ?update_handlers:update_handler list ->
   ('input, 'output,
    'input -> ('output, Temporal_base.Error.t) result)
   Temporal_base.Definition.t ->

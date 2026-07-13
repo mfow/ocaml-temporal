@@ -1052,6 +1052,231 @@ fn converts_query_results_and_matches_activation_ids() {
     );
 }
 
+/// Proves the pinned Core `DoUpdate` job retains both update identifiers,
+/// metadata, repeated input, headers, and replay-validation state through the
+/// bilateral semantic protocol.  This is the ownership boundary where a
+/// malformed optional Core metadata message must fail closed rather than being
+/// turned into a request with an ambiguous identity.
+#[test]
+fn converts_do_update_activation_losslessly() {
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::temporal::api::{common::v1::Payload as CorePayload, update::v1::Meta};
+
+    let payload = CorePayload {
+        metadata: [("encoding".to_owned(), b"binary/plain".to_vec())].into(),
+        data: b"update-input".to_vec(),
+        ..Default::default()
+    };
+    let activation = core_activation::WorkflowActivation {
+        run_id: "run-update".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::DoUpdate(core_activation::DoUpdate {
+                id: "update-42".to_owned(),
+                protocol_instance_id: "protocol-42".to_owned(),
+                name: "set-status".to_owned(),
+                input: vec![payload.clone()],
+                headers: [("trace".to_owned(), payload.clone())].into(),
+                meta: Some(Meta {
+                    update_id: "update-42".to_owned(),
+                    identity: "client".to_owned(),
+                }),
+                run_validator: false,
+            })),
+        }],
+        ..Default::default()
+    };
+
+    let semantic = workflow_protocol::activation_from_core(&activation).unwrap();
+    assert!(matches!(
+        &semantic.jobs[0],
+        workflow_protocol::ActivationJob::DoUpdate {
+            id,
+            protocol_instance_id,
+            name,
+            input,
+            headers,
+            meta,
+            run_validator,
+        } if id == "update-42"
+            && protocol_instance_id == "protocol-42"
+            && name == "set-status"
+            && input.len() == 1
+            && input[0].data == b"update-input"
+            && headers["trace"].data == b"update-input"
+            && meta.update_id == "update-42"
+            && meta.identity == "client"
+            && !run_validator
+    ));
+    let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
+
+    let mut missing_meta = activation;
+    let Some(Variant::DoUpdate(update)) = missing_meta.jobs[0].variant.as_mut() else {
+        panic!("update activation must contain a DoUpdate job");
+    };
+    update.meta = None;
+    let error = workflow_protocol::activation_from_core(&missing_meta)
+        .expect_err("Core update without metadata was accepted");
+    assert_eq!(
+        error.code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+}
+
+/// Proves accepted, rejected, and completed update responses preserve their
+/// protocol-instance correlation through Core conversion.  It also exercises
+/// the activation phase rules: immediate acceptance plus completion is valid,
+/// a later completion-only response is valid, and a second terminal response
+/// is rejected before any protobuf is built.
+#[test]
+fn converts_update_responses_and_enforces_phases() {
+    let payload = workflow_protocol::Payload {
+        metadata: [("encoding".to_owned(), b"binary/plain".to_vec())].into(),
+        data: b"updated".to_vec(),
+    };
+    let activation = workflow_protocol::Activation {
+        run_id: "run-update".to_owned(),
+        timestamp: Some(workflow_protocol::Timestamp {
+            seconds: 0,
+            nanoseconds: 0,
+        }),
+        is_replaying: false,
+        history_length: 1,
+        jobs: vec![workflow_protocol::ActivationJob::DoUpdate {
+            id: "update-42".to_owned(),
+            protocol_instance_id: "protocol-42".to_owned(),
+            name: "set-status".to_owned(),
+            input: vec![payload.clone()],
+            headers: [("trace".to_owned(), payload.clone())].into(),
+            meta: workflow_protocol::UpdateMeta {
+                identity: "client".to_owned(),
+                update_id: "update-42".to_owned(),
+            },
+            run_validator: true,
+        }],
+        metadata: None,
+    };
+    let immediate = workflow_protocol::Completion {
+        run_id: "run-update".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::UpdateResponse {
+                protocol_instance_id: "protocol-42".to_owned(),
+                response: workflow_protocol::UpdateResponseResult::Accepted,
+            },
+            workflow_protocol::CompletionCommand::UpdateResponse {
+                protocol_instance_id: "protocol-42".to_owned(),
+                response: workflow_protocol::UpdateResponseResult::Completed {
+                    payload: payload.clone(),
+                },
+            },
+        ],
+    };
+    let core = workflow_protocol::completion_to_core_for_activation(&activation, &immediate)
+        .expect("accepted and completed responses must convert");
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("update completion must be successful");
+    };
+    assert_eq!(success.commands.len(), 2);
+    assert!(matches!(
+        success.commands[0].variant.as_ref(),
+        Some(core_commands::workflow_command::Variant::UpdateResponse(response))
+            if response.protocol_instance_id == "protocol-42"
+                && matches!(
+                    response.response.as_ref(),
+                    Some(core_commands::update_response::Response::Accepted(()))
+                )
+    ));
+    assert!(matches!(
+        success.commands[1].variant.as_ref(),
+        Some(core_commands::workflow_command::Variant::UpdateResponse(response))
+            if matches!(
+                response.response.as_ref(),
+                Some(core_commands::update_response::Response::Completed(value))
+                    if value.data == b"updated"
+            )
+    ));
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        immediate
+    );
+
+    let later = workflow_protocol::Completion {
+        run_id: "run-update".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::UpdateResponse {
+            protocol_instance_id: "protocol-42".to_owned(),
+            response: workflow_protocol::UpdateResponseResult::Completed { payload },
+        }],
+    };
+    workflow_protocol::completion_to_core_for_activation(&activation, &later)
+        .expect("completion-only response must be valid in a later activation");
+
+    let accepted_then_rejected = workflow_protocol::Completion {
+        run_id: "run-update".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::UpdateResponse {
+                protocol_instance_id: "protocol-42".to_owned(),
+                response: workflow_protocol::UpdateResponseResult::Accepted,
+            },
+            workflow_protocol::CompletionCommand::UpdateResponse {
+                protocol_instance_id: "protocol-42".to_owned(),
+                response: workflow_protocol::UpdateResponseResult::Rejected {
+                    failure: workflow_protocol::Failure {
+                        message: "handler failed".to_owned(),
+                        source: "ocaml".to_owned(),
+                        stack_trace: String::new(),
+                        encoded_attributes: None,
+                        cause: None,
+                        info: workflow_protocol::FailureInfo::Application {
+                            type_name: "UpdateError".to_owned(),
+                            non_retryable: true,
+                            details: Vec::new(),
+                        },
+                    },
+                },
+            },
+        ],
+    };
+    workflow_protocol::completion_to_core_for_activation(&activation, &accepted_then_rejected)
+        .expect("accepted then rejected is a valid terminal update response");
+
+    let duplicate_terminal = workflow_protocol::Completion {
+        run_id: "run-update".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::UpdateResponse {
+                protocol_instance_id: "protocol-42".to_owned(),
+                response: workflow_protocol::UpdateResponseResult::Completed {
+                    payload: workflow_protocol::Payload {
+                        metadata: BTreeMap::new(),
+                        data: b"one".to_vec(),
+                    },
+                },
+            },
+            workflow_protocol::CompletionCommand::UpdateResponse {
+                protocol_instance_id: "protocol-42".to_owned(),
+                response: workflow_protocol::UpdateResponseResult::Completed {
+                    payload: workflow_protocol::Payload {
+                        metadata: BTreeMap::new(),
+                        data: b"two".to_vec(),
+                    },
+                },
+            },
+        ],
+    };
+    let error =
+        workflow_protocol::completion_to_core_for_activation(&activation, &duplicate_terminal)
+            .expect_err("duplicate update terminal responses were accepted");
+    assert_eq!(
+        error.code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+}
+
 /// Proves ordinary first-task metadata survives Core conversion and semantic
 /// JSON instead of being rejected as an unsupported default-only initializer.
 #[test]

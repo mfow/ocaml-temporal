@@ -3,11 +3,12 @@
 This document specifies how Temporal Core signals, queries, and updates cross
 the private Rust/OCaml boundary. It is both a design reference and an
 implementation-status record. The bilateral bridge now transports
-`SignalWorkflow` and the first `QueryWorkflow` activation safely through Rust,
-semantic JSON, and the OCaml runtime. Signals are queued on the workflow
-scheduler; queries are answered synchronously by a registered read-only
-handler. Update delivery remains unsupported until its activation and
-two-stage completion records are implemented and tested together.
+`SignalWorkflow`, `QueryWorkflow`, and the first bounded `DoUpdate` activation
+slice safely through Rust, semantic JSON, and the OCaml runtime. Signals are
+queued on the workflow scheduler; queries are answered synchronously by a
+registered read-only handler; and a native update handler currently runs to a
+single result in the activation that delivered it. Suspended update handlers
+and their later-activation completion records remain future work.
 
 For the public, in-memory typing that already exists, see
 [Signals, queries, and updates](../reference/interactive-workflows.md). That
@@ -39,13 +40,16 @@ the Rust side while giving the OCaml runtime a small type-checked vocabulary.
 
 The current semantic protocol supports initialization, activity and child
 resolutions, timers, cancellation, eviction, `SignalWorkflow`, and
-`QueryWorkflow`/`QueryResult`. A signal is validated in Rust, encoded as
-semantic JSON, decoded and copied by OCaml, and represented as a runtime signal
-job in the original activation order. A query activation is validated as a
-query-only batch, answered inline on the execution owner Domain, and returned
-as query-only completion commands. Update jobs are still rejected by the Rust
-Core conversion because the semantic protocol has no update-response command;
-Rust rejects those Core command variants rather than dropping them.
+`QueryWorkflow`/`QueryResult`, and the immediate `DoUpdate`/`UpdateResponse`
+slice. A signal is validated in Rust, encoded as semantic JSON, decoded and
+copied by OCaml, and represented as a runtime signal job in the original
+activation order. A query activation is validated as a query-only batch,
+answered inline on the execution owner Domain, and returned as query-only
+completion commands. An update job is validated and copied in the same way,
+looked up by name, and either rejected or dispatched through the typed public
+update handler. A successful non-suspending handler produces an accepted
+response followed by a completed response; a validator, input, or handler
+error produces a structured rejection.
 
 Consequently:
 
@@ -61,7 +65,15 @@ Consequently:
   list returns `QueryResult.failed` and is not silently truncated. Missing
   handlers and handler errors use the same failed-query response and leave the
   workflow execution unchanged.
-- `DoUpdate` is not currently deliverable to an OCaml workflow worker.
+- `DoUpdate` is deliverable to a registered OCaml update handler when the
+  handler accepts exactly one input payload and returns without suspending.
+  The private runtime retains the full input, headers, identity, metadata ID,
+  protocol-instance ID, and replay-validation flag while the public handler
+  currently exposes only the typed input value. Missing handlers and
+  unsupported input arity are rejected as typed non-retryable workflow errors.
+  The bridge accepts an accepted-plus-completed pair in one activation,
+  completion-only responses in later activations, and accepted-plus-rejected
+  terminal responses. It rejects duplicate acceptance or terminal responses.
 - `Temporal.Interaction` can exercise typed handler registration, codec
   validation, duplicate-name rejection, and validator ordering locally.
 - The signal transport test proves only the native activation boundary. It is
@@ -69,8 +81,9 @@ Consequently:
   handler; the focused scheduler test is not a live Temporal Server acceptance
   test yet.
 
-This explicit failure is intentional. A newer Core field, oneof variant, or
-update metadata field must not silently disappear at the language boundary.
+Unsupported Core fields and oneof variants still fail explicitly. This is
+intentional: a newer Core field or update metadata field must not silently
+disappear at the language boundary.
 
 ## End-to-end mapping
 
@@ -235,20 +248,62 @@ contains the `DoUpdate` job:
 | Validation | `accepted` or `rejected` | Always in the same activation as `DoUpdate`. |
 | Handler | `completed` or `rejected` | In that activation or a later activation after the handler finishes. |
 
+The current native implementation covers the non-suspending case. It decodes
+one payload with the registered input codec, runs the validator when
+`run_validator` is true, runs the implementation, and encodes one result. It
+then emits `accepted` followed by `completed` in the same completion. A
+validator or implementation failure emits only `rejected`; no workflow
+continuation is retained. On replay, the validator is skipped while the
+handler still follows the recorded update path. The current public API does
+not expose update headers or requester identity to the callback, but the
+private record validates and retains them so adding a metadata-aware API will
+not change the bridge shape.
+
+The private JSON shape is deliberately small and mirrors the semantic records
+used by both decoders. For example, one activation job is:
+
+```json
+{
+  "kind": "do_update",
+  "id": "update-42",
+  "protocol_instance_id": "protocol-42",
+  "name": "set-status",
+  "input": [{"metadata": {"encoding": "binary/plain"}, "data": "dXBkYXRl"}],
+  "headers": {},
+  "meta": {"identity": "client", "update_id": "update-42"},
+  "run_validator": true
+}
+```
+
+The corresponding completion commands use the same protocol ID and a closed
+`response` object: `{"kind":"update_response","protocol_instance_id":"protocol-42","response":{"kind":"accepted"}}`,
+followed by either `{"kind":"completed","payload":...}` or
+`{"kind":"rejected","failure":...}`. Unknown fields, duplicate object
+members, invalid identifiers, mismatched metadata IDs, malformed payloads,
+and duplicate response phases are rejected by both the OCaml and Rust
+decoders. The JSON Schema files under
+[`docs/schemas/bridge`](../schemas/bridge/) document these shapes for tooling;
+the bilateral decoders remain authoritative for byte limits and lifecycle
+rules.
+
 The validator runs before the handler only when `run_validator` is true. A
-successful validator emits `accepted` before the handler is allowed to
-suspend. A validator failure emits `rejected`, does not run the handler, and
-must not mutate workflow state. During replay, the runtime skips the validator
-and emits the deterministic acceptance response required by Core; the handler
-then follows the recorded update path. A handler failure emits a structured
+successful validator must emit `accepted` before a future suspended handler
+is allowed to continue. A validator failure emits `rejected`, does not run the
+handler, and must not mutate workflow state. During replay, the runtime skips
+the validator and follows the recorded update path; the current immediate
+implementation emits the deterministic acceptance response before its
+completed result in the same activation. A handler failure emits a structured
 `rejected` response; a successful handler encodes its output in `completed`.
 
-If the handler suspends on a supported workflow operation, the initial
-acceptance still belongs to the current activation and the terminal handler
-response is retained until the future resolves. This requires an update-owned
-continuation keyed by `protocol_instance_id`, not a global mutable callback
-map. Shutdown, eviction, duplicate delivery, and malformed completion must
-release that continuation exactly once.
+If a future handler suspends on a supported workflow operation, the initial
+acceptance must still belong to the current activation and the terminal handler
+response must be retained until the future resolves. That implementation
+requires an update-owned continuation keyed by `protocol_instance_id`, not a
+global mutable callback map. Shutdown, eviction, duplicate delivery, and
+malformed completion must release that continuation exactly once. The current
+native slice deliberately does not claim this behavior: a handler that needs a
+later activation is rejected by its public one-result boundary until the
+continuation machinery and replay tests are implemented.
 
 `id` and `protocol_instance_id` have different purposes and must not be
 interchanged. The former is workflow-visible update identity; the latter is
@@ -323,21 +378,26 @@ single side accepting a new variant early:
    semantic/runtime slice:** bilateral Core conversion, exact query-ID
    preservation (including Core's `legacy_query` path), output-only handler
    dispatch, and rejected extra arguments. Live Server coverage remains open.
-3. Add `DoUpdate` and `UpdateResponse`, including immediate acceptance,
-   validator skip during replay, suspended handler completion, duplicate
-   protocol-instance rejection, shutdown, and eviction cleanup tests.
-4. Add Core conversion fixtures in `rust/core-bridge/tests/`, OCaml runtime
+3. **Current milestone:** add `DoUpdate` and `UpdateResponse` semantic records,
+   strict JSON/schema validation, pinned-Core conversion, immediate
+   non-suspending public handler dispatch, replay validator skipping, and
+   response-phase tests. Suspended handler completion, shutdown, and eviction
+   cleanup remain open.
+4. Add update-owned continuations, later-activation completion, and lifecycle
+   tests before advertising full update support.
+5. Add Core conversion fixtures in `rust/core-bridge/tests/`, OCaml runtime
    tests under `test/`, and bilateral JSON round-trip tests for every supported
    variant. Run the representative local Makefile gates; queued GitHub
    Actions checks remain unexecuted evidence until the repository quota clears.
-5. Add a Docker Compose acceptance scenario with Temporal Server and
+6. Add a Docker Compose acceptance scenario with Temporal Server and
    PostgreSQL that sends a signal, issues a query, and waits for an update
    through the two OCaml binaries. Record live success separately from
    synthetic and bridge-only evidence.
 
-Until the later update completion stages have passed, the overall feature
-status remains experimental: native `SignalWorkflow` transport and
-output-only `QueryWorkflow` delivery are implemented and focused-tested, while
-updates and live interaction acceptance remain pending.
+Until the later update continuation stages have passed, the overall feature
+status remains experimental: native `SignalWorkflow` transport,
+output-only `QueryWorkflow` delivery, and immediate non-suspending update
+dispatch are implemented and focused-tested, while suspended updates and live
+interaction acceptance remain pending.
 `Temporal.Interaction` remains the public local-testing path for all three
 interaction kinds.

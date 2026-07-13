@@ -14,6 +14,29 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Native immediate workflow update activation slice
+
+Status: locally verified with focused OCaml and Rust tests; no live Temporal
+Server or GitHub Actions success is claimed for this slice.
+
+The semantic bridge now carries Core `DoUpdate` jobs and `UpdateResponse`
+commands through strict Rust and OCaml JSON validation, JSON Schema
+documentation, and pinned Temporal Core conversion. Both sides retain the
+workflow update ID, Core protocol-instance ID, requester metadata, headers,
+ordered inputs, and replay-validation flag. The native worker can register
+typed `Temporal.Update.Handler.t` values; a one-input, non-suspending handler
+runs its validator when requested, returns a typed result, and emits the
+Core-required accepted/completed pair. Validator, codec, missing-handler, and
+callback failures become structured rejections, and replay skips validation.
+Response-phase checks reject duplicate decisions while allowing completion-only
+later responses and accepted-then-rejected terminal responses.
+
+The focused Rust workflow-protocol suite (37 tests), OCaml bridge protocol
+suite, and native execution suite pass locally. Suspended update continuations,
+metadata-aware public callbacks, and live Compose update acceptance remain
+future work; the bridge deliberately fails closed for malformed or
+unrepresentable Core fields.
+
 ## 2026-07-13: Live asynchronous activity completion acceptance
 
 Status: locally verified against Temporal Server 1.31 and PostgreSQL; CI for

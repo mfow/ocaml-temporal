@@ -236,13 +236,36 @@ let runtime_query_handler (handler : Query.Handler.t) =
                     name)
                ()))
 
+(** Converts one public update handler into the private runtime callback. The
+    public API currently accepts one input payload; an update activation with
+    another arity is rejected without silently discarding Core data. *)
+let runtime_update_handler (handler : Update.Handler.t) =
+  let name = Update.Handler.name handler in
+  Workflow_adapter.make_update_handler ~name ~dispatch:(fun ~run_validator update ->
+      match Workflow_adapter.update_input update with
+      | [ payload ] ->
+          Update.Handler.dispatch ~run_validator handler
+            (Payload_private.of_base payload)
+          |> Result.map Payload_private.to_base
+          |> Result.map_error Error_private.to_base
+      | _ ->
+          Error
+            (Base_error.make ~non_retryable:true ~category:`Workflow
+               ~message:
+                 (Printf.sprintf
+                    "update %s must contain exactly one payload for its registered OCaml handler"
+                    name)
+               ()))
+
 (** Packs a workflow definition and its handlers for the private runtime
     adapter. The public [Worker] module validates names and duplicates before
     native resources are allocated. *)
-let register_workflow ?(signals = []) ?(queries = []) definition =
+let register_workflow ?(signals = []) ?(queries = []) ?(updates = []) definition =
   let signal_handlers = List.map runtime_signal_handler signals in
   let query_handlers = List.map runtime_query_handler queries in
-  Workflow_adapter.register ~signal_handlers ~query_handlers definition
+  let update_handlers = List.map runtime_update_handler updates in
+  Workflow_adapter.register ~signal_handlers ~query_handlers ~update_handlers
+    definition
 
 (** Packs an activity definition for [Activity.create]. *)
 let register_activity definition = Activity_adapter.register definition

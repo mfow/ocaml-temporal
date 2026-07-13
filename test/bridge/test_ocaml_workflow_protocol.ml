@@ -255,6 +255,102 @@ let test_query_protocol_slice () =
            ];
        })
 
+(** Proves workflow updates retain both Core identifiers, requester metadata,
+    replay validator state, and the two-phase acceptance/completion response.
+    A completed-only response is also accepted because Core may deliver it in a
+    later activation after the acceptance event has been recorded. *)
+let test_update_protocol_slice () =
+  let payload text : Protocol.payload =
+    { metadata = [ ("encoding", Bytes.of_string "binary/plain") ]; data = Bytes.of_string text }
+  in
+  let update : Protocol.activation_job =
+    Protocol.Do_update
+      {
+        id = "update-1";
+        protocol_instance_id = "update-1";
+        name = "set-status";
+        input = [ payload "ready" ];
+        headers = [ ("trace", payload "header") ];
+        meta = { Protocol.identity = "client"; update_id = "update-1" };
+        run_validator = true;
+      }
+  in
+  let activation : Protocol.activation =
+    {
+      run_id = "update-run";
+      timestamp = Some { seconds = 1L; nanoseconds = 0 };
+      is_replaying = false;
+      history_length = 2L;
+      jobs = [ update ];
+      metadata = None;
+    }
+  in
+  let encoded = unwrap (Protocol.encode_activation activation) in
+  if unwrap (Protocol.decode_activation encoded) <> activation then
+    failwith "update activation did not round-trip";
+  let completion : Protocol.completion =
+    {
+      run_id = "update-run";
+      commands =
+        [
+          Protocol.Update_response
+            { protocol_instance_id = "update-1"; response = Update_accepted };
+          Protocol.Update_response
+            {
+              protocol_instance_id = "update-1";
+              response = Update_completed (payload "done");
+            };
+        ];
+    }
+  in
+  let completion_json = unwrap (Protocol.encode_completion completion) in
+  if unwrap (Protocol.decode_completion completion_json) <> completion then
+    failwith "update completion did not round-trip";
+  let later_completion =
+    {
+      Protocol.run_id = "update-run";
+      commands =
+        [
+          Protocol.Update_response
+            {
+              protocol_instance_id = "update-1";
+              response = Update_completed (payload "later");
+            };
+        ];
+    }
+  in
+  ignore (unwrap (Protocol.encode_completion later_completion));
+  require_error
+    (Protocol.encode_completion
+       {
+         completion with
+         commands =
+           [
+             Protocol.Update_response
+               { protocol_instance_id = "update-1"; response = Update_accepted };
+             Protocol.Update_response
+               { protocol_instance_id = "update-1"; response = Update_accepted };
+           ];
+       });
+  require_error
+    (Protocol.encode_activation
+       {
+         activation with
+         jobs =
+           [
+             Protocol.Do_update
+               {
+                 id = "update-1";
+                 protocol_instance_id = "update-1";
+                 name = "set-status";
+                 input = [];
+                 headers = [];
+                 meta = { Protocol.identity = "client"; update_id = "different" };
+                 run_validator = true;
+               };
+           ];
+       })
+
 (** Proves the child-workflow start command uses the same canonical payload
     representation as activities while retaining its workflow identity. *)
 let test_start_child_workflow_command () =
@@ -1002,6 +1098,7 @@ let () =
   run "continuation initialization metadata" test_continuation_initialize_metadata;
   run "workflow completion" test_valid_completion;
   run "query protocol slice" test_query_protocol_slice;
+  run "update protocol slice" test_update_protocol_slice;
   run "start child workflow command" test_start_child_workflow_command;
   run "all child cancellation policies" test_all_child_cancellation_policies;
   run "child cancellation validation" test_child_cancellation_validation;

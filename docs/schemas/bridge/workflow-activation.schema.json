@@ -183,6 +183,30 @@
       },
       "description": "A synchronous read-only query request. Core may send several query jobs together; the runtime answers them without running ordinary workflow continuations."
     },
+    "update_meta": {
+      "type": "object", "additionalProperties": false,
+      "required": ["identity", "update_id"],
+      "properties": {
+        "identity": {"type": "string", "maxLength": 65536},
+        "update_id": {"$ref": "#/$defs/identifier"}
+      },
+      "description": "Requester metadata for a workflow update. update_id must equal the enclosing update id."
+    },
+    "do_update": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id", "protocol_instance_id", "name", "input", "headers", "meta", "run_validator"],
+      "properties": {
+        "kind": {"const": "do_update"},
+        "id": {"$ref": "#/$defs/identifier"},
+        "protocol_instance_id": {"$ref": "#/$defs/identifier"},
+        "name": {"$ref": "#/$defs/identifier"},
+        "input": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}},
+        "headers": {"type": "object", "maxProperties": 201326592, "additionalProperties": {"$ref": "#/$defs/payload"}},
+        "meta": {"$ref": "#/$defs/update_meta"},
+        "run_validator": {"type": "boolean"}
+      },
+      "description": "A workflow update request. The protocol instance ID correlates responses; run_validator is false while Core replays an already-validated update."
+    },
     "job": {
       "oneOf": [
         {
@@ -214,6 +238,7 @@
           "properties": {"kind": {"const": "resolve_child_workflow"}, "seq": {"$ref": "#/$defs/u32"}, "result": {"$ref": "#/$defs/child_workflow_resolution"}}
         },
         {"$ref": "#/$defs/query_workflow"},
+        {"$ref": "#/$defs/do_update"},
         {
           "type": "object", "additionalProperties": false,
           "required": ["kind", "signal_name", "input", "identity", "headers"],

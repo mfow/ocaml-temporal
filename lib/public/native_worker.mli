@@ -16,10 +16,12 @@ type activity_registration
 (** Packs one typed workflow definition without exposing the existential
     constructor used by the runtime adapter. [signals] attaches typed signal
     handlers to the same workflow execution; handlers run on the deterministic
-    workflow scheduler when native SignalWorkflow activations arrive. *)
+    workflow scheduler when native SignalWorkflow activations arrive. [updates]
+    attaches typed non-suspending update handlers for native DoUpdate jobs. *)
 val register_workflow :
   ?signals:Signal.Handler.t list ->
   ?queries:Query.Handler.t list ->
+  ?updates:Update.Handler.t list ->
   ('input, 'output,
    'input -> ('output, Temporal_base.Error.t) result)
   Temporal_base.Definition.t ->

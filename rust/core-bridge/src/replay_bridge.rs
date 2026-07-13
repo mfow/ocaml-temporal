@@ -516,14 +516,17 @@ impl ReplayWorker {
         self.lanes.retain_worker_for_test()
     }
 
-    /// Aborts the workflow poll task so the disposal test can verify that a
-    /// joined lane failure is reported with the replay worker still owned.
+    /// Replaces the workflow poll task with an awaited, deliberately aborted
+    /// pending task so disposal can verify that a joined lane failure is
+    /// reported with the replay worker still owned. Awaiting the original
+    /// handle prevents a natural Core shutdown from making this test timing
+    /// dependent.
     ///
     /// This is a deterministic test hook only; production shutdown always
     /// asks Core to stop and then awaits the lane naturally.
     #[cfg(test)]
-    pub(crate) fn abort_workflow_lane_for_test(&mut self) {
-        self.lanes.abort_workflow_lane_for_test();
+    pub(crate) async fn abort_workflow_lane_for_test(&mut self) {
+        self.lanes.abort_workflow_lane_for_test().await;
     }
 
     /// Exposes the ledger's reject-completion ordering probes so a test can

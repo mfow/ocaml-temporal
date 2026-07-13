@@ -26,7 +26,8 @@
         "z-trace": {"metadata": {"z-key": {"encoding": "base64", "data": "eg=="}, "a-key": {"encoding": "base64", "data": "YQ=="}}, "data": {"encoding": "base64", "data": ""}},
         "a-trace": {"metadata": {}, "data": {"encoding": "base64", "data": ""}}
       },
-      "first_execution_run_id": "first-run"
+      "first_execution_run_id": "first-run",
+      "continuation": null
     },
     "attempt": 1,
     "arguments": [{"metadata": {}, "data": {"encoding": "base64", "data": ""}}]

@@ -39,9 +39,9 @@ The remaining reference documents are useful when changing one subsystem:
   experimental typed signal, query, and update definitions, deterministic
   handler dispatcher, and the remaining native-delivery boundary.
 - [Native workflow interactions](design/native-interactions.md) specifies the
-  planned Core-to-Rust-to-OCaml mapping for signals, queries, and updates,
-  including response timing, replay rules, validation, and the current
-  unsupported boundary.
+  Core-to-Rust-to-OCaml mapping for signals, queries, and updates, including
+  response timing, replay rules, validation, the implemented signal boundary,
+  and the current query/update unsupported boundary.
 - [OCaml SDK logging](reference/observability.md) documents log sources, tags,
   levels, privacy, and Domain behavior.
 - [Local Temporal stack](reference/local-temporal-stack.md) documents the
@@ -114,10 +114,12 @@ This distinction prevents a green local synthetic test from being read as a
 claim that an unimplemented native feature is ready. Continue-as-new and
 context-aware activity heartbeats are implemented and focused-tested at the
 OCaml/native bridge, but neither has live Temporal Server acceptance yet.
-Native Temporal delivery for signals, queries, and updates, plus versioning,
-local activities, Nexus, and the remaining SDK parity work are tracked as later
-milestones. The typed definitions and deterministic local dispatcher are
-documented in the [interactive workflow reference](reference/interactive-workflows.md).
+Native signal delivery is implemented at the scheduler-owned activation
+boundary but still needs live Temporal Server acceptance. Native query/update
+delivery, plus versioning, local activities, Nexus, and the remaining SDK
+parity work are tracked as later milestones. The typed definitions and
+deterministic local dispatcher are documented in the [interactive workflow
+reference](reference/interactive-workflows.md).
 
 ## Build and test commands
 

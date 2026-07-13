@@ -1,11 +1,11 @@
 (** Driver process for the two-OCaml-binary live acceptance test.
 
     This executable is a deliberately small, typed harness. It starts the
-    fan-out, timer, continue-as-new, ordinary-retry, heartbeat-detail/retry,
-    parent/child success, parent/child failure, parent/child cancellation,
-    typed-failure, and long-running cancellation scenarios before waiting for
-    any of them, then checks the exact terminal outcomes returned by the public
-    client API. Without
+    fan-out, timer, ordinary-retry, heartbeat-detail/retry,
+    timeout-triggered-retry, parent/child success, parent/child failure,
+    parent/child cancellation, typed-failure, long-running cancellation, and
+    continue-as-new scenarios before waiting for any of them, then checks the
+    exact terminal outcomes returned by the public client API. Without
     [TEMPORAL_TWO_BINARY_LIVE=1] the process exits with a distinct status
     instead of accidentally exercising the in-memory [mock://] backend and
     giving a false live-smoke signal. *)
@@ -410,6 +410,11 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-activity-heartbeat-retry" ~input:"smoke"
         in
+        let* timeout_retry_handle =
+          start_workflow client ~workflow:Definitions.activity_timeout_retry
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-activity-timeout-retry" ~input:"smoke"
+        in
         let* parent_handle =
           start_workflow client ~workflow:Definitions.parent_awaits_child
             ~task_queue:Definitions.task_queue
@@ -441,11 +446,15 @@ let run () =
            run is cancelled; the timer keeps the execution outstanding. The
            heartbeat workflow is also already outstanding here, so its retry
            runs concurrently with the other live server work instead of being
-           mistaken for a sequential local callback. The two child-focused
-           parents and the continuation are likewise started before any wait:
-           one propagates a terminal child failure, the other waits for Core's
-           child cancellation acknowledgement, and the continuation proves
-           that successor waiting remains an explicit client operation. *)
+           mistaken for a sequential local callback. The timeout workflow is
+           also started before the first wait: its first activity callback
+           intentionally outlives its start-to-close lease, so the later exact
+           marker proves Temporal delivered the retry. The two child-focused
+           parents are likewise started before any wait: one propagates a
+           terminal child failure and the other waits for Core's child
+           cancellation acknowledgement. The continuation is also already
+           started, so its successor wait is an explicit client operation
+           rather than a latest-run lookup. *)
         let* () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token
         in
@@ -477,6 +486,11 @@ let run () =
         let* () =
           require_completed "smoke.activity_heartbeat_retry"
             "SMOKE:HEARTBEAT:RETRIED:SMOKE" (Ok heartbeat_retry_result)
+        in
+        let* timeout_retry_result = wait_workflow timeout_retry_handle in
+        let* () =
+          require_completed "smoke.activity_timeout_retry"
+            "SMOKE:TIMEOUT:RETRIED:SMOKE" (Ok timeout_retry_result)
         in
         let* parent_result = wait_workflow parent_handle in
         let* () =

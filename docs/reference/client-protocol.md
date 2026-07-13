@@ -272,13 +272,15 @@ and [`client-wait-response.schema.json`](../schemas/bridge/client-wait-response.
 
 The public client exposes the successor as an opaque-to-codec
 `Temporal.Client.execution` value containing the validated workflow and run
-identity. `Temporal.Client.follow client ~workflow successor` combines that
-identity with the caller's existing client and workflow definition to produce
-a typed exact-run handle. This is not another protocol message: no start or
-lookup is sent to Temporal, and no successor is selected implicitly. The
-operation only checks the local lifecycle bit and the same non-empty,
-NUL-free, 65,536-byte identifier limits used by `start` and `wait`; malformed
-input or a shut-down client is returned as an ordinary `Error.t` result.
+identity and its namespace. `Temporal.Client.follow client ~workflow successor`
+combines that identity with the caller's existing client and workflow
+definition to produce a typed exact-run handle, but first requires the
+successor namespace to equal the client's configured namespace. This is not
+another protocol message: no start or lookup is sent to Temporal, and no
+successor is selected implicitly. The operation only checks the local lifecycle
+bit and the same non-empty, NUL-free, 65,536-byte identifier limits used by
+`start` and `wait`; malformed, cross-namespace, or shut-down-client input is
+returned as an ordinary `Error.t` result.
 
 ## Structured failures
 

@@ -4,8 +4,9 @@
     definition owns the payload codec and the stable Temporal name; a handler
     can therefore decode the same bytes that the future native activation
     bridge will deliver. This module currently provides the typed definition
-    and deterministic in-memory handler path. Native Temporal delivery is a
-    later protocol milestone. *)
+    and deterministic in-memory handler path. Native workflow signal delivery
+    is available when the handler is attached with [Temporal.Worker.workflow];
+    query and update delivery remain separate protocol milestones. *)
 
 (** A validated signal name paired with the type of its input value. *)
 type 'input definition
@@ -34,10 +35,9 @@ module Handler : sig
       its definition and callback. *)
   type t
 
-  (** Builds a handler for [signal]. Signal callbacks may use the same direct
-      style as workflow functions; when the native interaction path is added,
-      suspension will be owned by the workflow scheduler. The current
-      synthetic dispatcher invokes the callback synchronously. *)
+  (** Builds a handler for [signal]. Signal callbacks use the same direct style
+      as workflow functions. The local dispatcher invokes them synchronously;
+      native worker delivery invokes them on the owning workflow scheduler. *)
   val make : 'input definition -> ('input -> (unit, Error.t) result) -> t
 
   (** Convenience alias for [make] that reads naturally at registration sites. *)

@@ -46,7 +46,9 @@ module Handler = struct
     implementation : 'input -> (unit, Error.t) result;
   } -> t
 
-  (** Builds a handler whose callback is associated with [signal]'s codec. *)
+  (** Builds a handler whose callback is associated with [signal]'s codec. The
+      private native worker adapts this existential package to its
+      scheduler-owned signal activation path. *)
   let make signal implementation = Handler { definition = signal; implementation }
 
   (** Registration-friendly alias for [make]. *)

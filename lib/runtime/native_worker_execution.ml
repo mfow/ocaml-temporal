@@ -36,14 +36,34 @@ end
 (** Stable diagnostics deliberately contain no payload bytes or native values. *)
 type error_view = { code : string; path : string; message : string }
 
+(** Runtime signal event and handler aliases kept private to this adapter. *)
+type signal = Execution.signal
+type signal_handler = Execution.signal_handler
+
 (** The public-facing existential registration. Its constructor remains
     private so callers can only produce values through [register]. *)
 type registered_workflow =
   | Workflow :
       ('input, 'output,
        'input -> ('output, Base_error.t) result)
-      Definition.t ->
+      Definition.t * Execution.signal_handler list ->
       registered_workflow
+
+(** Builds the private scheduler callback package without widening the public
+    native worker boundary. *)
+let make_signal_handler = Execution.make_signal_handler
+
+(** Returns the payload sequence retained by the execution runtime. *)
+let signal_input (signal : Execution.signal) = signal.input
+
+(** Returns the sender identity retained by the execution runtime. *)
+let signal_identity (signal : Execution.signal) = signal.identity
+
+(** Returns the signal headers retained by the execution runtime. *)
+let signal_headers (signal : Execution.signal) = signal.headers
+
+(** Returns a handler's stable signal name. *)
+let signal_handler_name = Execution.signal_handler_name
 
 (** One typed execution hidden behind the run-ID map. Both the definition and
     execution share the same input/output type parameters, which prevents a
@@ -104,7 +124,7 @@ type registered_definition =
   | Registered_definition :
       ('input, 'output,
        'input -> ('output, Base_error.t) result)
-      Definition.t ->
+      Definition.t * Execution.signal_handler list ->
       registered_definition
 
 (** Bounds diagnostics that may contain application codec messages before they
@@ -312,8 +332,19 @@ let report level ~operation ?error_kind () =
   with _ -> ()
 
 (** Adds or rejects one definition in the name map. *)
-let add_definition definitions (Workflow definition) =
+let add_definition definitions (Workflow (definition, signal_handlers)) =
   let name = Definition.name definition in
+  let rec validate_signal_names seen = function
+    | [] -> Ok ()
+    | handler :: rest ->
+        let signal_name = signal_handler_name handler in
+        if List.mem signal_name seen then
+          Error
+            (make_error ~path:("$.workflows." ^ name ^ ".signals")
+               "duplicate_signal_handler"
+               ("signal name is registered more than once: " ^ signal_name))
+        else validate_signal_names (signal_name :: seen) rest
+  in
   if Run_map.mem name definitions then
     Error
       (make_error ~path:"$.workflows" "duplicate_workflow"
@@ -322,7 +353,13 @@ let add_definition definitions (Workflow definition) =
     Error
       (make_error ~path:("$.workflows." ^ name) "not_executable"
          "workflow registration has no local implementation")
-  else Ok (Run_map.add name (Registered_definition definition) definitions)
+  else
+    match validate_signal_names [] signal_handlers with
+    | Error error -> Error error
+    | Ok () ->
+        Ok
+          (Run_map.add name (Registered_definition (definition, signal_handlers))
+             definitions)
 
 (** Builds the immutable definition registry before publishing any mutable
     worker state. *)
@@ -693,14 +730,14 @@ module Make (Supervisor : SUPERVISOR) = struct
                       begin
                         match find_definition adapter.definitions init.workflow_type with
                         | Error error -> retire_with_failure adapter activation error
-                        | Ok (Registered_definition definition) ->
+                        | Ok (Registered_definition (definition, signal_handlers)) ->
                             begin
                               match decode_input definition init.arguments with
                               | Error error -> retire_with_failure adapter activation error
                               | Ok input ->
                                   let execution =
                                     Execution.start ~task_queue:adapter.task_queue
-                                      definition input
+                                      ~signal_handlers definition input
                                   in
                                   let run = Run { definition; execution } in
                                   adapter.runs <-
@@ -825,4 +862,5 @@ module Make (Supervisor : SUPERVISOR) = struct
 end
 
 (** Exposes registration without exposing its existential constructor. *)
-let register definition = Workflow definition
+let register ?(signal_handlers = []) definition =
+  Workflow (definition, signal_handlers)

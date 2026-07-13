@@ -13,8 +13,12 @@ type ('input, 'output) handle
 
 (** An exact workflow/run identity returned when a workflow continues as new.
     It contains no codec or client ownership; use [follow] with the original
-    client and typed workflow definition to construct a handle for this run. *)
+    client and typed workflow definition to construct a handle for this run.
+    The namespace is retained so a continuation cannot accidentally be used
+    with a client connected to a different Temporal namespace. *)
 type execution = {
+  (* Namespace that owns the successor execution. *)
+  namespace : string;
   (* Durable workflow identity shared by the original and successor runs. *)
   workflow_id : string;
   (* Server-issued identity of the successor run. *)
@@ -79,9 +83,10 @@ val start :
 (** Rebuilds a typed exact-run handle for a continuation returned by [wait].
     This does not start a workflow or follow a run implicitly: it only combines
     the caller's existing client, the supplied workflow definition's codecs,
-    and the successor identity. Both identity fields must be non-empty,
-    NUL-free, and no more than 65,536 bytes; malformed values are returned as
-    typed defects before any backend operation. *)
+    and the successor identity. The continuation namespace must equal the
+    namespace used to create [client]. All identity fields must be non-empty,
+    NUL-free, and no more than 65,536 bytes; malformed or cross-namespace
+    values are returned as typed defects before any backend operation. *)
 val follow :
   t ->
   workflow:('input, 'output) Workflow.t ->

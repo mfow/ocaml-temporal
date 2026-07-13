@@ -98,6 +98,31 @@ let test_duplicate_workflows () =
          [ Temporal.Worker.workflow definition; Temporal.Worker.workflow definition ]
        ~activities:[] ())
 
+(** Signal handlers are attached to one workflow registration and duplicate
+    names are rejected before the mock or native backend is allocated. This
+    test exercises the public ergonomics without needing a live signal task. *)
+let test_workflow_signal_registration () =
+  let signal =
+    Temporal.Signal.define ~name:"unit.signal" ~input:Temporal.Codec.string
+  in
+  let handler = Temporal.Signal.Handler.make signal (fun _ -> Ok ()) in
+  let calls = Atomic.make 0 in
+  let workflow = unit_workflow calls in
+  let worker =
+    unwrap
+      (Temporal.Worker.create ~target_url:"mock://dispatch"
+         ~namespace:"unit-test" ~task_queue:"unit-test"
+         ~workflows:[ Temporal.Worker.workflow ~signals:[ handler ] workflow ]
+         ~activities:[] ())
+  in
+  unwrap (Temporal.Worker.shutdown worker);
+  expect_error "defect"
+    (Temporal.Worker.create ~target_url:"mock://dispatch"
+       ~namespace:"unit-test" ~task_queue:"unit-test"
+       ~workflows:
+         [ Temporal.Worker.workflow ~signals:[ handler; handler ] workflow ]
+       ~activities:[] ())
+
 (** Duplicate activity names use the same registration invariant as workflows. *)
 let test_duplicate_activities () =
   let calls = Atomic.make 0 in
@@ -207,6 +232,7 @@ let test_follow_continued_as_new_handle () =
   let continuation : string Temporal.Client.terminal_result =
     Temporal.Client.Continued_as_new
       {
+        namespace = "unit-test";
         workflow_id = Temporal.Client.workflow_id started;
         run_id = Temporal.Client.run_id started;
       }
@@ -240,20 +266,43 @@ let test_follow_rejects_malformed_successor_identity () =
     expect_error "defect"
       (Temporal.Client.follow client ~workflow:echo_workflow execution)
   in
-  expect_defect { workflow_id = ""; run_id = "run-1" };
-  expect_defect { workflow_id = "workflow-1"; run_id = "" };
-  expect_defect { workflow_id = "workflow\0001"; run_id = "run-1" };
-  expect_defect { workflow_id = "workflow-1"; run_id = "run\0001" };
+  expect_defect { namespace = "unit-test"; workflow_id = ""; run_id = "run-1" };
+  expect_defect { namespace = "unit-test"; workflow_id = "workflow-1"; run_id = "" };
+  expect_defect
+    { namespace = "unit-test"; workflow_id = "workflow\0001"; run_id = "run-1" };
+  expect_defect
+    { namespace = "unit-test"; workflow_id = "workflow-1"; run_id = "run\0001" };
   let oversized = String.make 65_537 'x' in
-  expect_defect { workflow_id = oversized; run_id = "run-1" };
-  expect_defect { workflow_id = "workflow-1"; run_id = oversized };
+  expect_defect
+    { namespace = "unit-test"; workflow_id = oversized; run_id = "run-1" };
+  expect_defect
+    { namespace = "unit-test"; workflow_id = "workflow-1"; run_id = oversized };
   unwrap (Temporal.Client.shutdown client);
   (* Handle construction observes the same closed-client admission rule as
      [start], [wait], and [cancel]; it must not retain a client graph after
      teardown has begun. *)
   expect_error "bridge"
     (Temporal.Client.follow client ~workflow:echo_workflow
-       { workflow_id = "workflow-1"; run_id = "run-1" })
+       { namespace = "unit-test"; workflow_id = "workflow-1"; run_id = "run-1" })
+
+(** A continuation identity from another namespace is rejected before a typed
+    handle is constructed. This closes the namespace-confusion gap where a
+    caller could combine a client for one Temporal namespace with a successor
+    execution returned by another client. *)
+let test_follow_rejects_cross_namespace_execution () =
+  let client_a =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"namespace-a" ())
+  in
+  expect_error_message_contains "defect" "different namespace"
+    (Temporal.Client.follow client_a ~workflow:echo_workflow
+       {
+         namespace = "namespace-b";
+         workflow_id = "workflow-1";
+         run_id = "run-1";
+       });
+  unwrap (Temporal.Client.shutdown client_a)
 
 (** Cancellation is acknowledged separately from waiting. The mock transport
     records the exact run cancellation, makes repeated requests idempotent,
@@ -399,6 +448,7 @@ let test_native_worker_configuration_boundary () =
 (** Runs all public worker and client regression assertions. *)
 let () =
   test_duplicate_workflows ();
+  test_workflow_signal_registration ();
   test_duplicate_activities ();
   test_remote_registration_is_rejected ();
   test_worker_registration_and_dispatch ();
@@ -406,6 +456,7 @@ let () =
   test_typed_start_and_wait_handle ();
   test_follow_continued_as_new_handle ();
   test_follow_rejects_malformed_successor_identity ();
+  test_follow_rejects_cross_namespace_execution ();
   test_exact_run_cancellation ();
   test_completed_mock_run_is_immutable ();
   test_client_validation_errors ();

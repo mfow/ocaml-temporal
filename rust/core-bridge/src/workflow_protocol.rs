@@ -177,7 +177,40 @@ pub struct WorkflowPriority {
     pub fairness_weight_bits: u32,
 }
 
-/// Normal fields delivered with an ordinary root workflow initialization.
+/// Why Temporal Core created a successor workflow run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinueAsNewInitiator {
+    /// Core supplied no continuation reason (the ordinary initial default).
+    Unspecified,
+    /// The workflow explicitly requested continue-as-new.
+    Workflow,
+    /// Core continued the workflow while applying a retry policy.
+    Retry,
+    /// Core continued the workflow because a cron schedule fired.
+    CronSchedule,
+}
+
+/// Provenance and terminal data attached to a continuation initialization.
+/// Optional failure and payload values are retained independently so a
+/// successor activation cannot silently lose Core's completion metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Continuation {
+    /// Run ID that continued into the current run.
+    pub continued_from_execution_run_id: String,
+    /// Core's reason for creating the successor run.
+    pub initiator: ContinueAsNewInitiator,
+    /// Failure recorded when the previous continuation did not complete.
+    #[serde(deserialize_with = "required_nullable")]
+    pub continued_failure: Option<Failure>,
+    /// Payloads returned by the previous run when it completed.
+    #[serde(deserialize_with = "required_nullable")]
+    pub last_completion_result: Option<Vec<Payload>>,
+}
+
+/// Normal fields delivered with a workflow initialization, including
+/// continuation provenance when Core starts a successor run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeContext {
@@ -208,6 +241,10 @@ pub struct InitializeContext {
     /// Workflow scheduling priority, when supplied by Core.
     #[serde(deserialize_with = "required_nullable")]
     pub priority: Option<WorkflowPriority>,
+    /// Continuation metadata, absent only when all Core continuation fields
+    /// carry their ordinary zero/absent defaults.
+    #[serde(deserialize_with = "required_nullable")]
+    pub continuation: Option<Continuation>,
 }
 
 /// Deployment version responsible for the current workflow task.
@@ -986,6 +1023,18 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                             "fairness key exceeds Core's 64-byte limit",
                         ));
                     }
+                    if let Some(continuation) = &context.continuation {
+                        identifier(
+                            &continuation.continued_from_execution_run_id,
+                            "$.jobs.context.continuation.continued_from_execution_run_id",
+                        )?;
+                        if let Some(failure) = &continuation.continued_failure {
+                            validate_failure(
+                                failure,
+                                "$.jobs.context.continuation.continued_failure",
+                            )?;
+                        }
+                    }
                 }
             }
             ActivationJob::ResolveActivity { result, .. } => match result {
@@ -1327,6 +1376,23 @@ fn payloads_from_core(
         .unwrap_or_else(|| Ok(Vec::new()))
 }
 
+/// Converts an optional Core payload collection without collapsing an absent
+/// value and an explicitly empty completion result.
+fn payloads_option_from_core(
+    value: Option<&api_common::Payloads>,
+) -> Result<Option<Vec<Payload>>, CoreConversionError> {
+    value
+        .map(|payloads| {
+            payloads
+                .payloads
+                .iter()
+                .map(payload_from_core)
+                .collect::<Result<Vec<_>, _>>()
+                .map(Some)
+        })
+        .unwrap_or(Ok(None))
+}
+
 /// Converts semantic payload collections while preserving order.
 fn payloads_to_core(values: &[Payload]) -> Result<api_common::Payloads, CoreConversionError> {
     Ok(api_common::Payloads {
@@ -1529,6 +1595,56 @@ pub(crate) fn failure_to_core(
     })
 }
 
+/// Maps Core's continuation initiator enum without accepting future values.
+fn continuation_initiator_from_core(
+    value: i32,
+) -> Result<ContinueAsNewInitiator, CoreConversionError> {
+    use api_enums::ContinueAsNewInitiator as Core;
+    match Core::try_from(value)
+        .map_err(|_| invalid_core("unknown Core continue-as-new initiator"))?
+    {
+        Core::Unspecified => Ok(ContinueAsNewInitiator::Unspecified),
+        Core::Workflow => Ok(ContinueAsNewInitiator::Workflow),
+        Core::Retry => Ok(ContinueAsNewInitiator::Retry),
+        Core::CronSchedule => Ok(ContinueAsNewInitiator::CronSchedule),
+    }
+}
+
+/// Converts continuation metadata from Core while preserving each optional
+/// failure and completion payload field. Core's ordinary initialization uses
+/// an empty run ID, initiator zero, and absent optional values; only that exact
+/// default is represented as [None] in semantic JSON.
+fn continuation_from_core(
+    value: &core_activation::InitializeWorkflow,
+) -> Result<Option<Continuation>, CoreConversionError> {
+    if value.continued_from_execution_run_id.is_empty()
+        && value.continued_initiator == 0
+        && value.continued_failure.is_none()
+        && value.last_completion_result.is_none()
+    {
+        return Ok(None);
+    }
+    if value.continued_from_execution_run_id.is_empty()
+        || value.continued_from_execution_run_id.len() > MAX_STRING_BYTES
+    {
+        return Err(invalid_core(
+            "Core continuation run ID is empty or exceeds the protocol limit",
+        ));
+    }
+    Ok(Some(Continuation {
+        continued_from_execution_run_id: value.continued_from_execution_run_id.clone(),
+        initiator: continuation_initiator_from_core(value.continued_initiator)?,
+        continued_failure: value
+            .continued_failure
+            .as_ref()
+            .map(failure_from_core)
+            .transpose()?,
+        last_completion_result: payloads_option_from_core(
+            value.last_completion_result.as_ref(),
+        )?,
+    }))
+}
+
 /// Converts one supported Core activity resolution.
 fn activity_resolution_from_core(
     value: &core_activity::ActivityResolution,
@@ -1671,11 +1787,7 @@ fn eviction_reason_from_core(value: i32) -> Result<EvictionReason, CoreConversio
 fn validate_initialize_subset(
     value: &core_activation::InitializeWorkflow,
 ) -> Result<(), CoreConversionError> {
-    if !value.continued_from_execution_run_id.is_empty()
-        || value.continued_initiator != 0
-        || value.continued_failure.is_some()
-        || value.last_completion_result.is_some()
-        || value.retry_policy.is_some()
+    if value.retry_policy.is_some()
         || !value.cron_schedule.is_empty()
         || value.workflow_execution_expiration_time.is_some()
         || value
@@ -1780,6 +1892,7 @@ pub fn activation_from_core(
                                 fairness_key: priority.fairness_key.clone(),
                                 fairness_weight_bits: priority.fairness_weight.to_bits(),
                             }),
+                            continuation: continuation_from_core(value)?,
                         }),
                     })
                 }

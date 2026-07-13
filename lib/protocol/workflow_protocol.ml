@@ -7,19 +7,6 @@ type workflow_execution = { workflow_id : string; run_id : string }
 type namespaced_workflow_execution = { namespace : string; workflow_id : string; run_id : string }
 type workflow_priority = { priority_key : int; fairness_key : string; fairness_weight_bits : int64 }
 
-type initialize_context = {
-  headers : (string * payload) list;
-  identity : string;
-  parent_workflow : namespaced_workflow_execution option;
-  workflow_execution_timeout : duration option;
-  workflow_run_timeout : duration option;
-  workflow_task_timeout : duration option;
-  first_execution_run_id : string;
-  start_time : timestamp option;
-  root_workflow : workflow_execution option;
-  priority : workflow_priority option;
-}
-
 type worker_deployment_version = { deployment_name : string; build_id : string }
 
 type suggest_continue_as_new_reason =
@@ -80,6 +67,33 @@ type failure = {
   encoded_attributes : payload option;
   cause : failure option;
   info : failure_info;
+}
+
+type continue_as_new_initiator =
+  | Continue_as_new_unspecified
+  | Continue_as_new_workflow
+  | Continue_as_new_retry
+  | Continue_as_new_cron_schedule
+
+type continuation = {
+  continued_from_execution_run_id : string;
+  initiator : continue_as_new_initiator;
+  continued_failure : failure option;
+  last_completion_result : payload list option;
+}
+
+type initialize_context = {
+  headers : (string * payload) list;
+  identity : string;
+  parent_workflow : namespaced_workflow_execution option;
+  workflow_execution_timeout : duration option;
+  workflow_run_timeout : duration option;
+  workflow_task_timeout : duration option;
+  first_execution_run_id : string;
+  start_time : timestamp option;
+  root_workflow : workflow_execution option;
+  priority : workflow_priority option;
+  continuation : continuation option;
 }
 
 (** Computes the public retryability flag without discarding an application
@@ -680,6 +694,57 @@ let rec failure path json =
   let* info = failure_info (path ^ ".info") info_json in
   Ok { message; source; stack_trace; encoded_attributes; cause; info }
 
+(** Decodes the Core enum describing why a successor run was created. *)
+let continuation_initiator path = function
+  | "unspecified" -> Ok Continue_as_new_unspecified
+  | "workflow" -> Ok Continue_as_new_workflow
+  | "retry" -> Ok Continue_as_new_retry
+  | "cron_schedule" -> Ok Continue_as_new_cron_schedule
+  | _ -> Error (invalid path "unknown continue-as-new initiator")
+
+(** Renders the Core continuation initiator using the closed JSON spelling. *)
+let continuation_initiator_string = function
+  | Continue_as_new_unspecified -> "unspecified"
+  | Continue_as_new_workflow -> "workflow"
+  | Continue_as_new_retry -> "retry"
+  | Continue_as_new_cron_schedule -> "cron_schedule"
+
+(** Decodes continuation provenance without collapsing optional failure or
+    completion payloads into an absent value. *)
+let continuation path json =
+  let* entries =
+    exact_object path
+      [
+        "continued_from_execution_run_id";
+        "initiator";
+        "continued_failure";
+        "last_completion_result";
+      ]
+      json
+  in
+  let* run_id_json = field path "continued_from_execution_run_id" entries in
+  let* continued_from_execution_run_id =
+    identifier (path ^ ".continued_from_execution_run_id") run_id_json
+  in
+  let* initiator_json = field path "initiator" entries in
+  let* initiator_name = string (path ^ ".initiator") initiator_json in
+  let* initiator = continuation_initiator (path ^ ".initiator") initiator_name in
+  let* failure_json = field path "continued_failure" entries in
+  let* continued_failure = nullable (path ^ ".continued_failure") failure failure_json in
+  let* result_json = field path "last_completion_result" entries in
+  let* last_completion_result =
+    nullable (path ^ ".last_completion_result")
+      (fun list_path list_json -> list list_path payload list_json)
+      result_json
+  in
+  Ok
+    {
+      continued_from_execution_run_id;
+      initiator;
+      continued_failure;
+      last_completion_result;
+    }
+
 (** Encodes the supported failure-info union. *)
 let rec failure_info_json = function
   | Application { type_name; non_retryable; details } ->
@@ -1017,6 +1082,7 @@ let initialize_context path json =
       "start_time";
       "root_workflow";
       "priority";
+      "continuation";
     ]
   in
   let* entries = exact_object path fields json in
@@ -1041,6 +1107,8 @@ let initialize_context path json =
   let* root_workflow = nullable (path ^ ".root_workflow") workflow_execution root_json in
   let* priority_json = field path "priority" entries in
   let* priority = nullable (path ^ ".priority") workflow_priority priority_json in
+  let* continuation_json = field path "continuation" entries in
+  let* continuation = nullable (path ^ ".continuation") continuation continuation_json in
   Ok
     {
       headers;
@@ -1053,6 +1121,7 @@ let initialize_context path json =
       start_time;
       root_workflow;
       priority;
+      continuation;
     }
 
 (** Encodes a first-workflow initialization context. *)
@@ -1074,6 +1143,31 @@ let initialize_context_json value =
     | None -> `Null
     | Some value -> `Assoc [ ("priority_key", `Int value.priority_key); ("fairness_key", `String value.fairness_key); ("fairness_weight_bits", `Intlit (Int64.to_string value.fairness_weight_bits)) ]
   in
+  let* continuation =
+    match value.continuation with
+    | None -> Ok `Null
+    | Some value ->
+        let* continued_failure =
+          match value.continued_failure with
+          | None -> Ok `Null
+          | Some failure -> failure_json failure
+        in
+        let* last_completion_result =
+          match value.last_completion_result with
+          | None -> Ok `Null
+          | Some values -> payloads_json values
+        in
+        Ok
+          (`Assoc
+            [
+              ( "continued_from_execution_run_id",
+                `String value.continued_from_execution_run_id );
+              ( "initiator",
+                `String (continuation_initiator_string value.initiator) );
+              ("continued_failure", continued_failure);
+              ("last_completion_result", last_completion_result);
+            ])
+  in
   Ok
     (`Assoc
       [
@@ -1090,6 +1184,7 @@ let initialize_context_json value =
           | Some value -> time_json value.seconds value.nanoseconds );
         ("root_workflow", root_workflow);
         ("priority", priority);
+        ("continuation", continuation);
       ])
 
 (** Maps a stable continue-as-new suggestion spelling. *)

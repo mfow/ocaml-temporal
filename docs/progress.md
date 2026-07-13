@@ -14,6 +14,24 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Scheduler-owned native workflow signal handlers
+
+Status: focused OCaml runtime, worker-adapter, and public registration tests
+pass locally; no live Temporal Server or GitHub Actions success is claimed for
+this slice.
+
+`Temporal.Worker.workflow` can now attach typed `Temporal.Signal.Handler.t`
+values to a workflow registration. The native semantic `SignalWorkflow` job
+retains its ordered payloads, sender identity, and headers, then queues the
+matching handler on that execution's deterministic scheduler. The public
+handler deliberately accepts exactly one payload; zero or multiple payloads,
+missing registrations, codec failures, and callback errors fail the workflow
+through the typed non-retryable path instead of silently acknowledging an
+event. Rust never calls an OCaml closure. Focused adapter tests prove scheduler
+delivery, deterministic `Workflow.now`, metadata retention, and unhandled
+signal cleanup. Native query/update response records and a live Compose signal
+round trip remain roadmap work.
+
 ## 2026-07-13: Typed continue-as-new successor handles
 
 Status: locally verified; no live Temporal Server acceptance is claimed for
@@ -27,8 +45,12 @@ The helper performs no implicit start or latest-run lookup, retains the
 workflow codecs and client ownership, rejects malformed identifiers as typed
 defects, and refuses to construct a handle after client shutdown. Unit tests
 cover codec-preserving exact-run handle reconstruction, malformed successor
-identities, and the closed-client lifecycle boundary. Live continued-as-new
-coverage remains pending in the acceptance roadmap.
+identities, cross-namespace successor rejection, and the closed-client
+lifecycle boundary. Live continued-as-new coverage remains pending in the
+acceptance roadmap. The private activation protocol also preserves Core
+continuation provenance, prior-run failure, and last-completion payload
+metadata through both Rust and OCaml focused tests; no live server claim is
+made for those fields.
 
 ## 2026-07-13: Complete nine-scenario Temporal smoke evidence (#210)
 

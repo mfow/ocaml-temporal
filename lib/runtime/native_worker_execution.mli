@@ -51,6 +51,32 @@ type error_view = { code : string; path : string; message : string }
     registry to contain heterogeneous workflow functions. *)
 type registered_workflow
 
+(** The validated signal event and private handler types used by a registered
+    workflow. They are aliases to the execution runtime and expose no
+    continuation or native handle. *)
+type signal = Execution.signal
+type signal_handler = Execution.signal_handler
+
+(** Builds a private handler that is invoked only on its workflow scheduler. *)
+val make_signal_handler :
+  name:string ->
+  dispatch:(signal -> (unit, Temporal_base.Error.t) result) ->
+  signal_handler
+
+(** Returns the one payload sequence delivered with a signal. The native public
+    adapter uses this accessor to apply its exact-one-payload policy. *)
+val signal_input : signal -> Temporal_base.Codec.payload list
+
+(** Returns the validated sender identity retained with a signal. *)
+val signal_identity : signal -> string
+
+(** Returns the validated signal headers in their source order. *)
+val signal_headers :
+  signal -> (string * Temporal_base.Codec.payload) list
+
+(** Returns a handler's stable Temporal name for registration validation. *)
+val signal_handler_name : signal_handler -> string
+
 (** One worker-loop outcome. [Rejected] means a valid lease was completed with
     a non-retryable bridge failure, so the caller can log the typed rejection
     and continue polling. A supervisor error remains a [result] error because
@@ -122,6 +148,7 @@ end
     registry can report a typed configuration error at [create] rather than
     silently pretending they are executable. *)
 val register :
+  ?signal_handlers:signal_handler list ->
   ('input, 'output,
    'input -> ('output, Temporal_base.Error.t) result)
   Temporal_base.Definition.t ->

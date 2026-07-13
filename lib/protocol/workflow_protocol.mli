@@ -28,22 +28,6 @@ type workflow_priority = {
   fairness_weight_bits : int64;
 }
 
-(** Normal initialization fields present on an ordinary first workflow task.
-    Grouping them keeps legacy fixtures readable while preserving every value
-    needed to execute a basic root workflow. *)
-type initialize_context = {
-  headers : (string * payload) list;
-  identity : string;
-  parent_workflow : namespaced_workflow_execution option;
-  workflow_execution_timeout : duration option;
-  workflow_run_timeout : duration option;
-  workflow_task_timeout : duration option;
-  first_execution_run_id : string;
-  start_time : timestamp option;
-  root_workflow : workflow_execution option;
-  priority : workflow_priority option;
-}
-
 (** Worker deployment identity attached to the current workflow task. *)
 type worker_deployment_version = { deployment_name : string; build_id : string }
 
@@ -111,6 +95,42 @@ type failure = {
   encoded_attributes : payload option;
   cause : failure option;
   info : failure_info;
+}
+
+(** How Core created a successor workflow run. The value is retained even
+    though the public workflow API does not currently expose continuation
+    provenance. *)
+type continue_as_new_initiator =
+  | Continue_as_new_unspecified
+  | Continue_as_new_workflow
+  | Continue_as_new_retry
+  | Continue_as_new_cron_schedule
+
+(** Provenance and terminal data attached to a continuation initialization.
+    [None] means Core supplied the ordinary zero/absent defaults. The nested
+    fields remain optional because Core can carry a continuation failure or
+    completion payload independently of the initiator. *)
+type continuation = {
+  continued_from_execution_run_id : string;
+  initiator : continue_as_new_initiator;
+  continued_failure : failure option;
+  last_completion_result : payload list option;
+}
+
+(** Initialization fields delivered by Core, including optional continuation
+    provenance for a successor run. *)
+type initialize_context = {
+  headers : (string * payload) list;
+  identity : string;
+  parent_workflow : namespaced_workflow_execution option;
+  workflow_execution_timeout : duration option;
+  workflow_run_timeout : duration option;
+  workflow_task_timeout : duration option;
+  first_execution_run_id : string;
+  start_time : timestamp option;
+  root_workflow : workflow_execution option;
+  priority : workflow_priority option;
+  continuation : continuation option;
 }
 
 (** Reports whether a failure is non-retryable according to Temporal's

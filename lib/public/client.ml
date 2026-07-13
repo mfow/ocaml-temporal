@@ -3,6 +3,8 @@
 (** The client state is intentionally opaque in the public interface. A single
     backend value owns all native resources for this SDK instance. *)
 type t = {
+  (* The validated Temporal namespace used for every operation on this client. *)
+  namespace : string;
   (* The backend owns the transport and native supervisor graph; no other
      client field retains a native handle. *)
   backend : Backend.client;
@@ -38,6 +40,8 @@ type ('input, 'output) handle = {
     turn this wire-level identity back into a handle, so the output codec is
     never guessed from an untyped run ID. *)
 type execution = {
+  (* Namespace that owns the successor execution. *)
+  namespace : string;
   (* Durable workflow identity shared by the original and successor runs. *)
   workflow_id : string;
   (* Server-issued identity of the successor run. *)
@@ -94,6 +98,7 @@ let create ?(identity = default_identity) ~target_url ~namespace () =
           Result.map
             (fun backend ->
               {
+                namespace;
                 backend;
                 closed = Atomic.make false;
                 shutdown_mutex = Mutex.create ();
@@ -170,18 +175,28 @@ let start client ?request_id ~workflow ~task_queue ~id ~input () =
     terminal result for the original run; this operation validates that
     identity at the same boundary as [start], retains the caller's client and
     supplied workflow codecs, and leaves the exact-run choice explicit to the
-    caller. *)
-let follow client ~workflow ({ workflow_id; run_id } : execution) =
+    caller. Namespace equality is checked before constructing a handle so an
+    execution returned by one client cannot be waited through another client's
+    namespace. *)
+let follow client ~workflow ({ namespace; workflow_id; run_id } : execution) =
   if Atomic.get client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
   else
-    match validate_name "successor workflow id" workflow_id with
+    match validate_name "successor namespace" namespace with
     | Error error -> Error error
     | Ok () -> (
-        match validate_name "successor run id" run_id with
-        | Error error -> Error error
-        | Ok () -> Ok { client; workflow; workflow_id; run_id })
+        if not (String.equal namespace client.namespace) then
+          Error
+            (Error.defect
+               ~message:"successor execution belongs to a different namespace")
+        else
+          match validate_name "successor workflow id" workflow_id with
+          | Error error -> Error error
+          | Ok () -> (
+              match validate_name "successor run id" run_id with
+              | Error error -> Error error
+              | Ok () -> Ok { client; workflow; workflow_id; run_id }))
 
 (** Decodes a completed payload and maps terminal failures without exposing the
     private backend constructors. *)
@@ -203,7 +218,9 @@ let wait handle =
       | Backend.Terminated error -> Ok (Terminated error)
       | Backend.Timed_out error -> Ok (Timed_out error)
       | Backend.Continued_as_new { workflow_id; run_id } ->
-          Ok (Continued_as_new { workflow_id; run_id }))
+          Ok
+            (Continued_as_new
+               { namespace = handle.client.namespace; workflow_id; run_id }))
 
 (** Validates cancellation metadata before it reaches the backend. The length
     limit protects the JSON bridge and matches the Rust-side bound; NUL is

@@ -298,6 +298,61 @@ let activity_heartbeat_retry =
           Temporal.Activity.execute ~heartbeat_timeout
             ~retry_policy:policy heartbeat_retry_activity seed)
 
+(** The start-to-close timeout for the timeout-only retry scenario. The first
+    activity attempt intentionally runs longer than this value, so the second
+    result can only be produced after Temporal observes the timeout and applies
+    the workflow's retry policy. *)
+let timeout_retry_start_to_close_timeout = Temporal.Duration.of_ms 500L
+
+(** Delay used by the first timeout-retry attempt. It is deliberately several
+    times longer than [timeout_retry_start_to_close_timeout] while remaining
+    short enough for the bounded Compose driver timeout. This sleep is activity
+    code, not workflow code, so it cannot affect deterministic replay. *)
+let timeout_retry_first_attempt_sleep_seconds = 1.5
+
+(** Counts executions of the timeout-only activity in the worker process. A
+    fresh Compose worker is created for each acceptance run, and the counter is
+    never read by workflow code; it only gives the activity a test-local way to
+    distinguish the intentionally slow first callback from Temporal's retry. *)
+let timeout_retry_attempts = Atomic.make 0
+
+(** Succeeds too late on its first callback for the configured start-to-close
+    lease, then returns a distinct marker on the retry. The first callback does
+    not return an application error: if the timeout path is absent, Temporal
+    would accept its late success and the driver's exact second-attempt marker
+    assertion would fail. *)
+let timeout_retry_activity =
+  Temporal.Activity.define ~name:"smoke.timeout_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
+      let attempt = Atomic.fetch_and_add timeout_retry_attempts 1 + 1 in
+      match attempt with
+      | 1 ->
+          Unix.sleepf timeout_retry_first_attempt_sleep_seconds;
+          Ok "SMOKE:TIMEOUT:ATTEMPT:1"
+      | 2 -> Ok ("SMOKE:TIMEOUT:RETRIED:" ^ String.uppercase_ascii input)
+      | attempt ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "timeout retry activity received unexpected attempt %d"
+                    attempt)))
+
+(** Schedules [timeout_retry_activity] with a short start-to-close lease and
+    the bounded two-attempt policy. The activity's late first success makes the
+    final marker a server-visible proof that a timeout, rather than an
+    application failure returned by the callback, caused the retry. *)
+let activity_timeout_retry =
+  Temporal.Workflow.define ~name:"smoke.activity_timeout_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match retry_policy with
+      | Error error -> Error error
+      | Ok policy ->
+          Temporal.Activity.execute
+            ~start_to_close_timeout:timeout_retry_start_to_close_timeout
+            ~retry_policy:policy ~do_not_eagerly_execute:true
+            timeout_retry_activity seed)
+
 (** A child workflow that waits on a short durable timer before deriving its
     result entirely from its input. The timer is deliberately inside the child
     rather than the parent so the live scenario exercises child start and

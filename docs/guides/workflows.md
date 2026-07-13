@@ -681,11 +681,12 @@ match Temporal.Client.wait handle with
 
 `follow` is local handle construction; it does not start a workflow, perform a
 second server lookup, or silently choose the latest run. It validates the
-successor's workflow and run IDs, retains the original client's ownership and
-the supplied workflow's codecs, and returns a typed error if the client has
-already been shut down or the identity is malformed. The caller therefore
-chooses explicitly whether to observe one successor, build a loop over a chain,
-or stop after the original run.
+successor's namespace, workflow, and run IDs, rejects a successor from a
+different client namespace, retains the original client's ownership and the
+supplied workflow's codecs, and returns a typed error if the client has already
+been shut down or the identity is malformed. The caller therefore chooses
+explicitly whether to observe one successor, build a loop over a chain, or
+stop after the original run.
 
 ## 10. Validate locally
 

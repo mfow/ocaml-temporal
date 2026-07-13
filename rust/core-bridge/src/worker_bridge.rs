@@ -1034,28 +1034,60 @@ impl PollLanes {
         run_id: &str,
         reason: &'static str,
     ) -> Result<(), WorkerBridgeError> {
+        // Retire the ledger lease *before* the Core completion await.
+        //
+        // Failing an activation causes Core to schedule a follow-up cache
+        // eviction for the same run_id. That eviction can be published by the
+        // background poll lane while this rejection is still in flight. If the
+        // run were still recorded in the ledger at that moment, the poll lane
+        // would classify the legitimate eviction as `Admission::Duplicate` and
+        // raise a terminal `PollLaneError::DuplicateIdentity`, surfacing as a
+        // fatal `STATUS_WORKER` from an otherwise healthy poll. Retiring first
+        // guarantees the eviction is admitted as a new obligation instead.
+        //
+        // `retire_rejected_workflow` both validates that the run is leased and
+        // removes it, so it replaces the earlier lease check. Rejection retires
+        // the lease unconditionally — even when Core rejects the generated
+        // failure — so performing the retirement up front does not change the
+        // ownership outcome: the run is retired exactly once regardless of the
+        // Core result. This mirrors the retire-before-await ordering already
+        // used by the dispose queue drain in
+        // `force_complete_outstanding_for_dispose`.
         self.ledger
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .ensure_workflow_leased(run_id)
+            .retire_rejected_workflow(run_id)
             .map_err(WorkerBridgeError::Completion)?;
         let completion = WorkflowActivationCompletion::fail(
             run_id,
             workflow_rejection_message(reason).into(),
             Some(WorkflowTaskFailedCause::WorkflowWorkerUnhandledFailure),
         );
-        let core_result = self
-            .worker
-            .complete_workflow_activation(completion)
-            .await
-            .map_err(|error| WorkerBridgeError::CoreWorkflow(error.to_string()));
-        let ledger_result = self
-            .ledger
+        // Record the ledger state at the exact handoff to Core. The retirement
+        // above must already have removed this run, so a correct ordering
+        // always probes `false`. A regression that retired after this await
+        // would probe `true`, deterministically failing the ordering test.
+        #[cfg(test)]
+        self.ledger
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .retire_rejected_workflow(run_id)
-            .map_err(WorkerBridgeError::Completion);
-        core_result.and(ledger_result)
+            .probe_reject_completion(run_id);
+        self.worker
+            .complete_workflow_activation(completion)
+            .await
+            .map_err(|error| WorkerBridgeError::CoreWorkflow(error.to_string()))
+    }
+
+    /// Test-only view of the reject-completion ordering probes recorded by the
+    /// shared ledger. Each entry is `false` when the corresponding rejection
+    /// retired its lease before handing the failure to Core.
+    #[cfg(test)]
+    pub(crate) fn reject_completion_probes(&self) -> Vec<bool> {
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .reject_completion_probes()
+            .to_vec()
     }
 
     /// Fails a remote activity task that semantic conversion could not expose.
@@ -1436,6 +1468,15 @@ pub struct TaskLedger {
     /// tombstones, these are bounded by the identities seen in one disposal
     /// window and are cleared after all producers stop.
     retired_activities: HashSet<Vec<u8>>,
+    /// Test-only trace of whether each rejected run was still recorded in the
+    /// ledger at the instant its rejection failure was handed to Core. The
+    /// reject path must retire the lease *before* that completion, because the
+    /// completion is what makes Core schedule the follow-up cache eviction for
+    /// the same run_id; an entry of `true` would mean the eviction could be
+    /// admitted as a spurious duplicate. See
+    /// `PollLanes::reject_workflow_delivery_with_reason`.
+    #[cfg(test)]
+    reject_completion_probes: Vec<bool>,
 }
 
 /// Mutable delivery state associated with one activity completion debt.
@@ -1454,7 +1495,24 @@ impl TaskLedger {
             activities: HashMap::new(),
             retired_workflows: HashSet::new(),
             retired_activities: HashSet::new(),
+            #[cfg(test)]
+            reject_completion_probes: Vec::new(),
         }
+    }
+
+    /// Records whether `run_id` is still an outstanding workflow obligation at
+    /// the moment its rejection failure is about to be sent to Core. Used only
+    /// by tests to assert the retire-before-complete ordering deterministically.
+    #[cfg(test)]
+    fn probe_reject_completion(&mut self, run_id: &str) {
+        self.reject_completion_probes
+            .push(self.workflows.contains_key(run_id));
+    }
+
+    /// Returns the recorded reject-completion ordering probes for assertions.
+    #[cfg(test)]
+    fn reject_completion_probes(&self) -> &[bool] {
+        &self.reject_completion_probes
     }
 
     /// Records one workflow activation before its delivery to OCaml.

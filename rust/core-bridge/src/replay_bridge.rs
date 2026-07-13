@@ -525,6 +525,14 @@ impl ReplayWorker {
     pub(crate) fn abort_workflow_lane_for_test(&mut self) {
         self.lanes.abort_workflow_lane_for_test();
     }
+
+    /// Exposes the ledger's reject-completion ordering probes so a test can
+    /// assert that each rejection retired its lease before Core was asked to
+    /// fail the activation.
+    #[cfg(test)]
+    pub(crate) fn reject_completion_probes(&self) -> Vec<bool> {
+        self.lanes.reject_completion_probes()
+    }
 }
 
 #[cfg(test)]

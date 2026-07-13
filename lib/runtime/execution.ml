@@ -325,13 +325,19 @@ let activate execution jobs =
           else (
             if not execution.terminal then run_scheduler execution;
             let commands = Workflow_context_store.take_commands execution.context in
-            (* Continue-as-new is emitted by a private terminal effect rather
-               than [emit_terminal], so finalize the execution after the
-               scheduler has stopped. This prevents a later activation from
-               reusing a run that Core has already replaced. *)
+            (* Terminal commands emitted through [terminate] (continue-as-new or
+               a Fail_workflow from a failed continue-as-new encode) do not go
+               through [emit_terminal], so finalize here after the scheduler
+               has stopped. Any terminal command seals the run so a later
+               activation cannot append a second terminal. *)
             if
               List.exists
-                (function Activation.Continue_as_new _ -> true | _ -> false)
+                (function
+                  | Activation.Complete_workflow _
+                  | Fail_workflow _
+                  | Cancel_workflow_execution
+                  | Continue_as_new _ -> true
+                  | _ -> false)
                 commands
             then (
               execution.terminal <- true;

@@ -627,7 +627,10 @@ let worker_complete_activity_json runtime input =
 
 (** Validates and submits one heartbeat for a currently leased activity. Rust
     checks the opaque token against the outstanding ledger but does not retire
-    it, because terminal completion remains a separate operation. *)
+    it, because terminal completion remains a separate operation. The result is
+    deliberately an acknowledgement only: pinned Temporal Core reports
+    cancellation, pause, and reset flags asynchronously in a later Cancel task
+    rather than fabricating synchronous status here. *)
 let worker_record_activity_heartbeat_json runtime input =
   bridge_call "worker_record_activity_heartbeat_json" (fun () ->
       Result.map (fun _ -> ())

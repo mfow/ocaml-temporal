@@ -56,12 +56,23 @@ type registered_activity =
 (** Completion classes exposed in the small private outcome summary. *)
 type completion_kind = Succeeded | Failed | Cancelled
 
+(** Cancellation facts copied from Core alongside a [Cancelled] completion.
+    Keeping this optional metadata on the private outcome lets worker-loop
+    instrumentation observe pause/reset/cancel distinctions without placing
+    them in the Temporal failure payload or pretending that a heartbeat call
+    returned synchronously. *)
+type cancellation_details = Protocol.cancellation_details
+
 (** One serialized adapter transaction result. The opaque token itself stays
     inside the supervisor and pending-lease map; only the activity type and
     terminal class are exposed for safe metrics and logs. *)
 type outcome =
   | Not_ready
-  | Completed of { activity_type : string option; kind : completion_kind }
+  | Completed of {
+      activity_type : string option;
+      kind : completion_kind;
+      cancellation_details : cancellation_details option;
+    }
   | Rejected of {
       activity_type : string option;
       error : error_view;
@@ -96,7 +107,10 @@ module Name_map = Map.Make (String)
     task carries the original adapter diagnostic so the caller can identify a
     bad registration or payload without inspecting the completion bytes. *)
 type accepted_result =
-  | Completed_result of completion_kind
+  | Completed_result of {
+      kind : completion_kind;
+      cancellation_details : cancellation_details option;
+    }
   | Rejected_result of error_view
 
 type lease = {
@@ -601,9 +615,15 @@ module Make (Supervisor : SUPERVISOR) = struct
     | Accepted ->
         adapter.leases <- Token_map.remove lease.token adapter.leases;
         begin match lease.accepted_result with
-        | Completed_result kind ->
+        | Completed_result { kind; cancellation_details } ->
             report Logs.Debug ~operation:"activity_task_completed" ();
-            Ok (Completed { activity_type = lease.activity_type; kind })
+            Ok
+              (Completed
+                 {
+                   activity_type = lease.activity_type;
+                   kind;
+                   cancellation_details;
+                 })
         | Rejected_result error ->
             report Logs.Warning ~operation:"activity_task_rejected"
               ~error_kind:error.code ();
@@ -725,7 +745,11 @@ module Make (Supervisor : SUPERVISOR) = struct
                                   enqueue_and_finish adapter ~token
                                     ~activity_type ~completion
                                     ~accepted_result:
-                                      (Completed_result Succeeded))))))
+                                    (Completed_result
+                                       {
+                                         kind = Succeeded;
+                                         cancellation_details = None;
+                                       }))))))
     in
     try process ()
     with exception_ ->
@@ -733,8 +757,9 @@ module Make (Supervisor : SUPERVISOR) = struct
         (exception_error ~path:"$.implementation" exception_)
 
   (** Converts a cancellation task into a canceled completion. Cancellation has
-      no activity type in the native task shape, so the outcome leaves that
-      optional diagnostic field unset. *)
+      no activity type in the native task shape, but its independent Core
+      details are retained on the private outcome for instrumentation. They
+      remain metadata rather than being copied into the Temporal failure. *)
   let process_cancel adapter token (cancel : Protocol.activity_cancel) =
     let completion =
       Protocol.
@@ -744,7 +769,9 @@ module Make (Supervisor : SUPERVISOR) = struct
         }
     in
     enqueue_and_finish adapter ~token ~activity_type:None ~completion
-      ~accepted_result:(Completed_result Cancelled)
+      ~accepted_result:
+        (Completed_result
+           { kind = Cancelled; cancellation_details = cancel.details })
 
   (** Processes one decoded task after copying its token. The extra empty-token
       check protects the adapter if a test or future supervisor bypasses the

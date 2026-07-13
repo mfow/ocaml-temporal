@@ -110,10 +110,15 @@ payload representation as task inputs and completion outputs. The OCaml and
 Rust validators reject unknown or duplicate object members, malformed base64,
 empty tokens, and payloads outside the shared size and metadata rules. The Rust
 bridge checks the token against its outstanding-task ledger before handing the
-heartbeat to Temporal Core; it does not retire the lease. The adapter must
-later submit a terminal completion, including a `Cancelled` result when it
-receives a cancellation task; only that terminal completion path removes the
-token from the ledger.
+heartbeat to Temporal Core; it does not retire the lease. The pinned Core
+`record_activity_heartbeat` API is fire-and-forget, so this operation returns
+only an acknowledgement. If Core's heartbeat response reports
+`cancel_requested`, `activity_paused`, or `activity_reset`, the worker lane
+delivers those facts asynchronously in a later `ActivityTask::Cancel`; no
+synchronous status is invented at the heartbeat call boundary. The adapter
+must later submit a terminal completion, including a `Cancelled` result when
+it receives that cancellation task; only that terminal completion path removes
+the token from the ledger.
 
 The schema is [`activity-heartbeat.schema.json`](../schemas/bridge/activity-heartbeat.schema.json).
 The focused bilateral tests are
@@ -141,9 +146,10 @@ activity merely because submission failed.
 
 A task with `variant.kind = "cancel"` does not invoke user activity code. The
 adapter maps its stable reason to a `Cancelled` completion with the standard
-Temporal `Canceled` failure. The independent cancellation flags remain task
-metadata and are not copied into an application payload. A heartbeat is
-non-terminal and therefore cannot acknowledge cancellation or completion by
+Temporal `Canceled` failure and retains the independent flags on its private
+OCaml outcome metadata for instrumentation. The flags are not copied into an
+application payload or derived from the heartbeat acknowledgement. A heartbeat
+is non-terminal and therefore cannot acknowledge cancellation or completion by
 itself.
 
 Cancellation is an update on the start task's token, not a second completion

@@ -1425,7 +1425,10 @@ impl Runtime {
 
     /// Strictly validates and records progress for one leased remote activity.
     /// A heartbeat is not terminal, so the semantic task map and native ledger
-    /// remain leased for the later completion or cancellation path.
+    /// remain leased for the later completion or cancellation path. The pinned
+    /// Core API is intentionally fire-and-forget: cancellation, pause, and
+    /// reset flags from the server arrive later as an `ActivityTask::Cancel`,
+    /// never as a fabricated synchronous result from this operation.
     fn record_activity_heartbeat(&mut self, input: &[u8]) -> Operation {
         let text = decode_semantic_input(input)?;
         let semantic = activity_protocol::decode_heartbeat(text).map_err(protocol_failure)?;
@@ -3024,6 +3027,11 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_worker_complete_activity_json(
 }
 
 /// Validate and submit one remote activity heartbeat JSON document.
+///
+/// Success is an acknowledgement with an empty value. Temporal Core reports
+/// any cancellation, pause, or reset discovered while processing this
+/// heartbeat asynchronously through a later activity poll, whose
+/// `ActivityTask::Cancel` document retains the independent detail flags.
 ///
 /// # Safety
 ///

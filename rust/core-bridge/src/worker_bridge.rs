@@ -1003,6 +1003,9 @@ impl PollLanes {
     /// Records progress for a leased activity without retiring its ledger
     /// entry. Core performs any batching and network work internally; the
     /// bridge only checks ownership before handing over the owned protobuf.
+    /// The pinned Core API does not return heartbeat response flags here:
+    /// cancellation, pause, and reset are delivered asynchronously as a later
+    /// `ActivityTask::Cancel` and therefore cannot be reported synchronously.
     pub fn record_activity_heartbeat(
         &self,
         heartbeat: ActivityHeartbeat,

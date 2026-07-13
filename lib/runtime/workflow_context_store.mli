@@ -153,11 +153,11 @@ val terminate : t -> Activation.command -> 'value
 val continue_as_new :
   t -> workflow_type:string -> input:Temporal_base.Codec.payload -> 'value
 
-(** Returns buffered commands in emission order and atomically clears them. *)
 (** True when the pending command buffer already holds a terminal workflow
     command such as complete, fail, cancel, or continue-as-new. *)
 val has_buffered_terminal : t -> bool
 
+(** Returns buffered commands in emission order and atomically clears them. *)
 val take_commands : t -> Activation.command list
 
 (** Closes the scheduler and removes all saved activity, child workflow, and

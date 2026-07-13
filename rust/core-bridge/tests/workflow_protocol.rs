@@ -909,7 +909,7 @@ fn accepts_core_child_cancellation_before_start_without_fabricating_run_id() {
                     workflow_type: Some(api_common::WorkflowType {
                         name: "child".to_owned(),
                     }),
-                    initiated_event_id: 0,
+                    initiated_event_id: 1,
                     started_event_id: 0,
                     retry_state: api_enums::RetryState::NonRetryableFailure as i32,
                 },

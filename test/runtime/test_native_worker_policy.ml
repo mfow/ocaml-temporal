@@ -98,8 +98,41 @@ let test_terminal_cleanup_preserves_original_error () =
   if exception_result <> original then
     failwith "cleanup exception replaced the original adapter error"
 
+(** Proves a re-entrant same-Domain [shutdown] never clears the shared [closed]
+    stop flag, reproducing the documented multi-caller deadlock interleaving:
+
+    1. Domain E calls [shutdown]: it wins the stop-flag gate, setting [closed]
+       to [true], and then blocks on [run_mutex] waiting for the run loop.
+    2. A systhread on the run loop's own Domain calls [shutdown]: it takes the
+       re-entrant same-Domain branch and applies this policy's flag action.
+
+    If that branch writes [closed] (the previous defect wrote [false]), it
+    undoes E's stop request; the loop keeps observing [closed = false], never
+    exits, holds [run_mutex] forever, and E deadlocks. The policy must therefore
+    leave [closed] untouched while still marking the admission failure retryable
+    so a later call from another Domain can drive the real drain-then-shutdown
+    once the loop exits. This test drives the exact production decision against a
+    real [closed] atomic, so a regression to any [closed] write fails here. *)
+let test_reentrant_same_domain_shutdown_preserves_closed () =
+  let closed_action, retryable = Policy.reentrant_same_domain_shutdown in
+  expect_bool "reentrant same-Domain shutdown retryable" true retryable;
+  (* A concurrent [shutdown] on another Domain wins the stop-flag gate. *)
+  let closed = Atomic.make false in
+  if not (Atomic.compare_and_set closed false true) then
+    failwith "concurrent shutdown failed to set the stop flag";
+  (* The re-entrant same-Domain branch applies its flag action next. *)
+  (match closed_action with
+  | Policy.Leave_unchanged -> ()
+  | Policy.Write value -> Atomic.set closed value);
+  if not (Atomic.get closed) then
+    failwith
+      "re-entrant same-Domain shutdown cleared the stop flag set by a \
+       concurrent shutdown; the run loop would never exit and deadlock the \
+       waiting caller"
+
 (** Runs all pure policy regressions. *)
 let () =
   test_activity_completion_policy ();
   test_shutdown_policy ();
-  test_terminal_cleanup_preserves_original_error ()
+  test_terminal_cleanup_preserves_original_error ();
+  test_reentrant_same_domain_shutdown_preserves_closed ()

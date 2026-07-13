@@ -25,6 +25,20 @@ val needs_native_cleanup : drain_failure -> bool
     disposal. Only the explicitly retryable activity case may leave the graph
     open for another completion attempt. *)
 
+type closed_flag_action =
+  | Leave_unchanged
+  | Write of bool
+(** How a [shutdown] admission decision must treat the shared [closed] stop
+    flag. [Leave_unchanged] performs no write; [Write] overwrites it. *)
+
+val reentrant_same_domain_shutdown : closed_flag_action * bool
+(** The flag effect of rejecting a re-entrant same-Domain [shutdown]. The
+    [closed_flag_action] is always [Leave_unchanged]: a concurrent [shutdown] on
+    another Domain may already have set [closed] to stop the run loop, so this
+    branch must not write it (a write would race that caller and could strand
+    the loop). The [bool] is the [shutdown_retryable] value to raise so the
+    admission failure can be retried from another Domain after the loop exits. *)
+
 (** Runs a terminal cleanup while preserving the original adapter error. The
     boolean result is [true] when the cleanup callback returned either [Ok] or
     [Error]; both outcomes mean the native implementation reached its

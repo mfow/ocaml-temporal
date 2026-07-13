@@ -28,6 +28,25 @@ let shutdown_retryable = function
     be disposed even though the adapter error remains the public result. *)
 let needs_native_cleanup failure = not (shutdown_retryable failure)
 
+type closed_flag_action =
+  | Leave_unchanged
+  | Write of bool
+
+(** Flag effect of a re-entrant same-Domain [shutdown] admission failure.
+
+    The [closed] stop flag is shared by [run] (its sole reader) and every
+    concurrent [shutdown] caller. A [shutdown] issued from the run loop's own
+    Domain must be rejected before it can wait on the run mutex (that would
+    self-deadlock the calling loop), but it must not write [closed]: another
+    Domain's [shutdown] may already have set it to request the loop stop, and
+    any write here -- even echoing the observed value back after a racing
+    read -- can undo that request and strand the loop. The action is therefore
+    [Leave_unchanged]. Only [shutdown_retryable] is raised (the [bool]), so the
+    public wrapper reopens admission and a later call from another Domain can
+    perform the real drain-then-native-shutdown once the loop exits. *)
+let reentrant_same_domain_shutdown : closed_flag_action * bool =
+  (Leave_unchanged, true)
+
 (** Keeps a terminal adapter failure authoritative while making native cleanup
     observable to the caller through callbacks. The cleanup callback is
     deliberately injected so the policy can be tested without constructing a

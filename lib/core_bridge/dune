@@ -9,11 +9,18 @@
   ../../scripts/copy-rust-bridge-artifacts.sh
   ../../scripts/render-rust-link-flags.sh)
  (action
-  (run
-   sh
-   %{workspace_root}/scripts/build-rust-bridge.sh
-   %{workspace_root}
-   %{targets})))
+  ;; Dune's [source_tree] input is copied read-only into the action sandbox.
+  ;; Cargo's target directory is mutable, so keep it beside that copied source
+  ;; tree. The standalone script still falls back to [rust/target] when callers
+  ;; invoke it outside Dune and do not provide [CARGO_TARGET_DIR].
+  (setenv
+   CARGO_TARGET_DIR
+   %{workspace_root}/rust-target
+   (run
+    sh
+    %{workspace_root}/scripts/build-rust-bridge.sh
+    %{workspace_root}
+    %{targets}))))
 
 (foreign_library
  (archive_name temporal_native_stubs)

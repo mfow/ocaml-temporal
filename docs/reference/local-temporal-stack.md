@@ -104,24 +104,20 @@ retry is one of those five), one typed non-retryable workflow failure, one
 typed child failure, one typed child cancellation, and one typed `Cancelled`
 result for the same workflow/run pair. The parent/child and ordinary retry
 scenarios are part of the same driver and are also started before the first
-wait. Historical live evidence covers the four baseline success
-payloads and the typed failure; the heartbeat, cancellation, and child
-failure/cancellation assertions are implemented and locally covered, but they
-are not live-verified because the attempted Actions run was cancelled and
-later checks may remain queued under the repository quota. After the driver exits, the Makefile stops
+wait. The complete [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+live-verified all nine assertions and the driver/worker shutdown markers.
+After the driver exits, the Makefile stops
 the worker and requires the current run's exact `.worker-stopped` marker; the
 driver's successful `client_shutdown` phase provides the corresponding client
 teardown evidence.
 
 This is a real workflow-result acceptance fixture, not only a lifecycle test.
-It has live evidence for the baseline fan-out, timer/activity, and parent/child
-success paths, one server-managed ordinary activity retry, and one
-non-retryable workflow-failure classification.
-The heartbeat-detail retry, cancellation, and child failure/cancellation
-implementations and local assertions are present, but do not yet establish
-live evidence in this environment. The fixture does not yet establish child
-start-failure, heartbeat-timeout-triggered retry, asynchronous
-activity completion, worker restart, replay, or cache eviction.
+The complete [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+has live evidence for fan-out, timer/activity, parent/child success and
+failure/cancellation, ordinary and heartbeat-detail activity retry, typed
+workflow failure, exact-run cancellation, and graceful shutdown. The fixture
+does not yet establish child start-failure, heartbeat-timeout-triggered retry,
+asynchronous activity completion, worker restart, replay, or cache eviction.
 The workflow configuration runs this target on pull requests and pushes to
 `master` in a standalone Ubuntu job labelled for OCaml 5.5; a queued or
 cancelled Actions run is not live acceptance evidence. It is intentionally

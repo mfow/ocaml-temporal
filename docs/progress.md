@@ -14,6 +14,27 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Complete nine-scenario Temporal smoke evidence (#210)
+
+Status: live-verified in the full [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859),
+then squash-merged to `master` as `f877fbf`. This is the current authoritative
+evidence for the two-OCaml-binary acceptance path; earlier entries that describe
+the expanded scenarios as local-only are historical snapshots.
+
+The green run passed every required CI job, including the Temporal/PostgreSQL
+integration job. Its independent OCaml driver started all nine workflows before
+waiting for any result, and its separate OCaml worker executed them against the
+real server. The assertions cover fan-out, a durable timer followed by an
+activity, ordinary activity retry, heartbeat-detail retry, parent/child success,
+propagated non-retryable child failure, child cancellation, a typed
+non-retryable top-level workflow failure, and marker-guarded exact-run
+cancellation. The driver and worker shutdown markers were also checked before
+the Compose project and PostgreSQL volume were removed.
+
+This evidence does not claim restart/replay/cache-eviction recovery,
+timeout-triggered activity retry, asynchronous activity completion, child start
+failure, or continued-as-new coverage; those remain roadmap work.
+
 ## 2026-07-13: Typed interaction definitions and deterministic dispatch
 
 Status: locally verified only; no live Temporal Server or GitHub Actions
@@ -295,9 +316,10 @@ GitHub Actions for this series were observed queued or pending while the
 repository was affected by its Actions quota, so this entry does not treat
 those checks as passing evidence. The Docker Compose acceptance against a
 live Temporal Server and PostgreSQL was not run for this milestone, and no
-new live result is claimed. The historical five-execution live result in run
+new live result is claimed at that milestone. The historical five-execution live result in run
 [`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
-remains the latest successful two-binary acceptance evidence.
+was the latest successful two-binary acceptance evidence at that time; the
+later PR #210 entry above supersedes it.
 
 ## 2026-07-13: Documentation evidence and navigation refresh (#129–#140)
 
@@ -327,9 +349,9 @@ the pinned scanner binaries being installed. GitHub Actions checks may remain
 queued because of the repository quota and are not treated as passing evidence.
 The historical five-execution live result in run
 [`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
-remains the latest successful two-binary acceptance evidence; the expanded
-heartbeat and exact-run cancellation assertions remain locally covered but not
-live-verified.
+was the latest successful two-binary acceptance evidence for this historical
+entry. The expanded assertions were later live-verified by PR #210, as recorded
+in the current entry above.
 
 ## 2026-07-13: Scope, child-lifecycle, and ABI cancellation-validation coverage
 
@@ -479,12 +501,13 @@ no new live acceptance result was produced by that documentation change.
 
 The acceptance references now distinguish the historical five-execution green
 run [`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
-from the current seven-run cancellation/heartbeat implementation and its local protocol,
+from the current-at-that-time seven-run cancellation/heartbeat implementation and its local protocol,
 client, worker, and supervisor checks. The one-shot OCaml assertion driver and
 the long-lived worker are described separately. GitHub Actions run
 [`29193818312`](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
-was cancelled, so the seven-run cancellation and heartbeat scenarios remain unverified against
-a live Temporal Server.
+was cancelled, so the seven-run cancellation and heartbeat scenarios were
+unverified against a live Temporal Server at the time. PR #210 later supplied
+the green nine-scenario run recorded in the current entry above.
 
 ## 2026-07-12: GitHub Actions capacity observation
 

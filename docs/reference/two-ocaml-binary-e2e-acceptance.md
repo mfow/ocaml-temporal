@@ -1,29 +1,23 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The fan-out, timer/activity, parent/child, activity-retry, and
-typed non-retryable workflow-failure scenarios were verified in Linux CI run
-[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
-for merge commit `a4eaccc8`. The retry workflow uses an explicit activity retry
-policy: its worker activity fails once, Temporal delivers a second attempt,
-and the driver asserts the exact attempt-2 result. The retry-policy constructor
-and bilateral JSON/Core conversion remain synthetic evidence; the CI run is
-the live evidence for this one server-managed retry delivery. The eighth
-top-level workflow also returns a typed non-retryable `Workflow` failure. The
-heartbeat-detail retry workflow is implemented and locally contract-checked,
-but it has no live evidence yet. The nine-run exact-run cancellation, child
-failure/cancellation, and heartbeat paths are implemented and covered by local
-acceptance checks, but
-they are not live-verified yet: the attempted [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
-was cancelled before producing a green result. The worker and driver remain
-guarded by `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services
-set it.
+**Status:** The complete [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+verified all nine scenarios against real Temporal Server and PostgreSQL. The
+run used PR head `47c9a93` and the PR was squash-merged as `f877fbf`. It covers
+fan-out, timer/activity, ordinary activity retry, heartbeat-detail retry,
+parent/child success, propagated child failure, child cancellation, a typed
+non-retryable workflow failure, and marker-guarded exact-run cancellation. The
+retry workflow still uses an explicit two-attempt policy, while the heartbeat
+workflow proves that Temporal returns the first attempt's detail and timeout to
+the second attempt. The worker and driver remain guarded by
+`TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
 
 The current implementation starts all nine top-level workflows before waiting
-for any result, and its local assertion target requires five exact successes,
-one propagated child failure, one child-cancellation marker, one typed
-non-retryable failure, and one exact-run cancellation. Only the five
-baseline executions are currently backed by live CI evidence; the heartbeat and
-cancellation assertions remain local-only until a green live run verifies them.
+for any result, and its assertion target requires five exact successes, one
+propagated child failure, one child-cancellation marker, one typed
+non-retryable failure, and one exact-run cancellation. Those nine assertions
+are now backed by the green PR #210 live run. Restart, replay, cache eviction,
+timeout-triggered retry, and asynchronous activity completion remain separate
+acceptance work.
 
 The heartbeat assertion has a Docker-free contract in addition to the live
 driver and worker. `test/smoke/test_temporal_heartbeat_contract.sh` checks the
@@ -96,10 +90,9 @@ attempt must receive that detail and timeout before returning
 stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
 for its `smoke.cancellation_ready` marker activity (with eager execution
 disabled), sends an exact-run cancellation request, and requires the same
-handle to return a typed `Cancelled` error. The cancellation implementation and
-local assertions are ready, but this nine-run path remains without green live CI
-evidence because the attempted [Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29193818312)
-was cancelled. Heartbeat-timeout-triggered retries, child start failures,
+handle to return a typed `Cancelled` error. This nine-run path passed in the
+[PR #210 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859).
+Heartbeat-timeout-triggered retries, child start failures,
 activity asynchronous completion, replay, and worker recovery remain separate
 scenarios. The
 intentionally broader follow-up requirements are listed in [Required
@@ -404,8 +397,8 @@ activity type, workflow/run identifiers, attempt, input payloads, and
 completion variants needed for its mock activity. The heartbeat document and
 `worker.record_activity_heartbeat` operation are now implemented with strict
 bilateral validation and focused native tests, and the two-binary fixture
-invokes them in its heartbeat-detail retry scenario. That scenario is locally
-contract-checked but not live-verified; heartbeat-timeout-triggered retry and
+invokes them in its heartbeat-detail retry scenario. The PR #210 live run
+verified detail and timeout delivery; heartbeat-timeout-triggered retry and
 asynchronous-completion fields can be added as separate closed changes.
 
 `client.start_workflow` accepts workflow type, workflow ID, task queue, and
@@ -532,9 +525,9 @@ thread.
 
 ## Required assertions and failure evidence
 
-The current driver's successful exit is intended to establish all of the
-following locally; a green live run is still required before the nine-run
-claims become live evidence:
+The current driver's successful exit establishes all of the following against
+the live stack. These assertions passed in the complete [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+for PR head `47c9a93`, later squash-merged as `f877fbf`:
 
 1. each top-level workflow start returned a nonempty run ID that the driver
    retained for its corresponding exact-run wait; the driver starts nine
@@ -593,7 +586,7 @@ test:
 
 * heartbeat-timeout-triggered retry, asynchronous activity completion, and
   activity-level non-retryable classification (the heartbeat-detail retry path
-  is implemented but remains local-only until a live run succeeds);
+  is live-verified, while these additional activity capabilities remain open);
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
 * child workflow start failure, cancellation, retry policy, and non-success
   terminal handling through the worker;
@@ -602,22 +595,19 @@ test:
   executions are outstanding.
 
 Child-start commands and both child-resolution jobs have a closed bilateral
-schema, Core conversion, pure-OCaml lifecycle tests, and this one real-server
-parent/child success assertion. The activity retry policy has the same
-separation: bilateral policy validation is synthetic, while CI run
-[`29191260073`](https://github.com/mfow/ocaml-temporal/actions/runs/29191260073)
-makes its attempt-2 result live evidence for one server-managed retry. Neither
-the child-failure nor child-cancellation assertion has live evidence. Both are
-implemented and locally contract-checked, but neither has live Temporal Server coverage
-until a green Compose run verifies the expanded fixture. None of these
-assertions claims coverage of retry timeouts, replay, or recovery behavior.
+schema, Core conversion, pure-OCaml lifecycle tests, and the PR #210
+real-server assertions for parent/child success, propagated child failure, and
+child cancellation. The activity retry policy has the same separation:
+bilateral policy validation is synthetic, while the PR #210 run makes both the
+ordinary attempt-2 result and heartbeat-detail retry live evidence. None of
+these assertions claims coverage of retry timeouts, replay, or recovery
+behavior.
 
 ## Completion criteria for this design
 
-The full current acceptance contract will be verified in Linux CI only when all
-of the following are true. The historical live result verifies the five
-baseline executions; the nine-run heartbeat, child-lifecycle, and cancellation assertion remains local-only
-until a run satisfies this complete contract:
+The full current acceptance contract is verified by the complete [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859),
+which satisfied all of the following for PR head `47c9a93` before the squash
+merge as `f877fbf`:
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;

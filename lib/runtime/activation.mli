@@ -18,6 +18,14 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  (** A signal delivered by Core. It carries no command sequence because it is
+      an incoming event rather than a completion of an earlier command. *)
+  | Signal_workflow of {
+      signal_name : string;
+      input : Temporal_base.Codec.payload list;
+      identity : string;
+      headers : (string * Temporal_base.Codec.payload) list;
+    }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow
   | Remove_from_cache

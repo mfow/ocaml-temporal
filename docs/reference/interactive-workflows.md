@@ -15,20 +15,21 @@ The definitions and handler types are available in `Temporal.Signal`,
 deterministic local routing path that currently lets those handlers be tested.
 The API is experimental while the native delivery path is being built.
 
-## Current status: typed local API, not live delivery
+## Current status: local handlers and a partial native boundary
 
-The native activation protocol does not deliver signals, queries, or updates
-yet. The current Rust/Core adapter still rejects those interaction activation
-jobs. This page therefore documents the OCaml typing, codec, validation, and
-ordering contract; it does not claim that a live Temporal Server can send an
-interaction to a workflow.
+`Temporal.Interaction` remains the public, deterministic path for exercising
+signal, query, and update handlers. The native bridge now accepts a Core
+`SignalWorkflow` activation, validates and copies its ordered payloads,
+identity, and headers, and retains it as a runtime job. That transport result
+does not yet invoke a public OCaml signal handler: the current execution logs
+the absence of a handler and emits no signal-specific command.
 
-Native support will need activation records, handler registration, and
-completion records for suspended handlers and validators. Until that work is
-complete, use `Temporal.Interaction` for deterministic unit tests. The
-[feature coverage table](feature-coverage.md) and [implementation
-roadmap](../implementation-roadmap.md#delivery-order) record the same status
-alongside the other SDK capabilities.
+Query and update activation jobs are still rejected because their handler
+registration, suspension, and completion records have not been implemented.
+No local dispatcher test or signal transport test is evidence that a live
+Temporal Server can invoke an OCaml interaction handler. The [feature coverage
+table](feature-coverage.md) and [implementation roadmap](../implementation-roadmap.md#delivery-order)
+record the same experimental status alongside the other SDK capabilities.
 
 ## The three-step model
 
@@ -42,10 +43,10 @@ An interaction is assembled in three steps:
 
 The definition and handler preserve the relationship between a Temporal name,
 its codec, and its OCaml type. A caller cannot accidentally pass a string to a
-handler that was defined for bytes without receiving a typed codec error.
-The planned activation and response lifecycles are described in the [native
-interaction design](../design/native-interactions.md); that design is not yet
-implemented by the worker.
+handler that was defined for bytes without receiving a typed codec error. The
+native transport and the planned handler/response lifecycles are described in
+the [native interaction design](../design/native-interactions.md); only the
+signal activation transport portion is implemented by the worker today.
 
 ## Definitions
 
@@ -226,10 +227,12 @@ the SDK's supervisor actor or a replacement for the future workflow scheduler.
 
 ## Native delivery boundary
 
-Native delivery is a separate protocol milestone. It must add:
+Native delivery is a separate protocol milestone. The first signal transport
+slice is implemented, but it intentionally stops before handler invocation. It
+must still add:
 
-- interaction activation records for signal delivery, query requests, and
-  update requests;
+- public signal-handler registration and scheduler delivery, followed by
+  activation records for query requests and update requests;
 - worker-side registration and completion records for suspended handlers and
   validators;
 - scheduler ownership for callbacks, so a Rust thread never calls an OCaml
@@ -239,5 +242,6 @@ Native delivery is a separate protocol milestone. It must add:
 
 The supervisor remains the sole owner of the Rust handle graph, and native
 readiness must be observed through its existing scheduler-safe boundary. Until
-those pieces are implemented, a passing `Temporal.Interaction` test proves
-only local OCaml behavior; it is not live Temporal Server acceptance.
+those pieces are implemented, a passing `Temporal.Interaction` test or signal
+transport test proves only local/bridge behavior; it is not live Temporal
+Server acceptance.

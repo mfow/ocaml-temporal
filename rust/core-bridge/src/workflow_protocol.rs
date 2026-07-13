@@ -404,6 +404,14 @@ pub enum ActivationJob {
         seq: u32,
         result: ChildWorkflowResolution,
     },
+    /// Incoming signal data delivered by Core. Signals are activation events,
+    /// not completions, so they intentionally do not carry a sequence number.
+    SignalWorkflow {
+        signal_name: String,
+        input: Vec<Payload>,
+        identity: String,
+        headers: BTreeMap<String, Payload>,
+    },
     FireTimer {
         seq: u32,
     },
@@ -625,6 +633,30 @@ fn bounded_text(value: &str, path: &str) -> Result<(), ProtocolError> {
     } else {
         Ok(())
     }
+}
+
+/// Validates a signal sender identity carried in Core's ordinary text field.
+///
+/// Unlike a Temporal identifier, an identity may be empty, but it still must
+/// be safe to replay through the semantic JSON document.  Rust `&str` values
+/// are UTF-8 by construction; retaining the explicit check beside the OCaml
+/// validator makes that invariant visible at this bilateral boundary and keeps
+/// the rule intact if this conversion is later changed to accept raw bytes.
+fn signal_identity(value: &str, path: &str) -> Result<(), ProtocolError> {
+    bounded_text(value, path)?;
+    if value.as_bytes().contains(&0) {
+        return Err(ProtocolError::invalid(
+            path,
+            "signal identity must not contain NUL",
+        ));
+    }
+    if std::str::from_utf8(value.as_bytes()).is_err() {
+        return Err(ProtocolError::invalid(
+            path,
+            "signal identity must be valid UTF-8",
+        ));
+    }
+    Ok(())
 }
 
 /// Validates exact protobuf time component ranges.
@@ -986,6 +1018,18 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                     validate_failure(failure, "$.jobs.result.failure")?
                 }
             },
+            ActivationJob::SignalWorkflow {
+                signal_name,
+                identity,
+                headers,
+                ..
+            } => {
+                identifier(signal_name, "$.jobs.signal_name")?;
+                signal_identity(identity, "$.jobs.identity")?;
+                for key in headers.keys() {
+                    identifier(key, "$.jobs.headers")?;
+                }
+            }
             ActivationJob::CancelWorkflow { reason } => bounded_text(reason, "$.jobs.reason")?,
             ActivationJob::RemoveFromCache { message, .. } => {
                 bounded_text(message, "$.jobs.message")?
@@ -1770,6 +1814,20 @@ pub fn activation_from_core(
                         )?,
                     })
                 }
+                Variant::SignalWorkflow(value) => Ok(ActivationJob::SignalWorkflow {
+                    signal_name: value.signal_name.clone(),
+                    input: value
+                        .input
+                        .iter()
+                        .map(payload_from_core)
+                        .collect::<Result<_, _>>()?,
+                    identity: value.identity.clone(),
+                    headers: value
+                        .headers
+                        .iter()
+                        .map(|(key, payload)| Ok((key.clone(), payload_from_core(payload)?)))
+                        .collect::<Result<BTreeMap<_, _>, CoreConversionError>>()?,
+                }),
                 Variant::FireTimer(value) => Ok(ActivationJob::FireTimer { seq: value.seq }),
                 Variant::CancelWorkflow(value) => Ok(ActivationJob::CancelWorkflow {
                     reason: value.reason.clone(),

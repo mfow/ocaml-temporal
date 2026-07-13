@@ -96,6 +96,20 @@ let validate_identifier path value : (unit, error) result =
     Error (invalid path "identifier must be valid UTF-8")
   else Ok ()
 
+(** Validates a bounded text field whose empty value is meaningful.  Signal
+    identities are supplied by Core as text but are not Temporal identifiers;
+    keeping this check local to the runtime prevents malformed bytes assembled
+    by an OCaml caller from being retained in a runtime job if the protocol
+    encoder is ever bypassed or extended. *)
+let validate_bounded_text path value : (unit, error) result =
+  if String.length value > 65_536 then
+    Error (invalid path "text exceeds 65536 bytes")
+  else if String.contains value '\000' then
+    Error (invalid path "text must not contain NUL")
+  else if not (Temporal_base.Codec.valid_utf_8 value) then
+    Error (invalid path "text must be valid UTF-8")
+  else Ok ()
+
 (** Applies the stricter text contract used for cancellation reasons.  Reasons
     are stored in Temporal history, so accepting malformed or empty text here
     would make replay and the Rust boundary disagree about one command. *)
@@ -455,6 +469,34 @@ let runtime_job path = function
       Ok
         ( Activation.Resolve_child_workflow { seq; result }, None, None, None,
           Some (Child_result, seq) )
+  | Protocol.Signal_workflow { signal_name; input; identity; headers } ->
+      let* () = validate_identifier (path ^ ".signal_name") signal_name in
+      let* () = validate_bounded_text (path ^ ".identity") identity in
+      let rec payloads_loop index reversed = function
+        | [] -> Ok (List.rev reversed)
+        | payload :: rest ->
+            let* payload =
+              runtime_payload
+                (Printf.sprintf "%s.input[%d]" path index)
+                payload
+            in
+            payloads_loop (index + 1) (payload :: reversed) rest
+      in
+      let rec headers_loop reversed = function
+        | [] -> Ok (List.rev reversed)
+        | (key, payload) :: rest ->
+            let* () = validate_identifier (path ^ ".headers.key") key in
+            let* payload = runtime_payload (path ^ ".headers." ^ key) payload in
+            headers_loop ((key, payload) :: reversed) rest
+      in
+      let* input = payloads_loop 0 [] input in
+      let* headers = headers_loop [] headers in
+      Ok
+        ( Activation.Signal_workflow { signal_name; input; identity; headers },
+          None,
+          None,
+          None,
+          None )
   | Protocol.Fire_timer { seq } ->
       let* () = validate_sequence (path ^ ".seq") seq in
       Ok

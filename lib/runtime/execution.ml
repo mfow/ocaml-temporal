@@ -167,6 +167,19 @@ let process_job execution = function
       with
       | Ok () -> ()
       | Error error -> fail execution error)
+  | Activation.Signal_workflow { signal_name; input; identity; headers } ->
+      (* The semantic bridge intentionally delivers the complete signal before
+         the public handler registry is introduced. A signal without a
+         registered handler is a valid Temporal event; retaining its validated
+         fields and acknowledging the job keeps replay deterministic and avoids
+         fabricating a completion command. *)
+      let tags =
+        Observability.tags ~operation:"workflow_signal_received"
+          ~workflow_type:(workflow_type execution) ()
+      in
+      report ~src:Observability.Source.workflow Logs.Debug ~tags
+        "workflow signal received; no signal handler is registered yet";
+      ignore (signal_name, input, identity, headers)
   | Fire_timer { seq } -> (
       match Workflow_context_store.fire_timer execution.context ~seq with
       | Ok () -> ()

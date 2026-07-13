@@ -170,6 +170,19 @@ let operation_key operation =
       add_payloads buffer payloads);
   Buffer.contents buffer
 
+(* A non-retryable bridge result means the native side has proved that this
+   retained capability cannot be used again (for example, Temporal returned
+   NotFound for an expired or already-completed task token). Closing the local
+   state machine as well as the adapter lease prevents a caller from retaining
+   an otherwise live callback closure and accidentally issuing a duplicate
+   request after the remote operation is terminal. Application and codec
+   errors are either raised before [submit_operation] or are deliberately
+   fail-closed at this boundary; retryable transport failures keep the exact
+   pending request for an explicit retry. *)
+let should_close_after_error (error : Error.t) =
+  let view = Error.view error in
+  view.category = `Bridge && view.non_retryable
+
 let submit_operation handle ~terminal operation =
   let key = operation_key operation in
   match begin_operation handle ~key operation with
@@ -189,8 +202,17 @@ let submit_operation handle ~terminal operation =
           match result with
           | Error _ ->
               (* Keep the pending key so only the byte-identical request can
-                 be retried. The callback is never rerun. *)
+                 be retried. The callback is never rerun. A terminal bridge
+                 error instead closes the capability and drops the pending
+                 request, because retaining it could make a stale native token
+                 appear retryable. *)
               pending.in_flight <- false;
+              (match result with
+              | Error error when should_close_after_error error ->
+                  handle.lifecycle <- Closed;
+                  handle.pending <- None
+              | Error _ -> ()
+              | Ok () -> ());
               result
           | Ok () ->
               pending.in_flight <- false;

@@ -1,6 +1,7 @@
 # ADR 0008: Asynchronous activity completion boundary
 
-- Status: implemented locally; live acceptance and remaining Core edge cases pending
+- Status: implemented locally; normal delayed completion is live-verified, while
+  CI and remaining Core edge cases are pending
 - Date: 2026-07-13
 - Decision owners: OCaml Temporal maintainers
 
@@ -185,12 +186,15 @@ each public boundary. The adapter tests cover handoff ordering, copied tokens,
 retry keys, lifecycle errors, and shutdown accounting.
 
 The native heartbeat operation currently acknowledges only successful
-submission. Core's cancellation/pause/reset response flags and a dedicated
-`AsyncActivityError::NotFound` mapping are not yet represented in the public
-OCaml result. `heartbeat_timeout` remains copied context metadata; the adapter
-does not run a local timeout timer or synthesize retry behavior. A live
-Temporal acceptance scenario for delayed completion, heartbeat, cancellation,
-and worker shutdown is still required.
+submission. Core's cancellation/pause/reset response flags are not yet
+represented in the public OCaml result. A dedicated
+`AsyncActivityError::NotFound` mapping now becomes a typed non-retryable bridge
+error and retires the adapter lease; the focused fake-supervisor test covers
+that terminal transition. `heartbeat_timeout` remains copied context metadata;
+the adapter does not run a local timeout timer or synthesize retry behavior.
+The normal delayed-completion, timeout-retry, cancellation, and worker-shutdown
+paths are covered by the local OCaml 5.5 Compose acceptance run; broader Core
+response-flag and heartbeat-timeout scenarios remain required.
 
 ## Consequences
 

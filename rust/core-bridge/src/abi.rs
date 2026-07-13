@@ -15,7 +15,10 @@ use std::sync::mpsc::{
     Receiver, RecvTimeoutError, SyncSender, TryRecvError, channel, sync_channel,
 };
 use std::time::Duration;
-use temporalio_client::{ActivityIdentifier, Client, ClientOptions, Connection, ConnectionOptions};
+use temporalio_client::{
+    ActivityIdentifier, Client, ClientOptions, Connection, ConnectionOptions,
+    errors::AsyncActivityError,
+};
 use temporalio_common::protos::coresdk::{
     ActivityHeartbeat as CoreActivityHeartbeat,
     activity_task::{self, ActivityTask as CoreActivityTask},
@@ -108,6 +111,33 @@ const MAX_PENDING_STARTS: usize = 64;
 /// Maximum time spent in one wait-ticket ABI call before the owner regains
 /// control of its mailbox and can service lifecycle messages.
 const START_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Converts an asynchronous activity client error into the closed status
+/// vocabulary understood by the OCaml lease state machine.
+///
+/// `NotFound` is a terminal outcome for a retained task token: Temporal has
+/// already completed, cancelled, timed out, or otherwise discarded that
+/// activity, so retrying the same request could never make it valid. Other RPC
+/// failures do not prove whether the server consumed the request. They remain
+/// a generic connection failure and are therefore fail-closed rather than
+/// guessed to be retryable. The remote diagnostic is intentionally discarded
+/// at this boundary so server-controlled text cannot enter the stable ABI.
+fn async_activity_failure(operation: &str, error: AsyncActivityError) -> Failure {
+    match error {
+        AsyncActivityError::NotFound(_) => Failure {
+            status: STATUS_INVALID_STATE,
+            message: format!("Temporal asynchronous activity {operation} is no longer active"),
+        },
+        AsyncActivityError::Rpc(_) => Failure {
+            status: STATUS_CONNECTION,
+            message: format!("Temporal asynchronous activity {operation} failed"),
+        },
+        _ => Failure {
+            status: STATUS_CONNECTION,
+            message: format!("Temporal asynchronous activity {operation} failed"),
+        },
+    }
+}
 
 const _: () = assert!(size_of::<Status>() == 4);
 
@@ -1555,10 +1585,7 @@ impl Runtime {
                 });
             }
         };
-        operation.map_err(|_| Failure {
-            status: STATUS_CONNECTION,
-            message: "Temporal asynchronous activity operation failed".to_owned(),
-        })?;
+        operation.map_err(|error| async_activity_failure("completion", error))?;
         Ok(Vec::new())
     }
 
@@ -1583,10 +1610,7 @@ impl Runtime {
             .tokio_handle();
         handle
             .block_on(activity.heartbeat(details))
-            .map_err(|_| Failure {
-                status: STATUS_CONNECTION,
-                message: "Temporal asynchronous activity heartbeat failed".to_owned(),
-            })?;
+            .map_err(|error| async_activity_failure("heartbeat", error))?;
         Ok(Vec::new())
     }
 
@@ -3561,6 +3585,45 @@ mod client_wait_tests {
         let result = runtime.block_on(bounded_client_wait(async { Ok(response.clone()) }));
 
         assert_eq!(result, Ok(Some(response)));
+    }
+}
+
+#[cfg(test)]
+mod async_activity_error_tests {
+    use super::{STATUS_CONNECTION, STATUS_INVALID_STATE, async_activity_failure};
+    use temporalio_client::{errors::AsyncActivityError, tonic::Status};
+
+    /// A server-side not-found response means the retained task token is
+    /// terminal, not that the OCaml supervisor should retry the same request.
+    #[test]
+    fn not_found_is_terminal_invalid_state() {
+        let failure = async_activity_failure(
+            "completion",
+            AsyncActivityError::NotFound(Status::not_found("ignored")),
+        );
+
+        assert_eq!(failure.status, STATUS_INVALID_STATE);
+        assert_eq!(
+            failure.message,
+            "Temporal asynchronous activity completion is no longer active"
+        );
+    }
+
+    /// A generic RPC failure does not prove whether Temporal consumed the
+    /// request, so the bridge must fail closed instead of inventing a retryable
+    /// classification from the remote status text.
+    #[test]
+    fn rpc_failure_is_fail_closed_connection() {
+        let failure = async_activity_failure(
+            "heartbeat",
+            AsyncActivityError::Rpc(Status::unavailable("ignored")),
+        );
+
+        assert_eq!(failure.status, STATUS_CONNECTION);
+        assert_eq!(
+            failure.message,
+            "Temporal asynchronous activity heartbeat failed"
+        );
     }
 }
 

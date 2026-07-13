@@ -809,6 +809,17 @@ module Make (Supervisor : SUPERVISOR) = struct
         | Ok () when terminal ->
             adapter.async_leases <- Token_map.remove token adapter.async_leases;
             Ok ()
+        | Error error ->
+            let view = Base_error.view error in
+            if view.category = `Bridge && view.non_retryable then begin
+              (* A non-retryable native result is terminal for this retained
+                 capability. Remove the adapter lease before returning the
+                 error; the base state machine closes its corresponding handle
+                 from the same classification, so neither side can retain a
+                 stale task token after Temporal has rejected it permanently. *)
+              adapter.async_leases <- Token_map.remove token adapter.async_leases
+            end;
+            Error error
         | _ -> operation_result))
 
   (** Calls native completion after validation and preserves lease uncertainty

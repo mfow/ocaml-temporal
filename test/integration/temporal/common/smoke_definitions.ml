@@ -222,6 +222,47 @@ let heartbeat_retry_activity =
                     "expected one heartbeat detail on retry, received %d"
                     (List.length details))))
 
+(** A small live asynchronous activity used to prove the complete handoff
+    lifecycle. The worker callback returns [Will_complete_async] immediately,
+    then an OCaml-owned Domain waits outside the activity dispatch call and
+    submits the typed result through the retained handle. The delay is
+    deliberately longer than one scheduler turn, so a worker that accidentally
+    completes the task synchronously would not satisfy this scenario. *)
+let async_completion_delay_seconds = 0.25
+
+let async_delayed_completion_activity =
+  Temporal.Activity.define_async ~name:"smoke.async_delayed_completion"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+    (fun context input ->
+      let handle = Temporal.Activity.Async_context.handle context in
+      let output =
+        "SMOKE:ASYNC:COMPLETED:" ^ String.uppercase_ascii input
+      in
+      (* The Domain is created by OCaml rather than by Rust, so the retained
+         handle remains inside the SDK's typed ownership boundary. Its only
+         cross-domain operation is the public completion call, which is
+         serialized by the async adapter's mutex and supervisor mailbox. *)
+      ignore
+        (Domain.spawn (fun () ->
+             Unix.sleepf async_completion_delay_seconds;
+             match Temporal.Activity.Async_handle.complete handle output with
+             | Ok () -> ()
+             | Error error ->
+                 Printf.eprintf
+                   "two-binary async activity completion failed (%s): %s\n%!"
+                   (Temporal.Error.kind error) (Temporal.Error.message error)));
+      Temporal.Activity.Will_complete_async handle)
+
+(** Schedules the delayed activity and returns its result through an ordinary
+    direct-style workflow expression. The workflow never sees the retained
+    handle or the activity-side Domain; it only observes the durable activity
+    future, which keeps the public authoring model identical to a synchronous
+    activity. *)
+let async_activity_completion =
+  Temporal.Workflow.define ~name:"smoke.async_activity_completion"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      Temporal.Activity.execute async_delayed_completion_activity seed)
+
 (** Starts two independent activity commands before awaiting either result.
     [Future.all] preserves input order, making this scenario test both fan-out
     and deterministic aggregation when the live worker path exercises the

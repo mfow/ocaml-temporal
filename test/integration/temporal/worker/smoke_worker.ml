@@ -203,6 +203,7 @@ let run () =
               Worker.workflow Definitions.continue_as_new;
               Worker.workflow Definitions.activity_retry;
               Worker.workflow Definitions.activity_heartbeat_retry;
+              Worker.workflow Definitions.async_activity_completion;
               Worker.workflow Definitions.activity_timeout_retry;
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
@@ -218,6 +219,7 @@ let run () =
               Worker.activity Definitions.mock_transform;
               Worker.activity Definitions.retry_once_activity;
               Worker.activity Definitions.heartbeat_retry_activity;
+              Worker.activity Definitions.async_delayed_completion_activity;
               Worker.activity Definitions.timeout_retry_activity;
               Worker.activity Definitions.cancellation_ready_activity;
             ]

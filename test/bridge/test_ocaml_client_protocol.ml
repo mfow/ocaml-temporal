@@ -298,11 +298,18 @@ let test_client_errors () =
    with
   | Protocol.Protocol { code = "core_invalid" } -> ()
   | _ -> failwith "protocol error code was not retained");
+  (* The schema and the Rust encoder both allow the rpc "ok" code (tonic's
+     Code::Ok, mapped with no filter in map_rpc_status), so the OCaml decoder
+     must accept it too even though it is near-unreachable on an error path. *)
+  (match
+     unwrap (Protocol.decode_client_error {|{"kind":"rpc","code":"ok"}|})
+   with
+  | Protocol.Rpc { code = "ok" } -> ()
+  | _ -> failwith "rpc ok error code was not retained");
   List.iter
     (fun document -> require_error (Protocol.decode_client_error document))
     [
       {|{"kind":"rpc","code":"not-a-real-code"}|};
-      {|{"kind":"rpc","code":"ok"}|};
       {|{"kind":"protocol","code":"unsupported-future-code"}|};
       {|{"kind":"unknown","code":"internal"}|};
       {|{"kind":"rpc","code":"internal","extra":true}|};

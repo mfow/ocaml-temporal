@@ -47,12 +47,16 @@ jobs:
               continue
             fi
 
-            # OCaml, native bridge, and Rust source changes enable all PR
-            # builds. Rust manifests and OCaml library build files are also
-            # included by their source trees because they change those builds.
+            # OCaml, native bridge, Rust, build, and CI source changes enable
+            # all PR builds. The Makefile is explicit because a shell-only
+            # acceptance or build fix must still run the full verification
+            # matrix rather than quietly receiving only the license audit.
             case "$path" in
-              *.ml|*.mli|*.mll|*.mly|*.re|*.rei|*.c|*.h|*.rs|lib/*|rust/*)
+              Makefile|Dockerfile*|.github/workflows/*|*.ml|*.mli|*.mll|*.mly|*.re|*.rei|*.c|*.h|*.rs|lib/*|rust/*)
                 code=true
+                smoke=true
+                ;;
+              test/smoke/*)
                 smoke=true
                 ;;
             esac
@@ -122,7 +126,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
       - name: Run the live two-OCaml-binary Temporal Compose smoke
-        run: make test-temporal-integration
+        run: |
+          make test-temporal-integration
+          make test-temporal-worker-restart
 
   verify:
     if: needs.changes.outputs.code == 'true'

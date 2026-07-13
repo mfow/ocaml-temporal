@@ -37,6 +37,29 @@ metadata-aware public callbacks, and live Compose update acceptance remain
 future work; the bridge deliberately fails closed for malformed or
 unrepresentable Core fields.
 
+## 2026-07-13: Two-generation worker restart/replay acceptance controller
+
+Status: implementation and Docker-free contract verified; a successful live
+Docker/CI run is still pending.
+
+The restart fixture now contains the deterministic
+`smoke.worker_restart_replay` workflow. Its timer is deliberately long enough
+for the controller to observe `TimerStarted`, stop and remove generation 1,
+and start a fresh generation 2 on the same task queue. The private worker
+activation hook records only run identity, replay status, generation, and
+history length; it never writes payloads or native handles. The driver remains a
+separate OCaml assertion binary and waits for the exact run and
+`SMOKE:AFTER-REPLAY` result.
+
+The controller normalizes machine-readable Temporal CLI history, separately
+checks the exact identity returned by `workflow describe`, validates the
+ordered initial/terminal event sequences, and emits a closed thirteen-step
+lifecycle record. The offline contract, negative parser cases, and controller
+fixture pass locally. The standalone CI integration job now runs the baseline
+two-binary smoke followed by `make test-temporal-worker-restart`. The latest
+local live attempt stopped before readiness because the Docker daemon exhausted
+storage during the cold native build, so no live replay claim is made yet.
+
 ## 2026-07-13: Live asynchronous activity completion acceptance
 
 Status: locally verified against Temporal Server 1.31 and PostgreSQL; CI for

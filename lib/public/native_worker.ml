@@ -325,6 +325,338 @@ let report level ~operation ?error_kind () =
       "native public worker event"
   with _ -> ()
 
+(** A replay diagnostic record is deliberately smaller than a workflow
+    activation: it contains only the identity and Core metadata needed by the
+    restart acceptance test. The record never includes payload bytes,
+    timestamps, task tokens, or user workflow values. *)
+type replay_record = {
+  phase : string;
+  generation : int;
+  is_replaying : bool;
+  history_length : int64;
+}
+
+(** Mutable state for the optional file-backed replay observer. The state is
+    reached only from the serialized workflow adapter callback, while the file
+    itself is replaced atomically after every new record. *)
+type replay_diagnostics = {
+  path : string;
+  generation : int;
+  target_workflow_id : string option;
+  mutable workflow_id : string option;
+  mutable run_id : string option;
+  mutable records : replay_record list;
+}
+
+(** Returns one required JSON object field while rejecting duplicate or missing
+    values. Diagnostics are a private test protocol, but strict decoding here
+    prevents a stale or hand-edited file from being mistaken for replay proof. *)
+let replay_field name fields =
+  match List.filter (fun (key, _) -> String.equal key name) fields with
+  | [ (_, value) ] -> Ok value
+  | [] -> Error (Base_error.defect ~message:("replay diagnostics missing " ^ name))
+  | _ -> Error (Base_error.defect ~message:("replay diagnostics duplicate " ^ name))
+
+(** Requires an exact set of object keys before reading a replay document. *)
+let replay_object expected fields =
+  let actual = List.map fst fields |> List.sort String.compare in
+  let expected = List.sort String.compare expected in
+  if actual = expected then Ok fields
+  else
+    Error
+      (Base_error.defect
+         ~message:"replay diagnostics contain unexpected or missing fields")
+
+(** Reads one bounded JSON document from the diagnostic path. The size limit
+    protects worker startup from accidentally ingesting a large arbitrary file
+    mounted at the test path. *)
+let read_replay_json path =
+  try
+    let channel = open_in_bin path in
+    Fun.protect
+      ~finally:(fun () -> close_in_noerr channel)
+      (fun () ->
+        let length = in_channel_length channel in
+        if length < 0 || length > 65_536 then
+          Error
+            (Base_error.defect
+               ~message:"replay diagnostics file is missing or too large")
+        else
+          let contents = really_input_string channel length in
+          try Ok (Yojson.Safe.from_string contents) with
+          | Yojson.Json_error message ->
+              Error
+                (Base_error.defect
+                   ~message:("replay diagnostics JSON is invalid: " ^ message)))
+  with exception_ ->
+    Error
+      (Base_error.defect
+         ~message:
+           (Printf.sprintf "cannot read replay diagnostics: %s"
+              (Printexc.to_string exception_)))
+
+(** Decodes a decimal JSON string as a signed 64-bit history length. History
+    lengths stay strings on disk so JSON number implementations cannot round a
+    large Temporal value through a floating-point representation. *)
+let replay_history_length = function
+  | `String value -> (
+      try
+        let parsed = Int64.of_string value in
+        if parsed < 0L then
+          Error
+            (Base_error.defect
+               ~message:"replay diagnostics history length must be non-negative")
+        else Ok parsed
+      with _ ->
+        Error
+          (Base_error.defect
+             ~message:"replay diagnostics history length is not int64"))
+  | _ ->
+      Error
+        (Base_error.defect
+           ~message:"replay diagnostics history length must be a string")
+
+(** Decodes one strict replay record from a previously published document. *)
+let decode_replay_record = function
+  | `Assoc fields ->
+      let* fields =
+        replay_object [ "phase"; "generation"; "is_replaying"; "history_length" ]
+          fields
+      in
+      let* phase = replay_field "phase" fields in
+      let* phase =
+        match phase with
+        | `String ("initial" as phase) | `String ("replay" as phase) -> Ok phase
+        | _ -> Error (Base_error.defect ~message:"invalid replay diagnostic phase")
+      in
+      let* generation = replay_field "generation" fields in
+      let* generation =
+        match generation with
+        | `Int value when value >= 1 -> Ok value
+        | `Intlit value -> (
+            try
+              let parsed = int_of_string value in
+              if parsed >= 1 then Ok parsed
+              else Error (Base_error.defect ~message:"invalid replay generation")
+            with _ ->
+              Error (Base_error.defect ~message:"invalid replay generation"))
+        | _ -> Error (Base_error.defect ~message:"invalid replay generation")
+      in
+      let* is_replaying = replay_field "is_replaying" fields in
+      let* is_replaying =
+        match is_replaying with
+        | `Bool value -> Ok value
+        | _ -> Error (Base_error.defect ~message:"invalid replay marker")
+      in
+      let* history_length = replay_field "history_length" fields in
+      let* history_length = replay_history_length history_length in
+      Ok { phase; generation; is_replaying; history_length }
+  | _ -> Error (Base_error.defect ~message:"replay diagnostic record is not an object")
+
+(** Loads the prior generation's diagnostic document and checks that its
+    records already prove the initial activation. Generation one starts from a
+    clean path; later generations must not silently create a new root. *)
+let load_replay_diagnostics path generation target_workflow_id =
+  if generation = 1 then
+    Ok
+      {
+        path;
+        generation;
+        target_workflow_id;
+        workflow_id = None;
+        run_id = None;
+        records = [];
+      }
+  else
+    let* json = read_replay_json path in
+    match json with
+    | `Assoc fields ->
+        let* fields = replay_object [ "workflow_id"; "run_id"; "records" ] fields in
+        let* workflow_id = replay_field "workflow_id" fields in
+        let* workflow_id =
+          match workflow_id with
+          | `String value when value <> "" -> Ok value
+          | _ -> Error (Base_error.defect ~message:"invalid replay workflow ID")
+        in
+        let* run_id = replay_field "run_id" fields in
+        let* run_id =
+          match run_id with
+          | `String value when value <> "" -> Ok value
+          | _ -> Error (Base_error.defect ~message:"invalid replay run ID")
+        in
+        let* records = replay_field "records" fields in
+        let* records =
+          match records with
+          | `List values ->
+              let rec loop reversed = function
+                | [] -> Ok (List.rev reversed)
+                | value :: rest ->
+                    let* record = decode_replay_record value in
+                    loop (record :: reversed) rest
+              in
+              loop [] values
+          | _ -> Error (Base_error.defect ~message:"replay records must be an array")
+        in
+        let* () =
+          match records with
+          | [ { phase = "initial"; generation = 1; is_replaying = false; _ } ] -> Ok ()
+          | _ ->
+              Error
+                (Base_error.defect
+                   ~message:
+                     "replay diagnostics must contain exactly one generation-one initial record")
+        in
+        let* () =
+          if
+            match target_workflow_id with
+            | Some expected -> not (String.equal expected workflow_id)
+            | None -> false
+          then
+            Error
+              (Base_error.defect
+                 ~message:"replay diagnostics workflow ID does not match configuration")
+          else Ok ()
+        in
+        Ok
+          {
+            path;
+            generation;
+            target_workflow_id;
+            workflow_id = Some workflow_id;
+            run_id = Some run_id;
+            records;
+          }
+    | _ -> Error (Base_error.defect ~message:"replay diagnostics root is not an object")
+
+(** Writes a diagnostic document through a same-directory temporary file and
+    rename. The worker callback is serialized, so a generation cannot interleave
+    two writes; the rename additionally ensures readers never see partial JSON. *)
+let write_replay_diagnostics state =
+  let record_json record =
+    `Assoc
+      [
+        ("phase", `String record.phase);
+        ("generation", `Int record.generation);
+        ("is_replaying", `Bool record.is_replaying);
+        ("history_length", `String (Int64.to_string record.history_length));
+      ]
+  in
+  match (state.workflow_id, state.run_id) with
+  | Some workflow_id, Some run_id ->
+      let json =
+        `Assoc
+          [
+            ("workflow_id", `String workflow_id);
+            ("run_id", `String run_id);
+            ("records", `List (List.map record_json state.records));
+          ]
+      in
+      let temporary = ref None in
+      (try
+         let generated =
+           Filename.temp_file ~temp_dir:(Filename.dirname state.path)
+             (Filename.basename state.path ^ ".tmp.") ""
+         in
+         temporary := Some generated;
+         let channel = open_out_bin generated in
+         Fun.protect
+           ~finally:(fun () -> close_out_noerr channel)
+           (fun () ->
+             Yojson.Safe.to_channel channel json;
+             output_char channel '\n';
+             flush channel);
+         Sys.rename generated state.path;
+         temporary := None
+       with exception_ ->
+         Option.iter
+           (fun generated -> try Sys.remove generated with _ -> ())
+           !temporary;
+         raise exception_)
+  | _ -> failwith "replay diagnostics state has no workflow/run identity"
+
+(** Creates the optional replay observer from test-only environment settings.
+    Production workers do not set these variables and therefore pay no file
+    I/O or callback cost. The observer records only the first initial and first
+    replay activation for the configured workflow/run. *)
+let replay_diagnostic_hook () =
+  match Sys.getenv_opt "SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE" with
+  | None -> Ok None
+  | Some path when path <> "" && not (String.contains path '\000') && not (Filename.is_relative path) ->
+      let* generation =
+        match Sys.getenv_opt "SMOKE_WORKER_GENERATION" with
+        | Some value -> (
+            try
+              let parsed = int_of_string value in
+              if parsed >= 1 then Ok parsed
+              else Error (Base_error.defect ~message:"SMOKE_WORKER_GENERATION must be positive")
+            with _ ->
+              Error (Base_error.defect ~message:"SMOKE_WORKER_GENERATION must be an integer"))
+        | None -> Error (Base_error.defect ~message:"SMOKE_WORKER_GENERATION must be set")
+      in
+      let target_workflow_id =
+        match Sys.getenv_opt "SMOKE_REPLAY_WORKFLOW_ID" with
+        | Some value when value <> "" -> Some value
+        | _ -> None
+      in
+      let* state = load_replay_diagnostics path generation target_workflow_id in
+      let callback (info : Workflow_adapter.activation_info) =
+        let matches_target =
+          match (state.target_workflow_id, info.workflow_id, state.workflow_id) with
+          | Some target, Some workflow_id, _ -> String.equal target workflow_id
+          | Some target, None, Some workflow_id -> String.equal target workflow_id
+          | Some _, None, None -> false
+          | None, Some workflow_id, _ ->
+              (match state.workflow_id with
+              | None -> true
+              | Some expected -> String.equal expected workflow_id)
+          | None, None, _ -> true
+        in
+        if matches_target then begin
+          (match (state.run_id, info.run_id) with
+          | Some expected, actual when not (String.equal expected actual) -> ()
+          | _ ->
+              let phase = if info.is_replaying then "replay" else "initial" in
+              let already_recorded =
+                List.exists (fun record -> String.equal record.phase phase) state.records
+              in
+              if not already_recorded then begin
+                if info.history_length < 0L then
+                  failwith "replay diagnostics history length was negative";
+                if state.generation = 1 && info.is_replaying then
+                  failwith "generation one unexpectedly reported replay";
+                if state.generation > 1 && not info.is_replaying then
+                  failwith "replacement worker did not report replay";
+                (match (state.workflow_id, info.workflow_id) with
+                | None, Some workflow_id -> state.workflow_id <- Some workflow_id
+                | Some expected, Some actual when not (String.equal expected actual) ->
+                    failwith "replay activation workflow ID changed"
+                | _ -> ());
+                (match state.run_id with
+                | None -> state.run_id <- Some info.run_id
+                | Some expected when not (String.equal expected info.run_id) ->
+                    failwith "replay activation run ID changed"
+                | Some _ -> ());
+                state.records <-
+                  state.records
+                  @ [
+                      {
+                        phase;
+                        generation = state.generation;
+                        is_replaying = info.is_replaying;
+                        history_length = info.history_length;
+                      };
+                    ];
+                write_replay_diagnostics state
+              end)
+        end
+      in
+      Ok (Some callback)
+  | Some _ ->
+      Error
+        (Base_error.defect
+           ~message:
+             "SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE must be a non-empty absolute path without NUL")
+
 (** Returns [true] only for the bounded readiness timeout. Other native errors
     must propagate because they may indicate a lost worker or connection. *)
 let is_not_ready = function
@@ -671,6 +1003,7 @@ let cleanup_abandoned worker =
     and closes all native resources before returning. Successful construction
     attaches a GC finalizer so abandoned workers still drain leases. *)
 let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities () =
+  let* on_activation = replay_diagnostic_hook () in
   let* client_config =
     Native.client_config ~target_url ~identity
     |> Result.map_error (public_bridge_error "client configuration")
@@ -702,7 +1035,7 @@ let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities (
       |> Result.map_error (public_native_error "worker startup")
     in
     let* workflows =
-      Workflow.create ~task_queue ~supervisor ~workflows ()
+      Workflow.create ?on_activation ~task_queue ~supervisor ~workflows ()
       |> Result.map_error (public_adapter_error "workflow registration")
     in
     let* activities =

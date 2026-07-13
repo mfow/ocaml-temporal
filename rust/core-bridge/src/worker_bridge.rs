@@ -514,19 +514,20 @@ impl PollLanes {
                         // we cannot accidentally deliver it after Core has been
                         // told the task failed admission handoff.
                         drop(activation);
+                        // AlreadyLeased means the first handoff still owns this
+                        // run_id. Force-failing would complete that live lease.
+                        if matches!(error, CompleteError::AlreadyLeased) {
+                            return Some(Err(PollLaneError::DuplicateIdentity));
+                        }
                         handle.block_on(force_fail_undeliverable_workflow(
                             self.worker.as_ref(),
                             &run_id,
                             "workflow activation lease handoff failed",
                         ));
-                        // Clear residual unleased debt only. An AlreadyLeased
-                        // entry remains owned by the first handoff.
-                        if !matches!(error, CompleteError::AlreadyLeased) {
-                            self.ledger
-                                .lock()
-                                .unwrap_or_else(|err| err.into_inner())
-                                .abandon_workflow_admission(&run_id);
-                        }
+                        self.ledger
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner())
+                            .abandon_workflow_admission(&run_id);
                         Some(Err(PollLaneError::Admission(AdmitError::InvalidIdentity)))
                     }
                 }
@@ -577,17 +578,21 @@ impl PollLanes {
                         Err(error) => {
                             let task_token = task.task_token.clone();
                             drop(task);
+                            // AlreadyLeased means the first handoff still owns
+                            // this token. Force-failing would complete that
+                            // live lease.
+                            if matches!(error, CompleteError::AlreadyLeased) {
+                                return Some(Err(PollLaneError::DuplicateIdentity));
+                            }
                             handle.block_on(force_fail_undeliverable_activity(
                                 self.worker.as_ref(),
                                 &task_token,
                                 "activity task lease handoff failed",
                             ));
-                            if !matches!(error, CompleteError::AlreadyLeased) {
-                                self.ledger
-                                    .lock()
-                                    .unwrap_or_else(|err| err.into_inner())
-                                    .abandon_activity_admission(&task_token);
-                            }
+                            self.ledger
+                                .lock()
+                                .unwrap_or_else(|err| err.into_inner())
+                                .abandon_activity_admission(&task_token);
                             return Some(Err(PollLaneError::Admission(
                                 AdmitError::InvalidIdentity,
                             )));

@@ -6,30 +6,40 @@ first time, so it separates three things that are easy to confuse:
 
 | Piece | What it describes | What it does not do yet |
 | --- | --- | --- |
-| `Signal.t`, `Query.t`, or `Update.t` | A name and the codecs for its typed values | Register anything with a worker or contact Temporal |
-| A `Handler.t` | The OCaml function that handles one definition | Make a callback safe to suspend or run concurrently |
+| `Signal.t`, `Query.t`, or `Update.t` | A name and the codecs for its typed values | Contact Temporal by itself |
+| A `Handler.t` | The OCaml function that handles one definition | Register a handler for a different interaction kind |
 | `Temporal.Interaction.t` | An immutable, in-memory dispatcher for local tests | Deliver a message from a live Temporal Server |
 
 The definitions and handler types are available in `Temporal.Signal`,
 `Temporal.Query`, and `Temporal.Update`. `Temporal.Interaction` provides the
-deterministic local routing path that currently lets those handlers be tested.
-The API is experimental while the native delivery path is being built.
+deterministic local routing path for tests. Native workflow signal delivery is
+now available when a handler is attached to `Temporal.Worker.workflow`; native
+queries and updates remain experimental and unsupported.
 
 ## Current status: local handlers and a partial native boundary
 
 `Temporal.Interaction` remains the public, deterministic path for exercising
-signal, query, and update handlers. The native bridge now accepts a Core
+all three interaction kinds locally. The native bridge accepts a Core
 `SignalWorkflow` activation, validates and copies its ordered payloads,
-identity, and headers, and retains it as a runtime job. That transport result
-does not yet invoke a public OCaml signal handler: the current execution logs
-the absence of a handler and emits no signal-specific command.
+identity, and headers, and dispatches it to the matching handler registered on
+the workflow. The callback is queued on that execution's scheduler, so it can
+use deterministic workflow APIs and follows the same source ordering as root,
+timer, activity, and child continuations.
+
+The native public handler currently accepts exactly one payload. An activation
+with zero or multiple payloads is completed as a non-retryable workflow failure
+instead of dropping data or choosing an arbitrary element. A signal with no
+matching handler follows the same fail-closed path. Identity and headers are
+validated and retained by the runtime, but the first public handler API exposes
+only the typed payload; a later API can add those metadata fields without
+changing the transport contract.
 
 Query and update activation jobs are still rejected because their handler
 registration, suspension, and completion records have not been implemented.
-No local dispatcher test or signal transport test is evidence that a live
-Temporal Server can invoke an OCaml interaction handler. The [feature coverage
-table](feature-coverage.md) and [implementation roadmap](../implementation-roadmap.md#delivery-order)
-record the same experimental status alongside the other SDK capabilities.
+The focused native worker test proves scheduler delivery and the fail-closed
+missing-handler path. It is still not live-server evidence; the [feature
+coverage table](feature-coverage.md) and [implementation roadmap](../implementation-roadmap.md#delivery-order)
+record that the Compose acceptance path must add a real signal round trip.
 
 ## The three-step model
 
@@ -38,15 +48,15 @@ An interaction is assembled in three steps:
 1. Define a stable name and the codec for each value that crosses the
    interaction boundary.
 2. Pair that definition with a typed OCaml callback to make a handler.
-3. Put handlers in an `Interaction` dispatcher, then call the typed operation
-   from a test or other local driver.
+3. Attach a signal handler to a worker workflow, or put handlers in an
+   `Interaction` dispatcher when writing a local test.
 
 The definition and handler preserve the relationship between a Temporal name,
 its codec, and its OCaml type. A caller cannot accidentally pass a string to a
 handler that was defined for bytes without receiving a typed codec error. The
-native transport and the planned handler/response lifecycles are described in
-the [native interaction design](../design/native-interactions.md); only the
-signal activation transport portion is implemented by the worker today.
+native transport and the remaining handler/response lifecycles are described
+in the [native interaction design](../design/native-interactions.md). Signal
+activation delivery is implemented; query and update responses are not.
 
 ## Definitions
 
@@ -142,6 +152,25 @@ let add_tool_handler =
     Ok (String.uppercase_ascii value))
 ```
 
+To deliver a signal through a native workflow worker, attach its handler when
+registering the workflow:
+
+```ocaml
+let workflow =
+  Temporal.Workflow.define ~name:"agent" ~input:Temporal.Codec.unit
+    ~output:Temporal.Codec.string (fun () -> Ok "ready")
+
+let registered =
+  Temporal.Worker.workflow ~signals:[ approval_handler ] workflow
+```
+
+The worker keeps the handler private to this workflow registration. A matching
+native activation is scheduled on the workflow's owner scheduler; it is not
+called from Rust or from a native callback thread. Signal handlers return
+`(unit, Temporal.Error.t) result` and can call deterministic workflow helpers,
+including operations that suspend. Their commands are included in the
+containing workflow-task completion.
+
 The `ref` above is deliberately small synthetic-test state. It demonstrates
 that a handler can close over ordinary OCaml values; it is not a substitute
 for replay-safe workflow state and it is not synchronized for concurrent
@@ -156,8 +185,9 @@ its definition.
 
 ## Dispatch order and results
 
-The local dispatcher follows a fixed sequence. This is the behavior that the
-future native activation path must preserve:
+The local dispatcher follows a fixed sequence. Native signal delivery preserves
+the same name lookup, codec, callback, and typed-error rules while adding
+scheduler ownership:
 
 | Operation | Local sequence | Result |
 | --- | --- | --- |
@@ -227,21 +257,22 @@ the SDK's supervisor actor or a replacement for the future workflow scheduler.
 
 ## Native delivery boundary
 
-Native delivery is a separate protocol milestone. The first signal transport
-slice is implemented, but it intentionally stops before handler invocation. It
-must still add:
-
-- public signal-handler registration and scheduler delivery, followed by
-  activation records for query requests and update requests;
-- worker-side registration and completion records for suspended handlers and
-  validators;
-- scheduler ownership for callbacks, so a Rust thread never calls an OCaml
-  closure directly; and
-- the same decode, validation, ordering, and error classification rules at
-  the OCaml/Rust boundary.
+The first native signal-handler slice is implemented. `Worker.workflow` carries
+its handler list into the private runtime registration, and each
+`SignalWorkflow` activation is validated before the matching callback is queued
+on the execution scheduler. The handler sees exactly one decoded payload in the
+public API; malformed arity, a missing name, a codec failure, or a callback
+error produces a typed non-retryable workflow failure. The handler's ordinary
+workflow commands are returned in that activation's completion.
 
 The supervisor remains the sole owner of the Rust handle graph, and native
-readiness must be observed through its existing scheduler-safe boundary. Until
-those pieces are implemented, a passing `Temporal.Interaction` test or signal
-transport test proves only local/bridge behavior; it is not live Temporal
-Server acceptance.
+readiness is observed through its scheduler-safe boundary. Rust never calls an
+OCaml closure. The focused runtime tests prove scheduler delivery, metadata
+retention, and fail-closed handling, but they are not live Temporal Server
+acceptance. The remaining native interaction work is:
+
+- query activation and `QueryResult` completion records with a strict
+  non-suspending handler mode;
+- update activation and two-stage `UpdateResponse` records; and
+- a Docker Compose acceptance scenario that sends a signal through Temporal
+  Server and observes its workflow-side effect.

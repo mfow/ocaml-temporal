@@ -264,10 +264,10 @@ let test_child_resolution_translation () =
           ]))
 
 (** Confirms that a Core signal keeps its complete payload envelope while it
-    crosses the semantic bridge. The current execution deliberately has no
-    public signal-handler registry, so the activation is acknowledged without
-    inventing a workflow command; the retained runtime job is still checked
-    field by field to protect the future handler boundary. *)
+    crosses the semantic bridge. An execution without a matching registration
+    fails closed instead of silently acknowledging an event that workflow code
+    could not observe; this protects replay by making the missing handler an
+    explicit non-retryable workflow failure. *)
 let test_signal_workflow_translation_and_activation () =
   let signal_input = protocol_payload "signal-input" in
   let signal_header = protocol_payload "signal-header" in
@@ -309,8 +309,20 @@ let test_signal_workflow_translation_and_activation () =
     unwrap "signal activation"
       (Native_execution.activate execution (activation [ signal ]))
   in
-  if completion.commands <> [] then
-    failwith "an unhandled signal emitted an unexpected workflow command"
+  begin match completion.commands with
+  | [ Protocol.Fail_workflow
+        {
+          failure =
+            {
+              message;
+              info = Protocol.Application { non_retryable = true; _ };
+              _;
+            };
+        } ]
+    when String.equal message "unhandled workflow signal: order_updated" ->
+      ()
+  | _ -> failwith "unhandled signal did not fail the workflow explicitly"
+  end
 
 (** Confirms that both malformed identity forms are rejected before a signal
     can become runtime state.  OCaml strings may contain arbitrary bytes, so

@@ -4,9 +4,9 @@ This document specifies how Temporal Core signals, queries, and updates cross
 the private Rust/OCaml boundary. It is both a design reference and an
 implementation-status record. The bilateral bridge now transports a
 `SignalWorkflow` activation safely through Rust, semantic JSON, and the OCaml
-runtime, but it does not yet invoke a public OCaml signal handler. Query and
-update delivery remain unsupported until their activation and completion
-records are implemented and tested together.
+runtime, then dispatches a registered public OCaml signal handler on the
+workflow scheduler. Query and update delivery remain unsupported until their
+activation and completion records are implemented and tested together.
 
 For the public, in-memory typing that already exists, see
 [Signals, queries, and updates](../reference/interactive-workflows.md). That
@@ -47,18 +47,20 @@ dropping them.
 
 Consequently:
 
-- `SignalWorkflow` is deliverable to the OCaml activation/runtime boundary,
+- `SignalWorkflow` is deliverable to a registered OCaml workflow handler,
   including its name, repeated payload list, sender identity, and headers.
-  The current execution has no public signal-handler registry, so an
-  unhandled signal is logged and produces no signal-specific command; it is
-  not silently discarded by the bridge.
+  The handler is queued on the execution scheduler. The public handler policy
+  accepts exactly one payload; a missing handler or unsupported arity is logged
+  and completed as a non-retryable workflow failure rather than acknowledged
+  as a no-op.
 - `QueryWorkflow` and `DoUpdate` are not currently deliverable to an OCaml
   workflow worker.
 - `Temporal.Interaction` can exercise typed handler registration, codec
   validation, duplicate-name rejection, and validator ordering locally.
 - The signal transport test proves only the native activation boundary. It is
   not evidence that a Temporal Server can invoke a public OCaml signal
-  handler; no live interaction acceptance test exists yet.
+  handler; the focused scheduler test is not a live Temporal Server acceptance
+  test yet.
 
 This explicit failure is intentional. A newer Core field, oneof variant, or
 update metadata field must not silently disappear at the language boundary.
@@ -88,10 +90,9 @@ Each stage validates before handing ownership to the next stage:
    rejects that exact document.
 3. OCaml validates and copies payload bytes, then translates the semantic job
    into a private runtime job. For `SignalWorkflow`, this retains the signal
-   name, ordered inputs, identity, and headers. The current execution logs
-   that no public handler is registered and emits no fabricated command. No
-   Rust future, pointer, protobuf value, or callback crosses into workflow
-   code.
+   name, ordered inputs, identity, and headers, resolves the registered handler,
+   and queues it on the execution scheduler. No Rust future, pointer, protobuf
+   value, or callback crosses into workflow code.
 4. OCaml handlers emit typed semantic commands. The OCaml encoder validates and
    round-trips the complete completion before the supervisor hands owned bytes
    to Rust. Rust validates the bytes again and converts them to Core protobuf.
@@ -144,18 +145,21 @@ NUL-free UTF-8 text (an empty identity is allowed). Ordered repeated inputs
 are preserved; the bridge does not select an arbitrary element or silently
 discard extra payloads.
 
-The current public signal definition accepts one typed input. A future handler
-layer must therefore choose and document an arity policy: it may add a
-repeated-input definition or return a typed handler error for an unsupported
-arity. That policy is deliberately not implemented by the transport slice.
+The current public signal definition accepts one typed input. The native public
+handler therefore requires exactly one payload and returns a typed,
+non-retryable workflow error for zero or multiple payloads. The runtime still
+retains the complete repeated list so a future repeated-input API can be added
+without changing the transport record.
 
 A signal handler is mutating workflow code but has no result command of its
 own. Its state changes and any ordinary activity, child, or timer commands are
 returned in the completion for the containing activation. The handler observes
 the Core-provided ordering relative to other signal and update jobs. A missing
-handler, invalid payload, or handler exception follows the SDK's typed
+handler, invalid arity or payload, or handler exception follows the SDK's typed
 non-retryable workflow-defect path; raw exceptions and payload values never
-cross the bridge.
+cross the bridge. Public `Temporal.Signal.Handler.t` currently receives the
+single typed payload only. Identity and headers remain validated runtime data
+until a metadata-aware public handler API is designed.
 
 Signal input, identity, and headers are history-derived data. They may be
 read by the handler, but the handler must still use only replay-safe workflow
@@ -299,9 +303,10 @@ Native interactions should be implemented in small bilateral slices, with no
 single side accepting a new variant early:
 
 1. Add typed Rust/OCaml semantic records and closed JSON shapes for
-   `SignalWorkflow` and its activation mapping. This transport slice is now
-   implemented, including malformed identity, payload, ordering, and
-   lossless-round-trip tests; public handler delivery remains a later step.
+   `SignalWorkflow` and its activation mapping. This slice is now implemented,
+   including malformed identity, payload, ordering, lossless-round-trip tests,
+   public handler registration, scheduler delivery, exact-one arity validation,
+   and fail-closed missing-handler tests.
 2. Add `QueryWorkflow` and `QueryResult`, including the no-suspension query
    mode and query-only completion tests. Add explicit tests for the current
    no-input public query API and for rejected extra arguments.
@@ -317,8 +322,9 @@ single side accepting a new variant early:
    through the two OCaml binaries. Record live success separately from
    synthetic and bridge-only evidence.
 
-Until the later handler and completion stages have passed, the overall feature
-status remains experimental: native `SignalWorkflow` transport is implemented
-through the activation/runtime boundary, while public signal delivery,
-queries, and updates remain unsupported. `Temporal.Interaction` is still the
-only public handler path available for local tests.
+Until the later query and update completion stages have passed, the overall
+feature status remains experimental: native `SignalWorkflow` transport and
+public scheduler-owned signal delivery are implemented, while queries and
+updates remain unsupported and live signal acceptance is pending.
+`Temporal.Interaction` remains the public local-testing path for all three
+interaction kinds.

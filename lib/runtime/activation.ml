@@ -16,9 +16,10 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
-  (** A validated incoming signal. The runtime keeps the complete event even
-      when no public handler registry is attached to this execution yet, so a
-      future handler layer can consume exactly what Core delivered. *)
+  (** A validated incoming signal. The runtime keeps the complete event while
+      the execution resolves its name against the private handler registry;
+      missing or invalid public handlers fail closed rather than dropping the
+      history-derived event. *)
   | Signal_workflow of {
       signal_name : string;
       input : Temporal_base.Codec.payload list;

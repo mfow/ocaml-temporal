@@ -98,6 +98,31 @@ let test_duplicate_workflows () =
          [ Temporal.Worker.workflow definition; Temporal.Worker.workflow definition ]
        ~activities:[] ())
 
+(** Signal handlers are attached to one workflow registration and duplicate
+    names are rejected before the mock or native backend is allocated. This
+    test exercises the public ergonomics without needing a live signal task. *)
+let test_workflow_signal_registration () =
+  let signal =
+    Temporal.Signal.define ~name:"unit.signal" ~input:Temporal.Codec.string
+  in
+  let handler = Temporal.Signal.Handler.make signal (fun _ -> Ok ()) in
+  let calls = Atomic.make 0 in
+  let workflow = unit_workflow calls in
+  let worker =
+    unwrap
+      (Temporal.Worker.create ~target_url:"mock://dispatch"
+         ~namespace:"unit-test" ~task_queue:"unit-test"
+         ~workflows:[ Temporal.Worker.workflow ~signals:[ handler ] workflow ]
+         ~activities:[] ())
+  in
+  unwrap (Temporal.Worker.shutdown worker);
+  expect_error "defect"
+    (Temporal.Worker.create ~target_url:"mock://dispatch"
+       ~namespace:"unit-test" ~task_queue:"unit-test"
+       ~workflows:
+         [ Temporal.Worker.workflow ~signals:[ handler; handler ] workflow ]
+       ~activities:[] ())
+
 (** Duplicate activity names use the same registration invariant as workflows. *)
 let test_duplicate_activities () =
   let calls = Atomic.make 0 in
@@ -333,6 +358,7 @@ let test_native_worker_configuration_boundary () =
 (** Runs all public worker and client regression assertions. *)
 let () =
   test_duplicate_workflows ();
+  test_workflow_signal_registration ();
   test_duplicate_activities ();
   test_remote_registration_is_rejected ();
   test_worker_registration_and_dispatch ();

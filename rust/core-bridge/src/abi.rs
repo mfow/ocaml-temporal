@@ -435,8 +435,8 @@ impl Runtime {
                     request_id,
                     workflow_id,
                 };
-                let encoded = client_protocol::encode_start_outcome(&fallback)
-                    .map_err(protocol_failure)?;
+                let encoded =
+                    client_protocol::encode_start_outcome(&fallback).map_err(protocol_failure)?;
                 Ok(encoded.into_bytes())
             }
         }

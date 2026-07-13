@@ -101,6 +101,17 @@ jq -e --arg workflow_id "$workflow_id" --arg run_id "$run_id" \
    and ([.events[].event_id] == ["1", "2", "3"])' \
   "$tmp/normalized-history.json" >/dev/null
 
+# Replacing a worker can produce a non-terminal WorkflowTaskTimedOut event when
+# the previous worker's sticky task expires. It is a valid replay boundary, so
+# the normalizer must retain it as a known semantic event instead of failing
+# closed as an unknown future event.
+jq '.history.events[1].eventType = "EVENT_TYPE_WORKFLOW_TASK_TIMED_OUT"' \
+  "$tmp/cli-history.json" >"$tmp/cli-history-sticky-timeout.json"
+sh "$normalizer" --workflow-id "$workflow_id" --run-id "$run_id" \
+  --output "$tmp/normalized-sticky-timeout.json" <"$tmp/cli-history-sticky-timeout.json"
+jq -e '.events[1].type == "WorkflowTaskTimedOut"' \
+  "$tmp/normalized-sticky-timeout.json" >/dev/null
+
 # The real Temporal CLI emits this top-level shape, without workflow/run
 # metadata around the history. The first event carries the workflow ID in its
 # started-event attributes; the controller obtains the exact run ID from the

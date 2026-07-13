@@ -80,6 +80,7 @@ if ! "$jq_bin" -e \
         elif . == "workflowtaskstarted" then "WorkflowTaskStarted"
         elif . == "workflowtaskcompleted" then "WorkflowTaskCompleted"
         elif . == "workflowtaskfailed" then "WorkflowTaskFailed"
+        elif . == "workflowtasktimedout" then "WorkflowTaskTimedOut"
         elif . == "timerstarted" then "TimerStarted"
         elif . == "timerfired" then "TimerFired"
         elif . == "timercanceled" then "TimerCanceled"

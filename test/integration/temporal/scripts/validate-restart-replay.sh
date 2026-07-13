@@ -109,6 +109,7 @@ event_types='[
   "WorkflowTaskStarted",
   "WorkflowTaskCompleted",
   "WorkflowTaskFailed",
+  "WorkflowTaskTimedOut",
   "TimerStarted",
   "TimerFired",
   "TimerCanceled",

@@ -1756,9 +1756,7 @@ fn continuation_from_core(
             .as_ref()
             .map(failure_from_core)
             .transpose()?,
-        last_completion_result: payloads_option_from_core(
-            value.last_completion_result.as_ref(),
-        )?,
+        last_completion_result: payloads_option_from_core(value.last_completion_result.as_ref())?,
     }))
 }
 

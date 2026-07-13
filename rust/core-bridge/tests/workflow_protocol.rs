@@ -568,10 +568,7 @@ fn converts_pinned_core_values_losslessly() {
         })
         .and_then(|context| context.continuation)
         .expect("continuation metadata should be retained");
-    assert_eq!(
-        continuation.continued_from_execution_run_id,
-        "previous-run"
-    );
+    assert_eq!(continuation.continued_from_execution_run_id, "previous-run");
     assert_eq!(
         continuation.initiator,
         workflow_protocol::ContinueAsNewInitiator::Workflow
@@ -849,7 +846,7 @@ fn preserves_continuation_terminal_metadata() {
     use core_activation::workflow_activation_job::Variant;
     use temporalio_protos::temporal::api::{
         common::v1::{Payload, Payloads},
-        failure::v1::{failure::FailureInfo, ApplicationFailureInfo, Failure},
+        failure::v1::{ApplicationFailureInfo, Failure, failure::FailureInfo},
     };
 
     let continuation_failure = Failure {
@@ -897,7 +894,11 @@ fn preserves_continuation_terminal_metadata() {
         workflow_protocol::ActivationJob::InitializeWorkflow {
             context: Some(context),
             ..
-        } => context.continuation.as_ref().expect("continuation context").clone(),
+        } => context
+            .continuation
+            .as_ref()
+            .expect("continuation context")
+            .clone(),
         _ => panic!("expected initialize workflow job"),
     };
     assert_eq!(
@@ -922,7 +923,10 @@ fn preserves_continuation_terminal_metadata() {
     );
     let encoded = workflow_protocol::encode_activation(&semantic)
         .expect("continuation metadata should encode");
-    assert_eq!(workflow_protocol::decode_activation(&encoded).unwrap(), semantic);
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
 }
 
 /// Proves a child activation retains both its namespaced parent and the root

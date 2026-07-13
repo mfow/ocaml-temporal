@@ -64,6 +64,11 @@ acknowledgement does the adapter activate the opaque handle and move the copied
 binary task token into its asynchronous-lease registry. The callback cannot use
 the handle synchronously before the handoff is accepted.
 
+This definition is executable only on the native worker path, where the Rust
+bridge can acknowledge the Core handoff and own the later client operation. A
+deterministic mock backend rejects asynchronous definitions during worker
+construction instead of pretending that it can retain a Temporal task token.
+
 The four handle methods are typed and return `(unit, Error.t) result`:
 
 - `Async_handle.complete` encodes the output codec paired with the definition
@@ -73,14 +78,18 @@ The four handle methods are typed and return `(unit, Error.t) result`:
 - `Async_handle.cancel` sends a canceled completion with ordered detail
   payloads.
 - `Async_handle.heartbeat` sends non-terminal progress through the
-  namespace-bound client operation.
+  namespace-bound client operation. It currently returns acknowledgement only;
+  Core cancellation, pause, and reset flags are not yet represented in the
+  public result.
 
 All payloads and task tokens are copied before crossing a boundary. The
 handle's private state allows one operation at a time and rejects a different
 operation while a previous request has an uncertain result. Terminal state is
-retired only after native acceptance. The handle is not a retained activity
-context: ordinary `Activity.Context` values are still invalidated when their
-callback returns.
+retired only after native acceptance. A failed request retains an operation key
+for retry; the caller must submit the same byte-identical operation because the
+current state machine does not retain a second mutable copy of the operation
+value. The handle is not a retained activity context: ordinary
+`Activity.Context` values are still invalidated when their callback returns.
 
 ## Registration and dispatch
 

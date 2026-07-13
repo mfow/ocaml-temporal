@@ -86,7 +86,7 @@ completion of an accepted asynchronous lease. Do not overload the existing
 | --- | --- | --- | --- |
 | `WillCompleteAsync` handoff | Core worker | `Worker::complete_activity_task` with the async status; no server RPC | ordinary worker lease -> async lease, only after acceptance |
 | later `Completed`/`Failed`/`Cancelled` | namespace-bound client | `Client::get_async_activity_handle(...).complete/fail/report_cancelation` | async lease remains pending until the client result proves acceptance |
-| later heartbeat | namespace-bound client | `AsyncActivityHandle::heartbeat` | async lease remains pending; cancellation flags are returned |
+| later heartbeat | namespace-bound client | `AsyncActivityHandle::heartbeat` | async lease remains pending; the current OCaml API exposes acknowledgement only |
 
 The new operation consumes the same strict activity-completion JSON shape but
 rejects `will_complete_async`; that variant is valid only for the worker
@@ -119,30 +119,33 @@ handles can be added later only with the same strict identity validation.
   retained handle, and retaining a context cannot extend a native token's
   lifetime.
 - A handle has one terminal transition. Concurrent terminal calls are
-  serialized by its lease state: one request is admitted, an already admitted
-  equivalent request may be observed as the same result, and a conflicting or
-  repeated terminal outcome returns a typed state error. No result is silently
-  discarded when a response is uncertain.
+  serialized by its lease state: one request is admitted, another request
+  while it is in flight returns a typed busy error, and a conflicting or
+  repeated terminal outcome after the request settles returns a typed state
+  error. No result is silently discarded when a response is uncertain.
 
 ## Retry and shutdown
 
 The adapter keeps terminal client requests in the asynchronous-lease registry
 until the supervisor reports acceptance. A typed transport failure or an
 exception leaves the copied token and operation key available for retry; the
-activity implementation is never run again. The current bridge maps native
-async-client failures through the generic typed bridge error path. A dedicated
+activity implementation is never run again. The current state machine retains
+the key rather than the original operation value, so a retry must reconstruct
+the byte-identical request. The current bridge maps native async-client
+failures through the generic typed bridge error path. A dedicated
 non-retryable Core `NotFound` status and bounded native wait are follow-up
 hardening work, so callers must treat an uncertain result as unresolved and
 must not issue a different operation for the same handle.
 
 Worker shutdown first stops new polling, then drains ordinary worker leases as
-it does today. It must also account for asynchronous leases: either drain
-their admitted client requests within the configured shutdown period or return
-a typed outstanding-async-leases error while retaining enough state for an
-explicit retry. It must not force-complete, drop, or invalidate an accepted
-async token merely to make the native worker graph appear closed. Finalizer
-cleanup follows the same ownership rule and may use the existing dedicated
-cleanup thread, but it cannot run user callbacks or issue a hidden completion.
+it does today. It also accounts for asynchronous leases: if an admitted client
+request remains, the adapter returns a typed outstanding-async-leases error and
+keeps the worker graph usable for an explicit retry. A non-retryable drain or
+native teardown failure invokes the native force-release contract first, then
+closes retained async handles and clears their adapter maps; it never sends a
+hidden completion. Finalizer cleanup follows the same ownership rule and may
+use the existing dedicated cleanup thread, but it cannot run user callbacks or
+invent a completion after Core has retired the lease.
 
 ## Verification plan
 

@@ -11,6 +11,10 @@ type status = Complete | Failed of exn | Blocked
     scheduler consumes it without treating it as an application defect. *)
 type _ Effect.t += Abort_workflow : 'value Effect.t
 
+(** Raised when a terminal abort settles the current fiber. User-code try/with
+    wrappers must re-raise it so it is not reported as a defect. *)
+exception Workflow_aborted
+
 (** Creates an empty active scheduler with an identity distinct from every
     other scheduler in this process. *)
 val create : unit -> t

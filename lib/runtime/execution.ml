@@ -167,6 +167,8 @@ let start_workflow execution =
         | Some implementation ->
             begin match
               try implementation execution.input with
+              | Scheduler.Workflow_aborted as exn -> raise exn
+              | Future_store.Scheduler_shutdown as exn -> raise exn
               | exn ->
                   Error
                     (Temporal_base.Error.defect

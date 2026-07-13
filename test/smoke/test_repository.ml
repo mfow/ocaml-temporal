@@ -148,7 +148,13 @@ let test_static_foreign_archives () =
     ~needle:"scripts/render-rust-link-flags.sh";
   require_text ~path:bridge
     ~needle:
-      "(setenv\n   CARGO_TARGET_DIR\n   %{workspace_root}/rust-target";
+      "(setenv\n   OCAML_TEMPORAL_RUST_TARGET_FALLBACK\n   %{workspace_root}/rust-target";
+  require_text
+    ~path:(Filename.concat source_root "scripts/build-rust-bridge.sh")
+    ~needle:"if [ -n \"${CARGO_TARGET_DIR:-}\" ]; then";
+  require_text
+    ~path:(Filename.concat source_root "scripts/build-rust-bridge.sh")
+    ~needle:"export CARGO_TARGET_DIR=$target_root";
   if contains ~needle:"(foreign_stubs" (read bridge) then
     failwith "lib/core_bridge/dune must not build a temporary native-stubs DLL"
 

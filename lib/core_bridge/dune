@@ -10,11 +10,12 @@
   ../../scripts/render-rust-link-flags.sh)
  (action
   ;; Dune's [source_tree] input is copied read-only into the action sandbox.
-  ;; Cargo's target directory is mutable, so keep it beside that copied source
-  ;; tree. The standalone script still falls back to [rust/target] when callers
-  ;; invoke it outside Dune and do not provide [CARGO_TARGET_DIR].
+  ;; Cargo's target directory is mutable, so advertise a writable sibling as a
+  ;; fallback for the bridge script. An explicitly configured
+  ;; [CARGO_TARGET_DIR] remains authoritative; this fallback must not make the
+  ;; Docker or native Makefile workflows build the Rust graph twice.
   (setenv
-   CARGO_TARGET_DIR
+   OCAML_TEMPORAL_RUST_TARGET_FALLBACK
    %{workspace_root}/rust-target
    (run
     sh

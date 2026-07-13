@@ -422,6 +422,21 @@ let test_exact_run_signal () =
   | Ok (Temporal.Client.Completed "ignored") -> ()
   | Ok _ -> failwith "signal changed the mock terminal result"
   | Error error -> failwith (Temporal.Error.message error));
+  (* [follow] only reconstructs a typed handle; the backend must still reject
+     a fabricated run ID instead of delivering the signal to the workflow ID's
+     current execution. *)
+  let mismatched_handle =
+    unwrap
+      (Temporal.Client.follow client ~workflow:echo_workflow
+         {
+           namespace = "unit-test";
+           workflow_id = "unit-signal";
+           run_id = "not-the-started-run";
+         })
+  in
+  expect_error_message_contains "bridge" "run id does not match"
+    (Temporal.Client.signal ~request_id:"mismatched-run" mismatched_handle
+       ~signal:add_document_signal ~input:"late");
   expect_error "workflow"
     (Temporal.Client.signal ~request_id:"late-signal" handle
        ~signal:add_document_signal ~input:"late");

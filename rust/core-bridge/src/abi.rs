@@ -844,6 +844,11 @@ impl Runtime {
         match handle.block_on(worker.finalize()) {
             Ok(()) => {
                 self.worker_namespace = None;
+                // Semantic handoffs belong to the worker that created them.
+                // Drop them with the worker so a later start on this runtime
+                // cannot treat a recycled run ID or task token as a duplicate.
+                self.workflow_activations.clear();
+                self.activity_tasks.clear();
                 Ok(Vec::new())
             }
             Err((worker, error)) => {
@@ -1126,6 +1131,8 @@ impl Runtime {
         match handle.block_on(worker.finalize(&handle)) {
             Ok(()) => {
                 self.worker_namespace = None;
+                self.workflow_activations.clear();
+                self.activity_tasks.clear();
                 Ok(Vec::new())
             }
             Err((worker, error)) => {
@@ -1157,6 +1164,8 @@ impl Runtime {
         match handle.block_on(worker.dispose(&handle)) {
             Ok(()) => {
                 self.worker_namespace = None;
+                self.workflow_activations.clear();
+                self.activity_tasks.clear();
                 Ok(Vec::new())
             }
             Err((worker, error)) => {

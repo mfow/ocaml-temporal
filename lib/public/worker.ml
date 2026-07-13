@@ -50,6 +50,10 @@ type activity_entry =
          the appropriate context without changing the public callback type. *)
       contextual_implementation :
         ('input, 'output) Activity.contextual_implementation option;
+      (* Deferred callback retained separately so the native adapter can
+         create its completion capability only after Core accepts handoff. *)
+      async_implementation :
+        ('input, 'output) Activity.async_implementation option;
     }
       -> activity_entry
 
@@ -124,13 +128,20 @@ let add_activity registry (Activity definition) =
   let name = Activity.name definition in
   match
     ( Activity.implementation definition,
-      Activity.implementation_with_context definition )
+      Activity.implementation_with_context definition,
+      Activity.implementation_async definition )
   with
-  | None, None ->
+  | None, None, None ->
       Error
         (Error.defect
            ~message:("activity " ^ name ^ " has no local implementation"))
-  | implementation, contextual_implementation ->
+  | Some _, Some _, _ | Some _, _, Some _ | _, Some _, Some _ ->
+      Error
+        (Error.defect
+           ~message:
+             ("activity " ^ name
+             ^ " must choose exactly one implementation mode"))
+  | implementation, contextual_implementation, async_implementation ->
       if Name_map.mem name registry then
         Error
           (Error.defect ~message:("duplicate activity registration: " ^ name))
@@ -138,7 +149,12 @@ let add_activity registry (Activity definition) =
         Ok
           (Name_map.add name
              (Activity_entry
-                { definition; implementation; contextual_implementation })
+                {
+                  definition;
+                  implementation;
+                  contextual_implementation;
+                  async_implementation;
+                })
              registry)
 
 (** Builds a workflow registry before opening any backend resource. *)
@@ -207,9 +223,18 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                         in
                         let native_activities =
                           Name_map.bindings activities
-                          |> List.map (fun (_, Activity_entry { definition; _ }) ->
-                                 Native_worker.register_activity
-                                   (Activity_private.to_base definition))
+                          |> List.map
+                               (fun
+                                 (_,
+                                  Activity_entry
+                                    { definition; async_implementation; _ }) ->
+                                 match async_implementation with
+                                 | Some _ ->
+                                     Native_worker.register_async_activity
+                                       (Activity_private.to_base_async definition)
+                                 | None ->
+                                     Native_worker.register_activity
+                                       (Activity_private.to_base definition))
                         in
                         let native_result =
                           Native_worker.create ~target_url ~namespace ~identity
@@ -267,15 +292,28 @@ let dispatch_activity worker task =
            ~message:("unregistered activity task: " ^ task.activity_name) ())
   | Some
       (Activity_entry
-        { definition; implementation; contextual_implementation }) -> (
+        {
+          definition;
+          implementation;
+          contextual_implementation;
+          async_implementation;
+        }) -> (
       match
         Codec.decode (Activity.input definition) task.input
       with
       | Error error -> Error error
       | Ok input -> (
           let result =
-            match contextual_implementation with
-            | Some implementation ->
+            match async_implementation with
+            | Some _ ->
+                Error
+                  (Error.make ~non_retryable:true ~category:`Activity
+                     ~message:
+                       "asynchronous activities require the native worker backend"
+                     ())
+            | None -> (
+                match contextual_implementation with
+                | Some implementation ->
                 (* Mock tasks have no native activity lease, so the callback
                    receives an explicit unavailable context instead of a
                    fabricated heartbeat capability. *)
@@ -285,15 +323,15 @@ let dispatch_activity worker task =
                 in
                 protect_implementation "activity" (implementation context)
                   input
-            | None -> (
-                match implementation with
-                | Some implementation ->
-                    protect_implementation "activity" implementation input
-                | None ->
-                    Error
-                      (Error.defect
-                         ~message:
-                           "activity registry entry has no implementation"))
+                | None -> (
+                    match implementation with
+                    | Some implementation ->
+                        protect_implementation "activity" implementation input
+                    | None ->
+                        Error
+                          (Error.defect
+                             ~message:
+                               "activity registry entry has no implementation")))
           in
           match result with
           | Error error -> Error error

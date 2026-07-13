@@ -650,7 +650,11 @@ module Native_backend = struct
     | Wait_activity_completion_retry_backoff : unit operation
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
+    | Complete_async_activity :
+        Temporal_protocol.Activity_protocol.completion -> unit operation
     | Record_activity_heartbeat :
+        Temporal_protocol.Activity_protocol.heartbeat -> unit operation
+    | Record_async_activity_heartbeat :
         Temporal_protocol.Activity_protocol.heartbeat -> unit operation
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation
@@ -739,10 +743,18 @@ module Native_backend = struct
         Result.bind
           (Protocol_adapter.encode_activity_completion completion)
           (Bridge.worker_complete_activity_json runtime)
+    | Complete_async_activity completion ->
+        Result.bind
+          (Protocol_adapter.encode_activity_completion completion)
+          (Bridge.client_complete_async_activity_json runtime)
     | Record_activity_heartbeat heartbeat ->
         Result.bind
           (Protocol_adapter.encode_activity_heartbeat heartbeat)
           (Bridge.worker_record_activity_heartbeat_json runtime)
+    | Record_async_activity_heartbeat heartbeat ->
+        Result.bind
+          (Protocol_adapter.encode_activity_heartbeat heartbeat)
+          (Bridge.client_record_async_activity_heartbeat_json runtime)
     | Shutdown_worker -> Bridge.worker_shutdown runtime
     | Disconnect_client -> Bridge.client_disconnect runtime
 
@@ -817,7 +829,11 @@ module Native = struct
     | Wait_activity_completion_retry_backoff : unit operation
     | Complete_activity :
         Temporal_protocol.Activity_protocol.completion -> unit operation
+    | Complete_async_activity :
+        Temporal_protocol.Activity_protocol.completion -> unit operation
     | Record_activity_heartbeat :
+        Temporal_protocol.Activity_protocol.heartbeat -> unit operation
+    | Record_async_activity_heartbeat :
         Temporal_protocol.Activity_protocol.heartbeat -> unit operation
     | Shutdown_worker : unit operation
     | Disconnect_client : unit operation

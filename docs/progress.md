@@ -14,6 +14,50 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Async handoff and native finalizer hardening
+
+Status: locally verified; PR CI is the remaining gate.
+
+The asynchronous activity handoff now checks that the returned completion
+handle is the one created for the current activity attempt. A handle retained
+from an earlier attempt remains dormant and is rejected as a typed activity
+failure instead of being attached to a new task token whose later completion
+could never reach the right lease. The adapter also classifies an admitted
+asynchronous lease found during shutdown as retryable. Normal shutdown now
+leaves the worker graph and handle usable so the caller can finish the lease
+and retry; only terminal native cleanup closes outstanding handles.
+
+The OCaml custom-block finalizer no longer enters or leaves an OCaml blocking
+section. Finalizers perform only C-side borrow accounting and transfer native
+destruction to the Rust cleanup path; regular bridge calls release their
+borrow before reacquiring the OCaml runtime lock. This removes unsupported
+runtime operations from the garbage-collector thread while preserving the
+defensive active-call barrier.
+
+Focused verification passed for the async activity suite, all runtime and
+supervisor OCaml tests, and the locked Rust test suite (including the native
+ABI and lifecycle tests). Temporary Dune and Cargo output was kept outside the
+repository and removed after verification.
+
+## 2026-07-13: Typed asynchronous activity completion bridge
+
+Status: locally implemented and focused-tested; live Temporal acceptance is
+still pending.
+
+The activity API now has an explicit `Temporal.Activity.define_async` form.
+Its callback can finish immediately, fail with a typed activity error, or
+return a retained opaque handle for work that completes after the worker
+callback has returned. A per-activity state machine copies task-token and
+payload bytes, rejects conflicting or repeated operations, and keeps the
+asynchronous lease separate from the ordinary worker lease. The supervisor
+serializes completion, failure, cancellation, and heartbeat submissions
+through the Rust bridge, and shutdown accounts for both lease registries.
+
+The focused OCaml async-activity suite and the native async bridge build pass
+locally. The remaining work is a live Compose scenario and hardening for Core
+heartbeat response flags, `NotFound` status mapping, bounded native waits, and
+shutdown/error-path acceptance.
+
 ## 2026-07-13: Deterministic replay disposal lane-failure regression
 
 Status: locally verified; this is a test-harness reliability fix and makes no
@@ -1370,8 +1414,9 @@ commit.
 The OCaml-owned executable can now create and close a real Temporal Core/Tokio
 runtime through the statically linked Rust bridge. The runtime remains an
 abstract private OCaml value. Explicit shutdown waits for complete destruction
-while the OCaml runtime lock is released; the garbage-collector fallback
-transfers destruction to a dedicated Rust cleanup thread without waiting.
+while the OCaml runtime lock is released; the garbage-collector fallback uses a
+C-only borrow barrier and transfers destruction to a dedicated Rust cleanup
+thread without calling OCaml runtime lock operations.
 
 The C stub atomically detaches the sole native pointer, making explicit close,
 repeated close, and finalization safe against one another. Blocking Rust calls

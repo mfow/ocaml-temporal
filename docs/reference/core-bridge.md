@@ -462,12 +462,19 @@ thread, and waits until Core's destructor has returned. This makes orderly
 shutdown observable without preventing other OCaml Domains from running.
 
 The OCaml custom-block finalizer is a fallback for abandoned runtime values. It
-performs the same atomic detach and ownership transfer but does not wait. Core
-is therefore never destroyed by the OCaml garbage collector thread, whose
-progress must not depend on Tokio shutdown. Both paths clear the handle before
-transfer and are idempotent; exactly one path can own the native graph. Cleanup
-finalizes worker, drops client, then drops Core even when callers did not
-explicitly close the children.
+atomically detaches the pointer, waits only on the C-side borrow counter, and
+then transfers Core to Rust's cleanup thread. It never enters or leaves an
+OCaml blocking section: custom-block finalizers must not call OCaml runtime
+operations. Every admitted C primitive keeps the runtime value rooted and
+releases its borrow before reacquiring the OCaml lock, so this defensive wait
+cannot deadlock behind a caller that is returning from Rust. The normal path
+therefore destroys Core on the dedicated cleanup thread; if that thread has
+already failed, Rust uses its defensive synchronous fallback to reclaim the
+graph on the caller thread rather than leak it. In either case the finalizer
+itself never invokes OCaml runtime operations. Both paths clear the handle
+before transfer and are idempotent; exactly one path can own the native graph.
+Cleanup finalizes worker, drops client, then drops Core even when callers did
+not explicitly close the children.
 
 ## Verification
 

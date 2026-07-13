@@ -15,6 +15,12 @@ complete_activity :
 
 record_activity_heartbeat :
   supervisor -> Activity_protocol.heartbeat -> (unit, native_error) result
+
+complete_async_activity :
+  supervisor -> Activity_protocol.completion -> (unit, native_error) result
+
+record_async_activity_heartbeat :
+  supervisor -> Activity_protocol.heartbeat -> (unit, native_error) result
 ```
 
 For a `Start` task, the native bridge has already leased the opaque task token
@@ -29,6 +35,61 @@ The adapter is deliberately independent of the concrete Rust supervisor.  A
 deterministic fake supervisor can therefore test every lease and completion
 path without a Temporal Server, while the production supervisor remains the
 only owner of Rust handles and network state.
+
+## Asynchronous completion
+
+An activity that needs to finish after its worker callback returns uses the
+explicit asynchronous definition:
+
+```ocaml
+let fetch_embedding =
+  Temporal.Activity.define_async
+    ~name:"fetch_embedding"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+    (fun context prompt ->
+      let handle = Temporal.Activity.Async_context.handle context in
+      start_external_request prompt (fun result ->
+        match result with
+        | Ok embedding ->
+            ignore (Temporal.Activity.Async_handle.complete handle embedding)
+        | Error error ->
+            ignore (Temporal.Activity.Async_handle.fail handle error));
+      Temporal.Activity.Will_complete_async handle)
+```
+
+`Completed` and `Failed` keep completion in the worker callback. Returning
+`Will_complete_async` acknowledges the worker lease first; only after that
+acknowledgement does the adapter activate the opaque handle and move the copied
+binary task token into its asynchronous-lease registry. The callback cannot use
+the handle synchronously before the handoff is accepted.
+
+This definition is executable only on the native worker path, where the Rust
+bridge can acknowledge the Core handoff and own the later client operation. A
+deterministic mock backend rejects asynchronous definitions during worker
+construction instead of pretending that it can retain a Temporal task token.
+
+The four handle methods are typed and return `(unit, Error.t) result`:
+
+- `Async_handle.complete` encodes the output codec paired with the definition
+  and sends a terminal client completion.
+- `Async_handle.fail` sends a structured application failure without rerunning
+  the activity callback.
+- `Async_handle.cancel` sends a canceled completion with ordered detail
+  payloads.
+- `Async_handle.heartbeat` sends non-terminal progress through the
+  namespace-bound client operation. It currently returns acknowledgement only;
+  Core cancellation, pause, and reset flags are not yet represented in the
+  public result.
+
+All payloads and task tokens are copied before crossing a boundary. The
+handle's private state allows one operation at a time and rejects a different
+operation while a previous request has an uncertain result. Terminal state is
+retired only after native acceptance. A failed request retains an operation key
+for retry; the caller must submit the same byte-identical operation because the
+current state machine does not retain a second mutable copy of the operation
+value. The handle is not a retained activity context: ordinary
+`Activity.Context` values are still invalidated when their callback returns.
 
 ## Registration and dispatch
 
@@ -113,9 +174,13 @@ the terminal completion retry map remains the sole owner of completion debt.
 `heartbeat_timeout` is copied server metadata, not a local deadline. The
 adapter exposes it but does not start a timer or synthesize timeout/retry
 behavior; Temporal Core owns timeout decisions and subsequent task delivery.
-If Core has already timed out an attempt, this synchronous adapter has no
-stale-completion recovery or asynchronous-lease operation, so timeout-triggered
-retry remains explicitly unimplemented.
+If Core has already timed out an attempt, the synchronous adapter has no stale
+completion recovery. An asynchronous handle remains owned by the SDK until a
+terminal client operation is accepted. A shutdown attempt that finds an
+admitted asynchronous lease returns a retryable outstanding-lease error and
+leaves the worker graph and handle usable; the caller must finish the handle
+and retry shutdown. Only terminal cleanup after a non-retryable failure closes
+an admitted handle.
 
 An implementation exception is caught at this boundary and becomes a typed
 non-retryable failure.  Exceptions are therefore a last-resort defect guard,
@@ -164,7 +229,10 @@ as `Retryable`. Generic `Connection`, `Not_ready`, and other failures are
 fail-closed because this Core revision may already have consumed the lease;
 the native graph is cleaned up rather than blindly resubmitting the same
 completion. An explicitly retryable failure preserves the exact completion and
-the native graph for a later attempt.
+the native graph for a later attempt. An admitted asynchronous handle is such a
+case: the adapter marks the outstanding-lease diagnostic retryable, so normal
+shutdown cannot force-discard the handle while user code still owns its
+completion capability.
 
 ### Worker-loop retry policy
 
@@ -216,11 +284,10 @@ context invalidation. A live Temporal heartbeat scenario, asynchronous
 activity completion, and timeout/retry behavior still require dedicated
 acceptance scenarios.
 
-Although the semantic protocol reserves `Will_complete_async`, this adapter
-does not emit that completion variant and does not retain a public handle for a
-later completion. Activities must return a terminal `result` synchronously;
-asynchronous completion is an explicit future capability rather than an
-implicit behavior of the current worker.
+The worker handoff uses `Will_complete_async` only for `define_async` callbacks.
+The later client endpoint rejects that marker and accepts only completed,
+failed, or canceled terminal results. This prevents a retained handle from
+accidentally re-entering the worker task ledger.
 
 The semantic wire shape already carries the full decoded Temporal activity
 context (headers, heartbeat details, timeouts, retry policy, priority, and

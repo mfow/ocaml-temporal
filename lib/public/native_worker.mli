@@ -34,6 +34,16 @@ val register_activity :
   Temporal_base.Definition.t ->
   activity_registration
 
+(** Packs an asynchronous activity definition. Its callback may return a
+    retained completion handle; the adapter activates that handle only after
+    the native worker acknowledges [WillCompleteAsync]. *)
+val register_async_activity :
+  ('input, 'output,
+   'output Temporal_base.Async_activity.context ->
+   'input -> 'output Temporal_base.Async_activity.async_result)
+  Temporal_base.Definition.t ->
+  activity_registration
+
 (** An opaque native worker containing the supervisor and both typed adapters.
     No Rust pointer, task token, or protocol buffer is exposed. *)
 type t

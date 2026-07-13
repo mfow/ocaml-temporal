@@ -116,6 +116,12 @@ external client_wait_start_workflow_json_raw : runtime -> bytes -> response
 external client_wait_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_wait_workflow_json"
 
+external client_complete_async_activity_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_complete_async_activity_json"
+
+external client_record_async_activity_heartbeat_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_record_async_activity_heartbeat_json"
+
 external worker_start_raw : runtime -> bytes -> response
   = "ocaml_temporal_worker_start"
 
@@ -493,6 +499,22 @@ let client_wait_start_workflow_json runtime input =
 let client_wait_workflow_json runtime input =
   bridge_call "client_wait_workflow_json" (fun () ->
       decode (client_wait_workflow_json_raw runtime input))
+
+(** Completes an admitted asynchronous activity through Rust's official
+    namespace-bound client. The input is strict activity-completion JSON and is
+    copied by the bridge before the C stub releases the OCaml runtime lock. *)
+let client_complete_async_activity_json runtime input =
+  bridge_call "client_complete_async_activity_json" (fun () ->
+      Result.map (fun _ -> ())
+        (decode (client_complete_async_activity_json_raw runtime input)))
+
+(** Records a heartbeat for an admitted asynchronous activity. The worker task
+    ledger is intentionally not consulted by this client operation. *)
+let client_record_async_activity_heartbeat_json runtime input =
+  bridge_call "client_record_async_activity_heartbeat_json" (fun () ->
+      Result.map (fun _ -> ())
+        (decode
+           (client_record_async_activity_heartbeat_json_raw runtime input)))
 
 (** Constructs and namespace-validates the official workflow-only worker. *)
 let worker_start runtime config =

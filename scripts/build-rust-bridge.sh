@@ -5,7 +5,21 @@ workspace_root=$1
 static_output=$2
 dynamic_output=$3
 link_flags_output=$4
-target_root=${CARGO_TARGET_DIR:-"$workspace_root/rust/target"}
+# Dune copy sandboxes expose the Rust source tree read-only. They set the
+# private fallback below to a writable sibling, while callers such as Docker
+# and the native Makefile set CARGO_TARGET_DIR directly. Keep the explicit
+# target directory authoritative so those workflows share one Cargo cache.
+if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+  target_root=$CARGO_TARGET_DIR
+elif [ -n "${OCAML_TEMPORAL_RUST_TARGET_FALLBACK:-}" ]; then
+  target_root=$OCAML_TEMPORAL_RUST_TARGET_FALLBACK
+  # Cargo must receive the same fallback selected for artifact copying. This
+  # assignment is deliberately limited to the unset case so an existing
+  # CARGO_TARGET_DIR is never replaced.
+  export CARGO_TARGET_DIR=$target_root
+else
+  target_root=$workspace_root/rust/target
+fi
 artifact_root=$target_root
 
 case "$(uname -s)" in

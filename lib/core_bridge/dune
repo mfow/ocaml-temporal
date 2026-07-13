@@ -9,11 +9,19 @@
   ../../scripts/copy-rust-bridge-artifacts.sh
   ../../scripts/render-rust-link-flags.sh)
  (action
-  (run
-   sh
-   %{workspace_root}/scripts/build-rust-bridge.sh
-   %{workspace_root}
-   %{targets})))
+  ;; Dune's [source_tree] input is copied read-only into the action sandbox.
+  ;; Cargo's target directory is mutable, so advertise a writable sibling as a
+  ;; fallback for the bridge script. An explicitly configured
+  ;; [CARGO_TARGET_DIR] remains authoritative; this fallback must not make the
+  ;; Docker or native Makefile workflows build the Rust graph twice.
+  (setenv
+   OCAML_TEMPORAL_RUST_TARGET_FALLBACK
+   %{workspace_root}/rust-target
+   (run
+    sh
+    %{workspace_root}/scripts/build-rust-bridge.sh
+    %{workspace_root}
+    %{targets}))))
 
 (foreign_library
  (archive_name temporal_native_stubs)

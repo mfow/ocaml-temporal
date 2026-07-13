@@ -1,15 +1,17 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The complete [PR #226 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
-verified the ten scenarios against real Temporal Server and PostgreSQL for
-PR head `ca112b8`, using the earlier timeout-fixture delay. This branch changes
-that delay to outlive Temporal Core's local timeout buffer; live verification
-of the ordering guard is pending. The earlier [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+**Status:** The complete [PR #229 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016)
+verified all ten scenarios against real Temporal Server and PostgreSQL for
+PR head `c244733`, including the timeout-ordering guard; PR #229 was then
+squash-merged as `bfbd568`. The earlier [PR #226 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
+verified the same ten scenarios with the shorter timeout-fixture delay, and
+the [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 verified the previous nine scenarios; that PR used head `47c9a93` and was
 squash-merged as `f877fbf`. The tenth `smoke.activity_timeout_retry` scenario
 has a first activity callback that sleeps beyond its 500 ms start-to-close
-timeout, and PR #226 accepted its exact second-attempt marker. The earlier run
-covers fan-out, timer/activity,
+timeout. The current fixture keeps that late callback, and uses a dedicated
+delayed two-attempt retry policy so the second attempt is not queued behind
+the serialized activity adapter. The earlier run covers fan-out, timer/activity,
 ordinary activity retry, heartbeat-detail retry, parent/child success,
 propagated child failure, child cancellation, a typed non-retryable workflow
 failure, and marker-guarded exact-run cancellation. The retry workflow still
@@ -18,13 +20,15 @@ Temporal returns the first attempt's detail and timeout to the second attempt.
 The worker and driver remain guarded by
 `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
 
-The current implementation starts all ten top-level workflows before waiting
-for any result, and its assertion target requires six exact successes, one
-propagated child failure, one child-cancellation marker, one typed
-non-retryable failure, and one exact-run cancellation. The previous nine
-assertions are backed by the green PR #210 live run and were also exercised by
-PR #226. The current timeout ordering still needs a fresh live run. Restart,
-replay, cache eviction,
+The current implementation starts nine top-level workflows before waiting for
+any terminal result. After the heartbeat-retry workflow reaches its terminal
+result, it starts the timeout workflow and waits for that result. This ordering
+keeps the six-second callback from occupying the serialized activity adapter
+while the heartbeat lease is still being exercised. The assertion target
+requires seven exact successes, one propagated child failure, one
+child-cancellation marker, one typed non-retryable failure, and one exact-run
+cancellation. The previous nine assertions are backed by the green PR #210
+live run and were also exercised by PR #226. Restart, replay, cache eviction,
 and asynchronous activity completion remain separate acceptance work.
 
 The heartbeat assertion has a Docker-free contract in addition to the live
@@ -53,12 +57,13 @@ atomic readiness marker. Compose waits for that health check before
 `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts all ten top-level workflows before
-waiting for any result. The cancellation scenario waits for the
+later acceptance run. The driver starts nine top-level workflows before its
+first terminal wait. Once the heartbeat-retry workflow has completed, it starts
+the timeout-retry workflow and waits for that separate result. The cancellation scenario waits for the
 `smoke.cancellation_ready` activity marker after the long-running workflow has
 issued its durable-timer and marker commands in one activation, then
 acknowledges cancellation for `two-binary-long-running-cancellation` before
-the first terminal wait. Six must complete with exact payloads, one must
+the first terminal wait. Seven must complete with exact payloads, one must
 propagate a typed child failure, one must return `SMOKE:CHILD:CANCELLED` after
 child cancellation, one must return a typed non-retryable workflow failure,
 and the cancelled execution
@@ -100,20 +105,24 @@ attempt must receive that detail and timeout before returning
 `smoke.activity_timeout_retry`: its first `smoke.timeout_retry` callback sleeps
 for 6 seconds while the activity's start-to-close timeout is 500 ms, then
 returns a success that is intentionally too late. The second callback returns
-`SMOKE:TIMEOUT:RETRIED:SMOKE`; the exact marker was accepted only after Temporal
+`SMOKE:TIMEOUT:RETRIED:SMOKE`; the exact marker is accepted only after Temporal
 has timed out the first lease and delivered the retry. The workflow disables
 eager activity execution so this assertion crosses the normal worker
 poll/completion path. Temporal Core adds a five-second local timeout buffer to
 the 500ms server lease; the six-second delay gives Core time to classify the
-expired token before the callback returns. Its source contract is Docker-free.
-The earlier ten-run path passed in the [PR #226 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182),
-but that run used the shorter delay; live evidence for this timeout-ordering
-guard is pending. The driver also starts
+expired token before the callback returns. A dedicated two-attempt policy uses
+7-second initial and maximum intervals, leaving the serialized activity adapter
+free before the retry is polled. Its source contract is Docker-free. The
+current ordering and retry policy passed in the [PR #229 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016);
+the earlier [PR #226 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
+used the shorter delay. The driver also starts
 `smoke.non_retryable_failure` and requires its
 stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
 for its `smoke.cancellation_ready` marker activity (with eager execution
 disabled), sends an exact-run cancellation request, and requires the same
-handle to return a typed `Cancelled` error. This ten-run path passed in the
+handle to return a typed `Cancelled` error. This ten-run path, including the
+updated timeout ordering, passed in the [PR #229 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016);
+the earlier ten-run path passed in the
 [PR #226 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182);
 the historical nine-run path passed in [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859).
 Heartbeat-timeout-triggered retries, child start failures,
@@ -364,29 +373,32 @@ The driver must:
 1. connect through `Temporal.Client` to the fixture namespace;
 2. start `smoke.fan_out`, `smoke.timer_then_activity`,
    `smoke.activity_retry`, `smoke.activity_heartbeat_retry`,
-   `smoke.activity_timeout_retry`,
    `smoke.parent_awaits_child`, `smoke.parent_awaits_failed_child`,
    `smoke.parent_cancels_child`, `smoke.non_retryable_failure`, and
    `smoke.long_running_cancellation` with distinct, known workflow IDs before
-   it waits for any of them;
+   its first terminal wait. After the heartbeat-retry result is terminal, start
+   `smoke.activity_timeout_retry` with its own distinct workflow ID;
 3. retain the ten public workflow handles returned by `start`;
 4. call `Temporal.Client.cancel` on the exact long-running handle and require
    its positive acknowledgement before waiting for any terminal result;
 5. wait for each handle's terminal result through the public client API; and
-6. decode and compare the six successful results, require the child-failure
+6. decode and compare the seven successful results, require the child-failure
    result to be a typed non-retryable child-workflow failure, require the
    child-cancellation result to equal `SMOKE:CHILD:CANCELLED`, require the
    typed non-retryable workflow failure and exact-run `Cancelled` outcome with
    expected metadata, then exit zero only if every assertion succeeded.
 
-Starting all ten executions before the first wait is material. It demonstrates
-that a client can hold independent workflow handles while a control request is
-issued for one exact run, and that the worker can service separate workflow
-executions rather than passing a single serial request through a readiness-only
-check. Workflow IDs are fixed and unique within the freshly created fixture
-database, and run IDs returned by `start` are retained for exact result and
-cancellation operations. Because the acceptance target recreates that database
-for every run, it does not depend on a retained volume or on test-run suffixes.
+Starting nine executions before the first terminal wait is material. It
+demonstrates that a client can hold independent workflow handles while a
+control request is issued for one exact run, and that the worker can service
+separate workflow executions rather than passing a single serial request
+through a readiness-only check. The timeout execution is intentionally started
+after the heartbeat-retry result because the activity adapter serializes
+polling, user callbacks, heartbeats, and completions behind one mutex. Workflow
+IDs are fixed and unique within the freshly created fixture database, and run
+IDs returned by `start` are retained for exact result and cancellation
+operations. Because the acceptance target recreates that database for every
+run, it does not depend on a retained volume or on test-run suffixes.
 Randomness in the driver is acceptable but randomness in a workflow is not.
 
 The driver returns a nonzero status for connection, start, terminal workflow,
@@ -591,7 +603,7 @@ for PR head `47c9a93`, later squash-merged as `f877fbf`:
     inside the parent workflow when its child future resolves;
 11. `smoke.parent_cancels_child` returned `SMOKE:CHILD:CANCELLED` only after
     Core resolved the child cancellation;
-12. the five success responses were not workflow failures, cancellations,
+12. the six success responses were not workflow failures, cancellations,
    timeouts, terminations, continued-as-new outcomes, codec failures, or
    bridge failures; and
 13. `smoke.non_retryable_failure` returned a `Workflow` error with
@@ -602,10 +614,11 @@ for PR head `47c9a93`, later squash-merged as `f877fbf`:
 
 The current fixture keeps all fourteen historical assertions and adds
 `smoke.activity_timeout_retry` as a tenth start and wait. The exact
-`SMOKE:TIMEOUT:RETRIED:SMOKE` result was accepted in the PR #226 live Compose
-run with the shorter delay; the historical PR #210 evidence above remains
-limited to its nine runs, and this branch's ordering guard is pending live
-verification.
+`SMOKE:TIMEOUT:RETRIED:SMOKE` result, the six-second late callback, the
+dedicated 7-second retry policy, and the nine-start ordering guard were all
+accepted in the PR #229 live Compose run. The historical PR #210 evidence above
+remains limited to its nine runs, while PR #226 remains evidence for the
+earlier shorter-delay timeout path.
 
 The driver logs no-payload phase records for starts, exact-run cancellation,
 exact-run waits, terminal classes, and operation latency. The Makefile requires
@@ -639,8 +652,9 @@ real-server assertions for parent/child success, propagated child failure, and
 child cancellation. The activity retry policy has the same separation:
 bilateral policy validation is synthetic, while the PR #210 run makes both the
 ordinary attempt-2 result and heartbeat-detail retry live evidence; the PR #226
-run adds start-to-close timeout-triggered retry for the earlier delay. The
-updated timeout ordering remains pending a fresh live run. None of these
+run adds start-to-close timeout-triggered retry for the earlier delay. The PR
+#229 run verifies the delayed retry policy and ordering guard against the live
+server. None of these
 assertions claims coverage of heartbeat timeouts, replay, or recovery behavior.
 
 ## Completion criteria for this design
@@ -648,16 +662,19 @@ assertions claims coverage of heartbeat timeouts, replay, or recovery behavior.
 The previous nine-workflow acceptance contract was verified by the complete
 [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 for PR head `47c9a93` before the squash merge as `f877fbf`. The current
-ten-workflow contract below was verified by the complete [PR #226 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
-for PR head `ca112b8` before this timeout-ordering guard was added. A fresh
-live run is required before treating the updated timing as verified:
+ten-workflow contract, including the updated timeout ordering, was verified by
+the complete [PR #229 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016)
+for PR head `c244733` before the squash merge as `bfbd568`. PR #226's complete
+run for PR head `ca112b8` remains historical evidence for the earlier shorter
+delay.
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;
 * the worker's live Core poll/complete loops execute the registered OCaml
   workflow and mock activity code;
-* the driver starts all ten top-level workflows through `temporal-sdk`, sends
-  an exact-run cancellation request, waits for their results through
+* the driver starts nine top-level workflows through `temporal-sdk`, sends an
+  exact-run cancellation request, starts the timeout workflow after the
+  heartbeat-retry result is terminal, waits for all ten results through
   `temporal-sdk`, and performs the listed success, typed-failure, and
   cancellation assertions;
 * the fixture exits nonzero for a failed driver assertion, a workflow failure,

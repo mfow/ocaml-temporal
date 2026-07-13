@@ -14,6 +14,23 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Temporal Core timeout failure information
+
+Status: locally verified bridge capability; no new live Temporal Server or
+GitHub Actions success is claimed for this slice. The live smoke path has
+reported timeout failures intermittently, so this change is deliberately
+covered by typed conversion and protocol tests rather than inferred from a
+single run.
+
+The Rust/Core adapter now maps `TimeoutFailureInfo` into a closed semantic
+timeout record containing Core's exact timeout policy and ordered heartbeat
+payloads. OCaml and Rust both reject unknown timeout enum values and validate
+heartbeat payload limits. An absent or empty Core heartbeat collection has the
+documented empty-list semantic representation and is normalized back to the
+absent protobuf field. The focused Rust round-trip/unknown-value test and the
+OCaml bridge round-trip/unknown-value test passed; generated build and target
+directories were removed after verification.
+
 ## 2026-07-13: Scheduler-owned native workflow signal handlers
 
 Status: focused OCaml runtime, worker-adapter, and public registration tests

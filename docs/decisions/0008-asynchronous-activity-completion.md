@@ -139,8 +139,9 @@ must not issue a different operation for the same handle.
 
 Worker shutdown first stops new polling, then drains ordinary worker leases as
 it does today. It also accounts for asynchronous leases: if an admitted client
-request remains, the adapter returns a typed outstanding-async-leases error and
-keeps the worker graph usable for an explicit retry. A non-retryable drain or
+request remains, the adapter returns a retryable typed outstanding-async-leases
+error and keeps the worker graph and admitted handles usable for an explicit
+retry after the caller finishes them. A non-retryable drain or
 native teardown failure invokes the native force-release contract first, then
 closes retained async handles and clears their adapter maps; it never sends a
 hidden completion. Finalizer cleanup follows the same ownership rule and may

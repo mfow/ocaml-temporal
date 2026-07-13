@@ -14,6 +14,31 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Async handoff and native finalizer hardening
+
+Status: locally verified; PR CI is the remaining gate.
+
+The asynchronous activity handoff now checks that the returned completion
+handle is the one created for the current activity attempt. A handle retained
+from an earlier attempt remains dormant and is rejected as a typed activity
+failure instead of being attached to a new task token whose later completion
+could never reach the right lease. The adapter also classifies an admitted
+asynchronous lease found during shutdown as retryable. Normal shutdown now
+leaves the worker graph and handle usable so the caller can finish the lease
+and retry; only terminal native cleanup closes outstanding handles.
+
+The OCaml custom-block finalizer no longer enters or leaves an OCaml blocking
+section. Finalizers perform only C-side borrow accounting and transfer native
+destruction to the Rust cleanup path; regular bridge calls release their
+borrow before reacquiring the OCaml runtime lock. This removes unsupported
+runtime operations from the garbage-collector thread while preserving the
+defensive active-call barrier.
+
+Focused verification passed for the async activity suite, all runtime and
+supervisor OCaml tests, and the locked Rust test suite (including the native
+ABI and lifecycle tests). Temporary Dune and Cargo output was kept outside the
+repository and removed after verification.
+
 ## 2026-07-13: Typed asynchronous activity completion bridge
 
 Status: locally implemented and focused-tested; live Temporal acceptance is

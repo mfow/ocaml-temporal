@@ -467,11 +467,14 @@ then transfers Core to Rust's cleanup thread. It never enters or leaves an
 OCaml blocking section: custom-block finalizers must not call OCaml runtime
 operations. Every admitted C primitive keeps the runtime value rooted and
 releases its borrow before reacquiring the OCaml lock, so this defensive wait
-cannot deadlock behind a caller that is returning from Rust. Core itself is
-therefore never destroyed by the OCaml garbage-collector thread. Both paths
-clear the handle before transfer and are idempotent; exactly one path can own
-the native graph. Cleanup finalizes worker, drops client, then drops Core even
-when callers did not explicitly close the children.
+cannot deadlock behind a caller that is returning from Rust. The normal path
+therefore destroys Core on the dedicated cleanup thread; if that thread has
+already failed, Rust uses its defensive synchronous fallback to reclaim the
+graph on the caller thread rather than leak it. In either case the finalizer
+itself never invokes OCaml runtime operations. Both paths clear the handle
+before transfer and are idempotent; exactly one path can own the native graph.
+Cleanup finalizes worker, drops client, then drops Core even when callers did
+not explicitly close the children.
 
 ## Verification
 

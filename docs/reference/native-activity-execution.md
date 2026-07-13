@@ -176,8 +176,11 @@ adapter exposes it but does not start a timer or synthesize timeout/retry
 behavior; Temporal Core owns timeout decisions and subsequent task delivery.
 If Core has already timed out an attempt, the synchronous adapter has no stale
 completion recovery. An asynchronous handle remains owned by the SDK until a
-terminal client operation is accepted or shutdown reports an outstanding
-asynchronous lease.
+terminal client operation is accepted. A shutdown attempt that finds an
+admitted asynchronous lease returns a retryable outstanding-lease error and
+leaves the worker graph and handle usable; the caller must finish the handle
+and retry shutdown. Only terminal cleanup after a non-retryable failure closes
+an admitted handle.
 
 An implementation exception is caught at this boundary and becomes a typed
 non-retryable failure.  Exceptions are therefore a last-resort defect guard,
@@ -226,7 +229,10 @@ as `Retryable`. Generic `Connection`, `Not_ready`, and other failures are
 fail-closed because this Core revision may already have consumed the lease;
 the native graph is cleaned up rather than blindly resubmitting the same
 completion. An explicitly retryable failure preserves the exact completion and
-the native graph for a later attempt.
+the native graph for a later attempt. An admitted asynchronous handle is such a
+case: the adapter marks the outstanding-lease diagnostic retryable, so normal
+shutdown cannot force-discard the handle while user code still owns its
+completion capability.
 
 ### Worker-loop retry policy
 

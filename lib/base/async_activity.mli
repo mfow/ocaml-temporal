@@ -61,11 +61,12 @@ val handle : 'output context -> 'output handle
     typed lifecycle error. *)
 val activate : 'output handle -> submit_result
 
-(** Reserves a dormant handle for the worker-side [WillCompleteAsync]
-    acknowledgement. Reservation happens before the native completion is sent
-    so a handle retained from an earlier activity attempt cannot be attached to
-    a new task token. Only the owning adapter calls this function. *)
-val prepare_handoff : 'output handle -> submit_result
+(** Reserves the current attempt's dormant handle for the worker-side
+    [WillCompleteAsync] acknowledgement. The [expected] identity is checked
+    before changing lifecycle state, so a callback cannot return a handle
+    retained from an earlier attempt whose submit callback still captures the
+    earlier task token. Only the owning adapter calls this function. *)
+val prepare_handoff : expected:'output handle -> 'output handle -> submit_result
 
 (** Encodes and submits one complete operation. The state machine derives a
     canonical key from the encoded payload; if the transport fails, only the

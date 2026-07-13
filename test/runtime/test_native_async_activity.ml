@@ -323,6 +323,28 @@ let expect_deferred = function
         (Printf.sprintf "async poll failed: %s at %s (%s)" error.message
            error.path error.code)
 
+(** Asserts that a callback defect was converted into a retired, typed
+    rejection rather than being mistaken for a deferred activity. *)
+let expect_rejected code
+    (result : (Raw_adapter.outcome, Raw_adapter.error_view) result) =
+  match result with
+  | Ok
+      (Raw_adapter.Rejected
+        { error = { code = actual; _ }; lease_retired = true; _ })
+    when String.equal actual code -> ()
+  | Ok (Raw_adapter.Rejected { error; lease_retired; _ }) ->
+      failwith
+        (Printf.sprintf
+           "async rejection had unexpected diagnostic %s or lease state %b"
+           error.code lease_retired)
+  | Ok (Raw_adapter.Completed _) ->
+      failwith "stale async handle was accepted as a deferred completion"
+  | Ok Raw_adapter.Not_ready ->
+      failwith "stale async handle unexpectedly produced Not_ready"
+  | Error error ->
+      failwith
+        (Printf.sprintf "stale async handle escaped as adapter error: %s" error.code)
+
 (** Deferred completion admits a handle only after the worker-side handoff,
     then routes heartbeat and terminal operations through the async ledger. *)
 let test_deferred_lifecycle () =
@@ -564,16 +586,86 @@ let test_async_drain_and_discard () =
   expect_deferred (Worker.poll worker);
   begin
     match Worker.drain worker with
-    | Error { code = "outstanding_async_leases"; _ } -> ()
+    | Error { code = "outstanding_async_leases"; retryable = true; _ } -> ()
+    | Error { code = "outstanding_async_leases"; retryable = false; _ } ->
+        failwith "outstanding async lease was incorrectly marked terminal"
     | Error error ->
         failwith ("async drain used the wrong diagnostic: " ^ error.code)
     | Ok () -> failwith "async drain ignored an admitted completion handle"
   end;
+  let handle = Option.get !retained in
+  begin
+    match Temporal.Activity.Async_handle.complete handle () with
+    | Ok () -> ()
+    | Error error ->
+        failwith
+          ("retryable async drain did not preserve the handle: "
+          ^ Temporal.Error.message error)
+  end;
+  begin
+    match Worker.drain worker with
+    | Ok () -> ()
+    | Error error ->
+        failwith ("drain after async completion failed: " ^ error.message)
+  end;
+
+  (* A later admitted handle still exercises the terminal discard path. *)
+  let second_token = Bytes.of_string "async-discard-token" in
+  enqueue supervisor
+    (start_task ~token:second_token ~activity_type:"async_drain_discard"
+       ~input:[ encode_input Temporal.Codec.unit () ]);
+  expect_deferred (Worker.poll worker);
+  let second_handle = Option.get !retained in
   Worker.discard worker;
   begin
-    match Temporal.Activity.Async_handle.complete (Option.get !retained) () with
+    match Temporal.Activity.Async_handle.complete second_handle () with
     | Error _ -> ()
     | Ok () -> failwith "discarded async handle remained usable"
+  end
+
+(** A handle retained from a synchronously completed attempt must not be
+    attachable to the next attempt. Its submit callback still captures the old
+    token, so accepting it would orphan the current asynchronous lease. *)
+let test_stale_handle_rejected () =
+  let supervisor = fake_supervisor () in
+  let calls = ref 0 in
+  let stale = ref None in
+  let activity =
+    Temporal.Activity.define_async ~name:"async_stale_handle"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.string
+      (fun context () ->
+        incr calls;
+        let current = Temporal.Activity.Async_context.handle context in
+        match !stale with
+        | None ->
+            stale := Some current;
+            Temporal.Activity.Completed "finished immediately"
+        | Some old -> Temporal.Activity.Will_complete_async old)
+  in
+  let first_token = Bytes.of_string "async-stale-first" in
+  let second_token = Bytes.of_string "async-stale-second" in
+  enqueue supervisor
+    (start_task ~token:first_token ~activity_type:"async_stale_handle"
+       ~input:[ encode_input Temporal.Codec.unit () ]);
+  enqueue supervisor
+    (start_task ~token:second_token ~activity_type:"async_stale_handle"
+       ~input:[ encode_input Temporal.Codec.unit () ]);
+  let worker = worker supervisor [ Adapter.register_async activity ] in
+  begin
+    match Worker.poll worker with
+    | Ok (Raw_adapter.Completed { kind = Raw_adapter.Succeeded; _ }) -> ()
+    | _ -> failwith "first stale-handle fixture did not complete synchronously"
+  end;
+  expect_rejected "activity" (Worker.poll worker);
+  if !calls <> 2 then failwith "stale-handle fixture reran an activity unexpectedly";
+  if !(supervisor.leased) <> [] then
+    failwith "stale-handle rejection left the current worker lease outstanding";
+  if !(supervisor.async_leased) <> [] then
+    failwith "stale handle was admitted as a current asynchronous lease";
+  begin
+    match Temporal.Activity.Async_handle.complete (Option.get !stale) "late" with
+    | Error _ -> ()
+    | Ok () -> failwith "stale dormant handle became usable after rejection"
   end
 
 (** The base state machine rejects use before activation and keeps its terminal
@@ -650,4 +742,5 @@ let () =
   test_async_completion_retry ();
   test_async_heartbeat_and_cancel ();
   test_async_failure ();
-  test_async_drain_and_discard ()
+  test_async_drain_and_discard ();
+  test_stale_handle_rejected ()

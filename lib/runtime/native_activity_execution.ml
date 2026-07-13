@@ -1013,6 +1013,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                   ~encode_output
               in
               let context = Async_activity.context handle in
+              let context_handle = Async_activity.handle context in
               (try
                  match implementation context input with
                  | Async_activity.Completed output ->
@@ -1055,7 +1056,10 @@ module Make (Supervisor : SUPERVISOR) = struct
                          reject_task_with_failure adapter ~token ~activity_type
                            ~failure diagnostic)
                  | Async_activity.Will_complete_async handle ->
-                     (match Async_activity.prepare_handoff handle with
+                     (match
+                        Async_activity.prepare_handoff ~expected:context_handle
+                          handle
+                      with
                      | Error error ->
                          reject_task adapter ~token ~activity_type
                            (application_error ~path:"$.implementation.async_handle"
@@ -1229,7 +1233,8 @@ module Make (Supervisor : SUPERVISOR) = struct
                 if Token_map.is_empty adapter.async_leases then Ok ()
                 else
                   let error =
-                    make_error ~path:"$.async_leases" "outstanding_async_leases"
+                    make_error ~path:"$.async_leases" ~retryable:true
+                      "outstanding_async_leases"
                       "asynchronous activity completions remain admitted"
                   in
                   Error error))

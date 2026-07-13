@@ -69,18 +69,22 @@ let activate handle =
       | Active | Terminal | Closed ->
           lifecycle_error "asynchronous activity handle is already activated")
 
-let prepare_handoff handle =
-  with_mutex handle.mutex (fun () ->
-      match handle.lifecycle with
-      | Dormant ->
-          handle.lifecycle <- Handoff_pending;
-          Ok ()
-      | Handoff_pending ->
-          lifecycle_error
-            "asynchronous activity handle is already reserved for a handoff"
-      | Active | Terminal | Closed ->
-          lifecycle_error
-            "asynchronous activity handle cannot be reserved for a handoff")
+let prepare_handoff ~expected handle =
+  if not (expected == handle) then
+    lifecycle_error
+      "asynchronous activity handle belongs to another activity attempt"
+  else
+    with_mutex handle.mutex (fun () ->
+        match handle.lifecycle with
+        | Dormant ->
+            handle.lifecycle <- Handoff_pending;
+            Ok ()
+        | Handoff_pending ->
+            lifecycle_error
+              "asynchronous activity handle is already reserved for a handoff"
+        | Active | Terminal | Closed ->
+            lifecycle_error
+              "asynchronous activity handle cannot be reserved for a handoff")
 
 let begin_operation handle ~key operation =
   with_mutex handle.mutex (fun () ->

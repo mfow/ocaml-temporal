@@ -777,7 +777,6 @@ pub(crate) fn validate_failure(value: &Failure, path: &str) -> Result<(), Protoc
         } => {
             identifier(namespace, path)?;
             identifier(workflow_id, path)?;
-            identifier(run_id, path)?;
             identifier(workflow_type, path)?;
             if *initiated_event_id < 0 || *started_event_id < 0 {
                 return Err(ProtocolError::invalid(
@@ -785,12 +784,40 @@ pub(crate) fn validate_failure(value: &Failure, path: &str) -> Result<(), Protoc
                     "child workflow failure event IDs must not be negative",
                 ));
             }
+            validate_child_failure_run_id(run_id, *started_event_id, path)?;
         }
     }
     if let Some(cause) = &value.cause {
         validate_failure(cause, path)?;
     }
     Ok(())
+}
+
+/// Validates the execution ID carried by a child-workflow failure.
+///
+/// Temporal Core emits a child failure while the child start is still in
+/// flight when a parent cancels it before `ChildWorkflowExecutionStarted`.
+/// In that narrow state Core has no concrete run ID yet and therefore emits
+/// an empty string together with `started_event_id == 0`.  The empty value is
+/// meaningful protocol state, not a missing field, so the bridge preserves it
+/// while retaining the ordinary identifier checks once the child has started.
+fn validate_child_failure_run_id(
+    run_id: &str,
+    started_event_id: i64,
+    path: &str,
+) -> Result<(), ProtocolError> {
+    if run_id.is_empty() {
+        if started_event_id == 0 {
+            Ok(())
+        } else {
+            Err(ProtocolError::invalid(
+                path,
+                "child failure run_id may be empty only before the child starts",
+            ))
+        }
+    } else {
+        identifier(run_id, path)
+    }
 }
 
 /// Applies invariants that derive-based closed-shape validation cannot express.

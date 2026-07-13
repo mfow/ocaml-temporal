@@ -1,0 +1,39 @@
+{
+  "run_id": "parent-run",
+  "timestamp": {"seconds": 0, "nanoseconds": 0},
+  "is_replaying": false,
+  "history_length": 2,
+  "jobs": [
+    {
+      "kind": "resolve_child_workflow_start",
+      "seq": 1,
+      "result": {
+        "kind": "cancelled",
+        "failure": {
+          "message": "Child Workflow Execution cancelled before scheduled: acceptance child cancelled",
+          "source": "",
+          "stack_trace": "",
+          "encoded_attributes": null,
+          "cause": {
+            "message": "",
+            "source": "",
+            "stack_trace": "",
+            "encoded_attributes": null,
+            "cause": null,
+            "info": {"kind": "canceled", "details": [], "identity": ""}
+          },
+          "info": {
+            "kind": "child_workflow",
+            "namespace": "default",
+            "workflow_id": "child-id-1",
+            "run_id": "",
+            "workflow_type": "child",
+            "initiated_event_id": 0,
+            "started_event_id": 0,
+            "retry_state": "non_retryable_failure"
+          }
+        }
+      }
+    }
+  ]
+}

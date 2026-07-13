@@ -81,6 +81,7 @@ let test_valid_activations () =
       "realistic-initialize";
       "child-initialize";
       "child-resolution";
+      "child-cancellation-before-start";
     ]
 
 (** Verifies every first-slice completion command and command ordering. *)
@@ -302,6 +303,7 @@ let test_invalid_documents () =
       "activation-child-start-invalid-cause";
       "activation-child-terminal-missing-payload";
       "activation-child-terminal-missing-failure-info";
+      "activation-child-failure-empty-run-id-after-start";
       "activation-child-failure-empty-workflow-id";
       "activation-child-failure-negative-event-id";
       "activation-child-unknown-terminal-kind";

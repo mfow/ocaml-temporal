@@ -337,6 +337,17 @@ let identifier path value =
     Error (invalid path "identifier must be valid UTF-8")
   else Ok value
 
+(** Validates the run ID carried by a child-workflow failure. Temporal Core
+    reports cancellation while a child start is still in flight with an empty
+    run ID and [started_event_id = 0]; once a child has started, the normal
+    non-empty identifier contract applies. *)
+let child_failure_run_id path ~started_event_id value =
+  let* value = string path value in
+  if String.equal value "" then
+    if Int64.equal started_event_id 0L then Ok value
+    else Error (invalid path "child failure run_id may be empty only before the child starts")
+  else identifier path (`String value)
+
 (** Validates a canonical unsigned 64-bit decimal representation. *)
 let uint64_decimal path value =
   let* value = string path value in
@@ -573,14 +584,16 @@ let failure_info path json =
       let* namespace = identifier (path ^ ".namespace") namespace_json in
       let* workflow_id_json = field path "workflow_id" entries in
       let* workflow_id = identifier (path ^ ".workflow_id") workflow_id_json in
-      let* run_id_json = field path "run_id" entries in
-      let* run_id = identifier (path ^ ".run_id") run_id_json in
       let* workflow_type_json = field path "workflow_type" entries in
       let* workflow_type = identifier (path ^ ".workflow_type") workflow_type_json in
       let* initiated_json = field path "initiated_event_id" entries in
       let* initiated_event_id = nonnegative_int64 (path ^ ".initiated_event_id") initiated_json in
       let* started_json = field path "started_event_id" entries in
       let* started_event_id = nonnegative_int64 (path ^ ".started_event_id") started_json in
+      let* run_id_json = field path "run_id" entries in
+      let* run_id =
+        child_failure_run_id (path ^ ".run_id") ~started_event_id run_id_json
+      in
       let* retry_json = field path "retry_state" entries in
       let* retry_name = string (path ^ ".retry_state") retry_json in
       let* retry_state = retry_state (path ^ ".retry_state") retry_name in

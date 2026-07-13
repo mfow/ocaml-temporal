@@ -1238,7 +1238,8 @@ let test_retryable_child_failure_preserves_retryability () =
           child_terminal_failure with
           info = Protocol.Child_workflow { info with retry_state = Protocol.Timeout };
         }
-    | Protocol.Application _ | Protocol.Canceled _ | Protocol.Activity _ ->
+    | Protocol.Application _ | Protocol.Canceled _ | Protocol.Activity _
+    | Protocol.Timeout_failure _ ->
         failwith "child terminal failure fixture lost its child-workflow info"
   in
   let child =

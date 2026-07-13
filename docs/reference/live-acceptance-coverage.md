@@ -30,8 +30,11 @@ head `47c9a93`; that PR was squash-merged as `f877fbf`. The complete [PR #226
 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
 then passed the dependency audit, changed-path gate, and live
 Temporal/PostgreSQL smoke for head `ca112b8`, covering the ten scenarios other
-than continue-as-new. The continue-as-new successor-follow scenario remains
-pending its own complete live run.
+than continue-as-new. That smoke run accepted the timeout-retry workflow and
+its exact second-attempt marker with the earlier fixture delay. This branch
+extends the first callback beyond Core's local timeout buffer; the updated
+ordering guard and continue-as-new successor-follow scenario remain pending a
+fresh complete live run.
 
 The earlier run live-verified four exact successes, a second activity task delivered
 by an ordinary retry policy, a heartbeat detail and timeout delivered to a

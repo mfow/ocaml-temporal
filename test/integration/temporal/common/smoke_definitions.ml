@@ -304,11 +304,15 @@ let activity_heartbeat_retry =
     the workflow's retry policy. *)
 let timeout_retry_start_to_close_timeout = Temporal.Duration.of_ms 500L
 
-(** Delay used by the first timeout-retry attempt. It is deliberately several
-    times longer than [timeout_retry_start_to_close_timeout] while remaining
-    short enough for the bounded Compose driver timeout. This sleep is activity
+(** Delay used by the first timeout-retry attempt. Core adds a five-second
+    local buffer to the 500ms server lease, so its local timeout is about 5.5s.
+    The six-second delay leaves a small scheduling margin. When the callback
+    returns, Core has already marked the timed-out token as not found and can
+    discard the late success instead of waiting on a completion RPC for an
+    expired token. The worker can then poll the retry without making this
+    single-threaded activity adapter depend on server timing. This is activity
     code, not workflow code, so it cannot affect deterministic replay. *)
-let timeout_retry_first_attempt_sleep_seconds = 1.5
+let timeout_retry_first_attempt_sleep_seconds = 6.0
 
 (** Counts executions of the timeout-only activity in the worker process. A
     fresh Compose worker is created for each acceptance run, and the counter is

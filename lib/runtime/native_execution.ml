@@ -9,6 +9,7 @@
     protocol merely to make a command fit an older protocol shape. *)
 
 module Protocol = Temporal_protocol.Workflow_protocol
+module Failure_diagnostic = Temporal_protocol.Failure_diagnostic
 
 (** Result-bind notation keeps every boundary conversion on the typed error
     path; no protocol or runtime input is handled with an exception. *)
@@ -148,6 +149,9 @@ let rec copy_failure (value : Protocol.failure) : Protocol.failure =
         Protocol.Application { info with details = copy_payloads details }
     | Protocol.Canceled ({ details; _ } as info) ->
         Protocol.Canceled { info with details = copy_payloads details }
+    | Protocol.Timeout_failure ({ last_heartbeat_details; _ } as info) ->
+        Protocol.Timeout_failure
+          { info with last_heartbeat_details = copy_payloads last_heartbeat_details }
     | Protocol.Activity _ as info -> info
     | Protocol.Child_workflow _ as info -> info
   in
@@ -239,102 +243,6 @@ let is_null_protocol_payload (value : Protocol.payload) =
   | [ ("encoding", bytes) ] -> Bytes.equal bytes (Bytes.of_string "binary/null")
   | _ -> false
 
-(** Adds the structured fields that the small public error type cannot store to
-    a diagnostic string. This preserves useful source, stack, identity, and
-    cause information without inventing a second error representation. *)
-let failure_info_summary = function
-  | Protocol.Application { type_name; non_retryable; details } ->
-      Printf.sprintf "application type=%s non_retryable=%b details=%d" type_name
-        non_retryable (List.length details)
-  | Protocol.Canceled { details; identity } ->
-      Printf.sprintf "canceled identity=%s details=%d" identity
-        (List.length details)
-  | Protocol.Activity
-      {
-        scheduled_event_id;
-        started_event_id;
-        identity;
-        activity_type;
-        activity_id;
-        retry_state;
-      } ->
-      let retry_state =
-        match retry_state with
-        | Protocol.Unspecified -> "unspecified"
-        | In_progress -> "in_progress"
-        | Non_retryable_failure -> "non_retryable_failure"
-        | Timeout -> "timeout"
-        | Maximum_attempts_reached -> "maximum_attempts_reached"
-        | Retry_policy_not_set -> "retry_policy_not_set"
-        | Internal_server_error -> "internal_server_error"
-        | Cancel_requested -> "cancel_requested"
-      in
-      Printf.sprintf
-        "activity id=%s type=%s identity=%s scheduled_event_id=%Ld \
-         started_event_id=%Ld retry_state=%s"
-        activity_id activity_type identity scheduled_event_id started_event_id
-        retry_state
-  | Protocol.Child_workflow
-      {
-        namespace;
-        workflow_id;
-        run_id;
-        workflow_type;
-        initiated_event_id;
-        started_event_id;
-        retry_state;
-      } ->
-      let retry_state =
-        match retry_state with
-        | Protocol.Unspecified -> "unspecified"
-        | In_progress -> "in_progress"
-        | Non_retryable_failure -> "non_retryable_failure"
-        | Timeout -> "timeout"
-        | Maximum_attempts_reached -> "maximum_attempts_reached"
-        | Retry_policy_not_set -> "retry_policy_not_set"
-        | Internal_server_error -> "internal_server_error"
-        | Cancel_requested -> "cancel_requested"
-      in
-      Printf.sprintf
-        "child_workflow namespace=%s id=%s run_id=%s type=%s initiated_event_id=%Ld \
-         started_event_id=%Ld retry_state=%s"
-        namespace workflow_id run_id workflow_type initiated_event_id
-        started_event_id retry_state
-
-(** Flattens a bounded failure chain into one deterministic diagnostic. The JSON
-    protocol already limits nesting; the depth guard also protects callers that
-    construct a recursive value directly. *)
-let failure_diagnostic (failure : Protocol.failure) =
-  let rec loop depth reversed (value : Protocol.failure) =
-    let current =
-      let source =
-        if String.length value.source = 0 then []
-        else [ "source=" ^ value.source ]
-      in
-      let stack_trace =
-        if String.length value.stack_trace = 0 then []
-        else [ "stack_trace=" ^ value.stack_trace ]
-      in
-      let attributes =
-        match value.encoded_attributes with
-        | None -> []
-        | Some _ -> [ "encoded_attributes_present=true" ]
-      in
-      String.concat " "
-        ((if String.length value.message = 0 then [] else [ value.message ])
-        @ source @ stack_trace
-        @ [ failure_info_summary value.info ]
-        @ attributes)
-    in
-    match value.cause with
-    | None -> String.concat " | " (List.rev (current :: reversed))
-    | Some _ when depth >= 128 ->
-        String.concat " | "
-          (List.rev ("cause_depth_limit_reached" :: current :: reversed))
-    | Some cause -> loop (depth + 1) (current :: reversed) cause
-  in
-  loop 0 [] failure
-
 (** Collects application and cancellation details through an activity wrapper.
     Temporal commonly reports an activity failure as an outer [Activity] record
     whose [cause] contains the application failure and its payloads. The bounded
@@ -347,6 +255,8 @@ let failure_details (failure : Protocol.failure) =
       | Protocol.Application { details; _ } | Protocol.Canceled { details; _ }
         ->
           List.rev_append details reversed
+      | Protocol.Timeout_failure { last_heartbeat_details; _ } ->
+          List.rev_append last_heartbeat_details reversed
       | Protocol.Activity _ | Protocol.Child_workflow _ -> reversed
     in
     match value.cause with
@@ -370,7 +280,7 @@ let runtime_error_of_failure path ~category (failure : Protocol.failure) =
   let non_retryable = Protocol.failure_non_retryable failure in
   Ok
     (Temporal_base.Error.make ~non_retryable ~details ~category
-       ~message:(failure_diagnostic failure)
+       ~message:(Failure_diagnostic.failure_diagnostic failure)
        ())
 
 (** Converts a protocol activity result while preserving the distinction between

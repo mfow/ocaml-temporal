@@ -18,6 +18,13 @@ type retry_state = Workflow.retry_state =
   | Internal_server_error
   | Cancel_requested
 
+type timeout_type = Workflow.timeout_type =
+  | Timeout_unspecified
+  | Timeout_start_to_close
+  | Timeout_schedule_to_start
+  | Timeout_schedule_to_close
+  | Timeout_heartbeat
+
 type failure_info = Workflow.failure_info =
   | Application of { type_name : string; non_retryable : bool; details : payload list }
   | Canceled of { details : payload list; identity : string }
@@ -37,6 +44,10 @@ type failure_info = Workflow.failure_info =
       initiated_event_id : int64;
       started_event_id : int64;
       retry_state : retry_state;
+    }
+  | Timeout_failure of {
+      timeout_type : timeout_type;
+      last_heartbeat_details : payload list;
     }
 
 type failure = Workflow.failure = {

@@ -11,6 +11,7 @@ module Bridge = Temporal_core_bridge.Native_bridge
 module Native = Sdk_supervisor.Native
 module Client_protocol = Temporal_protocol.Client_protocol
 module Workflow_protocol = Temporal_protocol.Workflow_protocol
+module Failure_diagnostic = Temporal_protocol.Failure_diagnostic
 
 (** Connection settings copied into each backend graph. *)
 type config = {
@@ -268,72 +269,6 @@ let public_payload (payload : Client_protocol.payload) : Payload.t =
     data = Bytes.copy payload.data;
   }
 
-(** Keeps diagnostics bounded while retaining enough context for an operator.
-    Native failure text is server input; truncating it avoids allowing a
-    malformed response to allocate an unbounded public error message. *)
-let bounded_text ~limit value =
-  if String.length value <= limit then value
-  else String.sub value 0 limit ^ "..."
-
-(** Describes the structured failure-info variant without copying payload
-    bytes. The detailed payloads are exposed separately through [Error.view]. *)
-let failure_info_summary = function
-  | Workflow_protocol.Application { type_name; non_retryable; details } ->
-      Printf.sprintf "application type=%s non_retryable=%b details=%d" type_name
-        non_retryable (List.length details)
-  | Workflow_protocol.Canceled { identity; details } ->
-      Printf.sprintf "canceled identity=%s details=%d" identity
-        (List.length details)
-  | Workflow_protocol.Activity
-      {
-        scheduled_event_id;
-        started_event_id;
-        identity;
-        activity_type;
-        activity_id;
-        retry_state;
-      } ->
-      let retry_state =
-        match retry_state with
-        | Workflow_protocol.Unspecified -> "unspecified"
-        | In_progress -> "in_progress"
-        | Non_retryable_failure -> "non_retryable_failure"
-        | Timeout -> "timeout"
-        | Maximum_attempts_reached -> "maximum_attempts_reached"
-        | Retry_policy_not_set -> "retry_policy_not_set"
-        | Internal_server_error -> "internal_server_error"
-        | Cancel_requested -> "cancel_requested"
-      in
-      Printf.sprintf
-        "activity id=%s type=%s identity=%s scheduled_event_id=%Ld started_event_id=%Ld retry_state=%s"
-        activity_id activity_type identity scheduled_event_id started_event_id
-        retry_state
-  | Workflow_protocol.Child_workflow
-      {
-        namespace;
-        workflow_id;
-        run_id;
-        workflow_type;
-        initiated_event_id;
-        started_event_id;
-        retry_state;
-      } ->
-      let retry_state =
-        match retry_state with
-        | Workflow_protocol.Unspecified -> "unspecified"
-        | In_progress -> "in_progress"
-        | Non_retryable_failure -> "non_retryable_failure"
-        | Timeout -> "timeout"
-        | Maximum_attempts_reached -> "maximum_attempts_reached"
-        | Retry_policy_not_set -> "retry_policy_not_set"
-        | Internal_server_error -> "internal_server_error"
-        | Cancel_requested -> "cancel_requested"
-      in
-      Printf.sprintf
-        "child_workflow namespace=%s id=%s run_id=%s type=%s initiated_event_id=%Ld started_event_id=%Ld retry_state=%s"
-        namespace workflow_id run_id workflow_type initiated_event_id
-        started_event_id retry_state
-
 (** Collects all application/cancellation detail payloads through a bounded
     failure cause chain. Protocol decoding already applies a depth limit; this
     second guard also protects callers that construct protocol values directly. *)
@@ -346,6 +281,8 @@ let failure_details failure =
           List.rev_append details reversed
       | Workflow_protocol.Activity _ | Workflow_protocol.Child_workflow _ ->
           reversed
+      | Workflow_protocol.Timeout_failure { last_heartbeat_details; _ } ->
+          List.rev_append last_heartbeat_details reversed
     in
     match value.cause with
     | Some cause when depth < 128 -> loop (depth + 1) reversed cause
@@ -362,20 +299,9 @@ let failure_details failure =
 let workflow_failure_error ?(category = `Workflow)
     (failure : Workflow_protocol.failure) =
   let non_retryable = Workflow_protocol.failure_non_retryable failure in
-  let context =
-    [
-      bounded_text ~limit:2048 failure.message;
-      (if String.equal failure.source "" then ""
-       else "source=" ^ bounded_text ~limit:512 failure.source);
-      (if String.equal failure.stack_trace "" then ""
-       else "stack_trace=" ^ bounded_text ~limit:1024 failure.stack_trace);
-      failure_info_summary failure.info;
-    ]
-    |> List.filter (fun value -> not (String.equal value ""))
-  in
   Error.make ~non_retryable ~category
     ~details:(failure_details failure)
-    ~message:(String.concat " " context) ()
+    ~message:(Failure_diagnostic.failure_diagnostic failure) ()
 
 (** Builds a typed cancellation/termination error from terminal detail
     payloads. Details remain binary-safe and are not interpolated into logs. *)

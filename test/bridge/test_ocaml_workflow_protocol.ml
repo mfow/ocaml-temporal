@@ -632,6 +632,61 @@ let test_failure_field_semantics () =
     (Protocol.encode_completion
        (invalid_activity 0L 0L (String.make 65_537 'i')))
 
+(** Proves timeout failure metadata keeps both the exact timeout policy and
+    ordered heartbeat payloads through OCaml encoding and decoding. The final
+    case changes only the enum spelling in an otherwise valid document to
+    ensure unknown future values fail closed. *)
+let test_timeout_failure_info () =
+  let heartbeat : Protocol.payload =
+    {
+      metadata = [ ("encoding", Bytes.of_string "binary/plain") ];
+      data = Bytes.of_string "heartbeat";
+    }
+  in
+  let completion : Protocol.completion =
+    {
+      run_id = "run-timeout";
+      commands =
+        [
+          Fail_workflow
+            {
+              failure =
+                failure_with_info
+                  (Timeout_failure
+                     {
+                       timeout_type = Timeout_heartbeat;
+                       last_heartbeat_details = [ heartbeat ];
+                     });
+            };
+        ];
+    }
+  in
+  let encoded = unwrap (Protocol.encode_completion completion) in
+  if
+    not
+      (contains_substring ~needle:{|"kind":"timeout"|} encoded
+      && contains_substring ~needle:{|"timeout_type":"heartbeat"|} encoded)
+  then failwith "timeout failure info was not encoded";
+  if unwrap (Protocol.decode_completion encoded) <> completion then
+    failwith "timeout failure info did not round-trip";
+  let rec replace_timeout_type = function
+    | `Assoc fields ->
+        `Assoc
+          (List.map
+             (fun (key, value) ->
+               if String.equal key "timeout_type" then
+                 (key, `String "future_timeout")
+               else (key, replace_timeout_type value))
+             fields)
+    | `List values -> `List (List.map replace_timeout_type values)
+    | value -> value
+  in
+  let malformed =
+    Yojson.Safe.to_string
+      (replace_timeout_type (Yojson.Safe.from_string encoded))
+  in
+  require_error (Protocol.decode_completion malformed)
+
 (** Proves retryability survives the Core wrapper used for activity and child
     failures. A nested application flag is authoritative when the wrapper has
     no retry policy of its own, while an explicit timeout remains retryable
@@ -870,6 +925,7 @@ let () =
   run "activation cross-field invariants" test_activation_cross_field_invariants;
   run "large activation job batch" test_large_activation_job_batch;
   run "failure field semantics" test_failure_field_semantics;
+  run "timeout failure info" test_timeout_failure_info;
   run "failure retryability inheritance" test_failure_retryability_inheritance;
   run "recursive failure depth" test_recursive_failure_depth;
   run "initialize header keys" test_initialize_header_keys;

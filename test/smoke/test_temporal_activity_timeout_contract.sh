@@ -45,7 +45,7 @@ require_file "$worker"
 require_text "$definitions" \
   'let timeout_retry_start_to_close_timeout = Temporal.Duration.of_ms 500L'
 require_text "$definitions" \
-  'let timeout_retry_first_attempt_sleep_seconds = 1.5'
+  'let timeout_retry_first_attempt_sleep_seconds = 6.0'
 require_text "$definitions" 'let timeout_retry_attempts = Atomic.make 0'
 require_text "$definitions" \
   'Temporal.Activity.define ~name:"smoke.timeout_retry"'

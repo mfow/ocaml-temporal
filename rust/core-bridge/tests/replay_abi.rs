@@ -613,6 +613,115 @@ fn replay_abi_waits_for_natural_shutdown_before_finalizing() {
     );
 }
 
+/// Rejects the exact activation just polled by re-encoding it as equivalent
+/// JSON. Re-serializing the semantic value exercises the retained-lease
+/// comparison the same way a real OCaml owner would, and returns `STATUS_OK`
+/// because the run identity still matches the lease.
+///
+/// A successful rejection fails the underlying Core workflow task, which is the
+/// operation that makes Core schedule the follow-up cache-eviction activation
+/// for the same run_id. This is the exact sequence whose retirement ordering
+/// the regression test below depends on.
+fn reject_leased_activation(runtime: *mut Runtime, activation: &[u8]) {
+    let semantic: serde_json::Value =
+        serde_json::from_slice(activation).expect("replay poll should return JSON");
+    let reencoded = serde_json::to_string(&semantic).expect("activation should re-encode");
+    let mut result = empty_result();
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_replay_worker_reject_workflow_json(
+                runtime,
+                reencoded.as_ptr(),
+                reencoded.len(),
+                &mut result,
+            )
+        },
+        STATUS_OK
+    );
+    assert_status(&mut result, STATUS_OK);
+}
+
+/// Drives one complete feed → poll → reject → acknowledge-eviction → finalize
+/// cycle on a freshly started replay worker, then frees the runtime.
+///
+/// Each cycle reproduces the ordering that previously raced: rejecting the
+/// leased activation fails its Core workflow task, Core immediately schedules a
+/// same-run eviction on the background poll lane, and the cycle then polls and
+/// completes that eviction. If the bridge ever retires the rejected lease
+/// *after* awaiting Core again, the eviction would be admitted as a duplicate
+/// and this poll would observe a fatal `STATUS_WORKER` instead of the eviction.
+fn reject_then_acknowledge_eviction_cycle() {
+    let mut runtime = new_replay_runtime();
+    let mut result = empty_result();
+    let document = replay_fixture::open_workflow_task_document("workflow-replay-stress");
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_replay_worker_feed_history_json(
+                runtime,
+                document.as_ptr(),
+                document.len(),
+                &mut result,
+            )
+        },
+        STATUS_OK
+    );
+    assert_status(&mut result, STATUS_OK);
+
+    let activation = poll_replay_activation(runtime);
+    reject_leased_activation(runtime, &activation);
+    complete_follow_up_eviction(runtime);
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_replay_worker_finish_input(runtime, &mut result) },
+        STATUS_OK
+    );
+    assert_status(&mut result, STATUS_OK);
+    finalize_after_natural_shutdown(runtime);
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
+}
+
+#[test]
+/// Regression guard for the replay reject/eviction retirement race.
+///
+/// Rejecting a leased replay activation makes Core publish a follow-up cache
+/// eviction for the same run_id on the background poll lane. Retiring the
+/// rejected lease only after awaiting Core left a window in which that
+/// legitimate eviction was classified as `Admission::Duplicate`, raising a
+/// terminal `PollLaneError::DuplicateIdentity` that surfaced as an intermittent
+/// `STATUS_WORKER` from an otherwise healthy poll (observed on `ubuntu-24.04-arm`
+/// under load). The bridge now retires the lease before that completion so the
+/// eviction is always admitted as a new obligation.
+///
+/// The race is timing sensitive: on an idle machine the poll lane rarely wins
+/// the interleaving, so this test drives many independent replay runtimes from
+/// several oversubscribed OS threads at once. The resulting scheduler pressure
+/// makes the reject thread yield between its Core completion and its ledger
+/// retirement often enough to expose the defect deterministically — the
+/// unfixed ordering fails this test within a handful of iterations, while the
+/// retire-before-await ordering runs every cycle cleanly.
+fn replay_abi_reject_eviction_cycle_never_duplicates_lease() {
+    // More worker threads than cores is intentional: the extra contention is
+    // what forces the reject/poll-lane interleaving the regression depends on.
+    let workers = 8;
+    let cycles_per_worker = 256;
+    let threads: Vec<_> = (0..workers)
+        .map(|_| {
+            std::thread::spawn(move || {
+                for _ in 0..cycles_per_worker {
+                    reject_then_acknowledge_eviction_cycle();
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread
+            .join()
+            .expect("stress worker thread should not panic");
+    }
+}
+
 #[test]
 /// Confirms the replay tests target the same ABI contract as the OCaml header.
 fn replay_abi_tests_use_the_current_contract() {

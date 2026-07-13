@@ -1034,28 +1034,39 @@ impl PollLanes {
         run_id: &str,
         reason: &'static str,
     ) -> Result<(), WorkerBridgeError> {
+        // Retire the ledger lease *before* the Core completion await.
+        //
+        // Failing an activation causes Core to schedule a follow-up cache
+        // eviction for the same run_id. That eviction can be published by the
+        // background poll lane while this rejection is still in flight. If the
+        // run were still recorded in the ledger at that moment, the poll lane
+        // would classify the legitimate eviction as `Admission::Duplicate` and
+        // raise a terminal `PollLaneError::DuplicateIdentity`, surfacing as a
+        // fatal `STATUS_WORKER` from an otherwise healthy poll. Retiring first
+        // guarantees the eviction is admitted as a new obligation instead.
+        //
+        // `retire_rejected_workflow` both validates that the run is leased and
+        // removes it, so it replaces the earlier lease check. Rejection retires
+        // the lease unconditionally — even when Core rejects the generated
+        // failure — so performing the retirement up front does not change the
+        // ownership outcome: the run is retired exactly once regardless of the
+        // Core result. This mirrors the retire-before-await ordering already
+        // used by the dispose queue drain in
+        // `force_complete_outstanding_for_dispose`.
         self.ledger
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .ensure_workflow_leased(run_id)
+            .retire_rejected_workflow(run_id)
             .map_err(WorkerBridgeError::Completion)?;
         let completion = WorkflowActivationCompletion::fail(
             run_id,
             workflow_rejection_message(reason).into(),
             Some(WorkflowTaskFailedCause::WorkflowWorkerUnhandledFailure),
         );
-        let core_result = self
-            .worker
+        self.worker
             .complete_workflow_activation(completion)
             .await
-            .map_err(|error| WorkerBridgeError::CoreWorkflow(error.to_string()));
-        let ledger_result = self
-            .ledger
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .retire_rejected_workflow(run_id)
-            .map_err(WorkerBridgeError::Completion);
-        core_result.and(ledger_result)
+            .map_err(|error| WorkerBridgeError::CoreWorkflow(error.to_string()))
     }
 
     /// Fails a remote activity task that semantic conversion could not expose.

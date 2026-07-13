@@ -285,8 +285,16 @@ let run_scheduler execution =
         Scheduler.run execution.scheduler)
   with
   | Scheduler.Failed exception_ ->
-      fail execution
-        (Temporal_base.Error.defect ~message:(Printexc.to_string exception_))
+      (* A sibling fiber may have raised after continue-as-new or terminate
+         already buffered a terminal command. Do not append a second terminal;
+         the existing command remains authoritative. *)
+      if
+        execution.terminal
+        || Workflow_context_store.has_buffered_terminal execution.context
+      then ()
+      else
+        fail execution
+          (Temporal_base.Error.defect ~message:(Printexc.to_string exception_))
   | Scheduler.Complete | Scheduler.Blocked -> ()
 
 (** Releases every paused fiber and pending operation table for this execution.

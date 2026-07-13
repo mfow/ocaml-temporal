@@ -405,6 +405,21 @@ let fire_timer context ~seq =
       fire ();
       Ok ()
 
+
+(** Reports whether the command buffer already contains a workflow-terminal
+    command. Used by the activation loop to avoid appending a second terminal
+    when the scheduler reports a sibling fiber exception after continue-as-new
+    or terminate has already buffered a terminal command. *)
+let has_buffered_terminal context =
+  List.exists
+    (function
+      | Activation.Complete_workflow _
+      | Fail_workflow _
+      | Cancel_workflow_execution
+      | Continue_as_new _ -> true
+      | _ -> false)
+    context.commands_rev
+
 (** Returns commands created so far and clears the buffer. Commands created
     later are returned by the next call. *)
 let take_commands context =

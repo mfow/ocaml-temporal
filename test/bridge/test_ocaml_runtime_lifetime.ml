@@ -62,3 +62,65 @@ let () =
   for _iteration = 1 to 8 do
     run_close_race ()
   done
+
+(** Same close-versus-blocking-operation race as [run_close_race], but with a
+    third Domain forcing GC promotion and major-heap compaction throughout the
+    waiter's ~100ms bounded native wait ([READINESS_WAIT_TIMEOUT] in
+    [rust/core-bridge/src/worker_bridge.rs]). The [runtime] custom block is
+    freshly allocated in the minor heap by [Bridge.runtime_create], so a
+    stop-the-world minor collection promotes (moves) it, and [Gc.compact]
+    subsequently relocates it again on the major heap. Both can happen while
+    the waiter Domain holds the OCaml runtime lock released inside its
+    blocking C call, and while this Domain's own [Bridge.runtime_close] call
+    captures and dereferences the runtime owner across its own blocking
+    section. This is a regression test for a use-after-free where the C stubs
+    cached an interior pointer into that movable custom block ([Runtime_val])
+    before releasing the lock and dereferenced it again afterward: a GC move
+    during the release window left the cached pointer stale, corrupting
+    whatever now occupied that memory and potentially hanging
+    [runtime_close]'s wait forever. Forcing collections here does not
+    guarantee any single run hits the exact interleaving that reproduced the
+    bug, but across many iterations and an aggressively GC-pressured window it
+    reliably did before the fix, and a bounded run here catches a
+    reintroduction without risking a flaky hang: [runtime_close] guarantees
+    eventual completion once the wait observes zero admitted calls. *)
+let run_close_race_under_gc_pressure () =
+  let runtime = unwrap (Bridge.runtime_create ()) in
+  let config = replay_worker_config () in
+  unwrap (Bridge.replay_worker_start runtime config);
+  let started = Atomic.make false in
+  let waiter =
+    Domain.spawn (fun () ->
+        Atomic.set started true;
+        Bridge.replay_worker_wait_workflow runtime)
+  in
+  await_started started;
+  let keep_pressing = Atomic.make true in
+  let presser =
+    Domain.spawn (fun () ->
+        while Atomic.get keep_pressing do
+          Gc.minor ();
+          Gc.compact ();
+          (* Allocate short-lived garbage so the following [Gc.minor] has real
+             promotion work to do rather than an empty nursery. *)
+          ignore (Sys.opaque_identity (Bytes.create 4096))
+        done)
+  in
+  Unix.sleepf 0.01;
+  unwrap (Bridge.runtime_close runtime);
+  Atomic.set keep_pressing false;
+  Domain.join presser;
+  match Domain.join waiter with
+  | Ok () -> ()
+  | Error { status = Bridge.Not_ready | Bridge.Invalid_state; _ } -> ()
+  | Error error ->
+      failwith
+        ("runtime close race under GC pressure returned an unexpected status: "
+        ^ error.message)
+
+(** Repeats the GC-pressured race enough times to make both a promotion-timed
+    and a compaction-timed overlap with the waiter's blocking window likely. *)
+let () =
+  for _iteration = 1 to 8 do
+    run_close_race_under_gc_pressure ()
+  done

@@ -62,8 +62,9 @@ let test_license () =
   if not (String.starts_with ~prefix:"Apache License" (read license)) then
     failwith "LICENSE does not begin with the Apache License marker"
 
-(** Checks package identity, maintainership, experimental status, and exact
-    dependency declarations in both generated build ecosystems. *)
+(** Checks package identity, maintainership, experimental status, repository
+    links, and exact dependency declarations in both generated build
+    ecosystems. *)
 let test_package_metadata () =
   let source_root = Sys.getenv "TEMPORAL_SOURCE_ROOT" in
   let source path = Filename.concat source_root path in
@@ -72,19 +73,52 @@ let test_package_metadata () =
   let dune_project = source "dune-project" in
   if Sys.file_exists (source "temporal.opam") then
     failwith "the retired temporal.opam package manifest still exists";
+  require_text ~path:opam
+    ~needle:"synopsis: \"Experimental Temporal workflows in modern OCaml\"";
+  require_text ~path:opam
+    ~needle:
+      "description: \"An experimental typed OCaml 5 workflow SDK backed by Temporal Core\"";
   require_text ~path:opam ~needle:"maintainer: \"Michael Fowlie\"";
   require_text ~path:opam ~needle:"authors: \"Michael Fowlie\"";
+  require_text ~path:opam
+    ~needle:"tags: [ \"temporal\" \"workflow\" \"sdk\" \"experimental\" ]";
   require_text ~path:opam ~needle:"x-maintenance-intent: [ \"(latest)\" ]";
-  require_text ~path:opam ~needle:"\"experimental\"";
+  require_text ~path:opam
+    ~needle:"homepage: \"https://github.com/mfow/ocaml-temporal\"";
+  require_text ~path:opam
+    ~needle:"bug-reports: \"https://github.com/mfow/ocaml-temporal/issues\"";
+  require_text ~path:opam
+    ~needle:"dev-repo: \"git+https://github.com/mfow/ocaml-temporal.git\"";
   require_text ~path:opam ~needle:"\"logs\" {>= \"0.10\"}";
   require_text ~path:opam ~needle:"\"yojson\" {>= \"3.0\"}";
   require_text ~path:locked ~needle:"name: \"temporal-sdk\"";
+  require_text ~path:locked
+    ~needle:"synopsis: \"Experimental Temporal workflows in modern OCaml\"";
+  require_text ~path:locked
+    ~needle:
+      "description: \"An experimental typed OCaml 5 workflow SDK backed by Temporal Core\"";
   require_text ~path:locked ~needle:"maintainer: \"Michael Fowlie\"";
   require_text ~path:locked ~needle:"authors: \"Michael Fowlie\"";
+  require_text ~path:locked
+    ~needle:"tags: [ \"temporal\" \"workflow\" \"sdk\" \"experimental\" ]";
   require_text ~path:locked ~needle:"x-maintenance-intent: [ \"(latest)\" ]";
-  require_text ~path:locked ~needle:"\"experimental\"";
+  require_text ~path:locked
+    ~needle:"homepage: \"https://github.com/mfow/ocaml-temporal\"";
+  require_text ~path:locked
+    ~needle:"bug-reports: \"https://github.com/mfow/ocaml-temporal/issues\"";
+  require_text ~path:locked
+    ~needle:"dev-repo: \"git+https://github.com/mfow/ocaml-temporal.git\"";
   require_text ~path:locked ~needle:"\"logs\" {= \"0.10.0\"}";
   require_text ~path:locked ~needle:"\"yojson\" {= \"3.0.0\"}";
+  require_text ~path:dune_project
+    ~needle:"(source (github mfow/ocaml-temporal))";
+  require_text ~path:dune_project
+    ~needle:"(synopsis \"Experimental Temporal workflows in modern OCaml\")";
+  require_text ~path:dune_project
+    ~needle:
+      "(description \"An experimental typed OCaml 5 workflow SDK backed by Temporal Core\")";
+  require_text ~path:dune_project
+    ~needle:"(tags (temporal workflow sdk experimental))";
   require_text ~path:dune_project ~needle:"(authors \"Michael Fowlie\")";
   require_text ~path:dune_project ~needle:"(maintainers \"Michael Fowlie\")";
   require_text ~path:dune_project ~needle:"(maintenance_intent \"(latest)\")";

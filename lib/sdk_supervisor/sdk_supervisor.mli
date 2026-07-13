@@ -138,6 +138,11 @@ module Native : sig
       (bytes, Temporal_core_bridge.Native_bridge.error) result
     (** Canonically serializes one typed exact-run cancellation request. *)
 
+    val encode_client_signal_request :
+      Temporal_protocol.Client_protocol.signal_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one typed exact-run signal request. *)
+
     val decode_client_start_ticket :
       Temporal_protocol.Client_protocol.start_request ->
       (bytes, Temporal_core_bridge.Native_bridge.error) result ->
@@ -199,6 +204,14 @@ module Native : sig
       result
     (** Decodes the cancellation acknowledgement and preserves structured
         server failures as an inner typed result. *)
+
+    val decode_client_signal_result :
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( (unit, Temporal_protocol.Client_protocol.client_error) result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes the signal acknowledgement and preserves structured server
+        failures as an inner typed result. *)
   end
 
   (** Validated client settings whose representation remains bridge-private. *)
@@ -247,6 +260,11 @@ module Native : sig
         (unit, Temporal_protocol.Client_protocol.client_error) result operation
         (** Requests cancellation of one exact run. The acknowledgement does
             not itself prove that the run has reached its cancelled outcome. *)
+    | Client_signal_workflow :
+        Temporal_protocol.Client_protocol.signal_request ->
+        (unit, Temporal_protocol.Client_protocol.client_error) result operation
+        (** Sends one signal to one exact run. The acknowledgement does not
+            itself prove that workflow code has processed the signal. *)
     | Start_worker : worker_config -> unit operation
     | Start_replay_worker : worker_config -> unit operation
         (** Starts a workflow-only replay worker without a Temporal client. *)

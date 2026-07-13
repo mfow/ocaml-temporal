@@ -32,6 +32,15 @@ type cancel_request = {
 
 type cancel_response = { acknowledged : bool }
 
+type signal_request = {
+  execution : execution;
+  signal_name : string;
+  request_id : string;
+  input : payload list;
+}
+
+type signal_response = { acknowledged : bool }
+
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -303,13 +312,45 @@ let encode_cancel_request (value : cancel_request) =
     accepted the cancellation RPC. A false acknowledgement is rejected rather
     than being exposed as success because the public operation has no separate
     pending state. *)
-let decode_cancel_response input =
+let decode_cancel_response input : (cancel_response, error) result =
   let* json = decode_object input in
   let* entries = exact_object "$" [ "acknowledged" ] json in
   let* acknowledged_json = field "$" "acknowledged" entries in
   let* acknowledged = bool "$.acknowledged" acknowledged_json in
-  if acknowledged then Ok { acknowledged }
+  if acknowledged then Ok ({ acknowledged } : cancel_response)
   else Error (invalid ~path:"$.acknowledged" "cancellation was not acknowledged")
+
+(** Serializes one exact-run signal request. Signal input remains an ordered
+    payload list so codecs that produce multiple Temporal payloads retain the
+    same order through OCaml, JSON, Rust, and the official protobuf service. *)
+let encode_signal_request (value : signal_request) =
+  let* () = validate_identifier "$.namespace" value.execution.namespace in
+  let* () = validate_identifier "$.workflow_id" value.execution.workflow_id in
+  let* () = validate_identifier "$.run_id" value.execution.run_id in
+  let* () = validate_identifier "$.signal_name" value.signal_name in
+  let* () = validate_identifier "$.request_id" value.request_id in
+  let* input = payloads_json value.input in
+  encode_object
+    (`Assoc
+      [
+        ("namespace", json_string value.execution.namespace);
+        ("workflow_id", json_string value.execution.workflow_id);
+        ("run_id", json_string value.execution.run_id);
+        ("signal_name", json_string value.signal_name);
+        ("request_id", json_string value.request_id);
+        ("input", input);
+      ])
+
+(** Decodes the positive acknowledgement returned by Rust after Temporal has
+    accepted a signal RPC. A false value is rejected so callers never observe
+    [Ok ()] for a request that the bridge did not positively acknowledge. *)
+let decode_signal_response input : (signal_response, error) result =
+  let* json = decode_object input in
+  let* entries = exact_object "$" [ "acknowledged" ] json in
+  let* acknowledged_json = field "$" "acknowledged" entries in
+  let* acknowledged = bool "$.acknowledged" acknowledged_json in
+  if acknowledged then Ok ({ acknowledged } : signal_response)
+  else Error (invalid ~path:"$.acknowledged" "signal was not acknowledged")
 
 let decode_successor path entries =
   let* successor_json = field path "successor" entries in
@@ -633,4 +674,15 @@ let decode_cancel_error input =
       Error
         (invalid ~path:"$.kind"
            "already_started is not a valid cancellation error")
+  | (Rpc _ | Protocol _) -> Ok error
+
+(** Decodes a signal failure while rejecting [Already_started], which is a
+    start-only category and cannot describe a signal RPC. *)
+let decode_signal_error input =
+  let* error = decode_client_error input in
+  match error with
+  | Already_started _ ->
+      Error
+        (invalid ~path:"$.kind"
+           "already_started is not a valid signal error")
   | (Rpc _ | Protocol _) -> Ok error

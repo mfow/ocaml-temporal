@@ -17,6 +17,10 @@ type t = {
   (* The first shutdown outcome is retained so every caller observes the same
      terminal result, including a native teardown error. *)
   mutable shutdown_result : (unit, Error.t) result option;
+  (* Signals without an explicit request ID receive a fresh process-local
+     sequence value. Atomic allocation keeps concurrent callers distinct
+     without adding a second synchronization path around the native graph. *)
+  next_signal_request_id : int Atomic.t;
 }
 
 (** A handle retains the definition codecs and exact execution identity. *)
@@ -103,6 +107,7 @@ let create ?(identity = default_identity) ~target_url ~namespace () =
                 closed = Atomic.make false;
                 shutdown_mutex = Mutex.create ();
                 shutdown_result = None;
+                next_signal_request_id = Atomic.make 0;
               })
             (Backend.client_create config))
 
@@ -241,6 +246,17 @@ let validate_cancel_fields ~request_id ~reason =
       Error (Error.defect ~message:"cancellation reason must not contain NUL")
   | Ok () -> Ok ()
 
+(** Validates signal metadata before encoding input or entering the backend.
+    Signal names are validated when their definitions are built; the request
+    ID still belongs to this particular delivery and is checked here. *)
+let validate_signal_fields ~request_id =
+  let request_result =
+    match request_id with
+    | None -> Ok ()
+    | Some request_id -> validate_name "signal request id" request_id
+  in
+  request_result
+
 (** Allocates a stable request ID for a cancellation call whose caller did not
     provide one. Hashing the exact execution identity makes repeated calls on
     the same handle represent one idempotent control operation without keeping
@@ -275,6 +291,44 @@ let cancel ?request_id ?(reason = "") handle =
           }
         in
         Backend.client_cancel handle.client.backend request
+
+(** Allocates a fresh request ID for a signal when the caller did not supply
+    one. Unlike cancellation, separate signal calls are distinct messages by
+    default, even when they target the same run and signal name. Supplying an
+    explicit ID gives a caller retry-safe idempotency semantics. *)
+let generated_signal_request_id (client : t) =
+  let sequence = Atomic.fetch_and_add client.next_signal_request_id 1 in
+  Printf.sprintf "ocaml-client-signal-%d" sequence
+
+(** Sends one typed signal to the exact run retained by [handle]. The input is
+    encoded before the backend call, and success means only that Temporal
+    acknowledged the RPC; workflow code may process it asynchronously. *)
+let signal ?request_id handle ~(signal : 'signal Signal.t) ~input =
+  if Atomic.get handle.client.closed then
+    Error
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else
+    match validate_signal_fields ~request_id with
+    | Error error -> Error error
+    | Ok () -> (
+        match Codec.encode (Signal.input signal) input with
+        | Error error -> Error error
+        | Ok encoded_input ->
+            let request_id =
+              match request_id with
+              | Some request_id -> request_id
+              | None -> generated_signal_request_id handle.client
+            in
+            let request : Backend.signal_request =
+              {
+                workflow_id = handle.workflow_id;
+                run_id = handle.run_id;
+                signal_name = Signal.name signal;
+                request_id;
+                input = encoded_input;
+              }
+            in
+            Backend.client_signal handle.client.backend request)
 
 (** Returns the durable workflow identity retained by a handle. *)
 let workflow_id (handle : ('input, 'output) handle) = handle.workflow_id

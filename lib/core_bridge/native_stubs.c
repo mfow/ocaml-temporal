@@ -432,6 +432,15 @@ CAMLprim value ocaml_temporal_client_cancel_workflow_json(value runtime,
       runtime, input, ocaml_temporal_core_v1_client_cancel_workflow_json);
 }
 
+/* Send one signal to one exact workflow run. The JSON input is copied before
+ * the OCaml runtime lock is released; Rust owns no OCaml memory after this
+ * call and the positive acknowledgement is decoded like cancellation. */
+CAMLprim value ocaml_temporal_client_signal_workflow_json(value runtime,
+                                                          value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_client_signal_workflow_json);
+}
+
 /* Admit one workflow start and return its opaque ticket. The input is copied
  * before releasing the OCaml runtime lock; Rust owns the pending Tokio task
  * and never retains OCaml memory from this call. */

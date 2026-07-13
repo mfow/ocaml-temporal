@@ -104,6 +104,13 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_client_cancel_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* Send one signal to one exact workflow run. The successful value is a strict
+ * {"acknowledged":true} document; the Rust client owns Temporal protobuf and
+ * network state while this ABI exposes only copied JSON. */
+ocaml_temporal_core_status ocaml_temporal_core_v1_client_signal_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
 /* Admit one workflow start without waiting for the RPC. The successful value
  * is an opaque JSON ticket. The caller must later poll or wait that ticket;
  * the Rust owner keeps its Core connection and Tokio task alive until one

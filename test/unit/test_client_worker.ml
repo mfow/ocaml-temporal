@@ -57,6 +57,12 @@ let echo_workflow =
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
       Ok input)
 
+(** A typed signal used by client-control tests. The mock transport only
+    acknowledges delivery, but the definition still exercises the public
+    codec/name boundary used by the native signal request. *)
+let add_document_signal =
+  Temporal.Signal.define ~name:"unit.add-document" ~input:Temporal.Codec.string
+
 (** Unit definitions keep the worker dispatch test independent of payload
     implementation details while still requiring decoding and re-encoding. *)
 let unit_workflow calls =
@@ -390,6 +396,37 @@ let test_completed_mock_run_is_immutable () =
   | Error error -> failwith (Temporal.Error.message error));
   unwrap (Temporal.Client.shutdown client)
 
+(** A signal is sent to the exact handle run and acknowledged independently of
+    waiting. Repeating an explicit request ID remains accepted by the
+    deterministic mock, matching Temporal's retry-safe control operation shape.
+    A signal to an already completed run is rejected rather than silently
+    pretending that workflow code could still receive it. *)
+let test_exact_run_signal () =
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let handle =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"unit-signal" ~input:"ignored" ())
+  in
+  unwrap
+    (Temporal.Client.signal ~request_id:"signal-unit-1" handle
+       ~signal:add_document_signal ~input:"document");
+  unwrap
+    (Temporal.Client.signal ~request_id:"signal-unit-1" handle
+       ~signal:add_document_signal ~input:"document");
+  (match Temporal.Client.wait handle with
+  | Ok (Temporal.Client.Completed "ignored") -> ()
+  | Ok _ -> failwith "signal changed the mock terminal result"
+  | Error error -> failwith (Temporal.Error.message error));
+  expect_error "workflow"
+    (Temporal.Client.signal ~request_id:"late-signal" handle
+       ~signal:add_document_signal ~input:"late");
+  unwrap (Temporal.Client.shutdown client)
+
 (** Invalid client settings are values rather than exceptions, and a malformed
     durable workflow id is rejected before the backend receives it. *)
 let test_client_validation_errors () =
@@ -419,6 +456,9 @@ let test_client_validation_errors () =
     (Temporal.Client.cancel ~request_id:"" handle);
   expect_error "defect"
     (Temporal.Client.cancel ~reason:"contains\000nul" handle);
+  expect_error "defect"
+    (Temporal.Client.signal ~request_id:"" handle ~signal:add_document_signal
+       ~input:"ignored");
   unwrap (Temporal.Client.shutdown client)
 
 (** Identifier limits are enforced before transport selection. This keeps the
@@ -487,6 +527,7 @@ let () =
   test_follow_rejects_cross_namespace_execution ();
   test_exact_run_cancellation ();
   test_completed_mock_run_is_immutable ();
+  test_exact_run_signal ();
   test_client_validation_errors ();
   test_client_identifier_size_validation ();
   test_native_client_configuration_boundary ();

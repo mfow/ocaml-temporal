@@ -53,6 +53,15 @@ type cancel_request = {
   reason : string;
 }
 
+(** Exact workflow/run pair and typed payload for one signal operation. *)
+type signal_request = {
+  workflow_id : string;
+  run_id : string;
+  signal_name : string;
+  request_id : string;
+  input : Payload.t;
+}
+
 (** Terminal workflow outcome represented independently from transport errors. *)
 type terminal_result =
   | Completed of Payload.t
@@ -629,6 +638,37 @@ let native_client_cancel (client : native_client) (request : cancel_request) :
     | Ok (Error error) -> Error (native_client_error error)
     | Ok (Ok ()) -> Ok ()
 
+(** Converts a public signal request to the namespace-bound protocol value.
+    The exact run identity comes from the typed handle, while the connected
+    client's namespace is the only namespace allowed to cross the bridge. *)
+let native_signal_request client (request : signal_request) :
+    Client_protocol.signal_request =
+  {
+    execution =
+      {
+        namespace = client.namespace;
+        workflow_id = request.workflow_id;
+        run_id = request.run_id;
+      };
+    signal_name = request.signal_name;
+    request_id = request.request_id;
+    input = [ protocol_payload request.input ];
+  }
+
+(** Sends one signal through the serialized supervisor operation. The result is
+    only an RPC acknowledgement; workflow code may process the signal later. *)
+let native_client_signal (client : native_client) (request : signal_request) :
+    (unit, Error.t) result =
+  if Atomic.get client.closed then Error (bridge_error "client is shut down")
+  else
+    match
+      Native.perform client.supervisor
+        (Native.Client_signal_workflow (native_signal_request client request))
+    with
+    | Error error -> Error (native_supervisor_error error)
+    | Ok (Error error) -> Error (native_client_error error)
+    | Ok (Ok ()) -> Ok ()
+
 (** Marks one exact mock execution cancelled. Repeated cancellation requests
     are idempotent, while a mismatched workflow/run pair is rejected so the
     deterministic seam exercises the same identity contract as native Core.
@@ -657,6 +697,33 @@ let client_cancel client request =
   match client with
   | Mock_client client -> mock_client_cancel client request
   | Native_client client -> native_client_cancel client request
+
+(** Accepts a signal for a pending mock run. The deterministic mock does not
+    execute workflow code, so it records no signal history; it still enforces
+    exact identity and rejects delivery to an already closed run. *)
+let mock_client_signal (client : mock_client) (request : signal_request) =
+  Mutex.lock client.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock client.mutex)
+    (fun () ->
+      if client.closed then Error (bridge_error "client is shut down")
+      else
+        match Hashtbl.find_opt client.executions request.workflow_id with
+        | None -> Error (bridge_error "workflow execution was not started")
+        | Some execution
+          when not (String.equal execution.run_id request.run_id) ->
+            Error (bridge_error "workflow run id does not match the started run")
+        | Some { terminal = Mock_pending; _ } -> Ok ()
+        | Some _ ->
+            Error
+              (Error.make ~category:`Workflow
+                 ~message:"workflow execution is not running" ()))
+
+(** Sends one signal on the selected private transport. *)
+let client_signal client request =
+  match client with
+  | Mock_client client -> mock_client_signal client request
+  | Native_client client -> native_client_signal client request
 
 (** Marks a client closed while preserving idempotent cleanup. Native shutdown
     runs the supervisor's reverse-order worker/client/runtime release path;

@@ -33,6 +33,12 @@ HOST_GID ?= $(shell id -g)
 # exhausting its memory without changing the normal CI/default behavior.
 DUNE_JOBS ?=
 DUNE_BUILD_ARGS := $(if $(strip $(DUNE_JOBS)),-j $(DUNE_JOBS),)
+# Rust integration tests each link the Temporal Core graph into a separate test
+# executable. Serializing those links and disabling unused incremental state
+# keeps the peak disk/memory footprint bounded on hosted runners without
+# changing the test set or the production build profile.
+CARGO_BUILD_JOBS ?= 1
+CARGO_TEST_ENV := CARGO_BUILD_JOBS=$(CARGO_BUILD_JOBS) CARGO_INCREMENTAL=0
 COMPOSE_RUN := OCAML_IMAGE=$(OCAML_IMAGE) $(COMPOSE) --progress quiet run --rm --build --user $(HOST_UID):$(HOST_GID) $(SERVICE)
 RUN := $(COMPOSE_RUN) opam exec --
 CARGO := $(COMPOSE_RUN) cargo
@@ -87,7 +93,7 @@ test:
 
 test-rust:
 	$(COMPOSE_RUN) sh test/smoke/test_rust_toolchain.sh
-	$(CARGO) test --manifest-path $(CARGO_MANIFEST) --locked
+	$(COMPOSE_RUN) env $(CARGO_TEST_ENV) cargo test --manifest-path $(CARGO_MANIFEST) --locked
 
 test-bridge:
 	$(COMPOSE_RUN) sh test/bridge/test_abi.sh
@@ -499,7 +505,7 @@ native-test: native-test-rust native-test-install test-quality-contract
 	$(NATIVE_ENV) $(NATIVE_RUN) dune runtest
 
 native-test-rust:
-	$(NATIVE_ENV) cargo test --manifest-path $(CARGO_MANIFEST) --locked
+	$(NATIVE_ENV) $(CARGO_TEST_ENV) cargo test --manifest-path $(CARGO_MANIFEST) --locked
 
 native-test-install:
 	$(NATIVE_ENV) sh test/bridge/test_install.sh

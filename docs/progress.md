@@ -14,6 +14,28 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Typed interaction definitions and deterministic dispatch
+
+Status: locally verified only; no live Temporal Server or GitHub Actions
+success claim is made. GitHub Actions may remain pending while the repository
+quota is exhausted.
+
+The public API now contains experimental typed signal, query, and update
+definitions with existentially paired handlers. `Temporal.Update.Handler`
+executes an optional validator before the implementation and prevents the
+implementation from running after rejection. `Temporal.Interaction` builds
+immutable per-kind registries, rejects duplicate names, preserves synchronous
+submission order, validates both codec boundaries, and converts unexpected
+handler exceptions into typed defects. The native activation protocol still
+rejects interaction jobs, so this is a local semantic slice rather than live
+Temporal delivery. `test/unit/test_interactions.ml` covers successful
+dispatch, ordering, duplicate registrations, unknown names, codec mismatch,
+validator short-circuiting, and exception containment.
+
+Local evidence for this entry: `opam exec -- dune build @install
+test/unit/test_interactions.exe`, `opam exec -- dune exec
+./test/unit/test_interactions.exe`, and `git diff --check`.
+
 ## 2026-07-13: Replay/Core disposal lifecycle hardening
 
 Status: locally verified; no live Temporal Server acceptance is claimed, and

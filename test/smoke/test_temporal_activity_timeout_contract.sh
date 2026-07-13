@@ -46,6 +46,11 @@ require_text "$definitions" \
   'let timeout_retry_start_to_close_timeout = Temporal.Duration.of_ms 500L'
 require_text "$definitions" \
   'let timeout_retry_first_attempt_sleep_seconds = 6.0'
+require_text "$definitions" 'let timeout_retry_policy ='
+require_text "$definitions" \
+  '~initial_interval:(Temporal.Duration.of_ms 7_000L)'
+require_text "$definitions" \
+  '~maximum_interval:(Temporal.Duration.of_ms 7_000L) ~maximum_attempts:2 ()'
 require_text "$definitions" 'let timeout_retry_attempts = Atomic.make 0'
 require_text "$definitions" \
   'Temporal.Activity.define ~name:"smoke.timeout_retry"'
@@ -56,6 +61,7 @@ require_text "$definitions" \
 require_text "$definitions" 'let activity_timeout_retry ='
 require_text "$definitions" \
   '~start_to_close_timeout:timeout_retry_start_to_close_timeout'
+require_text "$definitions" 'match timeout_retry_policy with'
 require_text "$definitions" '~retry_policy:policy ~do_not_eagerly_execute:true'
 require_text "$definitions" '~maximum_attempts:2 ()'
 

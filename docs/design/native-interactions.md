@@ -1,0 +1,304 @@
+# Native workflow interactions
+
+This document specifies how Temporal Core signals, queries, and updates will
+cross the private Rust/OCaml boundary. It is a design and compatibility
+reference, not an implementation claim. The current bridge deliberately
+supports a smaller activation and command vocabulary; the native interaction
+variants described here are rejected as unsupported until each layer is
+implemented and tested together.
+
+For the public, in-memory typing that already exists, see
+[Signals, queries, and updates](../reference/interactive-workflows.md). That
+page describes `Temporal.Interaction`, an immutable local dispatcher. It does
+not contact Temporal Server and must not be presented as native interaction
+delivery.
+
+## Scope and sources of truth
+
+Temporal Core is pinned by the Rust workspace to commit
+`95e97686a079dcfe6c42e3254b2f3f5e3d97408f` of `temporalio/sdk-core`. The
+authoritative interaction definitions are the pinned Core
+`workflow_activation.proto` and `workflow_commands.proto` files:
+
+| Core message | Direction | Meaning |
+| --- | --- | --- |
+| `SignalWorkflow` | Core -> language SDK | Deliver a signal to a running workflow. |
+| `QueryWorkflow` | Core -> language SDK | Ask a workflow for a read-only result. |
+| `DoUpdate` | Core -> language SDK | Run an update validator and then an update handler. |
+| `QueryResult` | language SDK -> Core | Answer one query activation. |
+| `UpdateResponse` | language SDK -> Core | Acknowledge, reject, or complete one update. |
+
+The Core protobuf types remain Rust-only. OCaml receives a closed semantic
+record over the existing JSON bridge, and Rust converts that record to or from
+Core protobuf. This keeps protobuf ownership, network I/O, and Core handles on
+the Rust side while giving the OCaml runtime a small type-checked vocabulary.
+
+## Current boundary
+
+The current semantic protocol supports initialization, activity and child
+resolutions, timers, cancellation, and eviction. The OCaml protocol decoder
+has a closed `activation_job` variant and the Rust `activation_from_core`
+conversion rejects any other Core job. The completion protocol similarly has
+no query-result or update-response command; Rust's reverse conversion rejects
+those Core command variants rather than dropping them.
+
+Consequently:
+
+- `SignalWorkflow`, `QueryWorkflow`, and `DoUpdate` are not currently
+  deliverable to an OCaml workflow worker.
+- `Temporal.Interaction` can exercise typed handler registration, codec
+  validation, duplicate-name rejection, and validator ordering locally.
+- No local dispatcher test is evidence that a Temporal Server can send an
+  interaction, and no live interaction acceptance test exists yet.
+
+This explicit failure is intentional. A newer Core field, oneof variant, or
+update metadata field must not silently disappear at the language boundary.
+
+## End-to-end mapping
+
+The native path will retain one ownership boundary and four semantic stages:
+
+```mermaid
+flowchart LR
+    C[Temporal Core protobuf] --> R1[Rust strict Core conversion]
+    R1 --> J1[Workflow activation JSON]
+    J1 --> O1[OCaml strict decoder]
+    O1 --> O2[Activation/job translator]
+    O2 --> O3[Workflow scheduler and interaction handlers]
+    O3 --> O4[Semantic completion JSON]
+    O4 --> R2[Rust strict completion conversion]
+    R2 --> C2[Temporal Core protobuf]
+```
+
+Each stage validates before handing ownership to the next stage:
+
+1. Rust reads the Core oneof and constructs a typed semantic value. Unsupported
+   or non-default Core fields return a structured conversion error.
+2. Rust encodes the value as the canonical operation-specific JSON document.
+   The supervisor retains the native lease until OCaml either completes or
+   rejects that exact document.
+3. OCaml validates and copies payload bytes, then translates the semantic job
+   into a private runtime job. No Rust future, pointer, protobuf value, or
+   callback crosses into workflow code.
+4. OCaml handlers emit typed semantic commands. The OCaml encoder validates and
+   round-trips the complete completion before the supervisor hands owned bytes
+   to Rust. Rust validates the bytes again and converts them to Core protobuf.
+
+The private JSON document is not a Temporal Server wire format. Temporal
+payloads remain opaque bytes plus encoding metadata; a JSON payload codec is an
+application choice, not a requirement of the interaction protocol.
+
+## Core ordering and activation ownership
+
+Core documents the following ordering inside an ordinary activation:
+
+1. workflow initialization;
+2. patch notifications;
+3. random-seed updates;
+4. signal and update jobs;
+5. other ordinary jobs;
+6. local-activity resolutions;
+7. queries; and
+8. cache eviction.
+
+Queries and evictions have stronger guarantees: each is delivered in its own
+activation, and an eviction activation contains only `RemoveFromCache`. The
+OCaml runtime must preserve the supplied list order. It may first record all
+state changes and then drive runnable fibers, but it must not reorder signals,
+updates, resolutions, or commands based on hash-table traversal or arrival on
+an unrelated thread.
+
+One SDK-instance supervisor remains the only owner of the Rust runtime, Core
+worker, and native handle graph. It serializes poll, completion, rejection, and
+shutdown messages on its owner Domain. Rust readiness is observed through the
+native wait mechanism with the OCaml runtime lock released; an OCaml workflow
+fiber must never block waiting for a Rust mutex. Rust threads must not invoke
+OCaml closures directly. Interaction handlers run on the owning workflow
+scheduler after the supervisor has delivered the validated activation.
+
+## Signal delivery
+
+`SignalWorkflow` contains:
+
+- `signal_name`, the registered handler name;
+- a repeated `input` payload list;
+- `identity`, the sender identity; and
+- a payload-valued `headers` map.
+
+The future semantic record must retain all four fields, including an empty
+input list and headers. The current public signal definition accepts one typed
+input, so native integration must choose and document an arity policy rather
+than flattening or silently discarding extra payloads. Until a repeated-input
+API exists, an activation with an unsupported arity should fail validation or
+produce a typed handler error; it must not select an arbitrary element.
+
+A signal handler is mutating workflow code but has no result command of its
+own. Its state changes and any ordinary activity, child, or timer commands are
+returned in the completion for the containing activation. The handler observes
+the Core-provided ordering relative to other signal and update jobs. A missing
+handler, invalid payload, or handler exception follows the SDK's typed
+non-retryable workflow-defect path; raw exceptions and payload values never
+cross the bridge.
+
+Signal input, identity, and headers are history-derived data. They may be
+read by the handler, but the handler must still use only replay-safe workflow
+operations. Sending a signal is not a permission to read wall time, random
+process state, the network, or mutable global state.
+
+## Query delivery and response
+
+`QueryWorkflow` contains a `query_id`, `query_type`, repeated argument
+payloads, and headers. Core guarantees that query jobs run after mutating jobs
+and that queries are delivered in their own activation. A query must therefore
+observe the workflow state after the preceding activation work, but it must not
+mutate that state.
+
+The native query path is planned as a read-only, non-suspending handler mode:
+
+1. decode the query arguments using the registered definition;
+2. invoke the handler without allowing workflow commands, timers, activities,
+   child workflows, or arbitrary effects;
+3. encode the typed result; and
+4. emit exactly one `QueryResult` command with the same `query_id`.
+
+`QueryResult` is either `succeeded` with one payload or `failed` with a
+structured Temporal failure. The response is part of the query activation's
+completion. It is not a workflow terminal result and must not be confused
+with `CompleteWorkflowExecution`.
+
+The first public OCaml query definition has no input. That API restriction is
+not a Core restriction: Core carries repeated arguments. Native integration
+must preserve the repeated list in the semantic record and either add a typed
+query-input definition before accepting arguments or reject a non-empty list
+with a documented typed error. It must not silently decode only the first
+argument.
+
+The query mode is intentionally stricter than a normal workflow fiber. A
+query cannot suspend on an activity, child, timer, or future that requires a
+later activation. If a query implementation attempts one of those operations,
+the runtime returns a typed defect in `QueryResult.failed` and leaves no
+pending continuation behind. The query handler's result and failure must be
+isolated from the workflow's normal command buffer.
+
+## Update delivery and two-phase response
+
+`DoUpdate` contains:
+
+- `id`, the workflow-scoped update identifier;
+- `protocol_instance_id`, Core's internal protocol tracking identifier;
+- `name`, the registered update handler name;
+- repeated input payloads;
+- headers;
+- `meta`, whose pinned Core fields include the update identity and requester
+  identity; and
+- `run_validator`, which is false during replay because validation is not
+  rerun against historical input.
+
+An update has two observable response stages. The language SDK must emit an
+`UpdateResponse` with the same `protocol_instance_id` in the completion that
+contains the `DoUpdate` job:
+
+| Stage | Response | When |
+| --- | --- | --- |
+| Validation | `accepted` or `rejected` | Always in the same activation as `DoUpdate`. |
+| Handler | `completed` or `rejected` | In that activation or a later activation after the handler finishes. |
+
+The validator runs before the handler only when `run_validator` is true. A
+successful validator emits `accepted` before the handler is allowed to
+suspend. A validator failure emits `rejected`, does not run the handler, and
+must not mutate workflow state. During replay, the runtime skips the validator
+and emits the deterministic acceptance response required by Core; the handler
+then follows the recorded update path. A handler failure emits a structured
+`rejected` response; a successful handler encodes its output in `completed`.
+
+If the handler suspends on a supported workflow operation, the initial
+acceptance still belongs to the current activation and the terminal handler
+response is retained until the future resolves. This requires an update-owned
+continuation keyed by `protocol_instance_id`, not a global mutable callback
+map. Shutdown, eviction, duplicate delivery, and malformed completion must
+release that continuation exactly once.
+
+`id` and `protocol_instance_id` have different purposes and must not be
+interchanged. The former is workflow-visible update identity; the latter is
+the Core protocol instance used to correlate every `UpdateResponse`. `meta`
+must be represented completely when it enters the semantic protocol. Until
+the semantic schema includes every field needed for the pinned Core revision,
+Rust must reject a non-default or otherwise unrepresentable field rather than
+silently dropping it.
+
+## Validation and failure policy
+
+Native interaction records will use the existing closed JSON rules documented
+in the [private JSON protocol](../reference/core-protocol.md):
+
+- required fields are present, and unknown fields and duplicate object members
+  are rejected;
+- names, IDs, identity, and header keys are bounded, NUL-free, valid UTF-8
+  text where the Core contract requires text;
+- every payload is validated as an opaque payload object, including metadata,
+  canonical base64, and size limits;
+- repeated payload lists retain order and are checked against the supported
+  arity policy; and
+- the complete outgoing document is canonicalized and decoded again before it
+  crosses C, with Rust repeating validation before Core conversion.
+
+The JSON Schema files are useful documentation and tooling input, but the
+bilateral decoders remain authoritative for duplicate members, byte limits,
+Core enum values, and activation-dependent lifecycle rules. A Core oneof that
+is not represented by the current semantic protocol is an `unsupported`
+conversion error, not a best-effort empty handler call.
+
+Expected operational failures are typed `result` values. A malformed signal,
+query, or update cannot partially mutate the workflow: decode and definition
+lookup happen before handler invocation, and failed validation leaves no
+pending continuation. Handler exceptions are converted to non-retryable
+defects at the scheduler boundary. Diagnostic logs may include a stable kind,
+operation, run identifier classification, and latency, but never payload bytes,
+headers, update input, query output, or raw Core diagnostics.
+
+## Replay and determinism rules
+
+Interaction history is part of the workflow's deterministic input. A replay
+must therefore make the same handler lookup, validator decision (or replay
+skip), state transition, and command sequence for the same ordered activation.
+In particular:
+
+- signal and update handlers run in Core's supplied order;
+- query execution is isolated and produces only its matching query response;
+- update acceptance is emitted at the validator stage even when the handler
+  completes later;
+- query and validator modes cannot use nondeterministic I/O, wall-clock reads,
+  randomness, or process-global mutation; and
+- opaque payload bytes and metadata are copied at the OCaml boundary so a
+  later Rust or C lifetime cannot change replay-visible data.
+
+The normal workflow clock is the activation timestamp supplied by Core. Query
+and update metadata does not provide an alternate clock or authorization to
+read host state.
+
+## Implementation sequence and evidence
+
+Native interactions should be implemented in small bilateral slices, with no
+single side accepting a new variant early:
+
+1. Add typed Rust/OCaml semantic records and closed JSON shapes for
+   `SignalWorkflow` and its activation mapping. Add malformed, unknown-field,
+   payload, ordering, and handler-error tests.
+2. Add `QueryWorkflow` and `QueryResult`, including the no-suspension query
+   mode and query-only completion tests. Add explicit tests for the current
+   no-input public query API and for rejected extra arguments.
+3. Add `DoUpdate` and `UpdateResponse`, including immediate acceptance,
+   validator skip during replay, suspended handler completion, duplicate
+   protocol-instance rejection, shutdown, and eviction cleanup tests.
+4. Add Core conversion fixtures in `rust/core-bridge/tests/`, OCaml runtime
+   tests under `test/`, and bilateral JSON round-trip tests for every supported
+   variant. Run the representative local Makefile gates; queued GitHub
+   Actions checks remain unexecuted evidence until the repository quota clears.
+5. Add a Docker Compose acceptance scenario with Temporal Server and
+   PostgreSQL that sends a signal, issues a query, and waits for an update
+   through the two OCaml binaries. Record live success separately from
+   synthetic and bridge-only evidence.
+
+Until all five stages have passed, the feature status remains “typed local
+interaction dispatcher only”; native interaction delivery is experimental and
+unsupported.

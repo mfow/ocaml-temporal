@@ -569,7 +569,7 @@ fn replay_dispose_retains_worker_when_poll_lane_join_fails() {
     let handle = core.tokio_handle().clone();
     let mut worker = ReplayWorker::start(&core, replay_config())
         .expect("replay worker should construct without a client");
-    worker.abort_workflow_lane_for_test();
+    handle.block_on(worker.abort_workflow_lane_for_test());
     let (worker, error) = match handle.block_on(worker.dispose(&handle)) {
         Ok(()) => panic!("disposal must report the aborted poll lane"),
         Err(result) => result,

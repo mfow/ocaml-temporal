@@ -1,18 +1,51 @@
 # Signals, queries, and updates
 
-This page describes the first public slice of workflow interactions. The
-definitions and handler types are available in `Temporal.Signal`,
-`Temporal.Query`, and `Temporal.Update`. `Temporal.Interaction` is a
-deterministic in-memory dispatcher used by unit tests and by future worker
-integration.
+This page explains the first public slice of workflow interactions in the
+OCaml API. It is written for someone defining a workflow or a test for the
+first time, so it separates three things that are easy to confuse:
 
-The native activation protocol does not deliver these interactions yet. The
-current Rust/Core adapter still rejects signal, query, and update activation
-jobs. This page therefore documents a stable OCaml typing and ordering
-contract, not a claim that a live Temporal Server can send an interaction to a
-workflow. Native delivery will reuse these definitions after the bilateral
-activation/completion protocol is extended. The planned mapping and response
-lifecycles are described in the [native interaction design](../design/native-interactions.md).
+| Piece | What it describes | What it does not do yet |
+| --- | --- | --- |
+| `Signal.t`, `Query.t`, or `Update.t` | A name and the codecs for its typed values | Register anything with a worker or contact Temporal |
+| A `Handler.t` | The OCaml function that handles one definition | Make a callback safe to suspend or run concurrently |
+| `Temporal.Interaction.t` | An immutable, in-memory dispatcher for local tests | Deliver a message from a live Temporal Server |
+
+The definitions and handler types are available in `Temporal.Signal`,
+`Temporal.Query`, and `Temporal.Update`. `Temporal.Interaction` provides the
+deterministic local routing path that currently lets those handlers be tested.
+The API is experimental while the native delivery path is being built.
+
+## Current status: typed local API, not live delivery
+
+The native activation protocol does not deliver signals, queries, or updates
+yet. The current Rust/Core adapter still rejects those interaction activation
+jobs. This page therefore documents the OCaml typing, codec, validation, and
+ordering contract; it does not claim that a live Temporal Server can send an
+interaction to a workflow.
+
+Native support will need activation records, handler registration, and
+completion records for suspended handlers and validators. Until that work is
+complete, use `Temporal.Interaction` for deterministic unit tests. The
+[feature coverage table](feature-coverage.md) and [implementation
+roadmap](../implementation-roadmap.md#delivery-order) record the same status
+alongside the other SDK capabilities.
+
+## The three-step model
+
+An interaction is assembled in three steps:
+
+1. Define a stable name and the codec for each value that crosses the
+   interaction boundary.
+2. Pair that definition with a typed OCaml callback to make a handler.
+3. Put handlers in an `Interaction` dispatcher, then call the typed operation
+   from a test or other local driver.
+
+The definition and handler preserve the relationship between a Temporal name,
+its codec, and its OCaml type. A caller cannot accidentally pass a string to a
+handler that was defined for bytes without receiving a typed codec error.
+The planned activation and response lifecycles are described in the [native
+interaction design](../design/native-interactions.md); that design is not yet
+implemented by the worker.
 
 ## Definitions
 
@@ -37,16 +70,43 @@ let add_tool =
     ~output:Temporal.Codec.string
 ```
 
+The public shapes are:
+
+```text
+Signal.define : name:string -> input:'a Codec.t -> 'a Signal.t
+Query.define  : name:string -> output:'b Codec.t -> 'b Query.t
+Update.define : name:string -> input:'a Codec.t -> output:'b Codec.t
+                -> ('a, 'b) Update.t
+```
+
 The name must be non-empty, NUL-free, valid UTF-8, and no longer than the
-bridge's 65,536-byte limit. Constructing a definition does not register a
-worker or contact Temporal. It only creates an immutable typed description that
-can be reused by helper functions and handler registration.
+bridge's 65,536-byte identifier limit. Constructing a definition does not
+register a worker or contact Temporal. It creates an immutable typed
+description that can be reused by ordinary helper functions and handler
+registration. An invalid name raises `Invalid_argument` because it is a
+programmer or configuration defect detected while building the workflow,
+not a routine runtime failure.
 
 Signals carry one input and do not return a result. Queries have no input in
-this initial API and return one typed value; callers that need parameters can
-make the query output a record containing the relevant state or use a future
-query-input extension. Updates carry one input, run an optional validator, and
-return one typed result.
+this initial API and return one typed value; a query that needs parameters can
+use a record or tuple as its output value, or wait for a future query-input
+extension. Updates carry one input, run an optional validator, and return one
+typed result.
+
+### Codecs and payloads
+
+A codec is the explicit boundary between an OCaml value and the payload that
+the interaction dispatcher routes. On the way into a handler, the dispatcher
+encodes the caller's value and the handler decodes that payload. On the way
+out, it encodes the handler's result and the caller decodes it with its
+definition. Encoding metadata is checked before a decoder runs, so a caller
+using a definition with a different encoding receives `Error` instead of
+silently interpreting the bytes as another type.
+
+`Temporal.Codec.string` uses Temporal's `json/plain` payload encoding. That is
+one payload choice, not a requirement that Temporal or the private OCaml/Rust
+bridge use JSON for every message. Applications can define another payload
+codec with `Temporal.Codec.make` when the value needs a different encoding.
 
 ## Handlers and ordinary helper functions
 
@@ -68,71 +128,116 @@ let status_handler =
   Temporal.Query.Handler.make status (fun () ->
       Ok (String.concat "," !approvals))
 
-let add_tool_handler =
+let non_empty_tool_handler update run =
   Temporal.Update.Handler.make
     ~validator:(fun value ->
       if String.equal value "" then
         Error (Temporal.Error.defect ~message:"tool name is empty")
       else Ok ())
-    add_tool (fun value -> Ok (String.uppercase_ascii value))
+    update run
+
+let add_tool_handler =
+  non_empty_tool_handler add_tool (fun value ->
+    Ok (String.uppercase_ascii value))
 ```
 
+The `ref` above is deliberately small synthetic-test state. It demonstrates
+that a handler can close over ordinary OCaml values; it is not a substitute
+for replay-safe workflow state and it is not synchronized for concurrent
+Domains. Keep a dispatcher and its callback-owned mutable state on one owning
+Domain until native worker scheduling supplies the corresponding ownership
+boundary.
+
 The definition and callback are existentially paired inside each handler. A
-registry therefore cannot accidentally use one callback with another codec.
-The callback's expected operational failures remain `Error error` values.
-Unexpected exceptions are caught at the handler boundary and converted to a
-non-retryable `Defect`; they must not tear down the worker dispatch loop.
+registry can therefore store handlers for different OCaml types without an
+unsafe cast, while each handler still decodes with the codec that belongs to
+its definition.
 
-Update validators run after input decoding and before the implementation. A
-validator that returns `Error` prevents the implementation from running and
-therefore cannot perform an update-side state change. Validators are intended
-to be read-only and non-suspending. The future native scheduler will reject
-command-producing operations from query and validator modes rather than
-blocking an OS thread.
+## Dispatch order and results
 
-## Deterministic dispatcher
+The local dispatcher follows a fixed sequence. This is the behavior that the
+future native activation path must preserve:
 
-The initial local dispatcher is immutable after construction:
+| Operation | Local sequence | Result |
+| --- | --- | --- |
+| Signal | Encode input, find the named handler, decode input, invoke the callback | `(unit, Error.t) result` |
+| Query | Find the named handler, invoke its read-only callback, encode its output, decode it with the caller's definition | `('output, Error.t) result` |
+| Update | Encode input, find the named handler, decode input, run the validator, invoke the implementation, encode output, decode it with the caller's definition | `('output, Error.t) result` |
+
+An update validator runs after input decoding and before the implementation. A
+validator that returns `Error` prevents the implementation from running, so
+the rejected request cannot perform an update-side state change. Validators
+are intended to be read-only and non-suspending. Query callbacks have the same
+read-only, non-suspending contract. The dispatcher cannot make a callback safe
+by blocking an OS thread or by silently moving it to another scheduler.
+
+Expected operational failures are returned as `Error error` values. Callback
+exceptions are caught at the handler boundary and converted to a non-retryable
+`Defect`; they must not escape through the dispatch loop.
+
+## Building and calling a dispatcher
+
+`Interaction.create` copies each handler list into a persistent map. It either
+returns a complete dispatcher or returns an error; it never returns a partial
+registry:
 
 ```ocaml
-let interactions =
+let run_local_test () =
   match Temporal.Interaction.create
           ~signals:[ approval_handler ]
           ~queries:[ status_handler ]
           ~updates:[ add_tool_handler ]
           () with
-  | Ok dispatcher -> dispatcher
-  | Error error -> failwith (Temporal.Error.message error)
-
-let send value = Temporal.Interaction.signal interactions approval value
-let read () = Temporal.Interaction.query interactions status
-let change value = Temporal.Interaction.update interactions add_tool value
+  | Error error -> Error error
+  | Ok interactions ->
+      let accepted = Temporal.Interaction.signal interactions approval "yes" in
+      let current = Temporal.Interaction.query interactions status in
+      let changed = Temporal.Interaction.update interactions add_tool "search" in
+      Ok (accepted, current, changed)
 ```
 
-Construction rejects duplicate names within each interaction kind. A signal,
-query, and update may use the same name because they occupy separate Temporal
-namespaces. Dispatch encodes input before routing, looks up by the definition's
-name, invokes the paired handler synchronously in the current Domain, and
-decodes the output with the caller's definition. Calls made by one caller are
-therefore observed in submission order; the dispatcher does not add a hidden
-queue or a background thread.
+In a real test, match each result and assert the expected value or inspect
+`Temporal.Error.view error`. The example returns results rather than using
+`failwith`, because routine interaction failures belong in the typed error
+channel. Exceptions are reserved for programmer defects and violated internal
+invariants.
 
-An unknown name returns a non-retryable `Workflow` error for signals and
-queries, or an `Update` error for updates. A name match with incompatible
-encoding metadata returns a typed `Codec` error. These failures are explicit
-`result` values, so a caller can choose whether to fail a synthetic test or
-translate the failure into a Temporal workflow outcome later.
+Registration and routing have these rules:
+
+- Names must be unique within signals, within queries, and within updates.
+  The same string may be used once in each kind because Temporal treats the
+  three kinds as separate namespaces.
+- A call made with a definition whose name has no local handler returns a
+  non-retryable `Workflow` error for signals and queries, or an `Update` error
+  for updates.
+- A name match with incompatible encoding metadata returns a typed `Codec`
+  error before the callback is invoked.
+- A duplicate registration returns a non-retryable `Defect` from
+  `Interaction.create`.
+- A validator's own `Error` is returned unchanged and its implementation is
+  not called. A callback exception is translated to a non-retryable `Defect`.
+
+Calls on one owning Domain are synchronous and are observed in submission
+order. `Interaction` does not add a hidden queue, background thread, fiber, or
+lock. Its maps are immutable after construction, but callback-owned mutable
+state is not synchronized; do not invoke one dispatcher concurrently from
+multiple Domains. This local module is a deterministic routing primitive, not
+the SDK's supervisor actor or a replacement for the future workflow scheduler.
 
 ## Native delivery boundary
 
-The dispatcher is deliberately separate from the native Core bridge. Future
-native work must add activation records for signal delivery, query requests,
-and update requests, plus completion records for suspended handlers and update
-validators. The supervisor remains the sole owner of the Rust handle graph;
-Rust threads must never call an OCaml closure directly. Interaction callbacks
-will run on the owning workflow scheduler, preserving replay determinism and
-the same validator-before-handler ordering described here.
+Native delivery is a separate protocol milestone. It must add:
 
-Until that protocol milestone is complete, use `Temporal.Interaction` for
-deterministic handler tests and do not describe a local dispatcher run as live
-Temporal Server coverage.
+- interaction activation records for signal delivery, query requests, and
+  update requests;
+- worker-side registration and completion records for suspended handlers and
+  validators;
+- scheduler ownership for callbacks, so a Rust thread never calls an OCaml
+  closure directly; and
+- the same decode, validation, ordering, and error classification rules at
+  the OCaml/Rust boundary.
+
+The supervisor remains the sole owner of the Rust handle graph, and native
+readiness must be observed through its existing scheduler-safe boundary. Until
+those pieces are implemented, a passing `Temporal.Interaction` test proves
+only local OCaml behavior; it is not live Temporal Server acceptance.

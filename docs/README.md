@@ -114,8 +114,10 @@ This distinction prevents a green local synthetic test from being read as a
 claim that an unimplemented native feature is ready. Continue-as-new and
 context-aware activity heartbeats are implemented and focused-tested at the
 OCaml/native bridge, but neither has live Temporal Server acceptance yet.
-Features such as signals, queries, updates, versioning, local activities,
-Nexus, and the remaining SDK parity work are tracked as later milestones.
+Native Temporal delivery for signals, queries, and updates, plus versioning,
+local activities, Nexus, and the remaining SDK parity work are tracked as later
+milestones. The typed definitions and deterministic local dispatcher are
+documented in the [interactive workflow reference](reference/interactive-workflows.md).
 
 ## Build and test commands
 

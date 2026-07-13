@@ -105,10 +105,16 @@ let make_derived ~parent ~outside_error =
   (future, resolve)
 
 (** A ready value can retain its source owner so a later combinator still
-    rejects accidental cross-workflow composition deterministically. *)
+    rejects accidental cross-workflow composition deterministically. The gate
+    delegates to [source]'s own gate (rather than a no-op) so a still-pending
+    [make_derived] future built on top of this one suspends on the real
+    owning scheduler instead of falling through to a synchronous
+    [outside_error]; [source]'s gate builds a fresh suspension point from its
+    real owner regardless of [source]'s own readiness, so this is safe even
+    though [source] itself is already settled. *)
 let ready_like source result =
   make_repr ~await:(fun () -> result)
-    ~await_gate:(fun register -> register (fun () -> ()))
+    ~await_gate:(fun register -> Temporal_future_kernel.await_gate source register)
     ~observe:(fun callback ->
       Temporal_future_kernel.enqueue source (fun () ->
           if Temporal_future_kernel.callbacks_live source then callback result))

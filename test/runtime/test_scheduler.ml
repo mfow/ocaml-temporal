@@ -250,6 +250,48 @@ let test_mapper_defect_is_contained () =
   | Scheduler.Failed (Failure message) when message = "mapper defect" -> ()
   | _ -> failwith "mapper exception escaped or was not recorded"
 
+(** A ready-owner-mismatch future ([ready_like]) that becomes the parent of a
+    still-pending outer combinator must suspend the awaiting fiber until the
+    outer future genuinely settles, and must then return the real settled
+    result rather than a synchronous "outside its workflow scheduler" defect.
+    Regression test for a bug where [ready_like] retained a real owner id but
+    installed a no-op await gate, so [make_derived.await] fell through to its
+    outside-scheduler fallback without ever suspending. *)
+let test_ready_like_parent_suspends_pending_outer () =
+  let first_scheduler = Scheduler.create () in
+  let second_scheduler = Scheduler.create () in
+  let f, resolve_f = promise first_scheduler ~outside_error in
+  let g, resolve_g = promise second_scheduler ~outside_error in
+  let h, resolve_h = promise first_scheduler ~outside_error in
+  (* [inner] is an immediately ready ownership-error future owned by
+     [first_scheduler] (f's owner), built from a genuine cross-scheduler
+     mismatch between [f] and [g]. Resolve both inputs so their schedulers'
+     pending counts can reach zero; [both]'s owner-mismatch branch captures
+     the ownership error independently of whether [f]/[g] ever settle. *)
+  let inner = Temporal.Future.both f g in
+  resolve_f (Ok 1);
+  resolve_g (Ok 1);
+  (* [outer] shares [inner]'s owner with [h], so it proceeds past the owner
+     guard and stays pending on [h]. *)
+  let outer = Temporal.Future.both inner h in
+  let observed = ref None in
+  Scheduler.spawn first_scheduler (fun () ->
+      observed := Some (Temporal.Future.await outer));
+  expect "outer await suspends on pending sibling" "blocked"
+    (Scheduler.run_label first_scheduler);
+  expect "await does not return before the sibling settles" None !observed;
+  resolve_h (Ok 2);
+  expect "outer completes once the sibling resolves" "complete"
+    (Scheduler.run_label first_scheduler);
+  let expected =
+    "Temporal future combinator received futures from different workflow executions"
+  in
+  match !observed with
+  | Some result ->
+      expect_error_message "await returns the real ownership error" expected
+        result
+  | None -> failwith "outer await never produced a result"
+
 (** Confirms [both] continues observing the other future after one side fails. *)
 let test_both_observes_sibling_after_error () =
   let scheduler = Scheduler.create () in
@@ -435,6 +477,7 @@ let () =
   test_map_error_and_owner_check ();
   test_resolved_combinator_callback_delivery ();
   test_aggregate_owner_errors_are_typed ();
+  test_ready_like_parent_suspends_pending_outer ();
   test_all_order_and_errors ();
   test_all_empty ();
   test_race_order_and_loser ();

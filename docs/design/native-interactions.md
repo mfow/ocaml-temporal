@@ -279,9 +279,12 @@ The corresponding completion commands use the same protocol ID and a closed
 `response` object: `{"kind":"update_response","protocol_instance_id":"protocol-42","response":{"kind":"accepted"}}`,
 followed by either `{"kind":"completed","payload":...}` or
 `{"kind":"rejected","failure":...}`. Unknown fields, duplicate object
-members, invalid identifiers, mismatched metadata IDs, malformed payloads,
-and duplicate response phases are rejected by both the OCaml and Rust
-decoders. The JSON Schema files under
+members, invalid identifiers, mismatched semantic metadata IDs, malformed
+payloads, and duplicate response phases are rejected by both the OCaml and
+Rust decoders. At the protobuf/Core boundary, the Rust adapter accepts Core's
+default-valued (stripped) nested metadata ID, rejects a non-empty conflicting
+copy, and reconstructs the canonical semantic metadata ID from `DoUpdate.id`.
+The JSON Schema files under
 [`docs/schemas/bridge`](../schemas/bridge/) document these shapes for tooling;
 the bilateral decoders remain authoritative for byte limits and lifecycle
 rules.

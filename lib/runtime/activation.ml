@@ -24,9 +24,10 @@ type job =
       arguments : Temporal_base.Codec.payload list;
       headers : (string * Temporal_base.Codec.payload) list;
     }
-  (** An update request retained in activation order. Both update identifiers
-      are preserved because Core uses the protocol instance for responses and
-      the nested metadata ID for workflow-visible identity. *)
+  (** An update request retained in activation order. Core uses the protocol
+      instance for responses; the workflow-visible ID is canonicalized from
+      the top-level update identifier by the native bridge even when Core
+      stripped its duplicate nested metadata field. *)
   | Do_update of {
       id : string;
       protocol_instance_id : string;

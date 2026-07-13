@@ -385,42 +385,44 @@ let process_job execution = function
         update_id;
         run_validator;
       } ->
-      (* The native first slice supports non-suspending update handlers. A
-         successful callback emits the Core-required acceptance and completion
-         phases in order; a validator or handler failure emits rejection only
-         (or rejection after acceptance if a future implementation chooses to
-         separate the phases). *)
+      (* Updates share the scheduler with workflow continuations.  Resolving a
+         future earlier in this activation only enqueues its continuation;
+         queueing the update here preserves that source order and runs the
+         handler under [Workflow_context_store.with_context].  Dispatching it
+         inline would let the update observe stale workflow state and would
+         run it outside the deterministic workflow context. *)
       let update =
         { id; protocol_instance_id; name; input; headers; identity; update_id }
       in
-      let emit response =
-        Workflow_context_store.emit execution.context
-          (Activation.Update_response { protocol_instance_id; response })
-      in
-      begin match Update_map.find_opt name execution.update_handlers with
-      | None ->
-          let error = bridge_error ("unhandled workflow update: " ^ name) in
-          report ~src:Observability.Source.workflow Logs.Error
-            ~tags:
-              (Observability.tags ~operation:"workflow_update_unhandled"
-                 ~workflow_type:(workflow_type execution) ())
-            "workflow update has no registered handler";
-          emit (`Rejected error)
-      | Some handler ->
-          let dispatched =
-            try handler.dispatch ~run_validator update with
-            | exn ->
-                Error
-                  (Temporal_base.Error.defect
-                     ~message:("update handler raised: " ^ Printexc.to_string exn))
+      Scheduler.spawn execution.scheduler (fun () ->
+          let emit response =
+            Workflow_context_store.emit execution.context
+              (Activation.Update_response { protocol_instance_id; response })
           in
-          begin match dispatched with
-          | Error error -> emit (`Rejected error)
-          | Ok payload ->
-              emit `Accepted;
-              emit (`Completed payload)
-          end
-      end
+          match Update_map.find_opt name execution.update_handlers with
+          | None ->
+              let error = bridge_error ("unhandled workflow update: " ^ name) in
+              report ~src:Observability.Source.workflow Logs.Error
+                ~tags:
+                  (Observability.tags ~operation:"workflow_update_unhandled"
+                     ~workflow_type:(workflow_type execution) ())
+                "workflow update has no registered handler";
+              emit (`Rejected error)
+          | Some handler ->
+              let dispatched =
+                try handler.dispatch ~run_validator update with
+                | exn ->
+                    Error
+                      (Temporal_base.Error.defect
+                         ~message:
+                           ("update handler raised: " ^ Printexc.to_string exn))
+              in
+              begin match dispatched with
+              | Error error -> emit (`Rejected error)
+              | Ok payload ->
+                  emit `Accepted;
+                  emit (`Completed payload)
+              end)
   | Activation.Signal_workflow { signal_name; input; identity; headers } ->
       (* Signals are queued as scheduler work rather than dispatched inline.
          This preserves FIFO ordering with root and resolver continuations and

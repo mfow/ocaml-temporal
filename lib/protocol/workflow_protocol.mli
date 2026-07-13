@@ -233,9 +233,12 @@ type activation_job =
       arguments : payload list;
       headers : (string * payload) list;
     }
-  (** Delivers one workflow update request. Updates are identified both by
-      [id] (the activation field) and [meta.update_id] (the nested metadata
-      field); the strict decoder requires those values to match exactly. *)
+  (** Delivers one workflow update request. Updates are identified by [id] in
+      the semantic activation record. The Rust/Core adapter copies that
+      authoritative value into [meta.update_id] because Core may strip the
+      duplicate nested protobuf field; the strict JSON decoder receives only
+      this canonical form and therefore requires the two semantic values to
+      match. *)
   | Do_update of {
       id : string;
       protocol_instance_id : string;

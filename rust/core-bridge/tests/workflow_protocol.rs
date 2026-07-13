@@ -1052,11 +1052,11 @@ fn converts_query_results_and_matches_activation_ids() {
     );
 }
 
-/// Proves the pinned Core `DoUpdate` job retains both update identifiers,
-/// metadata, repeated input, headers, and replay-validation state through the
-/// bilateral semantic protocol.  This is the ownership boundary where a
-/// malformed optional Core metadata message must fail closed rather than being
-/// turned into a request with an ambiguous identity.
+/// Proves the pinned Core `DoUpdate` job retains its authoritative top-level
+/// update identifier, metadata, repeated input, headers, and replay-validation
+/// state through the bilateral semantic protocol.  Core may strip the
+/// duplicate nested metadata ID, so conversion must rebuild that semantic
+/// field from `DoUpdate.id` while still rejecting a non-empty conflicting copy.
 #[test]
 fn converts_do_update_activation_losslessly() {
     use core_activation::workflow_activation_job::Variant;
@@ -1112,6 +1112,36 @@ fn converts_do_update_activation_losslessly() {
     assert_eq!(
         workflow_protocol::decode_activation(&encoded).unwrap(),
         semantic
+    );
+
+    // Core's activation protobuf can omit the duplicate nested ID.  The
+    // semantic bridge must preserve the workflow-visible identity instead of
+    // rejecting this valid default-valued field.
+    let mut stripped_metadata = activation.clone();
+    let Some(Variant::DoUpdate(update)) = stripped_metadata.jobs[0].variant.as_mut() else {
+        panic!("update activation must contain a DoUpdate job");
+    };
+    update.meta.as_mut().unwrap().update_id.clear();
+    let stripped_semantic = workflow_protocol::activation_from_core(&stripped_metadata)
+        .expect("Core update with stripped nested metadata ID was rejected");
+    assert!(matches!(
+        &stripped_semantic.jobs[0],
+        workflow_protocol::ActivationJob::DoUpdate { id, meta, .. }
+            if id == "update-42" && meta.update_id == "update-42"
+    ));
+
+    // A populated but conflicting duplicate is still malformed Core input and
+    // must not be silently normalized into a different workflow identity.
+    let mut conflicting_metadata = activation.clone();
+    let Some(Variant::DoUpdate(update)) = conflicting_metadata.jobs[0].variant.as_mut() else {
+        panic!("update activation must contain a DoUpdate job");
+    };
+    update.meta.as_mut().unwrap().update_id = "other-update".to_owned();
+    let conflict_error = workflow_protocol::activation_from_core(&conflicting_metadata)
+        .expect_err("conflicting Core update metadata ID was accepted");
+    assert_eq!(
+        conflict_error.code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
     );
 
     let mut missing_meta = activation;

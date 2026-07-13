@@ -2337,7 +2337,15 @@ pub fn activation_from_core(
                         .meta
                         .as_ref()
                         .ok_or_else(|| invalid_core("Core update metadata is absent"))?;
-                    if meta.update_id != value.id {
+                    // Temporal Core stores the workflow-scoped update ID in
+                    // the top-level [DoUpdate.id].  It may strip the duplicate
+                    // nested field from [DoUpdate.meta] before handing the job
+                    // to the language SDK, leaving that protobuf field at its
+                    // default empty value.  Reject a non-empty conflicting
+                    // copy, but always reconstruct the semantic metadata from
+                    // the authoritative top-level ID so valid stripped jobs do
+                    // not fail conversion.
+                    if !meta.update_id.is_empty() && meta.update_id != value.id {
                         return Err(invalid_core(
                             "Core update metadata ID does not match update ID",
                         ));
@@ -2358,7 +2366,7 @@ pub fn activation_from_core(
                             .collect::<Result<BTreeMap<_, _>, CoreConversionError>>()?,
                         meta: UpdateMeta {
                             identity: meta.identity.clone(),
-                            update_id: meta.update_id.clone(),
+                            update_id: value.id.clone(),
                         },
                         run_validator: value.run_validator,
                     })

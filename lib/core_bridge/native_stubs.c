@@ -28,8 +28,8 @@ typedef struct owned_response {
   atomic_int live;
 } owned_response;
 
-/* OCaml custom block owning the sole native runtime pointer for one SDK
- * instance. Future client and worker state remains subordinate to this owner.
+/* Owner of the sole native runtime pointer for one SDK instance. Future
+ * client and worker state remains subordinate to this owner.
  *
  * [active_calls] is a counted borrow of the pointer. A caller increments it
  * before loading the pointer and decrements it only after Rust has returned.
@@ -38,7 +38,20 @@ typedef struct owned_response {
  * the count to reach zero before handing the pointer to Rust for destruction.
  * This gate is needed even though the supervisor normally serializes calls:
  * finalizer and shutdown paths are defensive boundaries and must not turn an
- * accidental cross-Domain call into a use-after-free. */
+ * accidental cross-Domain call into a use-after-free.
+ *
+ * This struct is deliberately allocated with `malloc`, never embedded
+ * directly in the OCaml custom block. Every caller that borrows the runtime
+ * (`invoke_runtime_json`, `invoke_runtime`, `ocaml_temporal_runtime_close`)
+ * captures a `owned_runtime *` and keeps dereferencing it across a
+ * `caml_enter_blocking_section` / `caml_leave_blocking_section` window during
+ * which the OCaml runtime lock is released. A stop-the-world minor GC or
+ * major-heap compaction on another Domain can run during that window and
+ * relocate any OCaml-managed memory, including a small custom block's
+ * payload. Keeping this struct outside the OCaml heap gives every borrower a
+ * pointer value that stays valid for as long as the struct itself is alive,
+ * regardless of what the GC does to the (separate, movable) custom block that
+ * merely records where to find it. See [Runtime_val]. */
 typedef struct owned_runtime {
   _Atomic(ocaml_temporal_core_runtime *) runtime;
   atomic_uint active_calls;
@@ -61,9 +74,17 @@ static owned_response *Response_val(value response) {
   return (owned_response *)Data_custom_val(response);
 }
 
-/* Extract the private runtime owner stored in an OCaml custom block. */
+/* Extract the stable, non-relocatable pointer to the runtime owner from its
+ * OCaml custom block. The custom block payload holds only a plain pointer to
+ * a `malloc`-allocated [owned_runtime]; that pointer value never changes
+ * after [alloc_runtime] stores it, even though the block holding it may move.
+ * It is therefore safe to read this once and keep dereferencing the result
+ * across a released-lock window (see the [owned_runtime] comment) without
+ * re-fetching from [runtime] afterward. A NULL result means allocation of the
+ * owner struct failed after the custom block itself was created; callers that
+ * can observe this (the finalizer) must treat it as a no-op. */
 static owned_runtime *Runtime_val(value runtime) {
-  return (owned_runtime *)Data_custom_val(runtime);
+  return *(owned_runtime **)Data_custom_val(runtime);
 }
 
 /* Yield the OS thread while a close waits for an admitted Rust operation. Both
@@ -144,10 +165,20 @@ static void finalize_response(value response) {
 }
 
 /* GC fallback for a runtime whose supervisor did not complete explicit
- * shutdown. Normal operation closes the owner deterministically first. */
+ * shutdown. Normal operation closes the owner deterministically first. This
+ * is the one path that frees the malloc'd [owned_runtime]: the custom block
+ * is collected at most once, so this runs at most once per runtime value. */
 static void finalize_runtime(value runtime) {
   owned_runtime *owned = Runtime_val(runtime);
-  ocaml_temporal_core_runtime *native_runtime = detach_runtime(owned);
+  ocaml_temporal_core_runtime *native_runtime;
+
+  if (owned == NULL) {
+    /* alloc_runtime's malloc failed after the custom block was already
+     * registered for finalization; there is nothing to detach or free. */
+    return;
+  }
+
+  native_runtime = detach_runtime(owned);
   /* Custom-block finalizers have a deliberately tiny contract: they may
    * inspect their C payload and release foreign resources, but they must not
    * call OCaml runtime operations such as [caml_enter_blocking_section]. The
@@ -159,6 +190,7 @@ static void finalize_runtime(value runtime) {
   if (native_runtime != NULL) {
     (void)ocaml_temporal_core_v1_runtime_dispose(&native_runtime);
   }
+  free(owned);
 }
 
 /* Custom operations deliberately use identity/default behavior; responses are
@@ -202,24 +234,42 @@ static value alloc_response(void) {
 }
 
 /* Allocate a null-initialized runtime owner before entering native code so a
- * later OCaml allocation failure cannot orphan a successfully created handle. */
+ * later OCaml allocation failure cannot orphan a successfully created handle.
+ *
+ * The custom block payload stores only a pointer, immediately nulled, to a
+ * separately `malloc`-allocated [owned_runtime] (see the [owned_runtime] and
+ * [Runtime_val] comments for why this indirection exists). If that `malloc`
+ * fails, the custom block is already registered for finalization with a NULL
+ * inner pointer, and [finalize_runtime] treats NULL as a no-op. */
 static value alloc_runtime(void) {
   CAMLparam0();
   CAMLlocal1(runtime);
   owned_runtime *owned;
 
-  runtime = caml_alloc_custom(&runtime_operations, sizeof(owned_runtime), 0, 1);
-  owned = Runtime_val(runtime);
+  runtime = caml_alloc_custom(&runtime_operations, sizeof(owned_runtime *),
+                              sizeof(owned_runtime), 1);
+  *(owned_runtime **)Data_custom_val(runtime) = NULL;
+
+  owned = malloc(sizeof(owned_runtime));
+  if (owned == NULL) {
+    caml_raise_out_of_memory();
+  }
   atomic_init(&owned->runtime, NULL);
   atomic_init(&owned->active_calls, 0);
   atomic_init(&owned->closing, 0);
+  *(owned_runtime **)Data_custom_val(runtime) = owned;
+
   CAMLreturn(runtime);
 }
 
 /* Invoke a blocking graph operation after copying mutable OCaml bytes. The
  * counted borrow keeps the native pointer alive until Rust returns, while the
  * owner gate makes a concurrent close produce a typed null-runtime error
- * instead of allowing a use-after-free. */
+ * instead of allowing a use-after-free. [owned] is fetched once, before the
+ * blocking section: because it is the stable malloc'd pointer described on
+ * [owned_runtime], it stays valid across [caml_enter_blocking_section] /
+ * [caml_leave_blocking_section] with no re-fetch needed, unlike an interior
+ * pointer into a movable OCaml block. */
 static value invoke_runtime_json(value runtime, value input,
                                  runtime_json_operation operation) {
   CAMLparam2(runtime, input);
@@ -256,7 +306,9 @@ static value invoke_runtime_json(value runtime, value input,
   CAMLreturn(response);
 }
 
-/* Invoke a blocking graph operation which needs no borrowed OCaml input. */
+/* Invoke a blocking graph operation which needs no borrowed OCaml input. See
+ * [invoke_runtime_json] for why [owned] can be fetched once, before the
+ * blocking section, and safely reused after it. */
 static value invoke_runtime(value runtime, runtime_operation operation) {
   CAMLparam1(runtime);
   CAMLlocal1(response);
@@ -662,7 +714,14 @@ CAMLprim value ocaml_temporal_client_disconnect(value runtime) {
 /* Close the owner in three ordered phases: reject new borrows, detach the
  * pointer, then wait outside the OCaml runtime lock for admitted operations to
  * finish before Rust frees Core/Tokio. A second close observes a null pointer
- * and remains idempotent. */
+ * and remains idempotent.
+ *
+ * [wait_for_runtime_calls] polls [owned] for the entire duration of the
+ * blocking section below, which can be arbitrarily long. This is exactly why
+ * [owned_runtime] must be a stable, `malloc`-allocated struct rather than
+ * living inside the movable custom block: a GC move on another Domain during
+ * this wait must not invalidate the pointer this function is actively
+ * dereferencing. */
 CAMLprim value ocaml_temporal_runtime_close(value runtime) {
   CAMLparam1(runtime);
   owned_runtime *owned = Runtime_val(runtime);

@@ -27,13 +27,13 @@ reason and its independent detail flags. The completion result is a closed
 variant: completed with an optional payload, failed, cancelled, or
 will-complete-asynchronously.
 
-The `will-complete-asynchronously` variant is protocol-only at this baseline.
-The public activity adapter never emits it, and the existing worker completion
-operation is for the original Core worker lease only. A future asynchronous
-implementation must first acknowledge the handoff through that worker path,
-then use a separate namespace-bound client operation for the later completion,
-failure, cancellation, or heartbeat. Activity authors cannot construct this
-variant or retain the ordinary attempt context today.
+The `will-complete-asynchronously` variant is the worker-to-client handoff for
+`Temporal.Activity.define_async`. The adapter sends it through the ordinary
+worker completion path exactly once, then activates the opaque handle only
+after Core accepts it. Later completion, failure, cancellation, and heartbeat
+operations use separate namespace-bound client endpoints. Activity authors
+cannot construct a task token or retain the ordinary attempt context; they can
+only retain the typed handle returned by `Async_context.handle`.
 
 The module has no native handle, mutable global registry, Domain, fiber, or
 callback. Decoding allocates OCaml-owned values. Encoding reads those values
@@ -109,11 +109,12 @@ leased activity token. Details preserve their order and use the same binary
 payload representation as task inputs and completion outputs. The OCaml and
 Rust validators reject unknown or duplicate object members, malformed base64,
 empty tokens, and payloads outside the shared size and metadata rules. The Rust
-bridge checks the token against its outstanding-task ledger before handing the
-heartbeat to Temporal Core; it does not retire the lease. The adapter must
-later submit a terminal completion, including a `Cancelled` result when it
-receives a cancellation task; only that terminal completion path removes the
-token from the ledger.
+The Rust worker bridge checks a normal task token against its outstanding-task
+ledger before handing a heartbeat to Temporal Core; it does not retire that
+lease. An asynchronous heartbeat instead uses the namespace-bound client path
+and is checked by Core's async activity handle. Neither heartbeat operation is
+terminal. The corresponding adapter must later submit a terminal completion,
+including a `Cancelled` result when it receives a cancellation task.
 
 The schema is [`activity-heartbeat.schema.json`](../schemas/bridge/activity-heartbeat.schema.json).
 The focused bilateral tests are
@@ -155,19 +156,24 @@ completion. This mirrors Temporal Core's own orphan-cancellation handling and
 prevents a duplicate-token completion race; start-shaped delivery failures
 continue to use the normal force-failure path.
 
-`will_complete_async` remains a protocol and Core-conversion variant, but the
-current OCaml adapter neither emits it nor exposes a handle for a later
-completion. Current activities therefore return a terminal result
-synchronously; asynchronous completion remains a future capability.
+`will_complete_async` is accepted only as the worker handoff. The
+namespace-bound client endpoint rejects a second defer marker and accepts only
+completed, failed, or canceled terminal results. The adapter keeps the copied
+async lease until native acceptance, so a transport error cannot cause the
+activity callback to run again.
 
 ## Schemas and tests
 
 The Draft 2020-12
 [`activity-task.schema.json`](../schemas/bridge/activity-task.schema.json),
 [`activity-completion.schema.json`](../schemas/bridge/activity-completion.schema.json),
+[`activity-async-completion.schema.json`](../schemas/bridge/activity-async-completion.schema.json),
 and [`activity-heartbeat.schema.json`](../schemas/bridge/activity-heartbeat.schema.json)
 files document the closed wire shapes and link to the existing payload and
-failure schemas. Runtime validation remains authoritative for duplicate keys,
+failure schemas. The ordinary completion schema includes the worker-only
+`will_complete_async` handoff; the async-completion schema intentionally
+excludes it and documents the later client endpoint. Runtime validation remains
+authoritative for duplicate keys,
 UTF-8 byte counts, decoded byte sizes, exact unsigned 64-bit range, aggregate
 document limits, and normalized output because JSON Schema cannot prove all of
 those properties.

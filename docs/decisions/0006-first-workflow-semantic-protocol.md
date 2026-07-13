@@ -20,7 +20,9 @@ and output. Rust converts only at the official pinned Core protobuf boundary.
 The initial activation surface includes initialization, activity resolution,
 timer firing, cancellation, eviction, and the two child-workflow resolution
 jobs. The completion surface includes remote activities, child-workflow starts,
-timers, and terminal workflow commands. Child-start fields not exposed by the
+timers, and terminal workflow commands. A child-start command does not repeat
+the worker-scoped namespace: Rust injects the already validated worker
+namespace at the Core boundary. Other child-start fields not exposed by the
 runtime are represented by explicit Core defaults and rejected if non-default
 values appear on reverse conversion. Child start and terminal result are
 intentionally separate jobs sharing one sequence; the OCaml runtime stores the

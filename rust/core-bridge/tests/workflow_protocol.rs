@@ -148,6 +148,64 @@ fn converts_start_child_workflow_command() {
     );
 }
 
+/// Ensures a live worker supplies its configured namespace to Core even
+/// though namespace is intentionally absent from the workflow-level command.
+/// Core copies this field into child failure metadata, including the
+/// pre-start cancellation path; omitting it makes a valid cancellation
+/// activation impossible to represent at the OCaml boundary.
+#[test]
+fn injects_worker_namespace_into_child_workflow_command() {
+    let activation = workflow_protocol::Activation {
+        run_id: "parent-run".to_owned(),
+        timestamp: Some(workflow_protocol::Timestamp {
+            seconds: 0,
+            nanoseconds: 0,
+        }),
+        is_replaying: false,
+        history_length: 0,
+        jobs: Vec::new(),
+        metadata: None,
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "parent-run".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::StartChildWorkflow {
+            seq: 1,
+            workflow_id: "child/1".to_owned(),
+            workflow_type: "child".to_owned(),
+            input: Vec::new(),
+            retry_policy: None,
+            cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
+        }],
+    };
+    let core = workflow_protocol::completion_to_core_for_activation_with_namespace(
+        &activation,
+        &completion,
+        "namespace-under-test",
+    )
+    .expect("valid worker namespace must be accepted");
+    assert_eq!(
+        workflow_protocol::completion_to_core_for_activation_with_namespace(
+            &activation,
+            &completion,
+            "",
+        )
+        .unwrap_err()
+        .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("child completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::StartChildWorkflowExecution(child)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("child command must map to Core's start-child variant");
+    };
+    assert_eq!(child.namespace, "namespace-under-test");
+}
+
 /// Proves every child cancellation policy survives the JSON semantic protocol
 /// and the official Core command representation without relying on a numeric
 /// enum value at the OCaml/Rust boundary.  The policy is durable workflow
@@ -883,8 +941,10 @@ fn converts_child_workflow_resolution_lifecycle() {
 fn accepts_core_child_cancellation_before_start_without_fabricating_run_id() {
     use core_activation::resolve_child_workflow_execution_start::Status as StartStatus;
     use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::coresdk::child_workflow;
     use temporalio_protos::coresdk::workflow_activation::{
-        ResolveChildWorkflowExecutionStart, ResolveChildWorkflowExecutionStartCancelled,
+        ResolveChildWorkflowExecution, ResolveChildWorkflowExecutionStart,
+        ResolveChildWorkflowExecutionStartCancelled,
     };
     use temporalio_protos::temporal::api::{
         common::v1 as api_common, enums::v1 as api_enums, failure::v1 as api_failure,
@@ -997,6 +1057,47 @@ fn accepts_core_child_cancellation_before_start_without_fabricating_run_id() {
             .code,
         workflow_protocol::CoreConversionErrorCode::InvalidCore
     );
+
+    // Core can also report the same pre-start cancellation through the
+    // terminal child-resolution job for an immediate TryCancel/Abandon path.
+    // Both protobuf variants must share the narrow empty-run-id exception.
+    let terminal = core_activation::WorkflowActivation {
+        run_id: "parent-run".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::ResolveChildWorkflowExecution(
+                ResolveChildWorkflowExecution {
+                    seq: 1,
+                    result: Some(child_workflow::ChildWorkflowResult {
+                        status: Some(child_workflow::child_workflow_result::Status::Cancelled(
+                            child_workflow::Cancellation {
+                                failure: Some(failure),
+                            },
+                        )),
+                    }),
+                },
+            )),
+        }],
+        ..Default::default()
+    };
+    let terminal_semantic = workflow_protocol::activation_from_core(&terminal).unwrap();
+    match &terminal_semantic.jobs[0] {
+        workflow_protocol::ActivationJob::ResolveChildWorkflow {
+            result: workflow_protocol::ChildWorkflowResolution::Cancelled { failure },
+            ..
+        } => match &failure.info {
+            workflow_protocol::FailureInfo::ChildWorkflow {
+                run_id,
+                started_event_id,
+                ..
+            } => {
+                assert!(run_id.is_empty());
+                assert_eq!(*started_event_id, 0);
+            }
+            info => panic!("unexpected terminal child cancellation info: {info:?}"),
+        },
+        job => panic!("unexpected terminal child cancellation job: {job:?}"),
+    }
 }
 
 /// Proves absent oneofs and the eviction acknowledgement rule fail closed.

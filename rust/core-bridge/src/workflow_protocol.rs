@@ -1946,6 +1946,7 @@ fn child_cancellation_from_core(
 /// Builds one official Core command with unsupported optional fields defaulted explicitly.
 fn command_to_core(
     value: &CompletionCommand,
+    child_workflow_namespace: Option<&str>,
 ) -> Result<core_commands::WorkflowCommand, CoreConversionError> {
     use core_commands::workflow_command::Variant;
     let variant = match value {
@@ -2008,9 +2009,13 @@ fn command_to_core(
                 .map(retry_policy_to_core)
                 .transpose()?,
             cancellation_type: child_cancellation_to_core(*cancellation_type),
-            // Namespace, task queue, timeouts, and the other child options are
-            // still intentionally left at Core defaults until they have a
-            // stable public representation.
+            // The worker namespace is injected by the namespace-aware
+            // conversion used by live/replay workers. The legacy conversion
+            // helper intentionally leaves it at Core's default for isolated
+            // protocol round-trip tests; it is never submitted to a worker.
+            namespace: child_workflow_namespace.unwrap_or_default().to_owned(),
+            // Task queue, timeouts, and the other child options remain at Core
+            // defaults until they have a stable public representation.
             ..Default::default()
         }),
         CompletionCommand::CancelChildWorkflow { seq, reason } => {
@@ -2230,6 +2235,18 @@ fn command_from_core(
 pub fn completion_to_core(
     value: &Completion,
 ) -> Result<core_completion::WorkflowActivationCompletion, CoreConversionError> {
+    completion_to_core_with_child_namespace(value, None)
+}
+
+/// Shared conversion implementation used by the compatibility helper above
+/// and by activation-aware worker completion. `None` preserves the historical
+/// unit-test conversion for commands that are not submitted to a live worker;
+/// live and replay runtimes always use
+/// [`completion_to_core_for_activation_with_namespace`].
+fn completion_to_core_with_child_namespace(
+    value: &Completion,
+    child_workflow_namespace: Option<&str>,
+) -> Result<core_completion::WorkflowActivationCompletion, CoreConversionError> {
     validate_completion(value)
         .map_err(|_| invalid_core("semantic completion violates protocol invariants"))?;
     Ok(core_completion::WorkflowActivationCompletion {
@@ -2240,7 +2257,7 @@ pub fn completion_to_core(
                     commands: value
                         .commands
                         .iter()
-                        .map(command_to_core)
+                        .map(|command| command_to_core(command, child_workflow_namespace))
                         .collect::<Result<_, _>>()?,
                     used_internal_flags: Vec::new(),
                     versioning_behavior: 0,
@@ -2260,6 +2277,33 @@ pub fn completion_to_core_for_activation(
     activation: &Activation,
     completion: &Completion,
 ) -> Result<core_completion::WorkflowActivationCompletion, CoreConversionError> {
+    completion_to_core_for_activation_with_optional_namespace(activation, completion, None)
+}
+
+/// Converts one leased activation completion while injecting the worker
+/// namespace into every child-workflow start command.
+pub fn completion_to_core_for_activation_with_namespace(
+    activation: &Activation,
+    completion: &Completion,
+    child_workflow_namespace: &str,
+) -> Result<core_completion::WorkflowActivationCompletion, CoreConversionError> {
+    identifier(child_workflow_namespace, "$.worker_namespace")
+        .map_err(|_| invalid_core("worker namespace is not a valid identifier"))?;
+    completion_to_core_for_activation_with_optional_namespace(
+        activation,
+        completion,
+        Some(child_workflow_namespace),
+    )
+}
+
+/// Applies activation-dependent invariants before converting the completion.
+/// The optional namespace exists only for the legacy conversion helper; live
+/// and replay workers use the validated namespace-bearing entry point above.
+fn completion_to_core_for_activation_with_optional_namespace(
+    activation: &Activation,
+    completion: &Completion,
+    child_workflow_namespace: Option<&str>,
+) -> Result<core_completion::WorkflowActivationCompletion, CoreConversionError> {
     if activation.run_id != completion.run_id {
         return Err(invalid_core(
             "completion run id does not match its activation",
@@ -2274,7 +2318,7 @@ pub fn completion_to_core_for_activation(
             "cache eviction activation must have an empty completion",
         ));
     }
-    completion_to_core(completion)
+    completion_to_core_with_child_namespace(completion, child_workflow_namespace)
 }
 
 /// Converts a successful official completion without silently dropping flags or status.

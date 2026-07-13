@@ -281,10 +281,16 @@ cancelling a child workflow, starting and cancelling timers, and completing,
 failing, or cancelling the workflow. A child start includes an explicit
 cancellation policy, and a later cancel command carries a validated reason;
 Core applies that policy while preserving command order for replay. The child
-command deliberately omits namespace, task queue, timeout,
-retry, header, memo, search-attribute, versioning, and priority fields because
-the current OCaml runtime does not expose them; Rust fills those Core fields
-with explicit defaults and rejects non-default values on reverse conversion.
+command deliberately omits namespace, task queue, timeout, retry, header,
+memo, search-attribute, versioning, and priority fields because the current
+OCaml runtime does not expose them. For a live or replay worker, Rust injects
+the worker's already-validated namespace into Core's child-start command before
+submission; this is worker configuration, not workflow input. The remaining
+omitted Core fields receive explicit defaults and non-default values are
+rejected on reverse conversion. Injecting the namespace is important because
+Core copies it into child failure metadata, including cancellation before the
+child has a run ID; leaving it at Core's empty protobuf default would make that
+otherwise valid activation fail the semantic protocol validator.
 Scheduled activities require at least a schedule-to-close or start-to-close
 timeout. They may also carry a closed retry-policy object with positive initial
 and nondecreasing maximum intervals, a finite backoff coefficient at least 1.0,

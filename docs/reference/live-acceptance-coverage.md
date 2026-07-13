@@ -31,8 +31,9 @@ head `47c9a93`; that PR was squash-merged as `f877fbf`. The complete [PR #226
 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
 then passed the dependency audit, changed-path gate, and live
 Temporal/PostgreSQL smoke for head `ca112b8`. That smoke run accepted the
-timeout-retry workflow and its exact second-attempt marker, so the tenth
-scenario is now live evidence too.
+timeout-retry workflow and its exact second-attempt marker with the earlier
+fixture delay. This branch extends the first callback beyond Core's local
+timeout buffer; the updated ordering guard remains pending a fresh live run.
 
 The earlier run live-verified four exact successes, a second activity task delivered
 by an ordinary retry policy, a heartbeat detail and timeout delivered to a

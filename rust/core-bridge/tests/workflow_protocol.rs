@@ -1038,6 +1038,204 @@ fn converts_child_workflow_resolution_lifecycle() {
     }
 }
 
+/// Proves Core timeout failure metadata survives activation conversion and
+/// workflow-completion conversion. An absent Core heartbeat-details field is
+/// intentionally normalized to the empty semantic list.
+#[test]
+fn converts_timeout_failure_info_losslessly() {
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::coresdk::{activity_result, workflow_activation};
+    use temporalio_protos::temporal::api::{
+        common::v1 as api_common, enums::v1 as api_enums, failure::v1 as api_failure,
+    };
+
+    let heartbeat_payload = api_common::Payload {
+        metadata: [("encoding".to_owned(), b"binary/plain".to_vec())].into(),
+        data: b"heartbeat".to_vec(),
+        external_payloads: Vec::new(),
+    };
+    let timeout_failure =
+        |timeout_type: i32, details: Option<api_common::Payloads>| api_failure::Failure {
+            message: "activity timed out".to_owned(),
+            source: "server".to_owned(),
+            stack_trace: String::new(),
+            encoded_attributes: None,
+            cause: None,
+            failure_info: Some(api_failure::failure::FailureInfo::TimeoutFailureInfo(
+                api_failure::TimeoutFailureInfo {
+                    timeout_type,
+                    last_heartbeat_details: details,
+                },
+            )),
+        };
+    let activation_for = |failure: api_failure::Failure| core_activation::WorkflowActivation {
+        run_id: "parent-run".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::ResolveActivity(
+                workflow_activation::ResolveActivity {
+                    seq: 11,
+                    result: Some(activity_result::ActivityResolution {
+                        status: Some(activity_result::activity_resolution::Status::Failed(
+                            activity_result::Failure {
+                                failure: Some(failure),
+                            },
+                        )),
+                    }),
+                    is_local: false,
+                },
+            )),
+        }],
+        ..Default::default()
+    };
+
+    let with_details = activation_for(timeout_failure(
+        api_enums::TimeoutType::Heartbeat as i32,
+        Some(api_common::Payloads {
+            payloads: vec![heartbeat_payload.clone()],
+        }),
+    ));
+    let semantic = workflow_protocol::activation_from_core(&with_details).unwrap();
+    match &semantic.jobs[0] {
+        workflow_protocol::ActivationJob::ResolveActivity {
+            result: workflow_protocol::ActivityResolution::Failed { failure },
+            ..
+        } => match &failure.info {
+            workflow_protocol::FailureInfo::Timeout {
+                timeout_type,
+                last_heartbeat_details,
+            } => {
+                assert_eq!(*timeout_type, workflow_protocol::TimeoutType::Heartbeat);
+                assert_eq!(last_heartbeat_details.len(), 1);
+                assert_eq!(last_heartbeat_details[0].data, b"heartbeat");
+            }
+            info => panic!("unexpected timeout failure info: {info:?}"),
+        },
+        job => panic!("unexpected timeout activity job: {job:?}"),
+    }
+    let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
+
+    let absent = workflow_protocol::activation_from_core(&activation_for(timeout_failure(
+        api_enums::TimeoutType::StartToClose as i32,
+        None,
+    )))
+    .unwrap();
+    match &absent.jobs[0] {
+        workflow_protocol::ActivationJob::ResolveActivity {
+            result: workflow_protocol::ActivityResolution::Failed { failure },
+            ..
+        } => match &failure.info {
+            workflow_protocol::FailureInfo::Timeout {
+                timeout_type,
+                last_heartbeat_details,
+            } => {
+                assert_eq!(*timeout_type, workflow_protocol::TimeoutType::StartToClose);
+                assert!(last_heartbeat_details.is_empty());
+            }
+            info => panic!("unexpected absent timeout info: {info:?}"),
+        },
+        job => panic!("unexpected absent timeout activity job: {job:?}"),
+    }
+
+    let semantic_failure = workflow_protocol::Failure {
+        message: "activity timed out".to_owned(),
+        source: "server".to_owned(),
+        stack_trace: String::new(),
+        encoded_attributes: None,
+        cause: None,
+        info: workflow_protocol::FailureInfo::Timeout {
+            timeout_type: workflow_protocol::TimeoutType::Heartbeat,
+            last_heartbeat_details: vec![workflow_protocol::Payload {
+                metadata: [("encoding".to_owned(), b"binary/plain".to_vec())].into(),
+                data: b"heartbeat".to_vec(),
+            }],
+        },
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "parent-run".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::FailWorkflow {
+            failure: semantic_failure.clone(),
+        }],
+    };
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("timeout completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::FailWorkflowExecution(command)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("timeout completion must map to Core's fail command");
+    };
+    let Some(api_failure::failure::FailureInfo::TimeoutFailureInfo(info)) = command
+        .failure
+        .as_ref()
+        .and_then(|failure| failure.failure_info.as_ref())
+    else {
+        panic!("timeout completion lost its Core failure-info variant");
+    };
+    assert_eq!(info.timeout_type, api_enums::TimeoutType::Heartbeat as i32);
+    assert_eq!(
+        info.last_heartbeat_details
+            .as_ref()
+            .map(|details| details.payloads.len()),
+        Some(1)
+    );
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+
+    let empty_completion = workflow_protocol::Completion {
+        run_id: "parent-run".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::FailWorkflow {
+            failure: workflow_protocol::Failure {
+                info: workflow_protocol::FailureInfo::Timeout {
+                    timeout_type: workflow_protocol::TimeoutType::StartToClose,
+                    last_heartbeat_details: Vec::new(),
+                },
+                ..semantic_failure
+            },
+        }],
+    };
+    let empty_core = workflow_protocol::completion_to_core(&empty_completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        empty_core.status.as_ref()
+    else {
+        panic!("empty timeout completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::FailWorkflowExecution(command)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("empty timeout completion must map to Core's fail command");
+    };
+    let Some(api_failure::failure::FailureInfo::TimeoutFailureInfo(info)) = command
+        .failure
+        .as_ref()
+        .and_then(|failure| failure.failure_info.as_ref())
+    else {
+        panic!("empty timeout completion lost its Core failure-info variant");
+    };
+    assert!(info.last_heartbeat_details.is_none());
+    assert_eq!(
+        workflow_protocol::completion_from_core(&empty_core).unwrap(),
+        empty_completion
+    );
+
+    let unknown = activation_for(timeout_failure(99, None));
+    assert_eq!(
+        workflow_protocol::activation_from_core(&unknown)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+}
+
 /// Proves the pinned Core cancellation-before-start activation retains the
 /// empty child run ID that Core emits before it has a
 /// `ChildWorkflowExecutionStarted` event.  This exercises the protobuf

@@ -256,6 +256,27 @@ pub enum RetryState {
     CancelRequested,
 }
 
+/// The exact timeout reason reported by Temporal Core.
+///
+/// Keeping this separate from [`RetryState::Timeout`] matters: the retry state
+/// describes an activity or child-workflow wrapper, while this enum records
+/// which timeout policy actually elapsed and therefore carries Core's
+/// `TimeoutFailureInfo` semantics losslessly across the JSON boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeoutType {
+    /// Core did not identify a more specific timeout policy.
+    Unspecified,
+    /// The activity or workflow run exceeded its start-to-close timeout.
+    StartToClose,
+    /// The task remained in the queue longer than its schedule-to-start timeout.
+    ScheduleToStart,
+    /// The operation exceeded its schedule-to-close timeout.
+    ScheduleToClose,
+    /// A heartbeat was not received before the heartbeat timeout elapsed.
+    Heartbeat,
+}
+
 /// Supported closed subset of Temporal failure information.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -287,9 +308,15 @@ pub enum FailureInfo {
         started_event_id: i64,
         retry_state: RetryState,
     },
+    /// Timeout metadata, including the exact timeout policy and any heartbeat
+    /// details Core retained from the timed-out activity.
+    Timeout {
+        timeout_type: TimeoutType,
+        last_heartbeat_details: Vec<Payload>,
+    },
 }
 
-/// Recursive Temporal failure with one explicitly supported info variant.
+/// Recursive Temporal failure with one of the explicitly supported info variants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Failure {
@@ -772,14 +799,52 @@ fn validate_retry_policy(value: &RetryPolicy, path: &str) -> Result<(), Protocol
     Ok(())
 }
 
+/// Validates failure detail payloads before JSON serialization allocates a
+/// document. This gives timeout heartbeat details the same limits as
+/// application and cancellation details.
+fn validate_failure_payloads(values: &[Payload], path: &str) -> Result<(), ProtocolError> {
+    for (index, payload) in values.iter().enumerate() {
+        let payload_path = format!("{path}[{index}]");
+        if payload.data.len() > MAX_PAYLOAD_BYTES {
+            return Err(ProtocolError::invalid(
+                &payload_path,
+                "payload exceeds the byte limit",
+            ));
+        }
+        for (key, value) in &payload.metadata {
+            if key.is_empty() || key.len() > MAX_STRING_BYTES {
+                return Err(ProtocolError::invalid(
+                    &payload_path,
+                    "payload metadata key is outside protocol limits",
+                ));
+            }
+            if value.len() > MAX_PAYLOAD_BYTES {
+                return Err(ProtocolError::invalid(
+                    &payload_path,
+                    "payload metadata value exceeds the byte limit",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validates failure identifiers recursively.
 pub(crate) fn validate_failure(value: &Failure, path: &str) -> Result<(), ProtocolError> {
     bounded_text(&value.message, path)?;
     bounded_text(&value.source, path)?;
     bounded_text(&value.stack_trace, path)?;
     match &value.info {
-        FailureInfo::Application { type_name, .. } => bounded_text(type_name, path)?,
-        FailureInfo::Canceled { identity, .. } => bounded_text(identity, path)?,
+        FailureInfo::Application {
+            type_name, details, ..
+        } => {
+            bounded_text(type_name, path)?;
+            validate_failure_payloads(details, &format!("{path}.details"))?;
+        }
+        FailureInfo::Canceled { identity, details } => {
+            bounded_text(identity, path)?;
+            validate_failure_payloads(details, &format!("{path}.details"))?;
+        }
         FailureInfo::Activity {
             scheduled_event_id,
             started_event_id,
@@ -818,6 +883,13 @@ pub(crate) fn validate_failure(value: &Failure, path: &str) -> Result<(), Protoc
             }
             validate_child_failure_run_id(run_id, *started_event_id, path)?;
         }
+        FailureInfo::Timeout {
+            last_heartbeat_details,
+            ..
+        } => validate_failure_payloads(
+            last_heartbeat_details,
+            &format!("{path}.last_heartbeat_details"),
+        )?,
     }
     if let Some(cause) = &value.cause {
         validate_failure(cause, path)?;
@@ -1369,6 +1441,34 @@ fn retry_state_to_core(value: RetryState) -> i32 {
     }) as i32
 }
 
+/// Maps Core's timeout enum without accepting unknown values from a newer
+/// protobuf revision. Rejecting an unknown integer is safer than silently
+/// changing timeout semantics during replay.
+fn timeout_type_from_core(value: i32) -> Result<TimeoutType, CoreConversionError> {
+    use api_enums::TimeoutType as Core;
+    Ok(
+        match Core::try_from(value).map_err(|_| invalid_core("unknown Core timeout type"))? {
+            Core::Unspecified => TimeoutType::Unspecified,
+            Core::StartToClose => TimeoutType::StartToClose,
+            Core::ScheduleToStart => TimeoutType::ScheduleToStart,
+            Core::ScheduleToClose => TimeoutType::ScheduleToClose,
+            Core::Heartbeat => TimeoutType::Heartbeat,
+        },
+    )
+}
+
+/// Converts the semantic timeout enum to the official protobuf number.
+fn timeout_type_to_core(value: TimeoutType) -> i32 {
+    use api_enums::TimeoutType as Core;
+    (match value {
+        TimeoutType::Unspecified => Core::Unspecified,
+        TimeoutType::StartToClose => Core::StartToClose,
+        TimeoutType::ScheduleToStart => Core::ScheduleToStart,
+        TimeoutType::ScheduleToClose => Core::ScheduleToClose,
+        TimeoutType::Heartbeat => Core::Heartbeat,
+    }) as i32
+}
+
 /// Converts the supported recursive official failure subset.
 pub(crate) fn failure_from_core(
     value: &api_failure::Failure,
@@ -1425,6 +1525,10 @@ pub(crate) fn failure_from_core(
                 retry_state: retry_state_from_core(info.retry_state)?,
             }
         }
+        Core::TimeoutFailureInfo(info) => FailureInfo::Timeout {
+            timeout_type: timeout_type_from_core(info.timeout_type)?,
+            last_heartbeat_details: payloads_from_core(info.last_heartbeat_details.as_ref())?,
+        },
         _ => return Err(unsupported("Core failure info kind is not supported")),
     };
     Ok(Failure {
@@ -1509,6 +1613,19 @@ pub(crate) fn failure_to_core(
                 retry_state: retry_state_to_core(*retry_state),
             },
         ),
+        FailureInfo::Timeout {
+            timeout_type,
+            last_heartbeat_details,
+        } => Core::TimeoutFailureInfo(api_failure::TimeoutFailureInfo {
+            timeout_type: timeout_type_to_core(*timeout_type),
+            // Core treats an absent or empty heartbeat-details collection as
+            // equivalent. Normalize an empty semantic list to the absent
+            // protobuf field, matching Application/Canceled's existing list
+            // convention while avoiding an unnecessary empty message.
+            last_heartbeat_details: (!last_heartbeat_details.is_empty())
+                .then(|| payloads_to_core(last_heartbeat_details))
+                .transpose()?,
+        }),
     });
     Ok(api_failure::Failure {
         message: value.message.clone(),

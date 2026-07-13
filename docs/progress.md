@@ -28,6 +28,44 @@ deterministic and no producer task is detached. The focused replay test passed
 20 repetitions, all ten replay-bridge tests passed, Rust formatting and the
 diff check passed, and the temporary Cargo target was removed afterward.
 
+## 2026-07-13: Timeout-retry smoke ordering and nested diagnostics
+
+Status: focused fixture change; live Temporal Server and GitHub Actions
+verification are pending for this branch.
+
+The first attempt in the timeout-retry scenario now waits six seconds before
+returning. The activity has a 500ms server start-to-close lease, while Temporal
+Core adds a five-second local timeout buffer. Waiting beyond that combined
+local deadline means Core classifies the expired task token before the late
+callback completes, so the single-threaded activity adapter can discard the
+late result and continue polling the retry instead of waiting on a completion
+RPC for an already-expired task. The delay is activity code, not workflow code,
+and therefore does not affect deterministic replay.
+
+Public terminal workflow errors now use the same bounded outer-to-inner
+diagnostic traversal as the workflow runtime. A nested timeout or application
+cause is therefore retained in the public error message instead of being
+hidden by the outer activity/child wrapper. The focused protocol regression
+test covers the nested timeout shape and the depth guard; live verification of
+the smoke timing remains pending.
+
+## 2026-07-13: Temporal Core timeout failure information
+
+Status: locally verified bridge capability; no new live Temporal Server or
+GitHub Actions success is claimed for this slice. The live smoke path has
+reported timeout failures intermittently, so this change is deliberately
+covered by typed conversion and protocol tests rather than inferred from a
+single run.
+
+The Rust/Core adapter now maps `TimeoutFailureInfo` into a closed semantic
+timeout record containing Core's exact timeout policy and ordered heartbeat
+payloads. OCaml and Rust both reject unknown timeout enum values and validate
+heartbeat payload limits. An absent or empty Core heartbeat collection has the
+documented empty-list semantic representation and is normalized back to the
+absent protobuf field. The focused Rust round-trip/unknown-value test and the
+OCaml bridge round-trip/unknown-value test passed; generated build and target
+directories were removed after verification.
+
 ## 2026-07-13: Scheduler-owned native workflow signal handlers
 
 Status: focused OCaml runtime, worker-adapter, and public registration tests

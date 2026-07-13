@@ -384,11 +384,6 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-activity-heartbeat-retry" ~input:"smoke"
         in
-        let* timeout_retry_handle =
-          start_workflow client ~workflow:Definitions.activity_timeout_retry
-            ~task_queue:Definitions.task_queue
-            ~id:"two-binary-activity-timeout-retry" ~input:"smoke"
-        in
         let* parent_handle =
           start_workflow client ~workflow:Definitions.parent_awaits_child
             ~task_queue:Definitions.task_queue
@@ -414,19 +409,22 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-long-running-cancellation" ~input:cancellation_token
         in
-        (* All ten starts intentionally happen before the first wait. The
+        (* Nine starts intentionally happen before the first wait. The
            cancellation workflow's marker activity proves that its timer and
            marker commands were accepted in one activation before this exact
            run is cancelled; the timer keeps the execution outstanding. The
            heartbeat workflow is also already outstanding here, so its retry
            runs concurrently with the other live server work instead of being
            mistaken for a sequential local callback. The timeout workflow is
-           also started before the first wait: its first activity callback
-           intentionally outlives its start-to-close lease, so the later exact
-           marker proves Temporal delivered the retry. The two child-focused
-           parents are likewise started before any wait: one propagates a
-           terminal child failure and the other waits for Core's child
-           cancellation acknowledgement. *)
+           deliberately started only after the heartbeat workflow has reached
+           its terminal retry result below. The activity adapter serializes
+           polling, user implementations, heartbeats, and completions behind
+           one mutex; starting a six-second timeout callback while a 500ms
+           heartbeat lease is outstanding would therefore make this fixture
+           test an artificial local queue timeout instead of Temporal's retry
+           behavior. The two child-focused parents are likewise started before
+           any wait: one propagates a terminal child failure and the other
+           waits for Core's child cancellation acknowledgement. *)
         let* () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token
         in
@@ -450,6 +448,16 @@ let run () =
         let* () =
           require_completed "smoke.activity_heartbeat_retry"
             "SMOKE:HEARTBEAT:RETRIED:SMOKE" (Ok heartbeat_retry_result)
+        in
+        (* Start the intentionally late timeout attempt only after the short
+           heartbeat lease has been fully exercised. This preserves the
+           single-threaded activity adapter's safety invariant while still
+           proving that a late completion is rejected and the Temporal retry
+           is dispatched and observed. *)
+        let* timeout_retry_handle =
+          start_workflow client ~workflow:Definitions.activity_timeout_retry
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-activity-timeout-retry" ~input:"smoke"
         in
         let* timeout_retry_result = wait_workflow timeout_retry_handle in
         let* () =

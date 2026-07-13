@@ -5,6 +5,7 @@
 //! while retaining access to its private validation and lifecycle helpers.
 
 use super::*;
+use prost_wkt_types::{Duration as PbDuration, Timestamp};
 use std::time::Duration;
 use temporalio_common::protos::coresdk::workflow_completion::WorkflowActivationCompletion;
 use temporalio_common::protos::temporal::api::{
@@ -96,6 +97,92 @@ fn complete_history() -> History {
     };
     History {
         events: vec![started, scheduled, task_started, task_completed, completed],
+    }
+}
+
+/// Builds a history whose first workflow task is still open (started but not
+/// completed), with the timestamps and timeouts Core needs to construct a
+/// live, failable workflow task rather than an immediate eviction.
+///
+/// A replay activation from this history represents an active Core workflow
+/// task, so rejecting it exercises the failure-completion path that makes Core
+/// schedule a follow-up cache eviction for the same run_id — the exact
+/// sequence the ordering regression depends on. The extra fields mirror the
+/// integration fixture in `tests/support/replay_fixture.rs`; without the event
+/// timestamps Core turns the incomplete fixture into an eviction instead.
+fn open_workflow_task_history() -> History {
+    fn event_time(event_id: i64) -> Option<Timestamp> {
+        Some(Timestamp {
+            seconds: event_id,
+            nanos: 0,
+        })
+    }
+    fn task_timeout() -> Option<PbDuration> {
+        Some(PbDuration {
+            seconds: 10,
+            nanos: 0,
+        })
+    }
+    let started = HistoryEvent {
+        event_id: 1,
+        event_time: event_time(1),
+        event_type: EventType::WorkflowExecutionStarted as i32,
+        attributes: Some(
+            history_event::Attributes::WorkflowExecutionStartedEventAttributes(
+                WorkflowExecutionStartedEventAttributes {
+                    workflow_type: Some(WorkflowType {
+                        name: "replay-test".to_owned(),
+                    }),
+                    task_queue: Some(TaskQueue {
+                        name: "replay-test".to_owned(),
+                        ..Default::default()
+                    }),
+                    workflow_task_timeout: task_timeout(),
+                    original_execution_run_id: "run-replay-test".to_owned(),
+                    first_execution_run_id: "run-replay-test".to_owned(),
+                    attempt: 1,
+                    first_workflow_task_backoff: Some(PbDuration::default()),
+                    ..Default::default()
+                },
+            ),
+        ),
+        ..Default::default()
+    };
+    let scheduled = HistoryEvent {
+        event_id: 2,
+        event_time: event_time(2),
+        event_type: EventType::WorkflowTaskScheduled as i32,
+        attributes: Some(
+            history_event::Attributes::WorkflowTaskScheduledEventAttributes(
+                WorkflowTaskScheduledEventAttributes {
+                    task_queue: Some(TaskQueue {
+                        name: "replay-test".to_owned(),
+                        ..Default::default()
+                    }),
+                    start_to_close_timeout: task_timeout(),
+                    attempt: 1,
+                },
+            ),
+        ),
+        ..Default::default()
+    };
+    let task_started = HistoryEvent {
+        event_id: 3,
+        event_time: event_time(3),
+        event_type: EventType::WorkflowTaskStarted as i32,
+        attributes: Some(
+            history_event::Attributes::WorkflowTaskStartedEventAttributes(
+                WorkflowTaskStartedEventAttributes {
+                    identity: "replay-test-worker".to_owned(),
+                    scheduled_event_id: 2,
+                    ..Default::default()
+                },
+            ),
+        ),
+        ..Default::default()
+    };
+    History {
+        events: vec![started, scheduled, task_started],
     }
 }
 
@@ -360,5 +447,80 @@ fn replay_dispose_retains_worker_when_poll_lane_join_fails() {
     // The replay-aware join consumed the aborted handle. A retry therefore
     // has no detached producer left to race with finalization and can release
     // Core.
+    dispose_or_panic(worker, &handle);
+}
+
+/// Waits for the workflow lane to publish one activation and leases it for the
+/// owner. The bounded retry keeps the test deterministic across the
+/// Tokio-to-owner handoff without depending on a scheduler-specific delay.
+fn wait_and_lease_activation(
+    worker: &mut ReplayWorker,
+    handle: &tokio::runtime::Handle,
+) -> WorkflowActivation {
+    for _ in 0..20 {
+        match worker.wait_workflow() {
+            crate::worker_bridge::ReadinessWait::Ready => {
+                return worker
+                    .try_take_workflow(handle)
+                    .expect("replay activation should be queued")
+                    .expect("replay activation should satisfy bridge admission");
+            }
+            crate::worker_bridge::ReadinessWait::TimedOut => {}
+            crate::worker_bridge::ReadinessWait::Shutdown => {
+                panic!("replay workflow lane shut down before its activation")
+            }
+            crate::worker_bridge::ReadinessWait::Error(error) => {
+                panic!("replay workflow lane failed before its activation: {error:?}")
+            }
+        }
+    }
+    panic!("Core did not publish a replay activation within the bounded test wait");
+}
+
+/// Deterministic regression guard for the replay reject/eviction retirement
+/// race that produced an intermittent `STATUS_WORKER` on CI.
+///
+/// Rejecting a leased replay activation fails its Core workflow task, and Core
+/// responds by scheduling a follow-up cache-eviction activation for the same
+/// run_id on the background poll lane. If the bridge retires the rejected lease
+/// only *after* awaiting that completion, the poll lane can observe the
+/// eviction while the run is still recorded and misclassify it as
+/// `Admission::Duplicate`, raising a terminal `PollLaneError::DuplicateIdentity`.
+///
+/// Rather than racing the poll lane — which is timing sensitive and therefore
+/// flaky to observe — this test pins the exact ordering invariant the fix
+/// establishes: the reject path records, through the shared ledger, whether the
+/// run was still an outstanding obligation at the instant its failure was
+/// handed to Core. A correct implementation always retires first, so the probe
+/// is `false`. The pre-fix ordering retired after the completion and would
+/// probe `true`, failing this assertion on every run regardless of scheduling.
+#[test]
+fn replay_reject_retires_lease_before_core_completion() {
+    let core = core_runtime();
+    let handle = core.tokio_handle().clone();
+    let mut worker =
+        ReplayWorker::start(&core, replay_config()).expect("replay worker should construct");
+    let document = encode_history_document("workflow-replay-test", &open_workflow_task_history())
+        .expect("open-task history should encode");
+    worker
+        .feed_json(&handle, &document)
+        .expect("bounded feeder should accept one history");
+
+    let activation = wait_and_lease_activation(&mut worker, &handle);
+    assert_eq!(activation.run_id, "run-replay-test");
+
+    handle
+        .block_on(worker.reject_workflow_delivery(&activation.run_id, "test replay rejection"))
+        .expect("rejecting a leased replay activation should succeed");
+
+    assert_eq!(
+        worker.reject_completion_probes(),
+        vec![false],
+        "rejection must retire the ledger lease before handing the failure to Core, \
+         so the follow-up eviction is never admitted as a duplicate"
+    );
+
+    // The rejection left a follow-up eviction in flight; disposal abandons it
+    // and releases every native resource so the test cannot leak a worker.
     dispose_or_panic(worker, &handle);
 }

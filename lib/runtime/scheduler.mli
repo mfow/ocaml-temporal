@@ -42,4 +42,8 @@ val shutdown : t -> unit
 
 (** Performs the private terminal control effect. The polymorphic result gives
     public terminal helpers a natural non-returning type. *)
+(** Raised when a terminal abort settles the current fiber. User-code
+    try/with wrappers must re-raise it so it is not reported as a defect. *)
+exception Workflow_aborted
+
 val abort_workflow : unit -> 'value

@@ -6,6 +6,46 @@ type ('input, 'output) implementation =
     workflow command and error semantics never depend on application logging. *)
 module Observability = Temporal_base.Observability
 
+(** The complete incoming event made available to a native signal handler. The
+    activation translator has already validated and copied every payload. *)
+type signal = {
+  input : Temporal_base.Codec.payload list;
+  identity : string;
+  headers : (string * Temporal_base.Codec.payload) list;
+}
+
+(** A handler is kept private to the runtime so public callers cannot observe
+    scheduler callbacks, continuations, or native boundary values. *)
+type signal_handler = {
+  name : string;
+  dispatch : signal -> (unit, Temporal_base.Error.t) result;
+}
+
+(** Uses the same bounded identifier contract as workflow and activity names.
+    Invalid names are internal registration defects because public signal
+    definitions have already performed this validation. *)
+let validate_signal_name name =
+  if String.equal name "" then invalid_arg "signal handler name is empty";
+  if String.contains name '\000' then
+    invalid_arg "signal handler name contains NUL";
+  if String.length name > 65_536 then
+    invalid_arg "signal handler name exceeds 65536 bytes";
+  if not (Temporal_base.Codec.valid_utf_8 name) then
+    invalid_arg "signal handler name must be valid UTF-8"
+
+(** Builds one scheduler-owned callback package. *)
+let make_signal_handler ~name ~dispatch =
+  validate_signal_name name;
+  { name; dispatch }
+
+(** Returns the stable lookup key of an internal handler. *)
+let signal_handler_name handler = handler.name
+
+(** Signal names are resolved through an immutable map. Construction validates
+    duplicates in caller order; execution lookup never depends on hash-table
+    iteration or mutable global state. *)
+module Signal_map = Map.Make (String)
+
 (** Reports with workflow context masked so an application reporter cannot
     re-enter workflow APIs and mutate the deterministic command buffer. *)
 let report ~src level ~tags message =
@@ -21,6 +61,7 @@ type ('input, 'output) t = {
   input : 'input;
   scheduler : Scheduler.t;
   context : Workflow_context_store.t;
+  signal_handlers : signal_handler Signal_map.t;
   mutable started : bool;
   mutable terminal : bool;
   mutable evicted : bool;
@@ -28,7 +69,16 @@ type ('input, 'output) t = {
 
 (** Creates execution state without calling user workflow code. The code starts
     only after Temporal delivers a start job, matching replay behavior. *)
-let start ?(task_queue = "default") definition input =
+let start ?(task_queue = "default") ?(signal_handlers = []) definition input =
+  let signal_handlers =
+    List.fold_left
+      (fun handlers handler ->
+        let name = signal_handler_name handler in
+        if Signal_map.mem name handlers then
+          invalid_arg ("duplicate signal handler: " ^ name)
+        else Signal_map.add name handler handlers)
+      Signal_map.empty signal_handlers
+  in
   let scheduler = Scheduler.create () in
   let execution =
     {
@@ -36,6 +86,7 @@ let start ?(task_queue = "default") definition input =
       input;
       scheduler;
       context = Workflow_context_store.create ~task_queue scheduler;
+      signal_handlers;
       started = false;
       terminal = false;
       evicted = false;
@@ -168,18 +219,40 @@ let process_job execution = function
       | Ok () -> ()
       | Error error -> fail execution error)
   | Activation.Signal_workflow { signal_name; input; identity; headers } ->
-      (* The semantic bridge intentionally delivers the complete signal before
-         the public handler registry is introduced. A signal without a
-         registered handler is a valid Temporal event; retaining its validated
-         fields and acknowledging the job keeps replay deterministic and avoids
-         fabricating a completion command. *)
-      let tags =
-        Observability.tags ~operation:"workflow_signal_received"
-          ~workflow_type:(workflow_type execution) ()
-      in
-      report ~src:Observability.Source.workflow Logs.Debug ~tags
-        "workflow signal received; no signal handler is registered yet";
-      ignore (signal_name, input, identity, headers)
+      (* Signals are queued as scheduler work rather than dispatched inline.
+         This preserves FIFO ordering with root and resolver continuations and
+         gives a handler the same direct-style suspension semantics as the
+         workflow body. *)
+      let signal = { input; identity; headers } in
+      begin match Signal_map.find_opt signal_name execution.signal_handlers with
+      | None ->
+          let tags =
+            Observability.tags ~operation:"workflow_signal_unhandled"
+              ~workflow_type:(workflow_type execution) ()
+          in
+          report ~src:Observability.Source.workflow Logs.Error ~tags
+            "workflow signal has no registered handler";
+          fail execution
+            (Temporal_base.Error.make ~non_retryable:true ~category:`Workflow
+               ~message:("unhandled workflow signal: " ^ signal_name) ())
+      | Some handler ->
+          let tags =
+            Observability.tags ~operation:"workflow_signal_received"
+              ~workflow_type:(workflow_type execution) ()
+          in
+          report ~src:Observability.Source.workflow Logs.Debug ~tags
+            "workflow signal queued for its registered handler";
+          Scheduler.spawn execution.scheduler (fun () ->
+              match handler.dispatch signal with
+              | Ok () ->
+                  let tags =
+                    Observability.tags ~operation:"workflow_signal_handled"
+                      ~workflow_type:(workflow_type execution) ()
+                  in
+                  report ~src:Observability.Source.workflow Logs.Debug ~tags
+                    "workflow signal handler completed"
+              | Error error -> fail execution error)
+      end
   | Fire_timer { seq } -> (
       match Workflow_context_store.fire_timer execution.context ~seq with
       | Ok () -> ()

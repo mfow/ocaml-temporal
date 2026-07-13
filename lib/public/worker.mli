@@ -7,8 +7,12 @@
     each definition's input and output codecs paired with its implementation. *)
 type registered_workflow
 
-(** Packs a typed workflow definition for a worker registration list. *)
-val workflow : ('input, 'output) Workflow.t -> registered_workflow
+(** Packs a typed workflow definition for a worker registration list. [signals]
+    attaches handlers that run on the workflow scheduler when Temporal delivers
+    matching native signal activations. *)
+val workflow :
+  ?signals:Signal.Handler.t list ->
+  ('input, 'output) Workflow.t -> registered_workflow
 
 (** A heterogeneous activity registration item. *)
 type registered_activity

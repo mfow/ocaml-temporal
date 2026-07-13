@@ -184,8 +184,32 @@ module Activity = Activity_adapter.Make (Activity_source)
 type workflow_registration = Workflow_adapter.registered_workflow
 type activity_registration = Activity_adapter.registered_activity
 
-(** Packs a workflow definition for [Workflow.create]. *)
-let register_workflow definition = Workflow_adapter.register definition
+(** Converts one public signal handler into a private scheduler callback. The
+    public handler intentionally accepts one typed value, while Temporal Core
+    carries a repeated payload list; zero or multiple payloads therefore fail
+    the workflow non-retryably instead of silently changing the input. *)
+let runtime_signal_handler (handler : Signal.Handler.t) =
+  let name = Signal.Handler.name handler in
+  Workflow_adapter.make_signal_handler ~name ~dispatch:(fun signal ->
+      match Workflow_adapter.signal_input signal with
+      | [ payload ] ->
+          Signal.Handler.dispatch handler (Payload_private.of_base payload)
+          |> Result.map_error Error_private.to_base
+      | _ ->
+          Error
+            (Base_error.make ~non_retryable:true ~category:`Workflow
+               ~message:
+                 (Printf.sprintf
+                    "signal %s must contain exactly one payload for its registered OCaml handler"
+                    name)
+               ()))
+
+(** Packs a workflow definition and its handlers for the private runtime
+    adapter. The public [Worker] module validates names and duplicates before
+    native resources are allocated. *)
+let register_workflow ?(signals = []) definition =
+  let signal_handlers = List.map runtime_signal_handler signals in
+  Workflow_adapter.register ~signal_handlers definition
 
 (** Packs an activity definition for [Activity.create]. *)
 let register_activity definition = Activity_adapter.register definition

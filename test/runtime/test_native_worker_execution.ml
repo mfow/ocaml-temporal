@@ -46,6 +46,23 @@ let base_codec (codec : 'a Temporal.Codec.t) : 'a Temporal_base.Codec.t =
       | Ok value -> Ok value
       | Error error -> Error (base_error error))
 
+(** Converts an owned public payload to the binary-safe semantic protocol
+    representation used by the fake supervisor. Metadata values are copied as
+    bytes exactly as the Rust/JSON bridge does. *)
+let protocol_payload (payload : Temporal.Payload.t) : Protocol.payload =
+  {
+    Protocol.metadata =
+      List.map (fun (key, value) -> (key, Bytes.of_string value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
+(** Encodes one typed public value for a synthetic native activation. *)
+let encoded_protocol codec value =
+  match Temporal.Codec.encode codec value with
+  | Ok payload -> protocol_payload payload
+  | Error error ->
+      failwith ("test payload encoding failed: " ^ Temporal.Error.message error)
+
 (** Rebuilds a public workflow as the private base definition accepted by the
     native worker registry. Public implementation errors are converted only at
     this test boundary, matching the production adapter's ownership rule. *)
@@ -65,7 +82,8 @@ let base_workflow (definition : ('input, 'output) Temporal.Workflow.t) =
 module Adapter = struct
   include Raw_adapter
 
-  let register definition = Raw_adapter.register (base_workflow definition)
+  let register ?(signal_handlers = []) definition =
+    Raw_adapter.register ~signal_handlers (base_workflow definition)
 end
 
 (** Keeps workflow fixture sequencing on the same typed-result path as the
@@ -305,6 +323,117 @@ let test_cancellation () =
   | [ Protocol.Cancel_workflow_execution ] -> ()
   | _ -> failwith "cancellation did not produce a terminal cancel command"
   end
+
+(** A native SignalWorkflow job is dispatched on the execution scheduler, not
+    inline in the adapter's activation loop. The handler can therefore read
+    deterministic workflow time, and the adapter preserves the signal's input,
+    sender identity, header order, and payload ownership. *)
+let test_signal_handler_runs_on_scheduler () =
+  let supervisor = fake_supervisor () in
+  let seen = ref None in
+  let handler =
+    Raw_adapter.make_signal_handler ~name:"order_updated" ~dispatch:(fun signal ->
+        match Raw_adapter.signal_input signal with
+        | [ payload ] -> (
+            match
+              Temporal_base.Codec.decode (base_codec Temporal.Codec.string) payload
+            with
+            | Error error -> Error error
+            | Ok value ->
+                seen :=
+                  Some
+                    ( value,
+                      Raw_adapter.signal_identity signal,
+                      List.map fst (Raw_adapter.signal_headers signal),
+                      Temporal.Workflow.now () );
+                Ok ())
+        | _ ->
+            Error
+              (Temporal_base.Error.make ~non_retryable:true ~category:`Workflow
+                 ~message:"test signal handler received an unexpected arity" ()))
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_signal"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-signal" in
+  enqueue supervisor
+    (activation ~run_id [ initialize ~run_id ~workflow_type:"native_worker_signal" ]);
+  let worker = worker supervisor [ Adapter.register ~signal_handlers:[ handler ] workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  let timer_seq =
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_timer { seq; _ } ] -> seq
+    | _ -> failwith "signal workflow did not emit its initial timer"
+  in
+  let input = encoded_protocol Temporal.Codec.string "ready" in
+  let header = encoded_protocol Temporal.Codec.string "trace-value" in
+  enqueue supervisor
+    (activation ~run_id
+       [ Protocol.Signal_workflow
+           {
+             signal_name = "order_updated";
+             input = [ input ];
+             identity = "sender";
+             headers = [ ("trace", header) ];
+           } ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin
+    match !seen with
+    | Some ("ready", "sender", [ "trace" ], Ok instant)
+      when Int64.equal (Temporal.Time.seconds instant) 1L
+           && Int.equal (Temporal.Time.nanoseconds instant) 0 ->
+        ()
+    | Some _ -> failwith "signal handler lost deterministic signal metadata"
+    | None -> failwith "signal activation did not run its registered handler"
+  end;
+  enqueue supervisor
+    (activation ~run_id [ Protocol.Fire_timer { seq = timer_seq } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker))
+
+(** A SignalWorkflow with no matching registration fails the workflow
+    non-retryably. Silently acknowledging an unknown signal would make replay
+    diverge from the worker's observable state, so the run is removed only
+    after Core acknowledges the explicit failure command. *)
+let test_unhandled_signal_fails_closed () =
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_unhandled_signal"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-unhandled-signal" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_unhandled_signal" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (activation ~run_id
+       [ Protocol.Signal_workflow
+           {
+             signal_name = "missing";
+             input = [];
+             identity = "sender";
+             headers = [];
+           } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Fail_workflow
+          { failure = { message; info = Protocol.Application { non_retryable; _ }; _ } } ]
+      when non_retryable
+           && String.equal message "unhandled workflow signal: missing" ->
+        ()
+    | _ -> failwith "unhandled signal did not produce a non-retryable failure"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "unhandled signal left a native lease outstanding";
+  match Worker.poll worker with
+  | Ok Adapter.Not_ready -> ()
+  | Ok _ -> failwith "unhandled signal retained stale execution state"
+  | Error error -> failwith ("unhandled signal cleanup failed: " ^ error.message)
 
 (** A cache eviction retires the run without a command. A later activation for
     that run is rejected, proving that eviction removed the OCaml execution
@@ -1253,6 +1382,8 @@ let () =
   test_terminal_workflow ();
   test_timer_suspension_and_resume ();
   test_cancellation ();
+  test_signal_handler_runs_on_scheduler ();
+  test_unhandled_signal_fails_closed ();
   test_eviction ();
   test_eviction_after_terminal_completion ();
   test_unexpected_completion_exception_is_retried ();

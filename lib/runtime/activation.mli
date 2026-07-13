@@ -19,7 +19,9 @@ type job =
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
   (** A signal delivered by Core. It carries no command sequence because it is
-      an incoming event rather than a completion of an earlier command. *)
+      an incoming event rather than a completion of an earlier command. The
+      execution runtime resolves its name against the workflow's private
+      handler registry and preserves the full payload/metadata record. *)
   | Signal_workflow of {
       signal_name : string;
       input : Temporal_base.Codec.payload list;

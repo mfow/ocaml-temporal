@@ -2,14 +2,16 @@
 
 (** Heterogeneous workflow registration package. *)
 type registered_workflow =
-  | Workflow : ('input, 'output) Workflow.t -> registered_workflow
+  | Workflow :
+      ('input, 'output) Workflow.t * Signal.Handler.t list ->
+      registered_workflow
 
 (** Heterogeneous activity registration package. *)
 type registered_activity =
   | Activity : ('input, 'output) Activity.t -> registered_activity
 
 (** Packs a workflow definition for the heterogeneous registration list. *)
-let workflow definition = Workflow definition
+let workflow ?(signals = []) definition = Workflow (definition, signals)
 
 (** Packs an activity definition for the heterogeneous registration list. *)
 let activity definition = Activity definition
@@ -21,6 +23,9 @@ type workflow_entry =
       (* The definition supplies the registered name and the codecs used at
          the backend boundary. *)
       definition : ('input, 'output) Workflow.t;
+      (* Signal handlers remain attached to this definition through native
+         registration, preventing an accidental cross-workflow association. *)
+      signals : Signal.Handler.t list;
       (* This callback has the same input and output types as [definition], so
          the existential package cannot pair a function with another codec. *)
       implementation : ('input, 'output) Workflow.implementation;
@@ -85,7 +90,7 @@ let validate_name field value =
 
 (** Adds a workflow to the registry while rejecting duplicate names and remote
     references that do not contain executable OCaml code. *)
-let add_workflow registry (Workflow definition) =
+let add_workflow registry (Workflow (definition, signals)) =
   let name = Workflow.name definition in
   match Workflow.implementation definition with
   | None ->
@@ -97,10 +102,11 @@ let add_workflow registry (Workflow definition) =
         Error
           (Error.defect ~message:("duplicate workflow registration: " ^ name))
       else
-        Ok
-          (Name_map.add name
-             (Workflow_entry { definition; implementation })
-             registry)
+        Result.map
+          (fun () ->
+            Name_map.add name
+              (Workflow_entry { definition; signals; implementation }) registry)
+          (Interaction.create ~signals () |> Result.map (fun _ -> ()))
 
 (** Adds an activity to the registry with the same duplicate and implementation
     checks used for workflows. *)
@@ -181,8 +187,9 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                       else
                         let native_workflows =
                           Name_map.bindings workflows
-                          |> List.map (fun (_, Workflow_entry { definition; _ }) ->
+                          |> List.map (fun (_, Workflow_entry { definition; signals; _ }) ->
                                  Native_worker.register_workflow
+                                   ~signals
                                    (Workflow_private.to_base definition))
                         in
                         let native_activities =
@@ -226,7 +233,7 @@ let dispatch_workflow worker task =
       Error
         (Error.make ~category:`Workflow
            ~message:("unregistered workflow task: " ^ task.workflow_name) ())
-  | Some (Workflow_entry { definition; implementation }) -> (
+  | Some (Workflow_entry { definition; implementation; _ }) -> (
       match
         Codec.decode (Workflow.input definition) task.input
       with

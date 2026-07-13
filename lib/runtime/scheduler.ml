@@ -131,6 +131,10 @@ let spawn scheduler thunk =
 let run scheduler =
   if not scheduler.active then invalid_arg "Temporal scheduler is shut down";
   if scheduler.running then invalid_arg "Temporal scheduler is already running";
+  (* Abort is a per-drain control flag. Clearing it here lets a later
+     activation of a still-live execution drain newly queued work; a terminal
+     path seals the execution separately so this cannot revive a finished run. *)
+  scheduler.abort_requested <- false;
   scheduler.running <- true;
   Fun.protect
     ~finally:(fun () -> scheduler.running <- false)

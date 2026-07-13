@@ -611,6 +611,67 @@ fn converts_pinned_core_values_losslessly() {
     );
 }
 
+/// Proves Core's inherited continuation options do not make a valid successor
+/// activation fail admission. The first protocol slice has no OCaml fields
+/// for these options yet, so they are accepted only when continuation
+/// provenance is present; an ordinary root activation still rejects the same
+/// unrepresented metadata instead of silently dropping it.
+#[test]
+fn accepts_inherited_initialize_options_on_continuation() {
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::temporal::api::common::v1::{Memo, RetryPolicy, SearchAttributes};
+
+    let inherited = core_activation::InitializeWorkflow {
+        workflow_type: "workflow".to_owned(),
+        workflow_id: "workflow-1".to_owned(),
+        randomness_seed: 1,
+        attempt: 1,
+        first_execution_run_id: "first-run".to_owned(),
+        continued_from_execution_run_id: "previous-run".to_owned(),
+        continued_initiator: 1,
+        retry_policy: Some(RetryPolicy::default()),
+        cron_schedule: "0 * * * * *".to_owned(),
+        workflow_execution_expiration_time: Some(prost_wkt_types::Timestamp {
+            seconds: 1,
+            nanos: 2,
+        }),
+        cron_schedule_to_schedule_interval: Some(prost_wkt_types::Duration {
+            seconds: 3,
+            nanos: 4,
+        }),
+        memo: Some(Memo::default()),
+        search_attributes: Some(SearchAttributes::default()),
+        ..Default::default()
+    };
+    let activation = core_activation::WorkflowActivation {
+        run_id: "run-1".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::InitializeWorkflow(inherited.clone())),
+        }],
+        ..Default::default()
+    };
+
+    workflow_protocol::activation_from_core(&activation)
+        .expect("inherited continuation options should be compatibility metadata");
+
+    let mut root = inherited;
+    root.continued_from_execution_run_id.clear();
+    root.continued_initiator = 0;
+    let root_activation = core_activation::WorkflowActivation {
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::InitializeWorkflow(root)),
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        workflow_protocol::activation_from_core(&root_activation)
+            .expect_err("root metadata must not be silently discarded")
+            .code,
+        workflow_protocol::CoreConversionErrorCode::Unsupported
+    );
+}
+
 /// Proves an incoming signal maps from the pinned Core protobuf oneof to the
 /// lossless semantic job. Signal payloads, sender identity, and headers all
 /// participate in replay, so dropping any one of them would make a future

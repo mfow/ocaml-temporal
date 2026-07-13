@@ -1901,10 +1901,24 @@ fn eviction_reason_from_core(value: i32) -> Result<EvictionReason, CoreConversio
 /// has no scheduling meaning and therefore does not need a public semantic
 /// representation; every non-zero value remains rejected so a cron delay or
 /// another start-time delay cannot be silently discarded.
+///
+/// A successor activation is different from an ordinary root activation.
+/// Core deliberately carries the previous run's retry policy, memo, search
+/// attributes, and execution-expiration metadata into that activation, even
+/// when the command used the defaults. Those fields have no representation in
+/// this first OCaml workflow-context slice, but rejecting them would make the
+/// public continue-as-new command unusable against a real Temporal Server.
+/// Once continuation provenance is present, these inherited options are
+/// therefore accepted as compatibility metadata while the represented
+/// continuation identity and terminal payloads remain validated below.
 fn validate_initialize_subset(
     value: &core_activation::InitializeWorkflow,
 ) -> Result<(), CoreConversionError> {
-    if value.retry_policy.is_some()
+    let is_continuation = !value.continued_from_execution_run_id.is_empty()
+        || value.continued_initiator != 0
+        || value.continued_failure.is_some()
+        || value.last_completion_result.is_some();
+    let has_unsupported_root_metadata = value.retry_policy.is_some()
         || !value.cron_schedule.is_empty()
         || value.workflow_execution_expiration_time.is_some()
         || value
@@ -1912,8 +1926,8 @@ fn validate_initialize_subset(
             .as_ref()
             .is_some_and(|duration| duration.seconds != 0 || duration.nanos != 0)
         || value.memo.is_some()
-        || value.search_attributes.is_some()
-    {
+        || value.search_attributes.is_some();
+    if !is_continuation && has_unsupported_root_metadata {
         return Err(unsupported(
             "initialize workflow contains fields not represented by this protocol slice",
         ));

@@ -88,6 +88,51 @@ workflow, have the owning workflow return that result through its normal
 completion path and keep the application-level value rather than the future
 handle.
 
+### Workflow-local conditions
+
+`Temporal.Condition.wait_until` is the direct-style way to wait for
+workflow-local state. It is deliberately different from a timer or a future
+returned by an activity: it emits no Temporal command and creates no history
+event. The SDK checks the predicate immediately. If it is false, only the
+current workflow fiber is parked; the activation can continue running other
+fibers and handlers.
+
+```ocaml
+let wait_for_approval approved_by_signal =
+  let open Temporal.Result_syntax in
+  let* () =
+    Temporal.Condition.wait_until (fun () ->
+      Option.is_some !approved_by_signal)
+  in
+  Ok (Option.get !approved_by_signal)
+```
+
+The predicate should be a quick, deterministic read of workflow state. A
+signal handler or another runnable workflow fiber can mutate that state; after
+the activation's queued work drains, the SDK rechecks waiting predicates in
+registration order. A predicate that becomes true in that same activation
+therefore resumes before the activation is returned to Temporal. If the state
+has not changed, the waiter remains pending for a later activation. Do not
+perform network I/O, read wall-clock time, sleep an OS thread, or call a
+suspending SDK operation from a condition predicate; use an activity, child
+workflow, timer, or future for those operations.
+
+When a predicate can report an expected application failure, use
+`Temporal.Condition.wait_until_result`:
+
+```ocaml
+let wait_for_valid_state state =
+  Temporal.Condition.wait_until_result (fun () ->
+    if valid_state !state then Ok true
+    else Error (Temporal.Error.codec ~message:"state is invalid"))
+```
+
+Both forms return `(unit, Temporal.Error.t) result`. An exception raised by a
+predicate is contained and returned as a typed non-retryable defect. A
+condition is owned by one workflow execution and is removed when that
+execution completes, is evicted, or shuts down; stale callbacks cannot wake a
+finished workflow or retain its state.
+
 Child-workflow code is valid in the synthetic runtime and the semantic command
 translator. The native adapter also represents the complete two-stage
 resolution lifecycle: a successful start acknowledgment records the child run

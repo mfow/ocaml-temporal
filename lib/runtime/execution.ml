@@ -381,22 +381,37 @@ let process_job execution = function
     uncaught OCaml exception becomes a non-retryable defect instead of escaping
     the worker loop. *)
 let run_scheduler execution =
-  match
-    Workflow_context_store.with_context execution.context (fun () ->
-        Scheduler.run execution.scheduler)
-  with
-  | Scheduler.Failed exception_ ->
-      (* A sibling fiber may have raised after continue-as-new or terminate
-         already buffered a terminal command. Do not append a second terminal;
-         the existing command remains authoritative. *)
-      if
-        execution.terminal
-        || Workflow_context_store.has_buffered_terminal execution.context
-      then ()
-      else
-        fail execution
-          (Temporal_base.Error.defect ~message:(Printexc.to_string exception_))
-  | Scheduler.Complete | Scheduler.Blocked -> ()
+  let rec drain () =
+    let status =
+      Workflow_context_store.with_context execution.context (fun () ->
+          Scheduler.run execution.scheduler)
+    in
+    (match status with
+    | Scheduler.Failed exception_ ->
+        (* A sibling fiber may have raised after continue-as-new or terminate
+           already buffered a terminal command. Do not append a second
+           terminal; the existing command remains authoritative. *)
+        if
+          execution.terminal
+          || Workflow_context_store.has_buffered_terminal execution.context
+        then ()
+        else
+          fail execution
+            (Temporal_base.Error.defect ~message:(Printexc.to_string exception_))
+    | Scheduler.Complete | Scheduler.Blocked -> ());
+    (* Predicates are checked only after runnable workflow code has drained.
+       If a state mutation satisfies one, resolving its private signal queues a
+       continuation; drain again so that continuation participates in this
+       activation instead of waiting for a synthetic timer or later task. *)
+    if execution.terminal || execution.evicted then ()
+    else
+      let woke =
+        Workflow_context_store.with_context execution.context (fun () ->
+            Workflow_context_store.notify_conditions execution.context)
+      in
+      if woke then drain ()
+  in
+  drain ()
 
 (** Releases every paused fiber and pending operation table for this execution.
     Safe to call more than once: the context and scheduler ignore a second

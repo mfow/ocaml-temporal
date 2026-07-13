@@ -54,6 +54,17 @@ val create_signal :
   (unit, Temporal_base.Error.t) Future_store.t
   * (unit, Temporal_base.Error.t) Future_store.resolver
 
+(** Evaluates a condition predicate immediately and, if false, suspends the
+    current workflow fiber on the execution's private condition store. *)
+val wait_until :
+  t ->
+  predicate:(unit -> (bool, Temporal_base.Error.t) result) ->
+  (unit, Temporal_base.Error.t) result
+
+(** Re-evaluates all false condition predicates in deterministic registration
+    order and reports whether any waiter was settled. *)
+val notify_conditions : t -> bool
+
 (** Creates a detached failed future for an operation attempted without an
     active workflow context. *)
 val detached_error :

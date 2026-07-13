@@ -1,11 +1,11 @@
 (** Driver process for the two-OCaml-binary live acceptance test.
 
     This executable is a deliberately small, typed harness. It starts the
-    fan-out, timer, ordinary-retry, heartbeat-detail/retry, parent/child
-    success, parent/child failure, parent/child cancellation, typed-failure,
-    and long-running cancellation scenarios before waiting for any of them,
-    then checks the exact terminal outcomes returned by the public client API.
-    Without
+    fan-out, timer, continue-as-new, ordinary-retry, heartbeat-detail/retry,
+    parent/child success, parent/child failure, parent/child cancellation,
+    typed-failure, and long-running cancellation scenarios before waiting for
+    any of them, then checks the exact terminal outcomes returned by the public
+    client API. Without
     [TEMPORAL_TWO_BINARY_LIVE=1] the process exits with a distinct status
     instead of accidentally exercising the in-memory [mock://] backend and
     giving a false live-smoke signal. *)
@@ -326,6 +326,28 @@ let wait_workflow handle =
         ~duration_ms:(elapsed_ms started) ();
       result
 
+(** Waits for the original exact run of a continue-as-new workflow, then
+    explicitly reconstructs and waits on the returned successor identity. The
+    two waits are intentionally separate: following the successor must never
+    be implicit in [Client.wait], because callers may need to inspect or stop
+    exactly the run they started. *)
+let wait_continued_workflow client ~workflow ~operation handle =
+  match wait_workflow handle with
+  | Error error -> Error error
+  | Ok (Client.Continued_as_new execution) -> (
+      phase ~operation ~status:"successor"
+        ~workflow_id:execution.workflow_id ~run_id:execution.run_id ();
+      match Client.follow client ~workflow execution with
+      | Error error -> Error error
+      | Ok successor_handle -> wait_workflow successor_handle)
+  | Ok outcome ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf
+                "%s did not continue as new (terminal outcome %s)" operation
+                (terminal_kind outcome)))
+
 (** Runs every live smoke scenario through only the public client surface. *)
 let run () =
   match require_live_gate () with
@@ -373,6 +395,11 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-timer-then-activity" ~input:"smoke"
         in
+        let* continue_handle =
+          start_workflow client ~workflow:Definitions.continue_as_new
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-continue-as-new" ~input:"first"
+        in
         let* retry_handle =
           start_workflow client ~workflow:Definitions.activity_retry
             ~task_queue:Definitions.task_queue ~id:"two-binary-activity-retry"
@@ -408,16 +435,17 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-long-running-cancellation" ~input:cancellation_token
         in
-        (* All nine starts intentionally happen before the first wait. The
+        (* All ten starts intentionally happen before the first wait. The
            cancellation workflow's marker activity proves that its timer and
            marker commands were accepted in one activation before this exact
            run is cancelled; the timer keeps the execution outstanding. The
            heartbeat workflow is also already outstanding here, so its retry
            runs concurrently with the other live server work instead of being
            mistaken for a sequential local callback. The two child-focused
-           parents are likewise started before any wait: one propagates a
-           terminal child failure and the other waits for Core's child
-           cancellation acknowledgement. *)
+           parents and the continuation are likewise started before any wait:
+           one propagates a terminal child failure, the other waits for Core's
+           child cancellation acknowledgement, and the continuation proves
+           that successor waiting remains an explicit client operation. *)
         let* () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token
         in
@@ -431,6 +459,14 @@ let run () =
         let* () =
           require_completed "smoke.timer_then_activity" "SMOKE:TIMER"
             (Ok timer_result)
+        in
+        let* continued_result =
+          wait_continued_workflow client ~workflow:Definitions.continue_as_new
+            ~operation:"smoke.continue_as_new" continue_handle
+        in
+        let* () =
+          require_completed "smoke.continue_as_new" "SMOKE:CONTINUED:SECOND"
+            (Ok continued_result)
         in
         let* retry_result = wait_workflow retry_handle in
         let* () =

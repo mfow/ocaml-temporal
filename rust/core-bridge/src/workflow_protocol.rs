@@ -454,7 +454,9 @@ pub enum ActivationJob {
         randomness_seed: String,
         attempt: i32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        context: Option<InitializeContext>,
+        /// Boxed because initialization carries substantially more metadata
+        /// than the other activation jobs; serde keeps the same JSON shape.
+        context: Option<Box<InitializeContext>>,
     },
     ResolveActivity {
         seq: u32,
@@ -1960,7 +1962,7 @@ pub fn activation_from_core(
                             .collect::<Result<_, _>>()?,
                         randomness_seed: value.randomness_seed.to_string(),
                         attempt: value.attempt,
-                        context: Some(InitializeContext {
+                        context: Some(Box::new(InitializeContext {
                             headers: value
                                 .headers
                                 .iter()
@@ -2008,7 +2010,7 @@ pub fn activation_from_core(
                                 fairness_weight_bits: priority.fairness_weight.to_bits(),
                             }),
                             continuation: continuation_from_core(value)?,
-                        }),
+                        })),
                     })
                 }
                 Variant::ResolveActivity(value) => {

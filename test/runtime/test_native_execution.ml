@@ -312,6 +312,39 @@ let test_signal_workflow_translation_and_activation () =
   if completion.commands <> [] then
     failwith "an unhandled signal emitted an unexpected workflow command"
 
+(** Confirms that both malformed identity forms are rejected before a signal
+    can become runtime state.  OCaml strings may contain arbitrary bytes, so
+    this exercises the boundary that JSON received from Rust cannot express
+    for invalid UTF-8 but an in-process caller could otherwise bypass. *)
+let test_signal_identity_validation () =
+  let signal identity =
+    Protocol.Signal_workflow
+      {
+        signal_name = "order_updated";
+        input = [];
+        identity;
+        headers = [];
+      }
+  in
+  let expect_rejected label identity =
+    match Native_execution.translate_activation (activation [ signal identity ]) with
+    | Ok _ -> failwith (label ^ " signal identity was accepted")
+    | Error error ->
+        let view = Native_execution.error_view error in
+        if not (String.equal view.code "invalid_message") then
+          failwith (label ^ " returned the wrong error code");
+        (* Invalid UTF-8 is rejected by the lower-level JSON foundation before
+           the semantic decoder can attach the nested identity path. *)
+        if
+          not
+            (String.equal view.path "$.jobs[0].identity"
+            || String.equal view.path "$")
+        then
+          failwith (label ^ " returned the wrong error path")
+  in
+  expect_rejected "NUL" "sender\000";
+  expect_rejected "invalid UTF-8" (String.make 1 (Char.chr 0xff))
+
 (** Confirms cancellation and cache-removal facts are retained instead of being
     silently lost by marker-only runtime jobs. *)
 let test_cancellation_and_eviction () =
@@ -741,6 +774,7 @@ let () =
   test_activity_failure_details_are_preserved ();
   test_child_resolution_translation ();
   test_signal_workflow_translation_and_activation ();
+  test_signal_identity_validation ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();
   test_activate_installs_workflow_time ();

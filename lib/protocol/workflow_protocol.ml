@@ -275,6 +275,19 @@ let valid_utf_8 value =
   in
   loop 0
 
+(** Validates text that may be empty but still crosses the Core/JSON boundary.
+    Signal sender identities are opaque to the workflow, yet they are carried
+    in Core's string field and later replayed.  Keeping the check separate from
+    [identifier] allows an empty identity while rejecting values that cannot be
+    represented deterministically by the bilateral protocol. *)
+let bounded_text path value =
+  let* value = string path value in
+  if String.contains value '\000' then
+    Error (invalid path "text must not contain NUL")
+  else if not (valid_utf_8 value) then
+    Error (invalid path "text must be valid UTF-8")
+  else Ok value
+
 (** Validates a cancellation reason before it becomes part of history.  A
     reason is human-readable text rather than an identifier, but it still must
     be non-empty, bounded, UTF-8, and free of embedded NUL bytes for every
@@ -1181,7 +1194,7 @@ let activation_job path json =
       let* input_json = field path "input" entries in
       let* input = list (path ^ ".input") payload input_json in
       let* identity_json = field path "identity" entries in
-      let* identity = string (path ^ ".identity") identity_json in
+      let* identity = bounded_text (path ^ ".identity") identity_json in
       let* headers_json = field path "headers" entries in
       let* headers = payload_map (path ^ ".headers") headers_json in
       Ok (Signal_workflow { signal_name; input; identity; headers })

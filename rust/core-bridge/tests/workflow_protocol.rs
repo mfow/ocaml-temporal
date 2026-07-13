@@ -561,7 +561,7 @@ fn converts_signal_workflow_activation_losslessly() {
             variant: Some(Variant::SignalWorkflow(core_activation::SignalWorkflow {
                 signal_name: "order_updated".to_owned(),
                 input: vec![payload.clone()],
-                identity: "sender".to_owned(),
+                identity: "séndér".to_owned(),
                 headers: [("trace".to_owned(), payload)].into(),
             })),
         }],
@@ -579,7 +579,7 @@ fn converts_signal_workflow_activation_losslessly() {
             },
         ] => {
             assert_eq!(signal_name, "order_updated");
-            assert_eq!(identity, "sender");
+            assert_eq!(identity, "séndér");
             assert_eq!(input.len(), 1);
             assert_eq!(headers.len(), 1);
             assert_eq!(input[0].data, b"signal-value");
@@ -592,6 +592,58 @@ fn converts_signal_workflow_activation_losslessly() {
         workflow_protocol::decode_activation(&encoded).unwrap(),
         semantic
     );
+}
+
+/// Proves a sender identity cannot smuggle an embedded NUL through the
+/// semantic encoder. Rust strings are UTF-8 by construction, so the bilateral
+/// UTF-8 invariant is represented by accepting a non-ASCII identity in the
+/// normal round-trip above while this test covers the byte-level rejection
+/// that Rust can observe directly.
+#[test]
+fn rejects_signal_identity_with_nul() {
+    use core_activation::workflow_activation_job::Variant;
+
+    let activation = core_activation::WorkflowActivation {
+        run_id: "run-signal-invalid".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::SignalWorkflow(core_activation::SignalWorkflow {
+                signal_name: "order_updated".to_owned(),
+                input: Vec::new(),
+                identity: "sender\0".to_owned(),
+                headers: Default::default(),
+            })),
+        }],
+        ..Default::default()
+    };
+
+    let error = workflow_protocol::activation_from_core(&activation)
+        .expect_err("NUL-containing signal identity was accepted");
+    assert_eq!(
+        error.code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+
+    let semantic = workflow_protocol::Activation {
+        run_id: "run-signal-invalid".to_owned(),
+        timestamp: Some(workflow_protocol::Timestamp {
+            seconds: 0,
+            nanoseconds: 0,
+        }),
+        is_replaying: false,
+        history_length: 0,
+        jobs: vec![workflow_protocol::ActivationJob::SignalWorkflow {
+            signal_name: "order_updated".to_owned(),
+            input: Vec::new(),
+            identity: "sender\0".to_owned(),
+            headers: BTreeMap::new(),
+        }],
+        metadata: None,
+    };
+    let error = workflow_protocol::encode_activation(&semantic)
+        .expect_err("NUL-containing semantic identity was accepted");
+    assert_eq!(error.code, "invalid_message");
+    assert!(error.path.contains("identity"));
 }
 
 /// Proves ordinary first-task metadata survives Core conversion and semantic

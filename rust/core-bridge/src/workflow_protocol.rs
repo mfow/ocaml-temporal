@@ -635,6 +635,30 @@ fn bounded_text(value: &str, path: &str) -> Result<(), ProtocolError> {
     }
 }
 
+/// Validates a signal sender identity carried in Core's ordinary text field.
+///
+/// Unlike a Temporal identifier, an identity may be empty, but it still must
+/// be safe to replay through the semantic JSON document.  Rust `&str` values
+/// are UTF-8 by construction; retaining the explicit check beside the OCaml
+/// validator makes that invariant visible at this bilateral boundary and keeps
+/// the rule intact if this conversion is later changed to accept raw bytes.
+fn signal_identity(value: &str, path: &str) -> Result<(), ProtocolError> {
+    bounded_text(value, path)?;
+    if value.as_bytes().contains(&0) {
+        return Err(ProtocolError::invalid(
+            path,
+            "signal identity must not contain NUL",
+        ));
+    }
+    if std::str::from_utf8(value.as_bytes()).is_err() {
+        return Err(ProtocolError::invalid(
+            path,
+            "signal identity must be valid UTF-8",
+        ));
+    }
+    Ok(())
+}
+
 /// Validates exact protobuf time component ranges.
 pub(crate) fn validate_time(
     seconds: i64,
@@ -974,7 +998,7 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                 ..
             } => {
                 identifier(signal_name, "$.jobs.signal_name")?;
-                bounded_text(identity, "$.jobs.identity")?;
+                signal_identity(identity, "$.jobs.identity")?;
                 for key in headers.keys() {
                     identifier(key, "$.jobs.headers")?;
                 }

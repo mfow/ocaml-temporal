@@ -11,6 +11,16 @@ type t
     of the terminal payload. *)
 type ('input, 'output) handle
 
+(** An exact workflow/run identity returned when a workflow continues as new.
+    It contains no codec or client ownership; use [follow] with the original
+    client and typed workflow definition to construct a handle for this run. *)
+type execution = {
+  (* Durable workflow identity shared by the original and successor runs. *)
+  workflow_id : string;
+  (* Server-issued identity of the successor run. *)
+  run_id : string;
+}
+
 (** Terminal outcomes are values so workflow failures do not become control
     flow exceptions. The outer [result] of [wait] is reserved for bridge or
     payload transport errors. *)
@@ -27,12 +37,7 @@ type 'output terminal_result =
   | Timed_out of Error.t
   (* The run continued as new; the caller decides whether to wait on the
      returned successor identity. *)
-  | Continued_as_new of {
-      (* Durable workflow ID of the successor execution. *)
-      workflow_id : string;
-      (* Server-issued run ID of the successor execution. *)
-      run_id : string;
-    }
+  | Continued_as_new of execution
 
 (** Connects to the configured Temporal endpoint. [target_url] is copied into
     the private backend graph and [namespace] is required for every operation.
@@ -69,6 +74,18 @@ val start :
   id:string ->
   input:'input ->
   unit ->
+  (('input, 'output) handle, Error.t) result
+
+(** Rebuilds a typed exact-run handle for a continuation returned by [wait].
+    This does not start a workflow or follow a run implicitly: it only combines
+    the caller's existing client, the supplied workflow definition's codecs,
+    and the successor identity. Both identity fields must be non-empty,
+    NUL-free, and no more than 65,536 bytes; malformed values are returned as
+    typed defects before any backend operation. *)
+val follow :
+  t ->
+  workflow:('input, 'output) Workflow.t ->
+  execution ->
   (('input, 'output) handle, Error.t) result
 
 (** Waits for the exact workflow ID and run ID returned by [start]. A

@@ -270,6 +270,16 @@ successor implicitly. See
 [`client-wait-request.schema.json`](../schemas/bridge/client-wait-request.schema.json)
 and [`client-wait-response.schema.json`](../schemas/bridge/client-wait-response.schema.json).
 
+The public client exposes the successor as an opaque-to-codec
+`Temporal.Client.execution` value containing the validated workflow and run
+identity. `Temporal.Client.follow client ~workflow successor` combines that
+identity with the caller's existing client and workflow definition to produce
+a typed exact-run handle. This is not another protocol message: no start or
+lookup is sent to Temporal, and no successor is selected implicitly. The
+operation only checks the local lifecycle bit and the same non-empty,
+NUL-free, 65,536-byte identifier limits used by `start` and `wait`; malformed
+input or a shut-down client is returned as an ordinary `Error.t` result.
+
 ## Structured failures
 
 Routine transport and Core failures do not raise OCaml exceptions. Rust emits

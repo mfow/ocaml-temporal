@@ -14,6 +14,22 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Typed continue-as-new successor handles
+
+Status: locally verified; no live Temporal Server acceptance is claimed for
+this API slice.
+
+`Temporal.Client.wait` already returns a validated successor identity when an
+exact run continues as new. The public `Temporal.Client.execution` record and
+`Temporal.Client.follow` helper now let an application explicitly combine that
+identity with the existing client and the original typed workflow definition.
+The helper performs no implicit start or latest-run lookup, retains the
+workflow codecs and client ownership, rejects malformed identifiers as typed
+defects, and refuses to construct a handle after client shutdown. Unit tests
+cover codec-preserving exact-run handle reconstruction, malformed successor
+identities, and the closed-client lifecycle boundary. Live continued-as-new
+coverage remains pending in the acceptance roadmap.
+
 ## 2026-07-13: Complete nine-scenario Temporal smoke evidence (#210)
 
 Status: live-verified in the full [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859),

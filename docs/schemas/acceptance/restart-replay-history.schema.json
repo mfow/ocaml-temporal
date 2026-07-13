@@ -41,6 +41,7 @@
             "WorkflowTaskStarted",
             "WorkflowTaskCompleted",
             "WorkflowTaskFailed",
+            "WorkflowTaskTimedOut",
             "TimerStarted",
             "TimerFired",
             "TimerCanceled",

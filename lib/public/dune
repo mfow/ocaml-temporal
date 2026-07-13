@@ -18,4 +18,5 @@
   temporal_protocol
   temporal_runtime
   temporal_sdk_supervisor
+  yojson
   threads))

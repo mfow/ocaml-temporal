@@ -5,6 +5,7 @@
     {
       "step": "stack_ready",
       "status": "ok",
+      "stale_project_volumes_before_cleanup": 0,
       "remaining_project_volumes_before_start": 0,
       "temporal_healthy": true
     },
@@ -64,6 +65,21 @@
       "step": "driver_completed",
       "status": "ok",
       "outcome": "completed"
+    },
+    {
+      "step": "generation_two_stopped",
+      "status": "ok",
+      "generation": 2,
+      "container_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "exit_code": 0,
+      "shutdown_marker": true
+    },
+    {
+      "step": "generation_two_removed",
+      "status": "ok",
+      "generation": 2,
+      "container_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "remaining_worker_containers": 0
     },
     {
       "step": "postgres_volume_removed",

@@ -1,32 +1,32 @@
 # Worker restart and replay acceptance design
 
-**Status: bounded native replay plumbing implemented; live restart acceptance
-design only.** The private Rust bridge now validates and feeds one history at
-a time into a workflow-only Temporal Core replay worker. This document still
-describes the next real-Temporal acceptance scenario: it does not claim that
-worker restart, replay, or sticky-cache behavior has been verified yet. The
-bridge format and ownership rules are documented in the [internal replay
-bridge reference](replay-bridge.md). The existing
-[`make test-temporal-integration`](../../Makefile) gate remains the source of
-the current live evidence; this design must be implemented and pass in CI
-before the coverage matrix is changed.
+**Status: live controller implemented; clean-stack execution is awaiting a
+successful CI run.** The private Rust bridge validates and feeds one history at
+a time into a workflow-only Temporal Core replay worker. The public worker now
+reports bounded activation metadata through a private OCaml callback, and the
+Compose fixture replaces generation 1 with a fresh generation 2 while an
+independent OCaml driver waits for the exact run. This document describes the
+implemented acceptance contract; it does not claim that a live restart/replay
+run has passed until its Docker/CI evidence is recorded. Sticky-cache eviction
+remains a separate unimplemented live scenario. The bridge format and
+ownership rules are documented in the [internal replay bridge
+reference](replay-bridge.md).
 
-The current `make test-temporal-worker-restart` target is an offline contract
-check. It runs the checked-in normalized-history and diagnostics fixtures
-through the strict validator described in the
-[diagnostic contract](worker-restart-replay-diagnostics.md), including the
-ordered controller lifecycle fixture that proves the required stop/remove/
-replace/cleanup observations. It does not start Docker, PostgreSQL, Temporal
-Server, an OCaml worker, or an OCaml client. The live coverage matrix therefore
-still marks restart, replay, and cache eviction as planned rather than live
-evidence.
+`make test-temporal-worker-restart-contract` is the fast Docker-free contract
+gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
+Temporal Server, two-generation OCaml worker, and OCaml driver sequence, while
+`make test-temporal-worker-restart` runs both. The standalone CI integration job
+invokes this target after the existing twelve-result smoke. A local cold ARM64
+attempt did not reach the acceptance assertions because the Docker daemon ran
+out of storage during the native build; that is an infrastructure failure, not
+positive replay evidence.
 
 ## What this scenario proves
 
 The existing two-process acceptance fixture has historical live evidence for
 the baseline success paths while one worker remains alive. It does not stop or
 replace a worker, inspect server history, or expose an `is_replaying` marker.
-The next scenario must prove a narrower recovery contract:
+The live restart target proves a narrower recovery contract:
 
 1. an OCaml test-driver starts one workflow through `Temporal.Client` and waits
    for that exact workflow/run pair;
@@ -59,25 +59,27 @@ Temporal history query to know when the first timer has been recorded. It is
 not an application worker and does not change the user's rule that the OCaml
 container which starts workflows is just a test runner asserting a result.
 
-## Proposed workflow
+## Workflow under test
 
-The fixture should add a deterministic workflow named
-`smoke.worker_restart_replay`. Its body should contain only replay-safe SDK
-operations and should be equivalent to:
+The fixture adds a deterministic workflow named
+`smoke.worker_restart_replay`. Its body contains only replay-safe SDK
+operations and is equivalent to:
 
 ```ocaml
 Temporal.Workflow.define ~name:"smoke.worker_restart_replay"
   ~input:Temporal.Codec.string ~output:Temporal.Codec.string
-  (fun seed ->
-    match Temporal.Workflow.sleep (Temporal.Duration.of_ms 5_000L) with
+  (fun _seed ->
+    match Temporal.Workflow.sleep (Temporal.Duration.of_ms 60_000L) with
     | Error error -> Error error
     | Ok () ->
-        Temporal.Activity.execute restart_transform
-          (seed ^ ":after-replay"))
+        let open Temporal.Result_syntax in
+        let* transformed =
+          Temporal.Activity.execute mock_transform "after-replay"
+        in
+        Ok ("SMOKE:" ^ transformed))
 ```
 
-The exact API spelling may change with the public workflow surface, but the
-behavioral contract must remain:
+This is the current fixture implementation. Its behavioral contract is:
 
 - the initial workflow task emits one durable timer before the worker is
   stopped;
@@ -101,12 +103,10 @@ ID returned by `Client.start` rather than looking up a later run by workflow ID.
 The restart boundary needs evidence that generation 1 actually committed the
 timer. A fixed sleep in the controller is not sufficient: it can stop the
 worker before the first workflow task, or after the timer has already fired.
-The current `test-temporal-worker-restart` target does not execute this
-sequence; it remains the Docker-free contract gate above. The offline
-controller fixture and schema define the exact record order that the live
-controller must later emit, but they do not substitute for observations from
-Docker, Temporal, or the worker processes. Once a live Compose controller is
-implemented, it should use this bounded sequence:
+The live target uses the machine-readable Temporal CLI response, the exact run
+identity from `workflow describe`, and the strict normalized-history validator.
+It emits the ordered controller record defined by the checked-in schema and
+uses this bounded sequence:
 
 1. The live restart target invokes the same clean-stack setup as the existing
    integration target. `temporal-clean` runs before startup and in an exit
@@ -154,11 +154,10 @@ second OCaml worker hidden inside the test client.
 
 ## Replay evidence and limits
 
-The internal semantic activation currently retains Core's `is_replaying` bit,
-history length, run ID, and cache-removal metadata, but no public worker
-callback or live diagnostic path exposes those fields yet. The future fixture
-should emit a privacy-safe diagnostic record when it receives the post-restart
-activation, containing only:
+The internal semantic activation retains Core's `is_replaying` bit, history
+length, run ID, and cache-removal metadata. The private worker callback writes a
+privacy-safe diagnostic record when it receives the initial and post-restart
+activations, containing only:
 
 ```text
 phase=replay
@@ -169,13 +168,11 @@ is_replaying=true
 history_length=<positive-value>
 ```
 
-The initial activation must record `is_replaying=false`; the post-restart
-activation for the same run must record `is_replaying=true`. Payload bytes,
-workflow inputs, and activity output must not be written to logs. If the
-worker cannot provide this marker, a passing terminal result may be reported
-as **worker restarted and continued**, but it must not be presented as live
-proof of replay. The coverage document should stay red for replay until the
-marker and its focused tests exist.
+The initial activation records `is_replaying=false`; the post-restart
+activation for the same run records `is_replaying=true`. Payload bytes,
+workflow inputs, and activity output are not written to the diagnostic file. A
+live run is accepted only when this marker is present and the exact terminal
+result also passes; a terminal result without it is not replay evidence.
 
 A worker restart is not the same thing as a Temporal `RemoveFromCache`
 activation. Losing an in-memory sticky execution while replacing a worker is
@@ -266,24 +263,27 @@ The implementation should land as a separate acceptance slice, in this order:
 
 1. Add the deterministic workflow and a test-only activity diagnostic marker;
    add unit/runtime tests proving that the workflow emits the same timer and
-   activity commands when replayed with identical activation history.
+   activity commands when replayed with identical activation history. **Done.**
 2. Add a bounded, machine-readable history synchronizer and generation-aware
    worker readiness/replay markers to the fixture. Have the live controller
    emit the ordered records defined by
    [`restart-replay-controller.schema.json`](../schemas/acceptance/restart-replay-controller.schema.json),
-   and keep all payload logging disabled.
+   and keep all payload logging disabled. **Done; the offline contract passes.**
 3. Add a dedicated live Make target and CI job (one supported OCaml version)
-   separate from the current Docker-free contract target. It should start the
-   driver in the background, perform the controlled worker replacement, wait
-   for the exact assertion, and always remove the PostgreSQL volume.
+   separate from the Docker-free contract target. It should start the driver in
+   the background, perform the controlled worker replacement, wait for the
+   exact assertion, and always remove the PostgreSQL volume. **Done; the CI
+   job now invokes it.**
 4. Run the acceptance repeatedly from a clean stack, including a failure-path
    run that proves diagnostics appear before cleanup. Verify the target on both
    Linux `amd64` and `arm64` when the existing live job's platform policy
    permits it; native Windows/macOS jobs must not run this Linux Compose test.
-5. Only after a green CI run, update
+   **Pending a successful Docker/CI run.**
+5. After a green CI run, update
    [`live-acceptance-coverage.md`](live-acceptance-coverage.md),
    [`feature-coverage.md`](feature-coverage.md), and `docs/progress.md` with
-   the commit and run URL. Until then, leave restart/replay marked planned.
+   the commit and run URL. Until then, describe restart/replay as implemented
+   but unverified rather than as live-supported.
 
 This sequencing keeps a passing terminal result from being mistaken for
 replay evidence and keeps the current one-shot driver/long-lived-worker

@@ -34,11 +34,14 @@ require_text 'pg_isready'
 require_text 'nc -z localhost 7233'
 require_text 'smoke-worker:'
 require_text 'smoke-driver:'
+require_text 'smoke-restart-driver:'
 require_text 'TEMPORAL_TWO_BINARY_LIVE: "1"'
 require_text 'smoke_worker.exe'
 require_text 'smoke_driver.exe'
+require_text 'restart_driver.exe'
 require_text '--build-dir=/workspace/_build/smoke-worker'
 require_text '--build-dir=/workspace/_build/smoke-driver'
+require_text '--build-dir=/workspace/_build/smoke-restart-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "300"'
 require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready'
 require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
@@ -172,7 +175,7 @@ if ! grep -F 'up --force-recreate --detach --build --wait smoke-worker' "$makefi
   echo "worker startup must recreate the container before relying on its /tmp readiness marker" >&2
   exit 1
 fi
-if ! grep -F 'run --rm --no-deps smoke-driver' "$makefile" >/dev/null; then
+if ! grep -E 'run .*--no-deps smoke-driver' "$makefile" >/dev/null; then
   echo "the starter/assertion binary must run independently without creating another worker" >&2
   exit 1
 fi
@@ -189,7 +192,7 @@ if ! grep -F '$(MAKE) temporal-clean;' "$makefile" >/dev/null \
   echo "integration setup and its failure trap must both invoke temporal-clean" >&2
   exit 1
 fi
-for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration; do
+for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-live; do
   if ! grep -E "^${target}:" "$makefile" >/dev/null; then
     echo "Makefile does not define required target: $target" >&2
     exit 1
@@ -222,7 +225,8 @@ require_workflow_text() {
 }
 require_workflow_text 'name: Temporal/PostgreSQL integration smoke (OCaml 5.5)'
 require_workflow_text 'OCAML_VERSION: "5.5"'
-require_workflow_text 'run: make test-temporal-integration'
+require_workflow_text 'make test-temporal-integration'
+require_workflow_text 'make test-temporal-worker-restart'
 require_workflow_text 'make --silent cargo-metadata'
 
 require_absent() {
@@ -239,6 +243,7 @@ require_absent "$root/scripts/check-temporal-stack.sh"
 require_absent "$root/scripts/setup-temporal-postgres.sh"
 test -x "$fixture/scripts/setup-temporal-postgres.sh"
 test -x "$fixture/scripts/check-temporal-stack.sh"
+test -x "$fixture/scripts/validate-restart-replay-identity.sh"
 
 if ! grep -F 'test/integration/temporal' "$makefile" >/dev/null; then
   echo "root Make entrypoints must select the nested Compose fixture" >&2

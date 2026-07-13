@@ -419,9 +419,21 @@ let shutdown worker =
          loop that is making the call. Leave the private graph open and mark
          this admission failure retryable: the public wrapper reopens its
          admission flag, and a later call from another Domain can perform the
-         ordinary drain-then-native-shutdown path once the active loop exits. *)
-      Atomic.set worker.closed false;
-      Atomic.set worker.shutdown_retryable true;
+         ordinary drain-then-native-shutdown path once the active loop exits.
+
+         Critically, this branch must NOT write [worker.closed]. It never set
+         [closed] to [true] (it returns before the gate below), so any write
+         could only undo a [true] published by a concurrent [shutdown] on
+         another Domain -- clearing the stop request and stranding the loop,
+         which then holds [run_mutex] forever and deadlocks that caller. The
+         policy fixes the action to [Leave_unchanged] for exactly this reason. *)
+      let closed_action, shutdown_retryable =
+        Worker_policy.reentrant_same_domain_shutdown
+      in
+      (match closed_action with
+       | Worker_policy.Leave_unchanged -> ()
+       | Worker_policy.Write value -> Atomic.set worker.closed value);
+      Atomic.set worker.shutdown_retryable shutdown_retryable;
       Error
         (Base_error.defect
            ~message:

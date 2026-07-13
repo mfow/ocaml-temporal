@@ -218,7 +218,12 @@ work but retains its maps and schedules a detached retry, with the finalizer
 as a further last-resort path. A same-Domain shutdown call is different: no
 teardown has started, so it returns a retryable defect without closing the
 private graph; a later call from another Domain can wait for the run mutex and
-complete shutdown. Repeated successful shutdown calls are idempotent.
+complete shutdown. That branch must not write the shared stop flag: a
+concurrent shutdown on another Domain may already have set it to stop the run
+loop, and any write here would race that caller and could strand the loop,
+holding the run mutex forever. It therefore only marks the failure retryable
+and leaves the stop flag exactly as observed. Repeated successful shutdown
+calls are idempotent.
 
 The semantic translator accepts child-start commands with the workflow identity,
 input, and optional retry policy represented by the protocol. Core child options

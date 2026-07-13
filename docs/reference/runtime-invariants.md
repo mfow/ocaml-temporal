@@ -204,11 +204,13 @@ and bridge, read the [documentation guide](../README.md) first.
   completion and never emits workflow commands.
 - A valid value with no lossless representation is an explicit typed
   `unsupported` error. Activity commands carry every exposed Core field, and
-  child-start commands carry the workflow identity and input payload. Child
-  resolution retains start run IDs, terminal payloads, typed failure info, and
-  cancellation state. Options not yet exposed by the OCaml runtime remain
-  explicit Core defaults; the adapter never fabricates a language-level option
-  or silently drops a non-default value.
+  child-start commands carry the workflow identity and input payload. Rust
+  injects the already validated worker namespace into each Core child-start
+  command because Core copies it into child failure metadata. Child resolution
+  retains start run IDs, terminal payloads, typed failure info, and cancellation
+  state. Other options not yet exposed by the OCaml runtime remain explicit
+  Core defaults; the adapter never fabricates a language-level option or
+  silently drops a non-default value.
 - Unknown or duplicate operation sequences are bridge defects. They fail the
   execution rather than being ignored, because ignoring them would make
   replay diverge from the history supplied by Core.

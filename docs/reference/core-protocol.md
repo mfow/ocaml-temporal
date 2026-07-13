@@ -264,11 +264,16 @@ Both language decoders validate the complete child-resolution object before an
 activation reaches the runtime. Required identifiers must be nonempty and
 within the UTF-8 safety ceiling; outcome discriminators, start causes, nullable
 payloads, and recursive failure objects are closed and type-checked; child
-failure event IDs cannot be negative. A malformed document returns the typed
-`invalid_message` protocol error and has no lifecycle side effect. Runtime
-ordering checks happen only after this parse boundary: a terminal-before-start,
-duplicate start, duplicate terminal, or unknown sequence returns a typed bridge
-defect and leaves the existing resolver state unchanged.
+failure event IDs cannot be negative. One Temporal Core edge state is explicit:
+when cancellation is reported before `ChildWorkflowExecutionStarted`, Core
+does not know a child run ID and sends `run_id: ""` with
+`started_event_id: 0`. The bilateral validators preserve that empty value only
+for this pre-start state; a child failure after start must carry a nonempty run
+ID. A malformed document returns the typed `invalid_message` protocol error and
+has no lifecycle side effect. Runtime ordering checks happen only after this
+parse boundary: a terminal-before-start, duplicate start, duplicate terminal,
+or unknown sequence returns a typed bridge defect and leaves the existing
+resolver state unchanged.
 
 A completion is a closed object sent from OCaml to Rust. Its ordered commands
 cover scheduling and requesting cancellation of remote activities, starting and
@@ -276,10 +281,16 @@ cancelling a child workflow, starting and cancelling timers, and completing,
 failing, or cancelling the workflow. A child start includes an explicit
 cancellation policy, and a later cancel command carries a validated reason;
 Core applies that policy while preserving command order for replay. The child
-command deliberately omits namespace, task queue, timeout,
-retry, header, memo, search-attribute, versioning, and priority fields because
-the current OCaml runtime does not expose them; Rust fills those Core fields
-with explicit defaults and rejects non-default values on reverse conversion.
+command deliberately omits namespace, task queue, timeout, retry, header,
+memo, search-attribute, versioning, and priority fields because the current
+OCaml runtime does not expose them. For a live or replay worker, Rust injects
+the worker's already-validated namespace into Core's child-start command before
+submission; this is worker configuration, not workflow input. The remaining
+omitted Core fields receive explicit defaults and non-default values are
+rejected on reverse conversion. Injecting the namespace is important because
+Core copies it into child failure metadata, including cancellation before the
+child has a run ID; leaving it at Core's empty protobuf default would make that
+otherwise valid activation fail the semantic protocol validator.
 Scheduled activities require at least a schedule-to-close or start-to-close
 timeout. They may also carry a closed retry-policy object with positive initial
 and nondecreasing maximum intervals, a finite backoff coefficient at least 1.0,
@@ -327,10 +338,11 @@ semantics. The successor run is not followed by the bridge or by
 
 Temporal identifiers must be nonempty but use the protocol's 65,536-byte text
 safety ceiling rather than an invented 255-byte server policy; the server's
-identifier policy is configurable. Application failure `type` is bounded text
-and may be empty. Activity failure event IDs are nonnegative and worker
-identity is bounded text. Durations use nonnegative seconds plus 0 through
-999,999,999 nanoseconds;
+identifier policy is configurable. The one intentional exception is the
+pre-start child failure `run_id` described above. Application failure `type` is
+bounded text and may be empty. Activity failure event IDs are nonnegative and
+worker identity is bounded text. Durations use nonnegative seconds plus 0
+through 999,999,999 nanoseconds;
 timestamps allow signed seconds with the same nanosecond range. Payload metadata
 and initialization header maps normalize keys lexicographically on both sides.
 Payload values preserve opaque data and metadata bytes using the canonical

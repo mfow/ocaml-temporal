@@ -54,6 +54,7 @@ fn accepts_and_normalizes_workflow_activations() {
         "realistic-initialize",
         "child-initialize",
         "child-resolution",
+        "child-cancellation-before-start",
     ] {
         let input = fixture(&["valid", &format!("{name}.input.json")]);
         let expected = fixture(&["valid", &format!("{name}.normalized.json")]);
@@ -145,6 +146,64 @@ fn converts_start_child_workflow_command() {
             .code,
         workflow_protocol::CoreConversionErrorCode::Unsupported
     );
+}
+
+/// Ensures a live worker supplies its configured namespace to Core even
+/// though namespace is intentionally absent from the workflow-level command.
+/// Core copies this field into child failure metadata, including the
+/// pre-start cancellation path; omitting it makes a valid cancellation
+/// activation impossible to represent at the OCaml boundary.
+#[test]
+fn injects_worker_namespace_into_child_workflow_command() {
+    let activation = workflow_protocol::Activation {
+        run_id: "parent-run".to_owned(),
+        timestamp: Some(workflow_protocol::Timestamp {
+            seconds: 0,
+            nanoseconds: 0,
+        }),
+        is_replaying: false,
+        history_length: 0,
+        jobs: Vec::new(),
+        metadata: None,
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "parent-run".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::StartChildWorkflow {
+            seq: 1,
+            workflow_id: "child/1".to_owned(),
+            workflow_type: "child".to_owned(),
+            input: Vec::new(),
+            retry_policy: None,
+            cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
+        }],
+    };
+    let core = workflow_protocol::completion_to_core_for_activation_with_namespace(
+        &activation,
+        &completion,
+        "namespace-under-test",
+    )
+    .expect("valid worker namespace must be accepted");
+    assert_eq!(
+        workflow_protocol::completion_to_core_for_activation_with_namespace(
+            &activation,
+            &completion,
+            "",
+        )
+        .unwrap_err()
+        .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("child completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::StartChildWorkflowExecution(child)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("child command must map to Core's start-child variant");
+    };
+    assert_eq!(child.namespace, "namespace-under-test");
 }
 
 /// Proves every child cancellation policy survives the JSON semantic protocol
@@ -432,6 +491,7 @@ fn rejects_malformed_workflow_documents() {
         "activation-child-start-invalid-cause",
         "activation-child-terminal-missing-payload",
         "activation-child-terminal-missing-failure-info",
+        "activation-child-failure-empty-run-id-after-start",
         "activation-child-failure-empty-workflow-id",
         "activation-child-failure-negative-event-id",
         "activation-child-unknown-terminal-kind",
@@ -869,6 +929,174 @@ fn converts_child_workflow_resolution_lifecycle() {
             info => panic!("unexpected child failure info: {info:?}"),
         },
         job => panic!("unexpected failed child job: {job:?}"),
+    }
+}
+
+/// Proves the pinned Core cancellation-before-start activation retains the
+/// empty child run ID that Core emits before it has a
+/// `ChildWorkflowExecutionStarted` event.  This exercises the protobuf
+/// conversion path that previously rejected the live acceptance activation
+/// before the semantic JSON document could be delivered to OCaml.
+#[test]
+fn accepts_core_child_cancellation_before_start_without_fabricating_run_id() {
+    use core_activation::resolve_child_workflow_execution_start::Status as StartStatus;
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::coresdk::child_workflow;
+    use temporalio_protos::coresdk::workflow_activation::{
+        ResolveChildWorkflowExecution, ResolveChildWorkflowExecutionStart,
+        ResolveChildWorkflowExecutionStartCancelled,
+    };
+    use temporalio_protos::temporal::api::{
+        common::v1 as api_common, enums::v1 as api_enums, failure::v1 as api_failure,
+    };
+
+    let failure = api_failure::Failure {
+        message: "Child Workflow Execution cancelled before scheduled".to_owned(),
+        cause: Some(Box::new(api_failure::Failure {
+            failure_info: Some(api_failure::failure::FailureInfo::CanceledFailureInfo(
+                api_failure::CanceledFailureInfo::default(),
+            )),
+            ..Default::default()
+        })),
+        failure_info: Some(
+            api_failure::failure::FailureInfo::ChildWorkflowExecutionFailureInfo(
+                api_failure::ChildWorkflowExecutionFailureInfo {
+                    namespace: "default".to_owned(),
+                    workflow_execution: Some(api_common::WorkflowExecution {
+                        workflow_id: "child-id-1".to_owned(),
+                        run_id: String::new(),
+                    }),
+                    workflow_type: Some(api_common::WorkflowType {
+                        name: "child".to_owned(),
+                    }),
+                    initiated_event_id: 1,
+                    started_event_id: 0,
+                    retry_state: api_enums::RetryState::NonRetryableFailure as i32,
+                },
+            ),
+        ),
+        ..Default::default()
+    };
+    let activation = core_activation::WorkflowActivation {
+        run_id: "parent-run".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::ResolveChildWorkflowExecutionStart(
+                ResolveChildWorkflowExecutionStart {
+                    seq: 1,
+                    status: Some(StartStatus::Cancelled(
+                        ResolveChildWorkflowExecutionStartCancelled {
+                            failure: Some(failure.clone()),
+                        },
+                    )),
+                },
+            )),
+        }],
+        ..Default::default()
+    };
+
+    let semantic = workflow_protocol::activation_from_core(&activation).unwrap();
+    match &semantic.jobs[0] {
+        workflow_protocol::ActivationJob::ResolveChildWorkflowStart {
+            result: workflow_protocol::ChildWorkflowStartResolution::Cancelled { failure },
+            ..
+        } => match &failure.info {
+            workflow_protocol::FailureInfo::ChildWorkflow {
+                run_id,
+                started_event_id,
+                ..
+            } => {
+                assert!(run_id.is_empty());
+                assert_eq!(*started_event_id, 0);
+            }
+            info => panic!("unexpected child failure info: {info:?}"),
+        },
+        job => panic!("unexpected child cancellation job: {job:?}"),
+    }
+    let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
+
+    // An empty run ID after the child-start event would be ambiguous and must
+    // remain a protocol error rather than being accepted as another Core
+    // cancellation shape.
+    let mut invalid = activation;
+    let Some(Variant::ResolveChildWorkflowExecutionStart(start)) = invalid.jobs[0].variant.as_mut()
+    else {
+        panic!("cancellation activation must contain a start resolution");
+    };
+    let Some(StartStatus::Cancelled(cancelled)) = start.status.as_mut() else {
+        panic!("cancellation activation must contain a cancelled status");
+    };
+    cancelled
+        .failure
+        .as_mut()
+        .expect("cancellation must contain a failure")
+        .failure_info = Some(
+        api_failure::failure::FailureInfo::ChildWorkflowExecutionFailureInfo(
+            api_failure::ChildWorkflowExecutionFailureInfo {
+                namespace: "default".to_owned(),
+                workflow_execution: Some(api_common::WorkflowExecution {
+                    workflow_id: "child-id-1".to_owned(),
+                    run_id: String::new(),
+                }),
+                workflow_type: Some(api_common::WorkflowType {
+                    name: "child".to_owned(),
+                }),
+                initiated_event_id: 2,
+                started_event_id: 7,
+                retry_state: api_enums::RetryState::NonRetryableFailure as i32,
+            },
+        ),
+    );
+    assert_eq!(
+        workflow_protocol::activation_from_core(&invalid)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+
+    // Core can also report the same pre-start cancellation through the
+    // terminal child-resolution job for an immediate TryCancel/Abandon path.
+    // Both protobuf variants must share the narrow empty-run-id exception.
+    let terminal = core_activation::WorkflowActivation {
+        run_id: "parent-run".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::ResolveChildWorkflowExecution(
+                ResolveChildWorkflowExecution {
+                    seq: 1,
+                    result: Some(child_workflow::ChildWorkflowResult {
+                        status: Some(child_workflow::child_workflow_result::Status::Cancelled(
+                            child_workflow::Cancellation {
+                                failure: Some(failure),
+                            },
+                        )),
+                    }),
+                },
+            )),
+        }],
+        ..Default::default()
+    };
+    let terminal_semantic = workflow_protocol::activation_from_core(&terminal).unwrap();
+    match &terminal_semantic.jobs[0] {
+        workflow_protocol::ActivationJob::ResolveChildWorkflow {
+            result: workflow_protocol::ChildWorkflowResolution::Cancelled { failure },
+            ..
+        } => match &failure.info {
+            workflow_protocol::FailureInfo::ChildWorkflow {
+                run_id,
+                started_event_id,
+                ..
+            } => {
+                assert!(run_id.is_empty());
+                assert_eq!(*started_event_id, 0);
+            }
+            info => panic!("unexpected terminal child cancellation info: {info:?}"),
+        },
+        job => panic!("unexpected terminal child cancellation job: {job:?}"),
     }
 }
 

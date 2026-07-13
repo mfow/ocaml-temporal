@@ -48,6 +48,15 @@ let () =
            ~prefix:"max_concurrent_workflow_task_polls must be at least 2"
            message)
   | _ -> failwith "cached worker configuration with one poller was accepted");
+  (match
+     Bridge.worker_config ~namespace:"temporal-sdk\000test"
+       ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
+       ~max_cached_workflows:0 ~max_outstanding_workflow_tasks:100
+       ~max_concurrent_workflow_task_polls:1 ~graceful_shutdown_timeout_ms:1_000L
+   with
+  | Error { status = Configuration; message } ->
+      assert (String.starts_with ~prefix:"namespace must not contain NUL" message)
+  | _ -> failwith "worker configuration with a NUL namespace was accepted");
   let worker_config =
     unwrap
       (Bridge.worker_config ~namespace:"temporal-sdk-test"

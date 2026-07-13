@@ -81,6 +81,7 @@ let test_valid_activations () =
       "realistic-initialize";
       "child-initialize";
       "child-resolution";
+      "child-cancellation-before-start";
     ]
 
 (** Verifies every first-slice completion command and command ordering. *)
@@ -302,6 +303,7 @@ let test_invalid_documents () =
       "activation-child-start-invalid-cause";
       "activation-child-terminal-missing-payload";
       "activation-child-terminal-missing-failure-info";
+      "activation-child-failure-empty-run-id-after-start";
       "activation-child-failure-empty-workflow-id";
       "activation-child-failure-negative-event-id";
       "activation-child-unknown-terminal-kind";
@@ -560,6 +562,80 @@ let test_failure_field_semantics () =
     (Protocol.encode_completion
        (invalid_activity 0L 0L (String.make 65_537 'i')))
 
+(** Proves retryability survives the Core wrapper used for activity and child
+    failures. A nested application flag is authoritative when the wrapper has
+    no retry policy of its own, while an explicit timeout remains retryable
+    even if the nested application originally marked itself non-retryable. *)
+let test_failure_retryability_inheritance () =
+  let application non_retryable =
+    failure_with_info
+      (Application { type_name = "child_failure"; non_retryable; details = [] })
+  in
+  let child retry_state cause =
+    {
+      (failure_with_info
+         (Child_workflow
+            {
+              namespace = "temporal-sdk-test";
+              workflow_id = "child";
+              run_id = "run-child";
+              workflow_type = "child";
+              initiated_event_id = 1L;
+              started_event_id = 2L;
+              retry_state;
+            }))
+      with
+      cause = Some cause;
+    }
+  in
+  let activity retry_state cause =
+    {
+      (failure_with_info
+         (Activity
+            {
+              scheduled_event_id = 1L;
+              started_event_id = 2L;
+              identity = "worker";
+              activity_type = "activity";
+              activity_id = "activity";
+              retry_state;
+            }))
+      with
+      cause = Some cause;
+    }
+  in
+  if not (Protocol.failure_non_retryable (application true)) then
+    failwith "application non-retryable flag was lost";
+  if Protocol.failure_non_retryable (application false) then
+    failwith "retryable application was marked non-retryable";
+  if
+    not
+      (Protocol.failure_non_retryable
+         (child Retry_policy_not_set (application true)))
+  then failwith "child application retryability was not inherited";
+  if
+    not
+      (Protocol.failure_non_retryable
+         (activity Unspecified (application true)))
+  then failwith "activity application retryability was not inherited";
+  if
+    Protocol.failure_non_retryable (child Timeout (application true))
+  then failwith "explicit child timeout was overridden by its cause";
+  if
+    Protocol.failure_non_retryable
+      (activity In_progress (application true))
+  then failwith "explicit activity retry state was overridden by its cause";
+  if
+    not
+      (Protocol.failure_non_retryable
+         (child Non_retryable_failure (application false)))
+  then failwith "explicit child non-retryable state was lost";
+  if
+    not
+      (Protocol.failure_non_retryable
+         (activity Maximum_attempts_reached (application false)))
+  then failwith "maximum-attempts state was lost"
+
 (** Proves payload-aware parsing does not permit invalid initialization header
     keys through sender-side validation. *)
 let test_initialize_header_keys () =
@@ -723,6 +799,7 @@ let () =
   run "activation cross-field invariants" test_activation_cross_field_invariants;
   run "large activation job batch" test_large_activation_job_batch;
   run "failure field semantics" test_failure_field_semantics;
+  run "failure retryability inheritance" test_failure_retryability_inheritance;
   run "recursive failure depth" test_recursive_failure_depth;
   run "initialize header keys" test_initialize_header_keys;
   run "batched default Temporal payloads" test_batched_default_temporal_payloads;

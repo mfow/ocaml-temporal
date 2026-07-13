@@ -261,8 +261,13 @@ registers these local definitions with the public SDK:
 * `smoke.parent_awaits_failed_child`: starts
   `smoke.child_non_retryable_failure` through the same direct-style helper and
   intentionally propagates the child's non-retryable terminal error. The
-  driver checks the public `Child_workflow` error category and retryability,
-  not Core's verbose failure-info text.
+  driver checks the public terminal `Workflow` category and retryability, not
+  Core's verbose failure-info text. The parent-side child future uses the more
+  specific `Child_workflow` category, which is covered by native worker tests.
+  Core represents this case as a child wrapper with `retry_policy_not_set` plus
+  a nested application failure whose `non_retryable` flag is true; the OCaml
+  client must retain that nested flag rather than treating the wrapper's state
+  as a retryable result.
 * `smoke.parent_cancels_child`: retains a child handle, requests cancellation
   with `Wait_cancellation_requested`, and awaits the child future. It returns
   `SMOKE:CHILD:CANCELLED` only after the typed cancellation result arrives;
@@ -555,8 +560,10 @@ claims become live evidence:
    invalidation before any live claim is made;
 9. `smoke.parent_awaits_child` returned `SMOKE:CHILD` only after its child
    completed its own durable timer;
-10. `smoke.parent_awaits_failed_child` returned a non-retryable
-    `Child_workflow` failure with the stable child-failure diagnostic prefix;
+10. `smoke.parent_awaits_failed_child` returned a non-retryable `Workflow`
+    failure. The assertion does not depend on Core's version-specific child
+    diagnostic wording; the more specific `Child_workflow` category is tested
+    inside the parent workflow when its child future resolves;
 11. `smoke.parent_cancels_child` returned `SMOKE:CHILD:CANCELLED` only after
     Core resolved the child cancellation;
 12. the five success responses were not workflow failures, cancellations,

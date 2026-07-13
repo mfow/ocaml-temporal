@@ -219,6 +219,12 @@ pub struct Runtime {
     /// Optional workflow-only replay graph. It is mutually exclusive with the
     /// live worker and remains owned by this runtime's supervisor Domain.
     replay_worker: Option<ReplayWorker>,
+    /// Namespace passed to Core for child-workflow commands in the active
+    /// worker graph. The semantic OCaml command intentionally omits this
+    /// worker-scoped setting, so retaining it here prevents Core from using
+    /// its empty default and later emitting child failures that cannot cross
+    /// the strict semantic protocol.
+    worker_namespace: Option<String>,
     workflow_activations: HashMap<String, workflow_protocol::Activation>,
     activity_tasks: HashMap<Vec<u8>, Vec<activity_protocol::ActivityTask>>,
     pending_starts: HashMap<String, PendingStart>,
@@ -318,6 +324,7 @@ impl Runtime {
             client: None,
             worker: None,
             replay_worker: None,
+            worker_namespace: None,
             workflow_activations: HashMap::new(),
             activity_tasks: HashMap::new(),
             pending_starts: HashMap::new(),
@@ -728,6 +735,11 @@ impl Runtime {
             status: STATUS_INVALID_STATE,
             message: "Temporal client is not connected".to_owned(),
         })?;
+        // Keep the validated worker namespace beside the native graph. Child
+        // workflow commands do not expose namespace in the language-level
+        // command, but Core needs the worker namespace to populate failure
+        // metadata consistently when a child is cancelled before it starts.
+        let worker_namespace = config.namespace.clone();
         let worker_config = config.into_core()?;
         let core = self.core.as_ref().ok_or_else(|| Failure {
             status: STATUS_INVALID_STATE,
@@ -767,6 +779,7 @@ impl Runtime {
             });
         }
         self.worker = Some(PollLanes::start(worker, &handle));
+        self.worker_namespace = Some(worker_namespace);
         Ok(Vec::new())
     }
 
@@ -786,6 +799,7 @@ impl Runtime {
                 message: "Temporal replay worker is already running".to_owned(),
             });
         }
+        let worker_namespace = config.namespace.clone();
         let worker_config = config.into_core()?;
         let core = self.core.as_ref().ok_or_else(|| Failure {
             status: STATUS_INVALID_STATE,
@@ -793,6 +807,7 @@ impl Runtime {
         })?;
         let replay = ReplayWorker::start(core, worker_config).map_err(replay_worker_failure)?;
         self.replay_worker = Some(replay);
+        self.worker_namespace = Some(worker_namespace);
         Ok(Vec::new())
     }
 
@@ -827,7 +842,10 @@ impl Runtime {
             .take()
             .expect("checked worker remains owned until terminal finalization");
         match handle.block_on(worker.finalize()) {
-            Ok(()) => Ok(Vec::new()),
+            Ok(()) => {
+                self.worker_namespace = None;
+                Ok(Vec::new())
+            }
             Err((worker, error)) => {
                 // Put the worker back so the language side can finish outstanding
                 // tasks and retry graceful shutdown instead of losing the graph.
@@ -1023,9 +1041,16 @@ impl Runtime {
                 status: STATUS_PROTOCOL,
                 message: "replay workflow completion does not match a leased activation".to_owned(),
             })?;
-        let completion =
-            workflow_protocol::completion_to_core_for_activation(activation, &semantic)
-                .map_err(core_conversion_failure)?;
+        let worker_namespace = self.worker_namespace.as_deref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal replay worker namespace is not available".to_owned(),
+        })?;
+        let completion = workflow_protocol::completion_to_core_for_activation_with_namespace(
+            activation,
+            &semantic,
+            worker_namespace,
+        )
+        .map_err(core_conversion_failure)?;
         let handle = self
             .core
             .as_ref()
@@ -1099,7 +1124,10 @@ impl Runtime {
             message: "Temporal replay worker is not running".to_owned(),
         })?;
         match handle.block_on(worker.finalize(&handle)) {
-            Ok(()) => Ok(Vec::new()),
+            Ok(()) => {
+                self.worker_namespace = None;
+                Ok(Vec::new())
+            }
             Err((worker, error)) => {
                 self.replay_worker = Some(worker);
                 Err(replay_worker_failure(error))
@@ -1127,7 +1155,10 @@ impl Runtime {
             .take()
             .expect("replay worker was checked before disposal");
         match handle.block_on(worker.dispose(&handle)) {
-            Ok(()) => Ok(Vec::new()),
+            Ok(()) => {
+                self.worker_namespace = None;
+                Ok(Vec::new())
+            }
             Err((worker, error)) => {
                 self.replay_worker = Some(worker);
                 Err(replay_worker_failure(error))
@@ -1146,9 +1177,16 @@ impl Runtime {
                 status: STATUS_PROTOCOL,
                 message: "workflow completion does not match a leased activation".to_owned(),
             })?;
-        let completion =
-            workflow_protocol::completion_to_core_for_activation(activation, &semantic)
-                .map_err(core_conversion_failure)?;
+        let worker_namespace = self.worker_namespace.as_deref().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal workflow worker namespace is not available".to_owned(),
+        })?;
+        let completion = workflow_protocol::completion_to_core_for_activation_with_namespace(
+            activation,
+            &semantic,
+            worker_namespace,
+        )
+        .map_err(core_conversion_failure)?;
         let worker = self.worker.as_ref().ok_or_else(|| Failure {
             status: STATUS_INVALID_STATE,
             message: "Temporal worker is not running".to_owned(),
@@ -1915,6 +1953,12 @@ fn validate_identifier(name: &str, value: &str) -> std::result::Result<(), Failu
         return Err(Failure {
             status: STATUS_CONFIGURATION,
             message: format!("{name} exceeds {MAX_TRANSPORT_STRING_BYTES} UTF-8 bytes"),
+        });
+    }
+    if value.as_bytes().contains(&0) {
+        return Err(Failure {
+            status: STATUS_CONFIGURATION,
+            message: format!("{name} must not contain NUL"),
         });
     }
     Ok(())
@@ -3344,6 +3388,20 @@ mod worker_config_tests {
         config(MIN_CACHED_WORKFLOW_POLLS)
             .into_core()
             .expect("two workflow pollers should satisfy Core's cache invariant");
+    }
+
+    /// Rejects a NUL before Core construction so the namespace retained for
+    /// child-failure metadata can never become invalid after worker startup.
+    #[test]
+    fn worker_identifiers_reject_nul() {
+        let mut worker = config(MIN_CACHED_WORKFLOW_POLLS);
+        worker.namespace.push('\0');
+        let failure = match worker.into_core() {
+            Err(failure) => failure,
+            Ok(_) => panic!("worker identifiers must reject NUL"),
+        };
+        assert_eq!(failure.status, STATUS_CONFIGURATION);
+        assert!(failure.message.contains("namespace must not contain NUL"));
     }
 }
 

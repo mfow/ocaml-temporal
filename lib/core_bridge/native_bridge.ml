@@ -224,6 +224,8 @@ let configuration_error message = Error { status = Configuration; message }
 let validate_identifier name value =
   if String.length value = 0 then
     configuration_error (name ^ " must not be empty")
+  else if String.contains value '\000' then
+    configuration_error (name ^ " must not contain NUL")
   else if String.length value > max_transport_string_bytes then
     configuration_error
       (Printf.sprintf "%s exceeds %d UTF-8 bytes" name

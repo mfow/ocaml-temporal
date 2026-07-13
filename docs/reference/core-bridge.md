@@ -60,9 +60,11 @@ the checked completion model. It preserves activation metadata, initialization
 records, sequence ordering, cancellation reasons, eviction details, and copied
 payload bytes without exposing Rust state. Activity commands now carry every
 Core-required field and are accepted only after exact validation. Child-start
-commands now retain their workflow identity and input payload; options not yet
-exposed by the OCaml runtime remain at explicit Core defaults and are rejected
-if a reverse conversion encounters non-default values. Core child-start and
+commands now retain their workflow identity and input payload. Rust injects the
+worker's already validated namespace at the Core boundary because Core copies
+it into child failure metadata; the other options not yet exposed by the OCaml
+runtime remain at explicit Core defaults and are rejected if a reverse
+conversion encounters non-default values. Core child-start and
 terminal-resolution jobs are also converted losslessly. The OCaml runtime
 stores the start run ID, retires a failed start immediately, and accepts a
 terminal result only after that start acknowledgment. No field is silently

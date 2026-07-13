@@ -80,7 +80,7 @@
         {
           "type": "object", "additionalProperties": false,
           "required": ["kind", "seq", "workflow_id", "workflow_type", "input", "retry_policy", "cancellation_type"],
-          "description": "Starts a child workflow. An optional retry policy is passed to Core; namespace, task queue, timeouts, close/reuse policies, cron, headers, memo, search attributes, versioning, and priority remain Core defaults until the OCaml API exposes them explicitly.",
+          "description": "Starts a child workflow. An optional retry policy is passed to Core. The workflow-level command omits namespace because Rust injects the already validated worker namespace at the Core boundary; task queue, timeouts, close/reuse policies, cron, headers, memo, search attributes, versioning, and priority remain Core defaults until the OCaml API exposes them explicitly.",
           "properties": {
             "kind": {"const": "start_child_workflow"},
             "seq": {"$ref": "#/$defs/u32"},

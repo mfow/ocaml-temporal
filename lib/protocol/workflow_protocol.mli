@@ -113,6 +113,14 @@ type failure = {
   info : failure_info;
 }
 
+(** Reports whether a failure is non-retryable according to Temporal's
+    wrapper semantics. Application failures provide the direct flag; activity
+    and child-workflow wrappers use an explicit retry state when Core supplied
+    one, and otherwise inherit the nested cause. The bounded walk protects
+    callers that construct recursive protocol values without going through the
+    JSON decoder's depth validation. *)
+val failure_non_retryable : failure -> bool
+
 (** Result variants Core may deliver for a remote activity. *)
 type activity_resolution =
   | Completed of payload option

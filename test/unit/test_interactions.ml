@@ -134,9 +134,126 @@ let test_exception_containment () =
   let dispatcher = unwrap (Temporal.Interaction.create ~queries:[ handler ] ()) in
   expect_error_kind "defect" (Temporal.Interaction.query dispatcher query)
 
+(** A codec whose [encode] raises instead of returning [Error] is a contract
+    violation, but the dispatcher must still contain it as a non-retryable
+    defect rather than let the exception unwind the caller's workflow fiber
+    uncaught. [decode] is never expected to run in these tests, so it returns
+    a harmless [Ok ()]. *)
+let raising_encode_codec () =
+  Temporal.Codec.make ~encoding:"application/x-raising-test-codec-encode"
+    ~encode:(fun () -> failwith "codec encode bug")
+    ~decode:(fun _ -> Ok ())
+
+(** A codec whose [decode] raises instead of returning [Error]. [encode]
+    succeeds so a well-formed payload with matching encoding metadata can
+    reach the raising decoder, exercising containment at the decode boundary
+    specifically rather than being short-circuited by a metadata mismatch. *)
+let raising_decode_codec () =
+  Temporal.Codec.make ~encoding:"application/x-raising-test-codec-decode"
+    ~encode:(fun () -> Ok Bytes.empty)
+    ~decode:(fun _ -> failwith "codec decode bug")
+
+(** [Interaction.signal] must contain an input codec that raises on encode:
+    the exception is reported as a defect instead of escaping the call. *)
+let test_signal_input_codec_exception_containment () =
+  let signal =
+    Temporal.Signal.define ~name:"raising-input" ~input:(raising_encode_codec ())
+  in
+  let handler = Temporal.Signal.Handler.make signal (fun _ -> Ok ()) in
+  let dispatcher =
+    unwrap (Temporal.Interaction.create ~signals:[ handler ] ())
+  in
+  expect_error_kind "defect" (Temporal.Interaction.signal dispatcher signal ())
+
+(** [Signal.Handler.dispatch] must contain an input codec that raises on
+    decode, matching the same boundary as a raising handler callback. The
+    payload is built through the codec's own [encode] so it carries the
+    matching encoding metadata and actually reaches the raising decoder. *)
+let test_signal_handler_decode_exception_containment () =
+  let codec = raising_decode_codec () in
+  let signal = Temporal.Signal.define ~name:"raising-decode" ~input:codec in
+  let handler = Temporal.Signal.Handler.make signal (fun _ -> Ok ()) in
+  let payload = unwrap (Temporal.Codec.encode codec ()) in
+  expect_error_kind "defect" (Temporal.Signal.Handler.dispatch handler payload)
+
+(** [Interaction.query] must contain an output codec that raises on decode
+    after a successful handler dispatch: [Query.Handler.dispatch] encodes the
+    handler's result with the codec's working [encode], and [Interaction.query]
+    then decodes that payload with the same codec's raising [decode]. *)
+let test_query_output_codec_exception_containment () =
+  let query =
+    Temporal.Query.define ~name:"raising-output" ~output:(raising_decode_codec ())
+  in
+  let handler = Temporal.Query.Handler.make query (fun () -> Ok ()) in
+  let dispatcher = unwrap (Temporal.Interaction.create ~queries:[ handler ] ()) in
+  expect_error_kind "defect" (Temporal.Interaction.query dispatcher query)
+
+(** [Query.Handler.dispatch] must contain an output codec that raises on
+    encode, not just the handler callback itself. *)
+let test_query_handler_encode_exception_containment () =
+  let query =
+    Temporal.Query.define ~name:"raising-encode" ~output:(raising_encode_codec ())
+  in
+  let handler = Temporal.Query.Handler.make query (fun () -> Ok ()) in
+  expect_error_kind "defect" (Temporal.Query.Handler.dispatch handler)
+
+(** [Interaction.update] must contain both a raising input encode and a
+    raising output decode, since it owns both codec boundaries around the
+    handler dispatch it delegates to. *)
+let test_update_codec_exception_containment () =
+  let update =
+    Temporal.Update.define ~name:"raising-update-input"
+      ~input:(raising_encode_codec ()) ~output:Temporal.Codec.unit
+  in
+  let handler = Temporal.Update.Handler.make update (fun _ -> Ok ()) in
+  let dispatcher =
+    unwrap (Temporal.Interaction.create ~updates:[ handler ] ())
+  in
+  expect_error_kind "defect" (Temporal.Interaction.update dispatcher update ());
+  let update_raising_output =
+    Temporal.Update.define ~name:"raising-update-output" ~input:Temporal.Codec.unit
+      ~output:(raising_decode_codec ())
+  in
+  let output_handler =
+    Temporal.Update.Handler.make update_raising_output (fun () -> Ok ())
+  in
+  let output_dispatcher =
+    unwrap (Temporal.Interaction.create ~updates:[ output_handler ] ())
+  in
+  expect_error_kind "defect"
+    (Temporal.Interaction.update output_dispatcher update_raising_output ())
+
+(** [Update.Handler.dispatch] must contain a raising input decode and a
+    raising output encode around the validator/implementation sequence. *)
+let test_update_handler_codec_exception_containment () =
+  let input_codec = raising_decode_codec () in
+  let update =
+    Temporal.Update.define ~name:"raising-update-decode" ~input:input_codec
+      ~output:Temporal.Codec.unit
+  in
+  let handler = Temporal.Update.Handler.make update (fun _ -> Ok ()) in
+  let payload = unwrap (Temporal.Codec.encode input_codec ()) in
+  expect_error_kind "defect" (Temporal.Update.Handler.dispatch handler payload);
+  let update_raising_output =
+    Temporal.Update.define ~name:"raising-update-encode" ~input:Temporal.Codec.unit
+      ~output:(raising_encode_codec ())
+  in
+  let output_handler =
+    Temporal.Update.Handler.make update_raising_output (fun () -> Ok ())
+  in
+  let unit_payload = unwrap (Temporal.Codec.encode Temporal.Codec.unit ()) in
+  expect_error_kind "defect"
+    (Temporal.Update.Handler.dispatch output_handler unit_payload)
+
 (** Runs all interaction assertions. *)
 let () =
   test_dispatch_and_ordering ();
   test_registration_and_missing_handlers ();
   test_codec_mismatch ();
-  test_exception_containment ()
+  test_exception_containment ();
+  test_signal_input_codec_exception_containment ();
+  test_signal_handler_decode_exception_containment ();
+  test_query_output_codec_exception_containment ();
+  test_query_handler_encode_exception_containment ();
+  test_update_codec_exception_containment ();
+  test_update_handler_codec_exception_containment ()

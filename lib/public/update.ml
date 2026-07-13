@@ -61,9 +61,18 @@ module Handler = struct
 
   (** Performs the strict input-decode, validator, implementation, and output
       encode sequence. Each callback boundary contains exceptions as defects;
-      importantly, the implementation is not called when validation fails. *)
+      importantly, the implementation is not called when validation fails.
+      Both codec calls are contained the same way as the validator and
+      implementation callbacks, so a raising codec cannot escape dispatch
+      half-applied. *)
   let dispatch (Handler { definition; validator; implementation }) payload =
     match Codec.decode definition.input payload with
+    | exception exception_ ->
+        Error
+          (Error.defect
+             ~message:
+               (Printf.sprintf "update input codec raised: %s"
+                  (Printexc.to_string exception_)))
     | Error error -> Error error
     | Ok input -> (
         let validation_result =
@@ -92,5 +101,13 @@ module Handler = struct
             in
             match result with
             | Error _ as error -> error
-            | Ok output -> Codec.encode definition.output output))
+            | Ok output -> (
+                match Codec.encode definition.output output with
+                | result -> result
+                | exception exception_ ->
+                    Error
+                      (Error.defect
+                         ~message:
+                           (Printf.sprintf "update output codec raised: %s"
+                              (Printexc.to_string exception_))))))
 end

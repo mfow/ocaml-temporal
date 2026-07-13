@@ -55,9 +55,17 @@ let missing_handler ~kind ~name ~category =
 
 (** Encodes and dispatches one signal. Encoding occurs before lookup so a
     malformed input is reported as a codec failure and cannot be confused with
-    a missing registration; no callback runs in either failure case. *)
+    a missing registration; no callback runs in either failure case. A raising
+    codec is contained here rather than escaping the dispatcher, matching the
+    handler-boundary contract kept by [Signal.Handler.dispatch]. *)
 let signal dispatcher definition input =
   match Codec.encode (Signal.input definition) input with
+  | exception exception_ ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "signal input codec raised: %s"
+                (Printexc.to_string exception_)))
   | Error error -> Error error
   | Ok payload -> (
       match Name_map.find_opt (Signal.name definition) dispatcher.signals with
@@ -68,7 +76,8 @@ let signal dispatcher definition input =
 
 (** Routes a query and decodes its encoded result with the requested
     definition. A name/codec mismatch is deliberately surfaced by [Codec]
-    rather than being hidden by the existential handler package. *)
+    rather than being hidden by the existential handler package. A raising
+    decoder is contained here so it cannot escape the dispatcher. *)
 let query dispatcher definition =
   match Name_map.find_opt (Query.name definition) dispatcher.queries with
   | None ->
@@ -77,13 +86,28 @@ let query dispatcher definition =
   | Some handler -> (
       match Query.Handler.dispatch handler with
       | Error error -> Error error
-      | Ok payload -> Codec.decode (Query.output definition) payload)
+      | Ok payload -> (
+          match Codec.decode (Query.output definition) payload with
+          | result -> result
+          | exception exception_ ->
+              Error
+                (Error.defect
+                   ~message:
+                     (Printf.sprintf "query output codec raised: %s"
+                        (Printexc.to_string exception_)))))
 
 (** Encodes an update request, dispatches the validator/implementation pair,
     and decodes its result. The handler owns the validator order; this wrapper
-    only owns the typed codec boundaries and name routing. *)
+    only owns the typed codec boundaries and name routing. Both codec calls
+    are contained here so a raising codec cannot escape the dispatcher. *)
 let update dispatcher definition input =
   match Codec.encode (Update.input definition) input with
+  | exception exception_ ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "update input codec raised: %s"
+                (Printexc.to_string exception_)))
   | Error error -> Error error
   | Ok payload -> (
       match Name_map.find_opt (Update.name definition) dispatcher.updates with
@@ -93,4 +117,12 @@ let update dispatcher definition input =
       | Some handler -> (
           match Update.Handler.dispatch handler payload with
           | Error error -> Error error
-          | Ok output -> Codec.decode (Update.output definition) output))
+          | Ok output -> (
+              match Codec.decode (Update.output definition) output with
+              | result -> result
+              | exception exception_ ->
+                  Error
+                    (Error.defect
+                       ~message:
+                         (Printf.sprintf "update output codec raised: %s"
+                            (Printexc.to_string exception_))))))

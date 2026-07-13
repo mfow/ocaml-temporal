@@ -262,9 +262,18 @@ let race left right =
         ~outside_error:(Temporal_future_kernel.outside_error left)
     in
     let settled = ref false in
+    (* A losing future may remain pending for the rest of the workflow. Keep
+       the observer itself so that the operation can still settle normally,
+       but drop the aggregate resolver as soon as a winner is known. Without
+       this indirection the loser would retain the resolved aggregate (and its
+       value) through the observer closure until the loser finished or the
+       workflow shut down. *)
+    let resolution = ref (Some resolve) in
     let finish wrap result =
       if not !settled then (
         settled := true;
+        let resolve = Option.get !resolution in
+        resolution := None;
         resolve (Result.map wrap result))
     in
     Temporal_future_kernel.observe left (finish (fun value -> Left value));
@@ -281,9 +290,16 @@ let first leading rest =
         ~outside_error:(Temporal_future_kernel.outside_error leading)
     in
     let settled = ref false in
+    (* Preserve the losers' ability to finish their own operations while
+       releasing the selected future's resolver immediately after the first
+       completion. This avoids retaining the winner through a long-lived
+       losing activity or child workflow. *)
+    let resolution = ref (Some resolve) in
     let finish result =
       if not !settled then (
         settled := true;
+        let resolve = Option.get !resolution in
+        resolution := None;
         resolve result)
     in
     List.iter

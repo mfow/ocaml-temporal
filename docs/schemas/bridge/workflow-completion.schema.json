@@ -41,6 +41,26 @@
       ],
       "description": "A successful or failed answer to a synchronous query. A failed query does not fail the workflow execution."
     },
+    "update_response": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {"kind": {"const": "accepted"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {"kind": {"const": "rejected"}, "failure": {"$ref": "#/$defs/failure"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "payload"],
+          "properties": {"kind": {"const": "completed"}, "payload": {"$ref": "#/$defs/payload"}}
+        }
+      ],
+      "description": "One phase of a workflow update response. An immediate result can emit accepted followed by completed in the same completion; a later activation may emit completed alone."
+    },
     "retry_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -145,6 +165,16 @@
             "result": {"$ref": "#/$defs/query_result"}
           },
           "description": "Answers one query. Query completions contain only query_result commands and preserve the exact Core query IDs, including the legacy ID."
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "protocol_instance_id", "response"],
+          "properties": {
+            "kind": {"const": "update_response"},
+            "protocol_instance_id": {"$ref": "#/$defs/identifier"},
+            "response": {"$ref": "#/$defs/update_response"}
+          },
+          "description": "Answers a workflow update protocol instance. The protocol ID is not the workflow-visible update ID."
         },
         {
           "type": "object", "additionalProperties": false,

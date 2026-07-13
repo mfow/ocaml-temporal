@@ -38,6 +38,28 @@ type query_handler = {
   dispatch : query -> (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
 }
 
+(** The complete request delivered to an update handler. The public update
+    adapter currently accepts one typed payload; the runtime keeps the full
+    repeated list and metadata so unsupported arity is rejected explicitly. *)
+type update = {
+  id : string;
+  protocol_instance_id : string;
+  name : string;
+  input : Temporal_base.Codec.payload list;
+  headers : (string * Temporal_base.Codec.payload) list;
+  identity : string;
+  update_id : string;
+}
+
+(** An update callback returns its encoded result synchronously in this first
+    native slice. [run_validator] is false on replay and skips the validator. *)
+type update_handler = {
+  name : string;
+  dispatch :
+    run_validator:bool -> update ->
+    (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
+}
+
 (** Uses the same bounded identifier contract as workflow and activity names.
     Invalid names are internal registration defects because public signal
     definitions have already performed this validation. *)
@@ -78,6 +100,24 @@ let make_query_handler ~name ~dispatch : query_handler =
 (** Returns the stable lookup key of an internal query handler. *)
 let query_handler_name (handler : query_handler) = handler.name
 
+(** Uses the same bounded identifier contract for update registration names. *)
+let validate_update_name name =
+  if String.equal name "" then invalid_arg "update handler name is empty";
+  if String.contains name '\000' then
+    invalid_arg "update handler name contains NUL";
+  if String.length name > 65_536 then
+    invalid_arg "update handler name exceeds 65536 bytes";
+  if not (Temporal_base.Codec.valid_utf_8 name) then
+    invalid_arg "update handler name must be valid UTF-8"
+
+(** Builds one private update callback package. *)
+let make_update_handler ~name ~dispatch : update_handler =
+  validate_update_name name;
+  { name; dispatch }
+
+(** Returns the stable lookup key of an internal update handler. *)
+let update_handler_name (handler : update_handler) = handler.name
+
 (** Signal names are resolved through an immutable map. Construction validates
     duplicates in caller order; execution lookup never depends on hash-table
     iteration or mutable global state. *)
@@ -86,6 +126,10 @@ module Signal_map = Map.Make (String)
 (** Query handlers are immutable after execution creation, making dispatch
     deterministic and independent of map mutation or hash iteration order. *)
 module Query_map = Map.Make (String)
+
+(** Update handlers are immutable after execution creation, so dispatch never
+    depends on mutable or hash-table iteration state. *)
+module Update_map = Map.Make (String)
 
 (** Reports with workflow context masked so an application reporter cannot
     re-enter workflow APIs and mutate the deterministic command buffer. *)
@@ -104,6 +148,7 @@ type ('input, 'output) t = {
   context : Workflow_context_store.t;
   signal_handlers : signal_handler Signal_map.t;
   query_handlers : query_handler Query_map.t;
+  update_handlers : update_handler Update_map.t;
   mutable started : bool;
   mutable terminal : bool;
   mutable evicted : bool;
@@ -112,7 +157,7 @@ type ('input, 'output) t = {
 (** Creates execution state without calling user workflow code. The code starts
     only after Temporal delivers a start job, matching replay behavior. *)
 let start ?(task_queue = "default") ?(signal_handlers = []) ?(query_handlers = [])
-    definition input =
+    ?(update_handlers = []) definition input =
   let signal_handler_map : signal_handler Signal_map.t =
     List.fold_left
       (fun (handlers : signal_handler Signal_map.t) (handler : signal_handler) ->
@@ -131,6 +176,15 @@ let start ?(task_queue = "default") ?(signal_handlers = []) ?(query_handlers = [
         else Query_map.add name handler handlers)
       Query_map.empty query_handlers
   in
+  let update_handler_map : update_handler Update_map.t =
+    List.fold_left
+      (fun (handlers : update_handler Update_map.t) (handler : update_handler) ->
+        let name = update_handler_name handler in
+        if Update_map.mem name handlers then
+          invalid_arg ("duplicate update handler: " ^ name)
+        else Update_map.add name handler handlers)
+      Update_map.empty update_handlers
+  in
   let scheduler = Scheduler.create () in
   let execution : ('input, 'output) t =
     {
@@ -140,6 +194,7 @@ let start ?(task_queue = "default") ?(signal_handlers = []) ?(query_handlers = [
       context = Workflow_context_store.create ~task_queue scheduler;
       signal_handlers = signal_handler_map;
       query_handlers = query_handler_map;
+      update_handlers = update_handler_map;
       started = false;
       terminal = false;
       evicted = false;
@@ -181,7 +236,7 @@ let emit_terminal execution command =
     | Fail_workflow _ | Cancel_workflow_execution
     | Schedule_activity _ | Start_child_workflow _ | Request_cancel_activity _
     | Cancel_child_workflow _ | Start_timer _ | Cancel_timer _
-    | Query_result _ | Continue_as_new _ -> ())
+    | Query_result _ | Update_response _ | Continue_as_new _ -> ())
 
 (** Fails the workflow through the same one-terminal-command check. *)
 let fail execution error =
@@ -319,6 +374,55 @@ let process_job execution = function
       in
       Workflow_context_store.emit execution.context
         (Activation.Query_result { query_id; result })
+  | Activation.Do_update
+      {
+        id;
+        protocol_instance_id;
+        name;
+        input;
+        headers;
+        identity;
+        update_id;
+        run_validator;
+      } ->
+      (* Updates share the scheduler with workflow continuations.  Resolving a
+         future earlier in this activation only enqueues its continuation;
+         queueing the update here preserves that source order and runs the
+         handler under [Workflow_context_store.with_context].  Dispatching it
+         inline would let the update observe stale workflow state and would
+         run it outside the deterministic workflow context. *)
+      let update =
+        { id; protocol_instance_id; name; input; headers; identity; update_id }
+      in
+      Scheduler.spawn execution.scheduler (fun () ->
+          let emit response =
+            Workflow_context_store.emit execution.context
+              (Activation.Update_response { protocol_instance_id; response })
+          in
+          match Update_map.find_opt name execution.update_handlers with
+          | None ->
+              let error = bridge_error ("unhandled workflow update: " ^ name) in
+              report ~src:Observability.Source.workflow Logs.Error
+                ~tags:
+                  (Observability.tags ~operation:"workflow_update_unhandled"
+                     ~workflow_type:(workflow_type execution) ())
+                "workflow update has no registered handler";
+              emit (`Rejected error)
+          | Some handler ->
+              let dispatched =
+                try handler.dispatch ~run_validator update with
+                | exn ->
+                    Error
+                      (Temporal_base.Error.defect
+                         ~message:
+                           ("update handler raised: " ^ Printexc.to_string exn))
+              in
+              begin match dispatched with
+              | Error error -> emit (`Rejected error)
+              | Ok payload ->
+                  emit `Accepted;
+                  emit (`Completed payload)
+              end)
   | Activation.Signal_workflow { signal_name; input; identity; headers } ->
       (* Signals are queued as scheduler work rather than dispatched inline.
          This preserves FIFO ordering with root and resolver continuations and

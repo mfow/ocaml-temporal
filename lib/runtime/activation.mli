@@ -25,6 +25,18 @@ type job =
       arguments : Temporal_base.Codec.payload list;
       headers : (string * Temporal_base.Codec.payload) list;
     }
+  (** A workflow update request. [protocol_instance_id] correlates the
+      response with Core; [id] is the workflow-visible update identity. *)
+  | Do_update of {
+      id : string;
+      protocol_instance_id : string;
+      name : string;
+      input : Temporal_base.Codec.payload list;
+      headers : (string * Temporal_base.Codec.payload) list;
+      identity : string;
+      update_id : string;
+      run_validator : bool;
+    }
   (** A signal delivered by Core. It carries no command sequence because it is
       an incoming event rather than a completion of an earlier command. The
       execution runtime resolves its name against the workflow's private
@@ -103,6 +115,15 @@ type command =
   | Query_result of {
       query_id : string;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
+    }
+  (** One update protocol phase. An immediate update may emit accepted and
+      completed commands with the same protocol instance in one activation. *)
+  | Update_response of {
+      protocol_instance_id : string;
+      response :
+        [ `Accepted
+        | `Rejected of Temporal_base.Error.t
+        | `Completed of Temporal_base.Codec.payload ];
     }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t

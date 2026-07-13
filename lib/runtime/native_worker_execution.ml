@@ -50,6 +50,8 @@ type signal = Execution.signal
 type signal_handler = Execution.signal_handler
 type query = Execution.query
 type query_handler = Execution.query_handler
+type update = Execution.update
+type update_handler = Execution.update_handler
 
 (** The public-facing existential registration. Its constructor remains
     private so callers can only produce values through [register]. *)
@@ -57,7 +59,8 @@ type registered_workflow =
   | Workflow :
       ('input, 'output,
        'input -> ('output, Base_error.t) result)
-      Definition.t * Execution.signal_handler list * Execution.query_handler list ->
+      Definition.t * Execution.signal_handler list * Execution.query_handler list
+      * Execution.update_handler list ->
       registered_workflow
 
 (** Builds the private scheduler callback package without widening the public
@@ -87,6 +90,15 @@ let query_headers (query : Execution.query) = query.headers
 
 (** Returns a handler's stable query name. *)
 let query_handler_name = Execution.query_handler_name
+
+(** Builds a private update callback package. *)
+let make_update_handler = Execution.make_update_handler
+
+(** Returns a handler's stable update registration name. *)
+let update_handler_name = Execution.update_handler_name
+
+(** Returns all payloads carried by an update activation. *)
+let update_input (update : Execution.update) = update.input
 
 (** One typed execution hidden behind the run-ID map. Both the definition and
     execution share the same input/output type parameters, which prevents a
@@ -147,7 +159,8 @@ type registered_definition =
   | Registered_definition :
       ('input, 'output,
        'input -> ('output, Base_error.t) result)
-      Definition.t * Execution.signal_handler list * Execution.query_handler list ->
+      Definition.t * Execution.signal_handler list * Execution.query_handler list
+      * Execution.update_handler list ->
       registered_definition
 
 (** Bounds diagnostics that may contain application codec messages before they
@@ -343,7 +356,8 @@ let is_terminal completion =
       | Protocol.Request_cancel_activity _
       | Protocol.Start_timer _
       | Protocol.Cancel_timer _
-      | Protocol.Query_result _ -> false)
+      | Protocol.Query_result _
+      | Protocol.Update_response _ -> false)
     completion.Protocol.commands
 
 (** Reports one bounded lifecycle message without allowing a reporter defect to
@@ -357,7 +371,7 @@ let report level ~operation ?error_kind () =
 
 (** Adds or rejects one definition in the name map. *)
 let add_definition definitions
-    (Workflow (definition, signal_handlers, query_handlers)) =
+    (Workflow (definition, signal_handlers, query_handlers, update_handlers)) =
   let name = Definition.name definition in
   let rec validate_signal_names seen = function
     | [] -> Ok ()
@@ -381,6 +395,17 @@ let add_definition definitions
                ("query name is registered more than once: " ^ query_name))
         else validate_query_names (query_name :: seen) rest
   in
+  let rec validate_update_names seen = function
+    | [] -> Ok ()
+    | handler :: rest ->
+        let update_name = update_handler_name handler in
+        if List.mem update_name seen then
+          Error
+            (make_error ~path:("$.workflows." ^ name ^ ".updates")
+               "duplicate_update_handler"
+               ("update name is registered more than once: " ^ update_name))
+        else validate_update_names (update_name :: seen) rest
+  in
   if Run_map.mem name definitions then
     Error
       (make_error ~path:"$.workflows" "duplicate_workflow"
@@ -395,11 +420,15 @@ let add_definition definitions
     | Ok () -> (
         match validate_query_names [] query_handlers with
         | Error error -> Error error
-        | Ok () ->
-            Ok
-              (Run_map.add name
-                 (Registered_definition (definition, signal_handlers, query_handlers))
-                 definitions))
+        | Ok () -> (
+            match validate_update_names [] update_handlers with
+            | Error error -> Error error
+            | Ok () ->
+                Ok
+                  (Run_map.add name
+                     (Registered_definition
+                        (definition, signal_handlers, query_handlers, update_handlers))
+                     definitions)))
 
 (** Builds the immutable definition registry before publishing any mutable
     worker state. *)
@@ -563,6 +592,16 @@ module Make (Supervisor : SUPERVISOR) = struct
             | Protocol.Query_failed failure -> Protocol.Query_failed (copy_failure failure)
           in
           Protocol.Query_result { query_id; result }
+      | Protocol.Update_response { protocol_instance_id; response } ->
+          let response =
+            match response with
+            | Protocol.Update_accepted -> Protocol.Update_accepted
+            | Protocol.Update_rejected failure ->
+                Protocol.Update_rejected (copy_failure failure)
+            | Protocol.Update_completed payload ->
+                Protocol.Update_completed (copy_payload payload)
+          in
+          Protocol.Update_response { protocol_instance_id; response }
       | Protocol.Cancel_child_workflow _ as command -> command
       | Protocol.Request_cancel_activity _ as command -> command
       | Protocol.Start_timer _ as command -> command
@@ -840,30 +879,38 @@ module Make (Supervisor : SUPERVISOR) = struct
                         (make_error ~path:"$.run_id" "duplicate_run_id"
                            "workflow run is already present in the execution registry")
                     else
-                      (match find_definition adapter.definitions init.workflow_type with
-                      | Error error -> retire_with_failure adapter activation error
-                      | Ok
-                          (Registered_definition
-                            (definition, signal_handlers, query_handlers)) ->
-                          (match decode_input definition init.arguments with
-                          | Error error -> retire_with_failure adapter activation error
-                          | Ok input ->
-                              let execution =
-                                Execution.start ~task_queue:adapter.task_queue
-                                  ~signal_handlers ~query_handlers definition input
-                              in
-                              let run = Run { definition; execution } in
-                              adapter.runs <-
-                                Run_map.add activation.run_id run adapter.runs;
-                              (match
-                                 Native_execution.activate execution activation
-                               with
-                              | Error error ->
-                                  retire_with_failure ~remove_run:true adapter
-                                    activation (native_error error)
-                              | Ok completion ->
-                                  submit_completion adapter activation completion
-                                    ~run_id:activation.run_id)))
+                      begin
+                        match find_definition adapter.definitions init.workflow_type with
+                        | Error error -> retire_with_failure adapter activation error
+                        | Ok
+                            (Registered_definition
+                              (definition, signal_handlers, query_handlers,
+                               update_handlers)) ->
+                            begin
+                              match decode_input definition init.arguments with
+                              | Error error -> retire_with_failure adapter activation error
+                              | Ok input ->
+                                  let execution =
+                                    Execution.start ~task_queue:adapter.task_queue
+                                      ~signal_handlers ~query_handlers
+                                      ~update_handlers definition input
+                                  in
+                                  let run = Run { definition; execution } in
+                                  adapter.runs <-
+                                    Run_map.add activation.run_id run adapter.runs;
+                                  begin
+                                    match
+                                      Native_execution.activate execution activation
+                                    with
+                                    | Error error ->
+                                        retire_with_failure ~remove_run:true adapter
+                                          activation (native_error error)
+                                    | Ok completion ->
+                                        submit_completion adapter activation completion
+                                          ~run_id:activation.run_id
+                                  end
+                            end
+                      end
                 | Ok None ->
                     match Run_map.find_opt activation.run_id adapter.runs with
                     | None ->
@@ -963,5 +1010,6 @@ module Make (Supervisor : SUPERVISOR) = struct
 end
 
 (** Exposes registration without exposing its existential constructor. *)
-let register ?(signal_handlers = []) ?(query_handlers = []) definition =
-  Workflow (definition, signal_handlers, query_handlers)
+let register ?(signal_handlers = []) ?(query_handlers = []) ?(update_handlers = [])
+    definition =
+  Workflow (definition, signal_handlers, query_handlers, update_handlers)

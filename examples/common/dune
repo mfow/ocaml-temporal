@@ -1,0 +1,5 @@
+(library
+ (name temporal_sdk_examples_common)
+ (wrapped false)
+ (modules example_support)
+ (libraries temporal-sdk unix))

@@ -41,7 +41,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -51,7 +51,14 @@ version-check:
 
 build:
 	$(RUN) dune build $(DUNE_BUILD_ARGS)
+	$(MAKE) build-examples
 	$(CARGO) build --manifest-path $(CARGO_MANIFEST) --locked
+
+# Keep the examples as explicit compile targets rather than relying on Dune's
+# default alias. Every Docker and native build therefore proves that all three
+# executable applications compile against the public installed-library name.
+build-examples:
+	$(RUN) dune build $(DUNE_BUILD_ARGS) examples/workflow_worker/workflow_worker.exe examples/activity_worker/activity_worker.exe examples/client/client.exe
 
 # Emits only the locked Cargo metadata document on stdout, allowing CI to pipe
 # it into the isolated license scanner without knowing the Compose fixture path.
@@ -245,6 +252,7 @@ test-runtime:
 
 lint:
 	$(RUN) dune build $(DUNE_BUILD_ARGS)
+	$(MAKE) build-examples
 	$(COMPOSE_RUN) sh scripts/check-format.sh
 	$(MAKE) lint-rust
 
@@ -321,6 +329,7 @@ native-version-check:
 
 native-build:
 	$(NATIVE_ENV) $(NATIVE_RUN) dune build @install $(DUNE_BUILD_ARGS)
+	$(NATIVE_ENV) $(NATIVE_RUN) dune build $(DUNE_BUILD_ARGS) examples/workflow_worker/workflow_worker.exe examples/activity_worker/activity_worker.exe examples/client/client.exe
 	$(NATIVE_ENV) cargo build --manifest-path $(CARGO_MANIFEST) --locked
 
 native-test: native-test-rust native-test-install test-quality-contract
@@ -334,6 +343,7 @@ native-test-install:
 
 native-lint: native-lint-rust
 	$(NATIVE_ENV) $(NATIVE_RUN) dune build $(DUNE_BUILD_ARGS)
+	$(NATIVE_ENV) $(NATIVE_RUN) dune build $(DUNE_BUILD_ARGS) examples/workflow_worker/workflow_worker.exe examples/activity_worker/activity_worker.exe examples/client/client.exe
 	sh scripts/check-format.sh
 
 native-lint-rust:

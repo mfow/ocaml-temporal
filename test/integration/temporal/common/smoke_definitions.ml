@@ -314,6 +314,20 @@ let timeout_retry_start_to_close_timeout = Temporal.Duration.of_ms 500L
     code, not workflow code, so it cannot affect deterministic replay. *)
 let timeout_retry_first_attempt_sleep_seconds = 6.0
 
+(** Delays the timeout retry until after the intentionally slow first callback
+    has released the serialized activity adapter. The ordinary 100ms policy is
+    correct for short activities, but using it here would queue a second task
+    while the first callback still owns the adapter mutex; that retry's own
+    500ms start-to-close lease would then expire before it could be polled.
+    Keeping this policy local to the timeout workflow preserves the short retry
+    coverage for the other activities without hiding the adapter's ordering
+    invariant by enlarging their leases. *)
+let timeout_retry_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 7_000L)
+    ~backoff_coefficient:1.0
+    ~maximum_interval:(Temporal.Duration.of_ms 7_000L) ~maximum_attempts:2 ()
+
 (** Counts executions of the timeout-only activity in the worker process. A
     fresh Compose worker is created for each acceptance run, and the counter is
     never read by workflow code; it only gives the activity a test-local way to
@@ -343,13 +357,14 @@ let timeout_retry_activity =
                     attempt)))
 
 (** Schedules [timeout_retry_activity] with a short start-to-close lease and
-    the bounded two-attempt policy. The activity's late first success makes the
-    final marker a server-visible proof that a timeout, rather than an
-    application failure returned by the callback, caused the retry. *)
+    the dedicated delayed two-attempt policy. The activity's late first
+    success makes the final marker a server-visible proof that a timeout,
+    rather than an application failure returned by the callback, caused the
+    retry. *)
 let activity_timeout_retry =
   Temporal.Workflow.define ~name:"smoke.activity_timeout_retry"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
-      match retry_policy with
+      match timeout_retry_policy with
       | Error error -> Error error
       | Ok policy ->
           Temporal.Activity.execute

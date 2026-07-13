@@ -75,6 +75,12 @@ type t = {
   (* This atomic gate records shutdown admission without holding a lock while
      backend polling blocks, allowing repeated shutdown calls to be harmless. *)
   closed : bool Atomic.t;
+  (* Serializes the first teardown with later callers that need the cached
+     result, matching [Client.shutdown]. *)
+  shutdown_mutex : Mutex.t;
+  (* The first terminal shutdown outcome is retained so every caller observes
+     the same result, including a permanent native teardown error. *)
+  mutable shutdown_result : (unit, Error.t) result option;
 }
 
 (** Stable default identity for worker diagnostics. *)
@@ -181,6 +187,8 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                               workflows;
                               activities;
                               closed = Atomic.make false;
+                              shutdown_mutex = Mutex.create ();
+                              shutdown_result = None;
                             })
                           (Backend.worker_create config ~workflow_names
                              ~activity_names)
@@ -211,6 +219,8 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                               workflows;
                               activities;
                               closed = Atomic.make false;
+                              shutdown_mutex = Mutex.create ();
+                              shutdown_result = None;
                             })
                           native_result))))
 
@@ -376,26 +386,38 @@ let run worker =
 
 (** Shuts down the backend once and remembers that no new poll may be admitted. *)
 let shutdown worker =
-  if Atomic.compare_and_set worker.closed false true then
-    match worker.backend with
-    | Mock_backend backend -> (
-        match Backend.worker_shutdown backend with
-        | Ok () as result -> result
-        | Error _ as error ->
-            (* The mock backend can retry a failed shutdown admission. *)
-            Atomic.set worker.closed false;
-            error)
-    | Native_backend backend -> (
-        let result =
-          Native_worker.shutdown backend
-          |> Result.map_error Error_private.of_base
-        in
-        match result with
-        | Ok () as result -> result
-        | Error _ as error ->
-            (* Native adapter-drain failures are retryable only when the
-               private supervisor explicitly says teardown did not begin. *)
-            if Native_worker.shutdown_retryable backend then
-              Atomic.set worker.closed false;
-            error)
-  else Ok ()
+  Mutex.lock worker.shutdown_mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock worker.shutdown_mutex)
+    (fun () ->
+      match worker.shutdown_result with
+      | Some result -> result
+      | None ->
+          Atomic.set worker.closed true;
+          let result =
+            match worker.backend with
+            | Mock_backend backend -> (
+                match Backend.worker_shutdown backend with
+                | Ok () as result -> result
+                | Error _ as error ->
+                    (* The mock backend can retry a failed shutdown admission. *)
+                    Atomic.set worker.closed false;
+                    error)
+            | Native_backend backend -> (
+                let result =
+                  Native_worker.shutdown backend
+                  |> Result.map_error Error_private.of_base
+                in
+                match result with
+                | Ok () as result -> result
+                | Error _ as error ->
+                    (* Native adapter-drain failures are retryable only when the
+                       private supervisor explicitly says teardown did not begin. *)
+                    if Native_worker.shutdown_retryable backend then
+                      Atomic.set worker.closed false;
+                    error)
+          in
+          (* Cache only terminal outcomes. Retryable failures leave the worker
+             open so a later call can attempt shutdown again. *)
+          if Atomic.get worker.closed then worker.shutdown_result <- Some result;
+          result)

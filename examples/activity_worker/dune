@@ -1,0 +1,3 @@
+(executable
+ (name activity_worker)
+ (libraries temporal-sdk temporal_sdk_examples_common unix))

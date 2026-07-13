@@ -476,6 +476,81 @@ fn changed_rejection_identities_do_not_retire_real_leases() {
     assert!(ledger.can_finalize());
 }
 
+/// Regression test for the completion/eviction retirement race: a terminal
+/// workflow completion must retire its ledger lease before Core is asked to
+/// accept it, exactly like [`retire_rejected_workflow`]. A successful
+/// completion causes Core to schedule a follow-up cache-eviction activation
+/// for the same run_id, which the background poll lane can observe while the
+/// completion await is still in flight. If the run were still recorded at
+/// that moment, the eviction would be misclassified as `Admission::Duplicate`
+/// and raise a fatal `PollLaneError::DuplicateIdentity` on an otherwise
+/// healthy worker, and the eviction's own completion debt would be dropped
+/// rather than acknowledged. This models `PollLanes::complete_workflow`'s
+/// retire-before-await ordering directly against the ledger.
+#[test]
+fn completed_workflow_lease_retires_before_ack_allowing_eviction_readmission() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+
+    // Models `PollLanes::complete_workflow` retiring the ledger lease before
+    // the Core completion await resolves.
+    assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
+
+    // The follow-up cache eviction for the same run_id must be admitted as a
+    // fresh obligation rather than misclassified as a duplicate of the
+    // already-completed run.
+    assert_eq!(ledger.admit_polled_workflow("run-1"), Ok(Admission::New));
+}
+
+/// When Core rejects a terminal completion, the run never actually completed
+/// from Core's point of view, so the language side must be able to retry with
+/// a corrected completion for the same run_id. Retiring the lease before the
+/// Core await (previous test) would otherwise permanently strand that retry
+/// behind an `UnknownWorkflow` error; restoring the lease on rejection keeps
+/// the original retry contract intact.
+#[test]
+fn rejected_completion_restores_the_retired_lease_for_retry() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+
+    // Models the optimistic retirement `PollLanes::complete_workflow` performs
+    // before the Core completion await.
+    assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
+    assert_eq!(
+        ledger.ensure_workflow_leased("run-1"),
+        Err(CompleteError::UnknownWorkflow)
+    );
+
+    // Core rejected the completion: restore the lease so a corrected retry
+    // can be sent for the same run.
+    ledger.restore_rejected_workflow_completion("run-1");
+    assert_eq!(ledger.ensure_workflow_leased("run-1"), Ok(()));
+    assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
+}
+
+/// A rejected completion cannot have caused Core to schedule a follow-up
+/// eviction, so no other producer should legitimately re-admit the same
+/// run_id while the rejection's restore is pending. If that invariant is
+/// ever violated, restoring must not silently stamp a fresh, still-unleased
+/// admission as leased behind its real owner's back.
+#[test]
+fn restore_after_rejection_does_not_clobber_a_legitimately_readmitted_run() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+    assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
+
+    assert_eq!(ledger.admit_polled_workflow("run-1"), Ok(Admission::New));
+
+    ledger.restore_rejected_workflow_completion("run-1");
+    assert_eq!(
+        ledger.ensure_workflow_leased("run-1"),
+        Err(CompleteError::NotLeased)
+    );
+}
+
 /// The acceptance worker polls only workflows and remote activities; enabling
 /// local activities or Nexus would create unimplemented completion paths.
 #[test]

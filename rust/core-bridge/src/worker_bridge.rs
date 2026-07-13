@@ -954,28 +954,58 @@ impl PollLanes {
 
     /// Sends a leased workflow completion to Core, then retires its debt.
     ///
-    /// The ledger entry is deliberately retained when Core rejects the value,
-    /// allowing the language side to correct a validation failure rather than
-    /// losing track of ownership after a partial bridge conversion.
+    /// Retire the ledger lease *before* the Core completion await, mirroring
+    /// [`Self::reject_workflow_delivery_with_reason`]. A successful terminal
+    /// completion causes Core to schedule a follow-up cache-eviction
+    /// activation for the same run_id, which the background poll lane can
+    /// observe while this call is still in flight. If the run were still
+    /// recorded in the ledger at that moment, the poll lane would classify
+    /// the legitimate eviction as `Admission::Duplicate` and raise a terminal
+    /// `PollLaneError::DuplicateIdentity`, surfacing as a fatal
+    /// `STATUS_WORKER` on an otherwise healthy worker — and the eviction's
+    /// own completion debt would be dropped on the floor rather than
+    /// acknowledged. Retiring first guarantees the eviction is instead
+    /// admitted as a new obligation, which is exactly what the OCaml adapter
+    /// expects (see `submit_eviction_acknowledgement` in
+    /// `native_worker_execution.ml`, which acknowledges an eviction for a run
+    /// already removed from its registry).
+    ///
+    /// The ledger entry is restored when Core rejects the completion: a
+    /// rejected request never lands with Core, so no follow-up eviction can
+    /// have been scheduled for this run_id during the await, and the
+    /// language side is expected to correct the validation failure and retry
+    /// rather than losing track of ownership after a partial bridge
+    /// conversion.
     pub async fn complete_workflow(
         &self,
         completion: WorkflowActivationCompletion,
     ) -> Result<(), WorkerBridgeError> {
-        self.ledger
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .ensure_workflow_leased(&completion.run_id)
-            .map_err(WorkerBridgeError::Completion)?;
         let run_id = completion.run_id.clone();
-        self.worker
-            .complete_workflow_activation(completion)
-            .await
-            .map_err(|error| WorkerBridgeError::CoreWorkflow(error.to_string()))?;
         self.ledger
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .complete_workflow(&run_id)
-            .map_err(WorkerBridgeError::Completion)
+            .map_err(WorkerBridgeError::Completion)?;
+        // Record the ledger state at the exact handoff to Core. The
+        // retirement above must already have removed this run, so a correct
+        // ordering always probes `false`. A regression that retired after
+        // this await would probe `true`, deterministically failing the
+        // ordering test.
+        #[cfg(test)]
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .probe_complete_completion(&run_id);
+        match self.worker.complete_workflow_activation(completion).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.ledger
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .restore_rejected_workflow_completion(&run_id);
+                Err(WorkerBridgeError::CoreWorkflow(error.to_string()))
+            }
+        }
     }
 
     /// Sends a leased remote-activity completion to Core, then retires it.
@@ -1095,6 +1125,18 @@ impl PollLanes {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .reject_completion_probes()
+            .to_vec()
+    }
+
+    /// Test-only view of the terminal-completion ordering probes recorded by
+    /// the shared ledger. Each entry is `false` when the corresponding
+    /// completion retired its lease before handing the completion to Core.
+    #[cfg(test)]
+    pub(crate) fn complete_completion_probes(&self) -> Vec<bool> {
+        self.ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .complete_completion_probes()
             .to_vec()
     }
 
@@ -1525,6 +1567,13 @@ pub struct TaskLedger {
     /// `PollLanes::reject_workflow_delivery_with_reason`.
     #[cfg(test)]
     reject_completion_probes: Vec<bool>,
+    /// Test-only trace of whether each terminally-completed run was still
+    /// recorded in the ledger at the instant its completion was handed to
+    /// Core. Mirrors `reject_completion_probes` for
+    /// `PollLanes::complete_workflow`: a correct ordering always probes
+    /// `false`.
+    #[cfg(test)]
+    complete_completion_probes: Vec<bool>,
 }
 
 /// Mutable delivery state associated with one activity completion debt.
@@ -1545,6 +1594,8 @@ impl TaskLedger {
             retired_activities: HashSet::new(),
             #[cfg(test)]
             reject_completion_probes: Vec::new(),
+            #[cfg(test)]
+            complete_completion_probes: Vec::new(),
         }
     }
 
@@ -1561,6 +1612,22 @@ impl TaskLedger {
     #[cfg(test)]
     fn reject_completion_probes(&self) -> &[bool] {
         &self.reject_completion_probes
+    }
+
+    /// Records whether `run_id` is still an outstanding workflow obligation at
+    /// the moment its terminal completion is about to be sent to Core. Used
+    /// only by tests to assert the retire-before-complete ordering
+    /// deterministically. Mirrors [`Self::probe_reject_completion`].
+    #[cfg(test)]
+    fn probe_complete_completion(&mut self, run_id: &str) {
+        self.complete_completion_probes
+            .push(self.workflows.contains_key(run_id));
+    }
+
+    /// Returns the recorded complete-completion ordering probes for assertions.
+    #[cfg(test)]
+    fn complete_completion_probes(&self) -> &[bool] {
+        &self.complete_completion_probes
     }
 
     /// Records one workflow activation before its delivery to OCaml.
@@ -1751,6 +1818,28 @@ impl TaskLedger {
             Some(false) => Err(CompleteError::NotLeased),
             None => Err(CompleteError::UnknownWorkflow),
         }
+    }
+
+    /// Restores a workflow lease that [`Self::complete_workflow`] retired
+    /// optimistically before its Core completion await, after Core rejected
+    /// that completion.
+    ///
+    /// `PollLanes::complete_workflow` retires the ledger entry before
+    /// sending the completion to Core so a legitimate post-completion cache
+    /// eviction is never misclassified as a duplicate (see its doc comment).
+    /// But Core did not actually accept this completion, so the run never
+    /// became complete from Core's point of view and no such eviction could
+    /// have been scheduled for it during the await. The language side is
+    /// expected to retry with a corrected completion, so the lease must be
+    /// restored exactly as it was.
+    ///
+    /// If some other admission raced this run_id back into the ledger during
+    /// the await — which the reasoning above says cannot happen for a
+    /// genuinely rejected completion — the existing entry is left untouched
+    /// rather than silently overwritten, since blindly stamping it leased
+    /// would corrupt an unrelated obligation.
+    pub fn restore_rejected_workflow_completion(&mut self, run_id: &str) {
+        self.workflows.entry(run_id.to_owned()).or_insert(true);
     }
 
     /// Verifies that a workflow completion is authorized without mutating it.

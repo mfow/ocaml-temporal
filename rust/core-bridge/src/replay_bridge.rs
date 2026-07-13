@@ -536,6 +536,14 @@ impl ReplayWorker {
     pub(crate) fn reject_completion_probes(&self) -> Vec<bool> {
         self.lanes.reject_completion_probes()
     }
+
+    /// Exposes the ledger's terminal-completion ordering probes so a test can
+    /// assert that each completion retired its lease before Core was asked to
+    /// complete the activation. Mirrors [`Self::reject_completion_probes`].
+    #[cfg(test)]
+    pub(crate) fn complete_completion_probes(&self) -> Vec<bool> {
+        self.lanes.complete_completion_probes()
+    }
 }
 
 #[cfg(test)]

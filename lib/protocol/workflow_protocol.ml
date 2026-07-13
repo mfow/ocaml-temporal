@@ -136,6 +136,15 @@ type activation_job =
       seq : int64;
       result : child_workflow_resolution;
     }
+  (** Delivers one signal received by this workflow. Signal jobs have no
+      sequence number: Core replays their name, payloads, sender identity, and
+      headers as one ordinary workflow activation job. *)
+  | Signal_workflow of {
+      signal_name : string;
+      input : payload list;
+      identity : string;
+      headers : (string * payload) list;
+    }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow of { reason : string }
   | Remove_from_cache of { message : string; reason : eviction_reason }
@@ -1162,6 +1171,20 @@ let activation_job path json =
       let* result_json = field path "result" entries in
       let* result = child_workflow_resolution (path ^ ".result") result_json in
       Ok (Resolve_child_workflow { seq; result })
+  | "signal_workflow" ->
+      let* entries =
+        exact_object path [ "kind"; "signal_name"; "input"; "identity"; "headers" ]
+          json
+      in
+      let* signal_name_json = field path "signal_name" entries in
+      let* signal_name = identifier (path ^ ".signal_name") signal_name_json in
+      let* input_json = field path "input" entries in
+      let* input = list (path ^ ".input") payload input_json in
+      let* identity_json = field path "identity" entries in
+      let* identity = string (path ^ ".identity") identity_json in
+      let* headers_json = field path "headers" entries in
+      let* headers = payload_map (path ^ ".headers") headers_json in
+      Ok (Signal_workflow { signal_name; input; identity; headers })
   | "fire_timer" ->
       let* entries = exact_object path [ "kind"; "seq" ] json in
       let* seq_json = field path "seq" entries in
@@ -1224,6 +1247,18 @@ let activation_job_json = function
             ("kind", `String "resolve_child_workflow");
             ("seq", `Intlit (Int64.to_string seq));
             ("result", result);
+          ])
+  | Signal_workflow { signal_name; input; identity; headers } ->
+      let* input = payloads_json input in
+      let* headers = payload_map_json "$.headers" headers in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "signal_workflow");
+            ("signal_name", `String signal_name);
+            ("input", input);
+            ("identity", `String identity);
+            ("headers", headers);
           ])
   | Fire_timer { seq } ->
       Ok

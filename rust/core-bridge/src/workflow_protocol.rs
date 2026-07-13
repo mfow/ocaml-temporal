@@ -404,6 +404,14 @@ pub enum ActivationJob {
         seq: u32,
         result: ChildWorkflowResolution,
     },
+    /// Incoming signal data delivered by Core. Signals are activation events,
+    /// not completions, so they intentionally do not carry a sequence number.
+    SignalWorkflow {
+        signal_name: String,
+        input: Vec<Payload>,
+        identity: String,
+        headers: BTreeMap<String, Payload>,
+    },
     FireTimer {
         seq: u32,
     },
@@ -959,6 +967,18 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                     validate_failure(failure, "$.jobs.result.failure")?
                 }
             },
+            ActivationJob::SignalWorkflow {
+                signal_name,
+                identity,
+                headers,
+                ..
+            } => {
+                identifier(signal_name, "$.jobs.signal_name")?;
+                bounded_text(identity, "$.jobs.identity")?;
+                for key in headers.keys() {
+                    identifier(key, "$.jobs.headers")?;
+                }
+            }
             ActivationJob::CancelWorkflow { reason } => bounded_text(reason, "$.jobs.reason")?,
             ActivationJob::RemoveFromCache { message, .. } => {
                 bounded_text(message, "$.jobs.message")?
@@ -1743,6 +1763,20 @@ pub fn activation_from_core(
                         )?,
                     })
                 }
+                Variant::SignalWorkflow(value) => Ok(ActivationJob::SignalWorkflow {
+                    signal_name: value.signal_name.clone(),
+                    input: value
+                        .input
+                        .iter()
+                        .map(payload_from_core)
+                        .collect::<Result<_, _>>()?,
+                    identity: value.identity.clone(),
+                    headers: value
+                        .headers
+                        .iter()
+                        .map(|(key, payload)| Ok((key.clone(), payload_from_core(payload)?)))
+                        .collect::<Result<BTreeMap<_, _>, CoreConversionError>>()?,
+                }),
                 Variant::FireTimer(value) => Ok(ActivationJob::FireTimer { seq: value.seq }),
                 Variant::CancelWorkflow(value) => Ok(ActivationJob::CancelWorkflow {
                     reason: value.reason.clone(),

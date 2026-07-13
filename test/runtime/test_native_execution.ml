@@ -263,6 +263,55 @@ let test_child_resolution_translation () =
               { seq = 8L; result = Protocol.Child_completed None };
           ]))
 
+(** Confirms that a Core signal keeps its complete payload envelope while it
+    crosses the semantic bridge. The current execution deliberately has no
+    public signal-handler registry, so the activation is acknowledged without
+    inventing a workflow command; the retained runtime job is still checked
+    field by field to protect the future handler boundary. *)
+let test_signal_workflow_translation_and_activation () =
+  let signal_input = protocol_payload "signal-input" in
+  let signal_header = protocol_payload "signal-header" in
+  let signal =
+    Protocol.Signal_workflow
+      {
+        signal_name = "order_updated";
+        input = [ signal_input ];
+        identity = "sender";
+        headers = [ ("trace", signal_header) ];
+      }
+  in
+  let translated =
+    unwrap "signal translation"
+      (Native_execution.translate_activation (activation [ signal ]))
+  in
+  begin match translated.jobs with
+  | [
+   Activation.Signal_workflow
+     {
+       signal_name = "order_updated";
+       input = [ input ];
+       identity = "sender";
+       headers = [ ("trace", header) ];
+     } ] ->
+      if input <> runtime_payload "signal-input" then
+        failwith "signal input payload was changed during translation";
+      if header <> runtime_payload "signal-header" then
+        failwith "signal header payload was changed during translation"
+  | _ -> failwith "signal activation did not retain its complete runtime job"
+  end;
+  let workflow =
+    Temporal_base.Definition.make ~name:"native_signal"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:(Some (fun () -> Ok ()))
+  in
+  let execution = Execution.start workflow () in
+  let completion =
+    unwrap "signal activation"
+      (Native_execution.activate execution (activation [ signal ]))
+  in
+  if completion.commands <> [] then
+    failwith "an unhandled signal emitted an unexpected workflow command"
+
 (** Confirms cancellation and cache-removal facts are retained instead of being
     silently lost by marker-only runtime jobs. *)
 let test_cancellation_and_eviction () =
@@ -691,6 +740,7 @@ let () =
   test_retained_payloads_are_copied ();
   test_activity_failure_details_are_preserved ();
   test_child_resolution_translation ();
+  test_signal_workflow_translation_and_activation ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();
   test_activate_installs_workflow_time ();

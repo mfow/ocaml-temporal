@@ -173,6 +173,14 @@ type activation_job =
       seq : int64;
       result : child_workflow_resolution;
     }
+  (** Delivers a signal's deterministic name, payloads, sender identity, and
+      headers. Core does not assign a command sequence to an incoming signal. *)
+  | Signal_workflow of {
+      signal_name : string;
+      input : payload list;
+      identity : string;
+      headers : (string * payload) list;
+    }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow of { reason : string }
   | Remove_from_cache of { message : string; reason : eviction_reason }

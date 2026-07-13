@@ -540,6 +540,60 @@ fn converts_pinned_core_values_losslessly() {
     );
 }
 
+/// Proves an incoming signal maps from the pinned Core protobuf oneof to the
+/// lossless semantic job. Signal payloads, sender identity, and headers all
+/// participate in replay, so dropping any one of them would make a future
+/// OCaml signal handler observe a different event than Core delivered.
+#[test]
+fn converts_signal_workflow_activation_losslessly() {
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::temporal::api::common::v1::Payload as CorePayload;
+
+    let payload = CorePayload {
+        metadata: [("encoding".to_owned(), b"binary/plain".to_vec())].into(),
+        data: b"signal-value".to_vec(),
+        ..Default::default()
+    };
+    let activation = core_activation::WorkflowActivation {
+        run_id: "run-signal".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::SignalWorkflow(core_activation::SignalWorkflow {
+                signal_name: "order_updated".to_owned(),
+                input: vec![payload.clone()],
+                identity: "sender".to_owned(),
+                headers: [("trace".to_owned(), payload)].into(),
+            })),
+        }],
+        ..Default::default()
+    };
+
+    let semantic = workflow_protocol::activation_from_core(&activation).unwrap();
+    match semantic.jobs.as_slice() {
+        [
+            workflow_protocol::ActivationJob::SignalWorkflow {
+                signal_name,
+                input,
+                identity,
+                headers,
+            },
+        ] => {
+            assert_eq!(signal_name, "order_updated");
+            assert_eq!(identity, "sender");
+            assert_eq!(input.len(), 1);
+            assert_eq!(headers.len(), 1);
+            assert_eq!(input[0].data, b"signal-value");
+            assert_eq!(headers.get("trace").unwrap().data, b"signal-value");
+        }
+        jobs => panic!("unexpected signal activation jobs: {jobs:?}"),
+    }
+    let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
+}
+
 /// Proves ordinary first-task metadata survives Core conversion and semantic
 /// JSON instead of being rejected as an unsupported default-only initializer.
 #[test]

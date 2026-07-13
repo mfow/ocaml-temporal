@@ -191,6 +191,17 @@
         },
         {
           "type": "object", "additionalProperties": false,
+          "required": ["kind", "signal_name", "input", "identity", "headers"],
+          "properties": {
+            "kind": {"const": "signal_workflow"},
+            "signal_name": {"$ref": "#/$defs/identifier"},
+            "input": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}},
+            "identity": {"type": "string", "maxLength": 65536},
+            "headers": {"type": "object", "maxProperties": 201326592, "additionalProperties": {"$ref": "#/$defs/payload"}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
           "required": ["kind", "seq"],
           "properties": {"kind": {"const": "fire_timer"}, "seq": {"$ref": "#/$defs/u32"}}
         },

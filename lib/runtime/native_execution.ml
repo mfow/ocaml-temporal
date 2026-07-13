@@ -471,6 +471,33 @@ let runtime_job path = function
       Ok
         ( Activation.Resolve_child_workflow { seq; result }, None, None, None,
           Some (Child_result, seq) )
+  | Protocol.Signal_workflow { signal_name; input; identity; headers } ->
+      let* () = validate_identifier (path ^ ".signal_name") signal_name in
+      let rec payloads_loop index reversed = function
+        | [] -> Ok (List.rev reversed)
+        | payload :: rest ->
+            let* payload =
+              runtime_payload
+                (Printf.sprintf "%s.input[%d]" path index)
+                payload
+            in
+            payloads_loop (index + 1) (payload :: reversed) rest
+      in
+      let rec headers_loop reversed = function
+        | [] -> Ok (List.rev reversed)
+        | (key, payload) :: rest ->
+            let* () = validate_identifier (path ^ ".headers.key") key in
+            let* payload = runtime_payload (path ^ ".headers." ^ key) payload in
+            headers_loop ((key, payload) :: reversed) rest
+      in
+      let* input = payloads_loop 0 [] input in
+      let* headers = headers_loop [] headers in
+      Ok
+        ( Activation.Signal_workflow { signal_name; input; identity; headers },
+          None,
+          None,
+          None,
+          None )
   | Protocol.Fire_timer { seq } ->
       let* () = validate_sequence (path ^ ".seq") seq in
       Ok

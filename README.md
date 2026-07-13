@@ -75,11 +75,14 @@ opaque bytes and applications may choose another deterministic codec.
   Compose acceptance now proves one successful parent/child path against
   Temporal Server. Child failure, cancellation, and recovery remain follow-up
   scenarios.
-- Signals, queries, updates, versioning, local activities, Nexus, and the
-  remaining cross-SDK parity surface are roadmap work. Continue-as-new is
-  implemented and locally tested at the workflow/native bridge boundary, but
-  still needs live Temporal Server acceptance. Context-aware activity
-  heartbeats have the same implemented-but-not-live status.
+- Typed signal, query, and update definitions plus deterministic local handler
+  dispatch are available as an experimental OCaml-only slice. Native Temporal
+  interaction delivery, conditions, handler policies, versioning, local
+  activities, Nexus, and the remaining cross-SDK parity surface are roadmap
+  work. Continue-as-new is implemented and locally tested at the
+  workflow/native bridge boundary, but still needs live Temporal Server
+  acceptance. Context-aware activity heartbeats have the same
+  implemented-but-not-live status.
 - The public API, native protocol, and Temporal Core pin remain experimental
   and may change before a stable release.
 

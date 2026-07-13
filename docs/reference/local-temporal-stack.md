@@ -73,6 +73,13 @@ Run the infrastructure acceptance test with:
 make test-temporal-integration
 ```
 
+The one-shot driver is bounded to 300 seconds by default. The bound absorbs a
+temporary PostgreSQL checkpoint or host I/O stall while still failing a lost
+native request well before the CI job timeout. The Compose command sends
+`TERM` at the bound and permits 10 seconds for graceful cleanup before `KILL`;
+set `TEMPORAL_DRIVER_TIMEOUT_SECONDS` to override the bound for a slower local
+machine.
+
 The test intentionally removes this Compose project's PostgreSQL data volume
 before and after the run. No PostgreSQL volume or workflow history is
 preserved between acceptance runs. After database/frontend readiness, its

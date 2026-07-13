@@ -9,10 +9,12 @@ type registered_workflow
 
 (** Packs a typed workflow definition for a worker registration list. [signals]
     attach scheduler handlers for matching native signal activations; [queries]
-    attach synchronous read-only handlers for matching query requests. *)
+    attach synchronous read-only handlers for matching query requests; [updates]
+    attach typed non-suspending update handlers for matching update activations. *)
 val workflow :
   ?signals:Signal.Handler.t list ->
   ?queries:Query.Handler.t list ->
+  ?updates:Update.Handler.t list ->
   ('input, 'output) Workflow.t -> registered_workflow
 
 (** A heterogeneous activity registration item. *)

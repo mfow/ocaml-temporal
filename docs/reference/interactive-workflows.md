@@ -14,8 +14,10 @@ The definitions and handler types are available in `Temporal.Signal`,
 `Temporal.Query`, and `Temporal.Update`. `Temporal.Interaction` provides the
 deterministic local routing path for tests. Native workflow signal delivery is
 now available when a handler is attached to `Temporal.Worker.workflow`. Native
-output-only query delivery is also implemented at the bridge boundary; native
-updates remain experimental and unsupported.
+output-only query delivery is also implemented at the bridge boundary. Native
+updates have an experimental immediate slice: a registered one-input,
+non-suspending handler can run through the Rust/Core bridge and return a typed
+result. Suspended updates and live-server acceptance remain future work.
 
 ## Current status: local handlers and a partial native boundary
 
@@ -40,10 +42,19 @@ execution owner Domain and produce a matching query result. The current public
 query definition has no input argument, so an activation containing one or more
 arguments returns a typed non-retryable query failure rather than silently
 dropping them. Query callbacks are synchronous and non-suspending; they do not
-enter the workflow scheduler. Native updates remain unsupported. The focused
-native tests prove this bridge behavior but are not live-server evidence; the
-[feature coverage table](feature-coverage.md) and [implementation roadmap](../implementation-roadmap.md#delivery-order)
-record that a Compose acceptance path must add a real signal/query round trip.
+enter the workflow scheduler.
+
+Native update activations are validated and copied in the same way, then routed
+by update name to a typed `Temporal.Update.Handler.t`. The current public
+adapter requires exactly one input payload and a handler that returns in the
+same activation. It runs the validator when Core requests it, skips validation
+on replay, and emits accepted followed by completed responses. Codec failures,
+missing handlers, unsupported input arity, and callback errors become typed
+rejections. The private bridge retains headers, requester identity, and both
+update identifiers even though the first callback API exposes only its typed
+input. Focused native tests prove this behavior but are not live-server
+evidence; suspended continuations and a Compose update round trip remain
+roadmap work.
 
 ## The three-step model
 
@@ -52,7 +63,7 @@ An interaction is assembled in three steps:
 1. Define a stable name and the codec for each value that crosses the
    interaction boundary.
 2. Pair that definition with a typed OCaml callback to make a handler.
-3. Attach signal and/or output-only query handlers to a worker workflow, or
+3. Attach signal, output-only query, and/or immediate update handlers to a worker workflow, or
    put handlers in an `Interaction` dispatcher when writing a local test.
 
 The definition and handler preserve the relationship between a Temporal name,
@@ -60,8 +71,8 @@ its codec, and its OCaml type. A caller cannot accidentally pass a string to a
 handler that was defined for bytes without receiving a typed codec error. The
 native transport and the remaining handler/response lifecycles are described
 in the [native interaction design](../design/native-interactions.md). Signal
-and output-only query activation delivery are implemented; update responses
-and typed query inputs are not.
+and output-only query activation delivery plus immediate update responses are
+implemented; suspended update continuations and typed query inputs are not.
 
 ## Definitions
 

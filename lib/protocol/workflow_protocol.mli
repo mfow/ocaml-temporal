@@ -28,6 +28,11 @@ type workflow_priority = {
   fairness_weight_bits : int64;
 }
 
+(** Requester metadata attached to a workflow update. [update_id] is repeated
+    in the enclosing request so the bridge can verify that Core's two identity
+    fields have not diverged. *)
+type update_meta = { identity : string; update_id : string }
+
 (** Worker deployment identity attached to the current workflow task. *)
 type worker_deployment_version = { deployment_name : string; build_id : string }
 
@@ -228,6 +233,21 @@ type activation_job =
       arguments : payload list;
       headers : (string * payload) list;
     }
+  (** Delivers one workflow update request. Updates are identified by [id] in
+      the semantic activation record. The Rust/Core adapter copies that
+      authoritative value into [meta.update_id] because Core may strip the
+      duplicate nested protobuf field; the strict JSON decoder receives only
+      this canonical form and therefore requires the two semantic values to
+      match. *)
+  | Do_update of {
+      id : string;
+      protocol_instance_id : string;
+      name : string;
+      input : payload list;
+      headers : (string * payload) list;
+      meta : update_meta;
+      run_validator : bool;
+    }
   (** Delivers a signal's deterministic name, payloads, sender identity, and
       headers. Core does not assign a command sequence to an incoming signal. *)
   | Signal_workflow of {
@@ -286,6 +306,14 @@ type query_result =
   | Query_succeeded of payload
   | Query_failed of failure
 
+(** The two-phase response sent for one workflow update. Core first accepts or
+    rejects a request, then may receive its completed payload in a later
+    command. *)
+type update_response =
+  | Update_accepted
+  | Update_rejected of failure
+  | Update_completed of payload
+
 (** Supported workflow commands in scheduler emission order. *)
 type completion_command =
   | Schedule_activity of {
@@ -323,6 +351,13 @@ type completion_command =
   (** Answers a Core query request. The exact query ID is required for modern
       and legacy Core routing; it must not be generated or normalized. *)
   | Query_result of { query_id : string; result : query_result }
+  (** Answers one update protocol instance. [Update_accepted] and
+      [Update_rejected] are the first-phase decision; [Update_completed]
+      carries the handler's final payload. *)
+  | Update_response of {
+      protocol_instance_id : string;
+      response : update_response;
+    }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
   (** Ends this run and starts a successor run of [workflow_type] with the

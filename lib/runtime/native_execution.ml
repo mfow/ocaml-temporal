@@ -440,6 +440,61 @@ let runtime_job path = function
       let* headers = headers_loop [] headers in
       Ok (Activation.Query_workflow { query_id; query_type; arguments; headers }, None,
           None, None, None)
+  | Protocol.Do_update
+      {
+        id;
+        protocol_instance_id;
+        name;
+        input;
+        headers;
+        meta;
+        run_validator;
+      } ->
+      let* () = validate_identifier (path ^ ".id") id in
+      let* () =
+        validate_identifier (path ^ ".protocol_instance_id") protocol_instance_id
+      in
+      let* () = validate_identifier (path ^ ".name") name in
+      let* () = validate_identifier (path ^ ".meta.update_id") meta.update_id in
+      let* () = validate_bounded_text (path ^ ".meta.identity") meta.identity in
+      if not (String.equal id meta.update_id) then
+        Error (invalid (path ^ ".meta.update_id") "must match update id")
+      else
+        let rec payloads_loop index reversed = function
+          | [] -> Ok (List.rev reversed)
+          | payload :: rest ->
+              let* payload =
+                runtime_payload
+                  (Printf.sprintf "%s.input[%d]" path index)
+                  payload
+              in
+              payloads_loop (index + 1) (payload :: reversed) rest
+        in
+        let rec headers_loop reversed = function
+          | [] -> Ok (List.rev reversed)
+          | (key, payload) :: rest ->
+              let* () = validate_identifier (path ^ ".headers.key") key in
+              let* payload = runtime_payload (path ^ ".headers." ^ key) payload in
+              headers_loop ((key, payload) :: reversed) rest
+        in
+        let* input = payloads_loop 0 [] input in
+        let* headers = headers_loop [] headers in
+        Ok
+          ( Activation.Do_update
+              {
+                id;
+                protocol_instance_id;
+                name;
+                input;
+                headers;
+                identity = meta.identity;
+                update_id = meta.update_id;
+                run_validator;
+              },
+            None,
+            None,
+            None,
+            None )
   | Protocol.Signal_workflow { signal_name; input; identity; headers } ->
       let* () = validate_identifier (path ^ ".signal_name") signal_name in
       let* () = validate_bounded_text (path ^ ".identity") identity in
@@ -817,6 +872,21 @@ let command_to_protocol command =
             Ok (Protocol.Query_failed failure)
       in
       Ok (Protocol.Query_result { query_id; result })
+  | Activation.Update_response { protocol_instance_id; response } ->
+      let* () =
+        validate_identifier "$.command.protocol_instance_id" protocol_instance_id
+      in
+      let* response =
+        match response with
+        | `Accepted -> Ok Protocol.Update_accepted
+        | `Rejected error ->
+            let* failure = protocol_failure "$.command.response.failure" error in
+            Ok (Protocol.Update_rejected failure)
+        | `Completed payload ->
+            let* payload = protocol_payload "$.command.response.payload" payload in
+            Ok (Protocol.Update_completed payload)
+      in
+      Ok (Protocol.Update_response { protocol_instance_id; response })
   | Activation.Complete_workflow payload ->
       let* payload = protocol_payload "$.command.result" payload in
       let result =

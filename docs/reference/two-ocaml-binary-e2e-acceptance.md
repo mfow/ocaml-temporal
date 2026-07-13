@@ -1,12 +1,13 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The complete [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
-verified the previous nine scenarios against real Temporal Server and
-PostgreSQL. The run used PR head `47c9a93` and the PR was squash-merged as
-`f877fbf`. The current fixture adds a tenth `smoke.activity_timeout_retry`
-scenario, whose first activity callback sleeps beyond its 500 ms
-start-to-close timeout and whose exact second-attempt marker is awaiting its
-own live Compose result. The earlier run covers fan-out, timer/activity,
+**Status:** The complete [PR #226 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
+verified the current ten scenarios against real Temporal Server and
+PostgreSQL for PR head `ca112b8`. The earlier [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+verified the previous nine scenarios; that PR used head `47c9a93` and was
+squash-merged as `f877fbf`. The tenth `smoke.activity_timeout_retry` scenario
+has a first activity callback that sleeps beyond its 500 ms start-to-close
+timeout, and PR #226 accepted its exact second-attempt marker. The earlier run
+covers fan-out, timer/activity,
 ordinary activity retry, heartbeat-detail retry, parent/child success,
 propagated child failure, child cancellation, a typed non-retryable workflow
 failure, and marker-guarded exact-run cancellation. The retry workflow still
@@ -19,8 +20,8 @@ The current implementation starts all ten top-level workflows before waiting
 for any result, and its assertion target requires six exact successes, one
 propagated child failure, one child-cancellation marker, one typed
 non-retryable failure, and one exact-run cancellation. The previous nine
-assertions are backed by the green PR #210 live run; the timeout-retry assertion
-will be recorded after this change's live run. Restart, replay, cache eviction,
+assertions are backed by the green PR #226 live run; the previous nine also
+remain documented by PR #210. Restart, replay, cache eviction,
 and asynchronous activity completion remain separate acceptance work.
 
 The heartbeat assertion has a Docker-free contract in addition to the live
@@ -96,18 +97,19 @@ attempt must receive that detail and timeout before returning
 `smoke.activity_timeout_retry`: its first `smoke.timeout_retry` callback sleeps
 for 1.5 seconds while the workflow's start-to-close timeout is 500 ms, then
 returns a success that is intentionally too late. The second callback returns
-`SMOKE:TIMEOUT:RETRIED:SMOKE`; the exact marker is accepted only after Temporal
+`SMOKE:TIMEOUT:RETRIED:SMOKE`; the exact marker was accepted only after Temporal
 has timed out the first lease and delivered the retry. The workflow disables
 eager activity execution so this assertion crosses the normal worker
-poll/completion path. Its source contract is Docker-free, but its server
-evidence remains pending until the new Compose run passes. The driver also
+poll/completion path. Its source contract is Docker-free, and its server
+evidence is recorded by the PR #226 Compose run. The driver also
 starts
 `smoke.non_retryable_failure` and requires its
 stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
 for its `smoke.cancellation_ready` marker activity (with eager execution
 disabled), sends an exact-run cancellation request, and requires the same
-handle to return a typed `Cancelled` error. This nine-run path passed in the
-[PR #210 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859).
+handle to return a typed `Cancelled` error. This ten-run path passed in the
+[PR #226 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182);
+the historical nine-run path passed in [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859).
 Heartbeat-timeout-triggered retries, child start failures,
 activity asynchronous completion, replay, and worker recovery remain separate
 scenarios. The
@@ -586,9 +588,9 @@ for PR head `47c9a93`, later squash-merged as `f877fbf`:
     cancelled`.
 
 The current fixture keeps all fourteen historical assertions and adds
-`smoke.activity_timeout_retry` as a tenth start and wait. Its exact
-`SMOKE:TIMEOUT:RETRIED:SMOKE` result is intentionally not included in the
-historical PR #210 evidence above until this change's live Compose run passes.
+`smoke.activity_timeout_retry` as a tenth start and wait. The exact
+`SMOKE:TIMEOUT:RETRIED:SMOKE` result was accepted in the PR #226 live Compose
+run; the historical PR #210 evidence above remains limited to its nine runs.
 
 The driver logs no-payload phase records for starts, exact-run cancellation,
 exact-run waits, terminal classes, and operation latency. The Makefile requires
@@ -606,8 +608,7 @@ The first live test is intentionally small. With this success path verified,
 extend the same two-binary topology rather than adding a separate pseudo-worker
 test:
 
-* live evidence for the new start-to-close timeout-triggered retry,
-  heartbeat-timeout-triggered retry, asynchronous activity completion, and
+* heartbeat-timeout-triggered retry, asynchronous activity completion, and
   activity-level non-retryable classification (the heartbeat-detail retry path
   is live-verified, while these additional activity capabilities remain open);
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
@@ -622,17 +623,17 @@ schema, Core conversion, pure-OCaml lifecycle tests, and the PR #210
 real-server assertions for parent/child success, propagated child failure, and
 child cancellation. The activity retry policy has the same separation:
 bilateral policy validation is synthetic, while the PR #210 run makes both the
-ordinary attempt-2 result and heartbeat-detail retry live evidence. None of
-these assertions claims coverage of retry timeouts, replay, or recovery
-behavior.
+ordinary attempt-2 result and heartbeat-detail retry live evidence and the PR
+#226 run adds start-to-close timeout-triggered retry. None of these assertions
+claims coverage of heartbeat timeouts, replay, or recovery behavior.
 
 ## Completion criteria for this design
 
 The previous nine-workflow acceptance contract was verified by the complete
 [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 for PR head `47c9a93` before the squash merge as `f877fbf`. The current
-ten-workflow contract below adds the timeout-retry assertion and will be
-considered verified only after this change's live Compose job passes:
+ten-workflow contract below was verified by the complete [PR #226 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
+for PR head `ca112b8`:
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;

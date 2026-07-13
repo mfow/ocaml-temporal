@@ -24,9 +24,19 @@ type view = {
     [view]. Public callers still use accessors, so this may change later. *)
 type t = view
 
-(** Creates an error with the common defaults: retryable and without details. *)
+(** Copies one detail payload so [make] never aliases a caller's mutable
+    [bytes] buffer. *)
+let copy_detail (payload : Payload.t) : Payload.t =
+  {
+    Payload.metadata = List.map (fun (key, value) -> (key, value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
+(** Creates an error with the common defaults: retryable and without details.
+    Detail payloads are deep-copied so later mutation of a caller's [bytes]
+    cannot change an error already retained by the SDK. *)
 let make ?(non_retryable = false) ?(details = []) ~category ~message () =
-  { category; message; non_retryable; details }
+  { category; message; non_retryable; details = List.map copy_detail details }
 
 let view error = error
 

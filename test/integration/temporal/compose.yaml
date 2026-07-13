@@ -158,13 +158,13 @@ services:
       TEMPORAL_TWO_BINARY_LIVE: "1"
       TEMPORAL_ADDRESS: http://temporal:7233
       TEMPORAL_NAMESPACE: temporal-sdk-test
-      SMOKE_DRIVER_TIMEOUT_SECONDS: "${SMOKE_DRIVER_TIMEOUT_SECONDS:-120}"
+      SMOKE_DRIVER_TIMEOUT_SECONDS: "${SMOKE_DRIVER_TIMEOUT_SECONDS:-300}"
       SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready
     command:
       - timeout
       - --signal=TERM
       - --kill-after=10s
-      - "${SMOKE_DRIVER_TIMEOUT_SECONDS:-120}"
+      - "${SMOKE_DRIVER_TIMEOUT_SECONDS:-300}"
       - opam
       - exec
       - --

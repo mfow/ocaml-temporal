@@ -6,7 +6,10 @@ COMPOSE := docker compose --project-directory "$(TEMPORAL_FIXTURE_DIR)" --file "
 # numeric identity, selected OCaml image, and bounded driver timeout so every
 # service shares Dune's lock/build ownership and overrides behave predictably.
 TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) SMOKE_DRIVER_TIMEOUT_SECONDS=$(TEMPORAL_DRIVER_TIMEOUT_SECONDS) $(COMPOSE) --profile temporal
-TEMPORAL_DRIVER_TIMEOUT_SECONDS ?= 120
+# Keep the one-shot acceptance driver bounded while allowing a temporarily
+# stalled CI PostgreSQL checkpoint to finish. This is a process-level guard,
+# not a workflow timeout; callers can still override it for slower machines.
+TEMPORAL_DRIVER_TIMEOUT_SECONDS ?= 300
 SMOKE_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.smoke-driver.log
 SMOKE_CANCELLATION_READY_FILE := $(TEMPORAL_FIXTURE_DIR)/.cancellation-ready
 SMOKE_WORKER_STOPPED_FILE := $(TEMPORAL_FIXTURE_DIR)/.worker-stopped

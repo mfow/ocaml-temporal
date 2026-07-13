@@ -14,6 +14,20 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Deterministic replay disposal lane-failure regression
+
+Status: locally verified; this is a test-harness reliability fix and makes no
+claim about a new live Temporal Server capability.
+
+The replay disposal regression test previously aborted Core's real poll handle
+without first taking ownership of it. On a slow runner that lane could reach
+natural shutdown before the abort, making the test incorrectly expect a join
+failure. The test-only hook now awaits the original handle and installs a
+deliberately aborted pending Tokio handle, so the expected `PollLane` error is
+deterministic and no producer task is detached. The focused replay test passed
+20 repetitions, all ten replay-bridge tests passed, Rust formatting and the
+diff check passed, and the temporary Cargo target was removed afterward.
+
 ## 2026-07-13: Scheduler-owned native workflow signal handlers
 
 Status: focused OCaml runtime, worker-adapter, and public registration tests

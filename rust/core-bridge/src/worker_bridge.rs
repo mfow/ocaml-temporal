@@ -1181,14 +1181,29 @@ impl PollLanes {
         Arc::clone(&self.worker)
     }
 
-    /// Aborts the workflow poll task for deterministic replay join-failure
-    /// coverage. Production callers always use the Core shutdown path instead.
+    /// Replaces the workflow poll task with an explicitly aborted pending task
+    /// for deterministic replay join-failure coverage.
+    ///
+    /// The original Core poll handle is first aborted and awaited, so the test
+    /// never leaves a detached producer behind. A fresh Tokio task that cannot
+    /// complete on its own is then aborted and installed as the owned handle;
+    /// replay disposal observes exactly one join failure without depending on
+    /// whether Core's real poll had already reached natural shutdown.
+    /// Production callers always use the Core shutdown path instead.
     #[cfg(test)]
-    pub(crate) fn abort_workflow_lane_for_test(&mut self) {
-        self.workflow_lane
-            .as_ref()
-            .expect("poll lanes must own a workflow task")
-            .abort();
+    pub(crate) async fn abort_workflow_lane_for_test(&mut self) {
+        let workflow_lane = self
+            .workflow_lane
+            .take()
+            .expect("poll lanes must own a workflow task");
+        workflow_lane.abort();
+        let _ = workflow_lane.await;
+
+        let replacement = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        replacement.abort();
+        self.workflow_lane = Some(replacement);
     }
 }
 

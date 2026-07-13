@@ -97,34 +97,40 @@ validating the readiness path and before validating later marker settings; its
 finalizer removes the marker again.
 This ordering prevents a reused container from reporting a previous run's
 readiness while the current worker is still being constructed or has failed.
-The driver implementation starts nine smoke workflows before waiting for any
-result. This includes the successful parent/child, propagated child-failure,
-and child-cancellation scenarios. For
+The driver implementation starts eleven smoke workflows before waiting for any
+result, then starts the timeout-retry workflow after the heartbeat result is
+terminal. This includes the successful parent/child, propagated child-failure,
+and child-cancellation scenarios, delayed asynchronous completion, and
+continue-as-new successor following. For
 the heartbeat workflow, the first activity attempt records a progress detail
 with a 500 ms heartbeat timeout and returns a retryable error; the driver
 requires the second attempt to receive that detail and timeout from Temporal.
 For the long-running workflow, it waits for the test-only marker activity to
 publish the current run token after the durable timer and marker commands are
 accepted together, then sends `Temporal.Client.cancel` for that exact handle.
-The local assertion checks five exact success payloads (the heartbeat-detail
-retry is one of those five), one typed non-retryable workflow failure, one
-typed child failure, one typed child cancellation, and one typed `Cancelled`
-result for the same workflow/run pair. The parent/child and ordinary retry
-scenarios are part of the same driver and are also started before the first
-wait. The complete [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
-live-verified all nine assertions and the driver/worker shutdown markers.
+The local assertion checks all twelve exact success or typed terminal outcomes,
+including timeout retry, one typed non-retryable workflow failure, one typed
+child failure, one typed child cancellation, and one typed `Cancelled` result
+for the same workflow/run pair. The parent/child and ordinary retry scenarios
+are part of the same driver and are also started before the first wait. The
+complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+live-verified all twelve assertions and the driver/worker shutdown markers.
 After the driver exits, the Makefile stops
 the worker and requires the current run's exact `.worker-stopped` marker; the
 driver's successful `client_shutdown` phase provides the corresponding client
 teardown evidence.
 
 This is a real workflow-result acceptance fixture, not only a lifecycle test.
-The complete [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+The complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 has live evidence for fan-out, timer/activity, parent/child success and
-failure/cancellation, ordinary and heartbeat-detail activity retry, typed
-workflow failure, exact-run cancellation, and graceful shutdown. The fixture
-does not yet establish child start-failure, heartbeat-timeout-triggered retry,
-asynchronous activity completion, worker restart, replay, or cache eviction.
+failure/cancellation, ordinary, heartbeat-detail, and timeout-triggered
+activity retry, delayed asynchronous activity completion, continue-as-new
+successor following, typed workflow failure, exact-run cancellation, and
+graceful shutdown. A separate `make test-temporal-worker-restart` target in
+the same run also verifies worker replacement, replay, exact-run continuation,
+history ordering, and volume cleanup. The fixture does not yet establish child
+start-failure, heartbeat-timeout-triggered retry, sticky-cache eviction, or
+crash recovery.
 The workflow configuration runs this target on pull requests and pushes to
 `master` in a standalone Ubuntu job labelled for OCaml 5.5; a queued or
 cancelled Actions run is not live acceptance evidence. It is intentionally

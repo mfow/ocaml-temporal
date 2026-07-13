@@ -14,10 +14,31 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-14: Live worker restart/replay acceptance (#253)
+
+Status: verified in the complete [PR #253 GitHub Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+for head `017c58e00ad64458f0ce2b41a7d29bad3404ded5`.
+
+The real Temporal/PostgreSQL integration job passed the twelve-result baseline
+and the two-generation restart/replay controller. Generation 1 received the
+workflow and committed its durable timer; the controller stopped and removed
+that worker container, then started a fresh generation 2. The replacement
+worker emitted the required replay diagnostic for the exact workflow/run pair,
+completed the follow-up activity, and the driver asserted the exact
+`SMOKE:AFTER-REPLAY` result. The controller also validated the normalized
+history ordering, accepted its thirteen lifecycle steps, and removed the
+PostgreSQL volume during cleanup.
+
+The same Actions run passed the independent dependency-license and quality
+jobs, Linux OCaml 5.2 through 5.5 amd64/arm64 jobs, and the OCaml 5.5 Windows
+x64 and macOS ARM jobs. This establishes live restart/replay evidence for the
+current acceptance controller; sticky-cache eviction, crash recovery, and
+broader child lifecycle scenarios remain separate work.
+
 ## 2026-07-13: Two-generation worker restart/replay acceptance controller
 
-Status: implementation and Docker-free contract verified; a successful live
-Docker/CI run is still pending.
+Status: implementation and Docker-free contract verified locally. The
+successful live result is recorded in the newer [2026-07-14 entry](#2026-07-14-live-worker-restartreplay-acceptance-253).
 
 The restart fixture now contains the deterministic
 `smoke.worker_restart_replay` workflow. Its timer is deliberately long enough
@@ -32,10 +53,11 @@ The controller normalizes machine-readable Temporal CLI history, separately
 checks the exact identity returned by `workflow describe`, validates the
 ordered initial/terminal event sequences, and emits a closed thirteen-step
 lifecycle record. The offline contract, negative parser cases, and controller
-fixture pass locally. The standalone CI integration job now runs the baseline
-two-binary smoke followed by `make test-temporal-worker-restart`. The latest
-local live attempt stopped before readiness because the Docker daemon exhausted
-storage during the cold native build, so no live replay claim is made yet.
+fixture pass locally. The standalone CI integration job runs the baseline
+two-binary smoke followed by `make test-temporal-worker-restart`; its successful
+run is recorded above. The earlier local cold ARM64 attempt stopped before
+readiness because the Docker daemon exhausted storage during the native build,
+which was an infrastructure failure and not replay evidence.
 
 ## 2026-07-13: Live asynchronous activity completion acceptance
 

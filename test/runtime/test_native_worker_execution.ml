@@ -278,6 +278,81 @@ let test_terminal_workflow () =
   | _ -> failwith "empty queue did not report Not_ready"
   end
 
+(** The private replay observer receives only metadata after strict activation
+    translation. This test proves that workflow identity, replay state, and the
+    64-bit history length are delivered without exposing the activation payload
+    or changing the ordinary completion path. *)
+let test_activation_metadata_hook () =
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_activation_hook"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () -> Ok ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-hook"
+       [ initialize ~run_id:"run-hook" ~workflow_type:"native_worker_activation_hook" ]);
+  let seen = ref None in
+  let worker =
+    match
+      Worker.create
+        ~on_activation:(fun info -> seen := Some info)
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          (Printf.sprintf "activation hook worker creation failed: %s" error.message)
+  in
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  match !seen with
+  | Some
+      {
+        Raw_adapter.run_id = "run-hook";
+        workflow_id = Some "workflow-run-hook";
+        is_replaying = true;
+        history_length = 1L;
+      } -> ()
+  | None -> failwith "activation metadata hook was not called"
+  | Some _ -> failwith "activation metadata hook received incorrect metadata"
+
+(** A diagnostic callback is outside workflow code and must not be able to
+    escape the worker poll with an unretired lease. The adapter converts its
+    exception to a typed rejection and submits the normal failure completion. *)
+let test_activation_metadata_hook_failure_is_typed () =
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_activation_hook_failure"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () -> Ok ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-hook-failure"
+       [ initialize ~run_id:"run-hook-failure"
+           ~workflow_type:"native_worker_activation_hook_failure" ]);
+  let worker =
+    match
+      Worker.create
+        ~on_activation:(fun _ -> failwith "diagnostic sink failed")
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          (Printf.sprintf "activation hook failure worker creation failed: %s"
+             error.message)
+  in
+  begin match Worker.poll worker with
+  | Ok (Adapter.Rejected { lease_retired = true; error; _ }) ->
+      if not (String.equal error.path "$.activation.replay_metadata") then
+        failwith
+          (Printf.sprintf
+             "activation hook exception had the wrong diagnostic path: %s (%s)"
+             error.path error.code)
+  | Ok _ -> failwith "activation hook exception was not rejected"
+  | Error _ -> failwith "activation hook exception escaped as a supervisor error"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "activation hook exception left a native lease outstanding"
+
 (** A workflow that sleeps first remains in the run registry after its timer
     command, then completes when the matching timer job is delivered. *)
 let test_timer_suspension_and_resume () =
@@ -846,6 +921,59 @@ let test_activity_command_retires_lease () =
   end;
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "activity command left a native lease outstanding"
+
+(** Proves that [discard] disposes an execution that is blocked awaiting an
+    activity result, and therefore lives only in the run registry
+    ([adapter.runs]), never in the pending-completion table. Native worker
+    shutdown's happy path must call [discard] after every activation, even one
+    whose most recent poll left it suspended rather than pending, or the
+    blocked run's scheduler and one-shot continuation would leak until a
+    later GC cycle instead of being torn down deterministically at shutdown.
+    A subsequent job for the same run ID is accepted as [unknown_run_id] only
+    if the run was actually removed from the registry, so this proves
+    disposal rather than merely inferring it from an internal accessor. *)
+let test_discard_shuts_down_blocked_execution () =
+  let supervisor = fake_supervisor () in
+  let activity =
+    Temporal.Activity.remote ~name:"native_worker_discard_activity"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_discard_blocked"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Activity.execute activity ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-discard-blocked"
+       [ initialize ~run_id:"run-discard-blocked"
+           ~workflow_type:"native_worker_discard_blocked" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  begin match Worker.poll worker with
+  | Ok (Adapter.Completed { terminal = false; _ }) -> ()
+  | Ok _ ->
+      failwith "blocked activity fixture unexpectedly completed the workflow"
+  | Error error ->
+      failwith ("blocked activity fixture failed to poll: " ^ error.message)
+  end;
+  (* The workflow task lease is retired as soon as its [Schedule_activity]
+     command is submitted; the run itself stays alive in [adapter.runs],
+     suspended, awaiting a future activation with the activity's result. *)
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "blocked run's workflow task lease was not retired by its poll";
+  Worker.discard worker;
+  enqueue supervisor
+    (activation ~run_id:"run-discard-blocked"
+       [ Protocol.Cancel_workflow { reason = "post-discard probe" } ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Rejected { lease_retired = true; error; _ }) ->
+      if not (String.equal error.code "unknown_run_id") then
+        failwith
+          ("discard left the blocked run reachable under a different code: "
+          ^ error.code)
+  | Ok _ ->
+      failwith "discard did not remove the blocked run from the execution registry"
+  | Error error -> failwith ("post-discard probe failed to poll: " ^ error.message)
+  end
 
 (** Child starts and their two-stage Core resolutions share one worker lease.
     The first completion records the start command, a successful start
@@ -1531,6 +1659,8 @@ let test_task_queue_validation () =
 (** Runs all native worker adapter assertions. *)
 let () =
   test_terminal_workflow ();
+  test_activation_metadata_hook ();
+  test_activation_metadata_hook_failure_is_typed ();
   test_timer_suspension_and_resume ();
   test_cancellation ();
   test_signal_handler_runs_on_scheduler ();
@@ -1544,6 +1674,7 @@ let () =
   test_failure_completion_exception_is_typed ();
   test_resumed_failure_removes_run ();
   test_activity_command_retires_lease ();
+  test_discard_shuts_down_blocked_execution ();
   test_child_command_and_resolution_lifecycle ();
   test_child_terminal_before_start_retires_parent_lease ();
   test_duplicate_child_start_acknowledgment_retires_parent_lease ();

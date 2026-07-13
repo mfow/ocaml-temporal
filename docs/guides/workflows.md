@@ -263,6 +263,42 @@ let summarize_activity =
     (fun document -> Ok (String.trim document))
 ```
 
+For work that must finish after the worker callback returns, use the explicit
+asynchronous form. The callback receives a typed capability, returns
+`Will_complete_async`, and hands the capability to the code that will finish
+the activity. Later operations return `(unit, Error.t) result`; they do not
+raise for an expired task token or a transport failure. Do not retain the
+ordinary contextual activity value: it is intentionally invalid after the
+callback returns.
+
+```ocaml
+let delayed_summary =
+  Temporal.Activity.define_async
+    ~name:"delayed_summary"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+    (fun context document ->
+      let handle = Temporal.Activity.Async_context.handle context in
+      ignore
+        (Domain.spawn (fun () ->
+             let value = String.trim document in
+             match Temporal.Activity.Async_handle.complete handle value with
+             | Ok () -> ()
+             | Error error ->
+                 Logs.err (fun report ->
+                     report "delayed_summary completion failed: %s"
+                       (Temporal.Error.message error))));
+      Temporal.Activity.Will_complete_async handle)
+```
+
+The handle is tied to one activity attempt and one output codec. A completion
+or failure can be submitted once; heartbeat calls keep the lease non-terminal.
+The worker first acknowledges the asynchronous handoff to Temporal Core, then
+the retained handle uses the namespace-bound client operation. If that native
+operation reports a retryable transport failure, the private adapter retains
+the byte-identical request for retry. A terminal bridge error closes the handle
+so a later call fails predictably instead of leaving worker shutdown blocked.
+
 Use `Activity.remote` or `Workflow.remote` when another worker owns the
 implementation. A remote definition keeps the name and codecs needed to
 encode and decode the call, but it cannot be registered as a local worker

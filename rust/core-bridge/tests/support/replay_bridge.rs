@@ -658,3 +658,50 @@ fn replay_reject_retires_lease_before_core_completion() {
     // and releases every native resource so the test cannot leak a worker.
     dispose_or_panic(worker, &handle);
 }
+
+/// Deterministic regression guard for the same eviction-retirement race as
+/// [`replay_reject_retires_lease_before_core_completion`], but for a
+/// successful terminal completion rather than a rejection.
+///
+/// A successful terminal workflow completion causes Core to schedule a
+/// follow-up cache-eviction activation for the same run_id, exactly like a
+/// rejection does. If the bridge retires the completed lease only *after*
+/// awaiting that completion, the poll lane can observe the eviction while the
+/// run is still recorded and misclassify it as `Admission::Duplicate`,
+/// raising a terminal `PollLaneError::DuplicateIdentity` on an otherwise
+/// healthy worker — silently dropping the eviction's own completion debt in
+/// the process. As with the reject regression, this pins the exact ordering
+/// invariant the fix establishes rather than racing the poll lane: a correct
+/// implementation always retires the lease before handing the completion to
+/// Core, so the probe is `false`.
+#[test]
+fn replay_complete_retires_lease_before_core_completion() {
+    let core = core_runtime();
+    let handle = core.tokio_handle().clone();
+    let mut worker =
+        ReplayWorker::start(&core, replay_config()).expect("replay worker should construct");
+    let document = encode_history_document("workflow-replay-test", &open_workflow_task_history())
+        .expect("open-task history should encode");
+    worker
+        .feed_json(&handle, &document)
+        .expect("bounded feeder should accept one history");
+
+    let activation = wait_and_lease_activation(&mut worker, &handle);
+    assert_eq!(activation.run_id, "run-replay-test");
+
+    handle
+        .block_on(worker.complete_workflow(WorkflowActivationCompletion::empty(&activation.run_id)))
+        .expect("completing a leased replay activation should succeed");
+
+    assert_eq!(
+        worker.complete_completion_probes(),
+        vec![false],
+        "completion must retire the ledger lease before handing it to Core, \
+         so the follow-up eviction is never admitted as a duplicate"
+    );
+
+    // The empty completion is a replay nondeterminism against this open-task
+    // history, leaving a follow-up eviction in flight; disposal abandons it
+    // and releases every native resource so the test cannot leak a worker.
+    dispose_or_panic(worker, &handle);
+}

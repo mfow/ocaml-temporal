@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/acceptance/restart-replay-controller.schema.json",
   "title": "Worker restart/replay controller evidence",
-  "description": "A payload-free, ordered record of the lifecycle observations required by the future two-generation Temporal restart/replay controller. This document is a contract fixture until the public worker exposes replay diagnostics and a machine-readable history adapter exists.",
+  "description": "A payload-free, ordered record of the lifecycle observations emitted by the two-generation Temporal restart/replay controller. The live controller records the exact workflow identity, initial and terminal history checks, worker replacement, replay marker, graceful teardown, and PostgreSQL volume removal.",
   "type": "object",
   "additionalProperties": false,
   "required": ["workflow_id", "run_id", "events"],
@@ -11,8 +11,8 @@
     "run_id": {"$ref": "#/$defs/identifier"},
     "events": {
       "type": "array",
-      "minItems": 11,
-      "maxItems": 11,
+      "minItems": 13,
+      "maxItems": 13,
       "prefixItems": [
         {"$ref": "#/$defs/stack_ready"},
         {"$ref": "#/$defs/driver_accepted"},
@@ -24,6 +24,8 @@
         {"$ref": "#/$defs/replay_observed"},
         {"$ref": "#/$defs/history_checked"},
         {"$ref": "#/$defs/driver_completed"},
+        {"$ref": "#/$defs/generation_two_stopped"},
+        {"$ref": "#/$defs/generation_two_removed"},
         {"$ref": "#/$defs/volume_removed"}
       ],
       "items": false
@@ -61,10 +63,11 @@
     "stack_ready": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["step", "status", "remaining_project_volumes_before_start", "temporal_healthy"],
+      "required": ["step", "status", "stale_project_volumes_before_cleanup", "remaining_project_volumes_before_start", "temporal_healthy"],
       "properties": {
         "step": {"const": "stack_ready"},
         "status": {"$ref": "#/$defs/status"},
+        "stale_project_volumes_before_cleanup": {"$ref": "#/$defs/non_negative_count"},
         "remaining_project_volumes_before_start": {"const": 0},
         "temporal_healthy": {"const": true}
       }
@@ -168,6 +171,31 @@
         "step": {"const": "postgres_volume_removed"},
         "status": {"$ref": "#/$defs/status"},
         "remaining_project_volumes": {"const": 0}
+      }
+    },
+    "generation_two_stopped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "generation", "container_id", "exit_code", "shutdown_marker"],
+      "properties": {
+        "step": {"const": "generation_two_stopped"},
+        "status": {"$ref": "#/$defs/status"},
+        "generation": {"const": 2},
+        "container_id": {"$ref": "#/$defs/container_id"},
+        "exit_code": {"const": 0},
+        "shutdown_marker": {"const": true}
+      }
+    },
+    "generation_two_removed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "generation", "container_id", "remaining_worker_containers"],
+      "properties": {
+        "step": {"const": "generation_two_removed"},
+        "status": {"$ref": "#/$defs/status"},
+        "generation": {"const": 2},
+        "container_id": {"$ref": "#/$defs/container_id"},
+        "remaining_worker_containers": {"const": 0}
       }
     }
   }

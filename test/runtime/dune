@@ -3,6 +3,7 @@
   test_activation
   test_native_execution
   test_native_activity_execution
+  test_native_async_activity
   test_native_activity_lifecycle
   test_native_worker_loop
   test_native_worker_policy

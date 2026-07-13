@@ -1,8 +1,9 @@
 (** Driver process for the two-OCaml-binary live acceptance test.
 
     This executable is a deliberately small, typed harness. It starts the
-    fan-out, timer, ordinary-retry, heartbeat-detail/retry,
-    timeout-triggered-retry, parent/child success, parent/child failure,
+    fan-out, timer, ordinary-retry, heartbeat-detail/retry, delayed
+    asynchronous activity completion, timeout-triggered-retry, parent/child
+    success, parent/child failure,
     parent/child cancellation, typed-failure, long-running cancellation, and
     continue-as-new scenarios before waiting for any of them, then checks the
     exact terminal outcomes returned by the public client API. Without
@@ -410,6 +411,11 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-activity-heartbeat-retry" ~input:"smoke"
         in
+        let* async_completion_handle =
+          start_workflow client ~workflow:Definitions.async_activity_completion
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-async-activity-completion" ~input:"smoke"
+        in
         let* parent_handle =
           start_workflow client ~workflow:Definitions.parent_awaits_child
             ~task_queue:Definitions.task_queue
@@ -435,7 +441,7 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-long-running-cancellation" ~input:cancellation_token
         in
-        (* Ten starts intentionally happen before the first wait. The
+        (* Eleven starts intentionally happen before the first wait. The
            cancellation workflow's marker activity proves that its timer and
            marker commands were accepted in one activation before this exact
            run is cancelled; the timer keeps the execution outstanding. The
@@ -448,8 +454,12 @@ let run () =
            one mutex; starting a six-second timeout callback while a 500ms
            heartbeat lease is outstanding would therefore make this fixture
            test an artificial local queue timeout instead of Temporal's retry
-           behavior. The two child-focused parents are likewise started before
-           any wait: one propagates a terminal child failure and the other
+           behavior. The asynchronous activity workflow is also started before
+           the first wait; its activity callback returns a deferred handoff and
+           the driver later waits for the separate OCaml-owned Domain to complete
+           it through the namespace-bound client path. The two child-focused
+           parents are likewise started before any wait: one propagates a
+           terminal child failure and the other
            waits for Core's child cancellation acknowledgement. The continuation
            is also already started, so its successor wait is an explicit client
            operation rather than a latest-run lookup. *)
@@ -484,6 +494,11 @@ let run () =
         let* () =
           require_completed "smoke.activity_heartbeat_retry"
             "SMOKE:HEARTBEAT:RETRIED:SMOKE" (Ok heartbeat_retry_result)
+        in
+        let* async_completion_result = wait_workflow async_completion_handle in
+        let* () =
+          require_completed "smoke.async_activity_completion"
+            "SMOKE:ASYNC:COMPLETED:SMOKE" (Ok async_completion_result)
         in
         (* Start the intentionally late timeout attempt only after the short
            heartbeat lease has been fully exercised. This preserves the

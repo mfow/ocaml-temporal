@@ -1,28 +1,27 @@
 # ADR 0008: Asynchronous activity completion boundary
 
-- Status: accepted design; implementation pending
+- Status: implemented locally; normal delayed completion is live-verified, while
+  CI and remaining Core edge cases are pending
 - Date: 2026-07-13
 - Decision owners: OCaml Temporal maintainers
 
 ## Context
 
-The current activity worker invokes one OCaml callback at a time, submits one
-terminal completion through the Temporal Core worker operation, and invalidates
-the attempt context before dispatch returns. If the native completion call is
+The activity worker invokes one OCaml callback at a time, submits a terminal
+completion through the Temporal Core worker operation, and invalidates the
+attempt context before dispatch returns. If the native completion call is
 temporarily unavailable, the adapter retains an owned copy in its retry ledger
-and retries it without running the callback again. `Temporal.Activity.define`
-and `Temporal.Activity.define_with_context` therefore support synchronous
-activities and heartbeats, but they do not let an activity retain a safe
-completion capability for work that finishes later or after the worker lease
-has expired.
+and retries it without running the callback again. The ordinary
+`Temporal.Activity.define` and `Temporal.Activity.define_with_context` APIs
+remain synchronous, while `define_async` provides an explicit capability for
+work that finishes after the worker callback returns.
 
-The private activity protocol already has a closed
-`will_complete_async` result. It is a protocol/Core-conversion variant only:
-the OCaml adapter does not produce it from a public activity definition, and
-the Rust bridge currently exposes only the Core worker completion path. Every
-completion produced by the current adapter therefore remains a worker-lease
-completion; no public `AsyncActivityHandle` is retained for a later client
-operation.
+The private activity protocol has a closed `will_complete_async` result. The
+OCaml adapter now emits it only for `define_async` callbacks that return
+`Will_complete_async`, and the Rust bridge exposes separate namespace-bound
+client operations for the later terminal completion or heartbeat. The worker
+lease and the retained asynchronous lease are deliberately different state
+machines.
 
 Temporal Core deliberately treats these two operations differently. Accepting
 `WillCompleteAsync` through the worker tells Core that the worker has handed
@@ -40,13 +39,8 @@ valid workaround: it is intentionally invalidated when the callback returns.
 
 ## Decision
 
-Keep the existing synchronous API unchanged. Until this decision is
-implemented, `Temporal.Activity.define` and
-`Temporal.Activity.define_with_context` remain the only executable activity
-definitions, and their callbacks must return terminal results before dispatch
-returns. Then add an explicit asynchronous activity definition with a typed
-outcome. The exact names may evolve during implementation, but the public
-shape must have these properties:
+Keep the existing synchronous API unchanged and add an explicit asynchronous
+activity definition with a typed outcome. The public shape is:
 
 ```ocaml
 type ('output) async_result =
@@ -66,13 +60,13 @@ val define_async :
 ```
 
 `Async_handle.t` is opaque. Its operations accept and encode the output type
-paired with the activity definition and return `(unit, Error.t) result` (or a
-typed heartbeat response), never an exception for an expected Temporal or
-transport failure. A context helper may construct the handle, but the callback
-must return the explicit `Will_complete_async` case. There must be no dummy
-successful output, mutable context flag, or implicit defer caused by dropping
-an output value. The existing `define` and `define_with_context` wrappers
-remain ordinary result-returning functions.
+paired with the activity definition and return `(unit, Error.t) result`, never
+an exception for an expected Temporal or transport failure. A context helper
+returns the opaque handle, but the callback must return the explicit
+`Will_complete_async` case. There is no dummy successful output, mutable
+context flag, or implicit defer caused by dropping an output value. The
+existing `define` and `define_with_context` wrappers remain ordinary
+result-returning functions.
 
 The defer handoff is linearized only after the activity callback has returned.
 At that point the adapter submits exactly one `WillCompleteAsync` completion
@@ -93,7 +87,7 @@ completion of an accepted asynchronous lease. Do not overload the existing
 | --- | --- | --- | --- |
 | `WillCompleteAsync` handoff | Core worker | `Worker::complete_activity_task` with the async status; no server RPC | ordinary worker lease -> async lease, only after acceptance |
 | later `Completed`/`Failed`/`Cancelled` | namespace-bound client | `Client::get_async_activity_handle(...).complete/fail/report_cancelation` | async lease remains pending until the client result proves acceptance |
-| later heartbeat | namespace-bound client | `AsyncActivityHandle::heartbeat` | async lease remains pending; cancellation flags are returned |
+| later heartbeat | namespace-bound client | `AsyncActivityHandle::heartbeat` | async lease remains pending; the current OCaml API exposes acknowledgement only |
 
 The new operation consumes the same strict activity-completion JSON shape but
 rejects `will_complete_async`; that variant is valid only for the worker
@@ -126,29 +120,34 @@ handles can be added later only with the same strict identity validation.
   retained handle, and retaining a context cannot extend a native token's
   lifetime.
 - A handle has one terminal transition. Concurrent terminal calls are
-  serialized by its lease state: one request is admitted, an already admitted
-  equivalent request may be observed as the same result, and a conflicting or
-  repeated terminal outcome returns a typed state error. No result is silently
-  discarded when a response is uncertain.
+  serialized by its lease state: one request is admitted, another request
+  while it is in flight returns a typed busy error, and a conflicting or
+  repeated terminal outcome after the request settles returns a typed state
+  error. No result is silently discarded when a response is uncertain.
 
 ## Retry and shutdown
 
 The adapter keeps terminal client requests in the asynchronous-lease registry
 until the supervisor reports acceptance. A typed transport failure or an
-exception leaves the exact token and encoded request available for retry; the
-activity implementation is never run again. The implementation must map
-Temporal's already-completed/not-found responses deliberately rather than
-assuming that a lost response means the request was not applied. This is the
-only safe way to preserve idempotent behavior across a network boundary.
+exception leaves the copied token and operation key available for retry; the
+activity implementation is never run again. The current state machine retains
+the key rather than the original operation value, so a retry must reconstruct
+the byte-identical request. The current bridge maps native async-client
+failures through the generic typed bridge error path. A dedicated
+non-retryable Core `NotFound` status and bounded native wait are follow-up
+hardening work, so callers must treat an uncertain result as unresolved and
+must not issue a different operation for the same handle.
 
 Worker shutdown first stops new polling, then drains ordinary worker leases as
-it does today. It must also account for asynchronous leases: either drain
-their admitted client requests within the configured shutdown period or return
-a typed outstanding-async-leases error while retaining enough state for an
-explicit retry. It must not force-complete, drop, or invalidate an accepted
-async token merely to make the native worker graph appear closed. Finalizer
-cleanup follows the same ownership rule and may use the existing dedicated
-cleanup thread, but it cannot run user callbacks or issue a hidden completion.
+it does today. It also accounts for asynchronous leases: if an admitted client
+request remains, the adapter returns a retryable typed outstanding-async-leases
+error and keeps the worker graph and admitted handles usable for an explicit
+retry after the caller finishes them. A non-retryable drain or
+native teardown failure invokes the native force-release contract first, then
+closes retained async handles and clears their adapter maps; it never sends a
+hidden completion. Finalizer cleanup follows the same ownership rule and may
+use the existing dedicated cleanup thread, but it cannot run user callbacks or
+invent a completion after Core has retired the lease.
 
 ## Verification plan
 
@@ -176,19 +175,26 @@ reviewable:
    shutdown scenarios. These are live feature tests; focused fake-supervisor
    tests must remain separate.
 
-## Current synchronous boundary and heartbeat limits
+## Current implementation boundary and heartbeat limits
 
-The asynchronous handoff described here is not implemented yet. The current
-activity protocol keeps `will_complete_async` so the semantic wire shape is
-closed, but the public adapter emits only synchronous terminal completions
-through the worker path. There is no public async handle, retained activity
-context, or client-side completion operation in the current OCaml/C/Rust ABI.
-Likewise, `heartbeat_timeout` is copied context metadata; the adapter does not
-run a local timeout timer or attempt to recover a completion after Core has
-timed out the lease. Existing context-lifecycle, payload-copying, protocol,
-and ABI tests prove the synchronous ownership boundary. The next milestone is
-the separate namespace-bound async lease and client terminal-operation path,
-followed by live timeout and retry acceptance.
+The local implementation now includes the separate namespace-bound async lease
+and client terminal-operation path. `Temporal.Activity.define_async` callbacks
+can return `Completed`, `Failed`, or `Will_complete_async`; the latter is
+activated only after Core accepts the worker handoff. `Async_handle.complete`,
+`fail`, `cancel`, and `heartbeat` return typed results and copy payload bytes at
+each public boundary. The adapter tests cover handoff ordering, copied tokens,
+retry keys, lifecycle errors, and shutdown accounting.
+
+The native heartbeat operation currently acknowledges only successful
+submission. Core's cancellation/pause/reset response flags are not yet
+represented in the public OCaml result. A dedicated
+`AsyncActivityError::NotFound` mapping now becomes a typed non-retryable bridge
+error and retires the adapter lease; the focused fake-supervisor test covers
+that terminal transition. `heartbeat_timeout` remains copied context metadata;
+the adapter does not run a local timeout timer or synthesize retry behavior.
+The normal delayed-completion, timeout-retry, cancellation, and worker-shutdown
+paths are covered by the local OCaml 5.5 Compose acceptance run; broader Core
+response-flag and heartbeat-timeout scenarios remain required.
 
 ## Consequences
 
@@ -217,12 +223,14 @@ The existing closed protocol representation is specified in
 
 The adapter implementation is in
 `lib/runtime/native_activity_execution.ml`; public activity registration is in
-`lib/public/activity.ml`. Neither module exposes asynchronous completion yet.
+`lib/public/activity.ml`. The low-level lifecycle state machine is isolated in
+`lib/base/async_activity.ml`, and the native client operations are declared in
+`lib/core_bridge/native_bridge.ml` and implemented by the Rust ABI.
 
 The worker/client split and one-owner lifecycle are recorded in
 [`ADR 0004`](0004-sdk-instance-supervisor.md). The pinned Temporal Core client
 implementation is
 [`async_activity_handle.rs`](https://github.com/temporalio/sdk-core/blob/95e97686a079dcfe6c42e3254b2f3f5e3d97408f/crates/client/src/async_activity_handle.rs),
-which provides the namespace-bound `AsyncActivityHandle` operations used by
-this decision. It is a design reference for the future bridge; no current
-OCaml/C/Rust operation wraps it.
+which provides the namespace-bound `AsyncActivityHandle` operations wrapped by
+the current bridge. The pinned Core error and heartbeat-response behavior
+remain the reference for the follow-up status/response work.

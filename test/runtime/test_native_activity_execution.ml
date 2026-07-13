@@ -220,6 +220,25 @@ module Fake_supervisor = struct
           retryable = false;
         }
 
+  (** The legacy activity fake does not model a namespace-bound client; making
+      this explicit keeps tests honest when the adapter contract grows. *)
+  let complete_async_activity _supervisor (_completion : Protocol.completion) =
+    Error
+      {
+        code = "unsupported";
+        message = "async client operation is not configured in this fake";
+        retryable = false;
+      }
+
+  let record_async_activity_heartbeat _supervisor
+      (_heartbeat : Protocol.heartbeat) =
+    Error
+      {
+        code = "unsupported";
+        message = "async client operation is not configured in this fake";
+        retryable = false;
+      }
+
   (** Exposes the bounded source classification expected by the adapter. *)
   let error_code error = error.code
 

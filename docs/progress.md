@@ -14,6 +14,93 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-13: Two-generation worker restart/replay acceptance controller
+
+Status: implementation and Docker-free contract verified; a successful live
+Docker/CI run is still pending.
+
+The restart fixture now contains the deterministic
+`smoke.worker_restart_replay` workflow. Its timer is deliberately long enough
+for the controller to observe `TimerStarted`, stop and remove generation 1,
+and start a fresh generation 2 on the same task queue. The private worker
+activation hook records only run identity, replay status, generation, and
+history length; it never writes payloads or native handles. The driver remains a
+separate OCaml assertion binary and waits for the exact run and
+`SMOKE:AFTER-REPLAY` result.
+
+The controller normalizes machine-readable Temporal CLI history, separately
+checks the exact identity returned by `workflow describe`, validates the
+ordered initial/terminal event sequences, and emits a closed thirteen-step
+lifecycle record. The offline contract, negative parser cases, and controller
+fixture pass locally. The standalone CI integration job now runs the baseline
+two-binary smoke followed by `make test-temporal-worker-restart`. The latest
+local live attempt stopped before readiness because the Docker daemon exhausted
+storage during the cold native build, so no live replay claim is made yet.
+
+## 2026-07-13: Live asynchronous activity completion acceptance
+
+Status: locally verified against Temporal Server 1.31 and PostgreSQL; CI for
+this checkout is the remaining gate.
+
+The two-binary Compose acceptance now starts eleven workflows before its first
+terminal wait, including a delayed asynchronous activity-completion workflow
+and a continue-as-new successor workflow. After the heartbeat retry is
+terminal, the driver starts the start-to-close timeout-retry workflow and waits
+for its second-attempt marker. The local command
+`OCAML_VERSION=5.5 DUNE_JOBS=1 make test-temporal-integration` passed all twelve
+top-level assertions, including the exact
+`SMOKE:ASYNC:COMPLETED:SMOKE` result, timeout retry, child success/failure/
+cancellation, continue-as-new following, exact-run cancellation, and both
+graceful shutdown markers. Compose cleanup removed the PostgreSQL volume after
+the run. Restart/replay/cache recovery and heartbeat-timeout-triggered retry
+remain separate acceptance work.
+
+## 2026-07-13: Async handoff and native finalizer hardening
+
+Status: locally verified; PR CI is the remaining gate.
+
+The asynchronous activity handoff now checks that the returned completion
+handle is the one created for the current activity attempt. A handle retained
+from an earlier attempt remains dormant and is rejected as a typed activity
+failure instead of being attached to a new task token whose later completion
+could never reach the right lease. The adapter also classifies an admitted
+asynchronous lease found during shutdown as retryable. Normal shutdown now
+leaves the worker graph and handle usable so the caller can finish the lease
+and retry; only terminal native cleanup closes outstanding handles.
+
+The OCaml custom-block finalizer no longer enters or leaves an OCaml blocking
+section. Finalizers perform only C-side borrow accounting and transfer native
+destruction to the Rust cleanup path; regular bridge calls release their
+borrow before reacquiring the OCaml runtime lock. This removes unsupported
+runtime operations from the garbage-collector thread while preserving the
+defensive active-call barrier.
+
+Focused verification passed for the async activity suite, all runtime and
+supervisor OCaml tests, and the locked Rust test suite (including the native
+ABI and lifecycle tests). Temporary Dune and Cargo output was kept outside the
+repository and removed after verification.
+
+## 2026-07-13: Typed asynchronous activity completion bridge
+
+Status: locally implemented, focused-tested, and exercised by the local
+Temporal/PostgreSQL acceptance run; CI for this checkout is still pending.
+
+The activity API now has an explicit `Temporal.Activity.define_async` form.
+Its callback can finish immediately, fail with a typed activity error, or
+return a retained opaque handle for work that completes after the worker
+callback has returned. A per-activity state machine copies task-token and
+payload bytes, rejects conflicting or repeated operations, and keeps the
+asynchronous lease separate from the ordinary worker lease. The supervisor
+serializes completion, failure, cancellation, and heartbeat submissions
+through the Rust bridge, and shutdown accounts for both lease registries.
+
+The focused OCaml async-activity suite, native async bridge build, delayed
+completion workflow, and terminal `NotFound` lease-retirement test pass
+locally. The remaining work is Core heartbeat response flags, heartbeat-timeout
+retry, bounded native-wait expansion, and broader conformance/error coverage;
+the local Compose run already covers the normal asynchronous completion and
+shutdown paths.
+
 ## 2026-07-13: Deterministic replay disposal lane-failure regression
 
 Status: locally verified; this is a test-harness reliability fix and makes no
@@ -111,8 +198,8 @@ query-input API, updates, and live query acceptance remain future work.
 
 ## 2026-07-13: Typed continue-as-new successor handles
 
-Status: locally verified; no live Temporal Server acceptance is claimed for
-this API slice.
+Status: locally verified and exercised by the local OCaml 5.5 Compose
+acceptance; CI for the newer twelve-result path is still pending.
 
 `Temporal.Client.wait` already returns a validated successor identity when an
 exact run continues as new. The public `Temporal.Client.execution` record and
@@ -123,18 +210,17 @@ workflow codecs and client ownership, rejects malformed identifiers as typed
 defects, and refuses to construct a handle after client shutdown. Unit tests
 cover codec-preserving exact-run handle reconstruction, malformed successor
 identities, cross-namespace successor rejection, and the closed-client
-lifecycle boundary. Live continued-as-new coverage remains pending in the
-acceptance roadmap. The private activation protocol also preserves Core
+lifecycle boundary. The local acceptance now follows the continued-as-new
+successor explicitly; the private activation protocol also preserves Core
 continuation provenance, prior-run failure, and last-completion payload
 metadata through both Rust and OCaml focused tests; no live server claim is
 made for those fields.
 
 ## 2026-07-13: Complete nine-scenario Temporal smoke evidence (#210)
 
-Status: live-verified in the full [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859),
-then squash-merged to `master` as `f877fbf`. This is the current authoritative
-evidence for the two-OCaml-binary acceptance path; earlier entries that describe
-the expanded scenarios as local-only are historical snapshots.
+Status: historical CI evidence from the full [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859),
+then squash-merged to `master` as `f877fbf`. The newer local twelve-result
+acceptance entry above supersedes this as the current fixture description.
 
 The green run passed every required CI job, including the Temporal/PostgreSQL
 integration job. Its independent OCaml driver started all nine workflows before
@@ -146,7 +232,7 @@ non-retryable top-level workflow failure, and marker-guarded exact-run
 cancellation. The driver and worker shutdown markers were also checked before
 the Compose project and PostgreSQL volume were removed.
 
-This evidence does not claim restart/replay/cache-eviction recovery,
+At that historical commit this evidence did not claim restart/replay/cache-eviction recovery,
 timeout-triggered activity retry, asynchronous activity completion, child start
 failure, or continued-as-new coverage; those remain roadmap work.
 
@@ -1370,8 +1456,9 @@ commit.
 The OCaml-owned executable can now create and close a real Temporal Core/Tokio
 runtime through the statically linked Rust bridge. The runtime remains an
 abstract private OCaml value. Explicit shutdown waits for complete destruction
-while the OCaml runtime lock is released; the garbage-collector fallback
-transfers destruction to a dedicated Rust cleanup thread without waiting.
+while the OCaml runtime lock is released; the garbage-collector fallback uses a
+C-only borrow barrier and transfers destruction to a dedicated Rust cleanup
+thread without calling OCaml runtime lock operations.
 
 The C stub atomically detaches the sole native pointer, making explicit close,
 repeated close, and finalization safe against one another. Blocking Rust calls

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/activity-async-completion.schema.json",
+  "title": "Accepted asynchronous activity completion",
+  "description": "A terminal completion sent through the namespace-bound client after the worker has accepted will_complete_async. The handoff marker is deliberately not valid here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_token", "result"],
+  "properties": {
+    "task_token": {"$ref": "activity-completion.schema.json#/$defs/task_token"},
+    "result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "result"],
+          "properties": {
+            "kind": {"const": "completed"},
+            "result": {
+              "oneOf": [
+                {"$ref": "activity-completion.schema.json#/$defs/payload"},
+                {"type": "null"}
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {
+            "kind": {"const": "failed"},
+            "failure": {"$ref": "activity-completion.schema.json#/$defs/failure"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {
+            "kind": {"const": "cancelled"},
+            "failure": {"$ref": "activity-completion.schema.json#/$defs/failure"}
+          }
+        }
+      ]
+    }
+  }
+}

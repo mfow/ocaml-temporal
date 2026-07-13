@@ -70,6 +70,28 @@ let publish_ready path = publish_marker path "worker-ready\n"
     teardown assertion. *)
 let publish_stopped path = publish_marker path "worker-stopped\n"
 
+(** Removes the replay diagnostics only for generation one. Generation two
+    must read and extend this file; deleting it there would erase the only
+    evidence that the original worker observed the timer boundary. *)
+let clear_replay_diagnostics_before_start path generation =
+  if generation = 1 then
+    try
+      if Sys.file_exists path then Sys.remove path;
+      if Sys.file_exists path then
+        Error
+          (Error.defect
+             ~message:
+               (Printf.sprintf
+                  "cannot remove stale replay diagnostics file %s" path))
+      else Ok ()
+    with exception_ ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "cannot remove stale replay diagnostics file %s: %s"
+                path (Printexc.to_string exception_)))
+  else Ok ()
+
 (** Removes the readiness marker during every normal result path. Compose also
     removes the container on failure, but explicit cleanup prevents a local
     rerun from inheriting stale readiness state. *)
@@ -114,9 +136,19 @@ let run_with_signal_shutdown worker =
         while not (Atomic.get watcher_finished) do
           if Atomic.get stop_requested then begin
             (* A bounded native wait lets this call join the worker loop rather
-               than terminating the process while Core still owns a lease. *)
-            (try ignore (Worker.shutdown worker) with _ -> ());
-            Atomic.set watcher_finished true
+               than terminating the process while Core still owns a lease. A
+               transient retryable drain error must not end the watcher: doing
+               so would leave [Worker.run] alive after the signal and make the
+               host-side stop wait until Compose forcibly kills the process. *)
+            let shutdown_result =
+              try Worker.shutdown worker with _ ->
+                Error
+                  (Error.defect
+                     ~message:"worker shutdown watcher raised an exception")
+            in
+            match shutdown_result with
+            | Ok () -> Atomic.set watcher_finished true
+            | Error _ -> Unix.sleepf 0.05
           end
           else Unix.sleepf 0.05
         done)
@@ -186,6 +218,21 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* stopped_file = required_env "SMOKE_WORKER_STOPPED_FILE" in
+      let* replay_diagnostics_file =
+        required_env "SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE"
+      in
+      let* generation =
+        match Sys.getenv_opt "SMOKE_WORKER_GENERATION" with
+        | Some value -> (
+            try
+              let parsed = int_of_string value in
+              if parsed >= 1 then Ok parsed
+              else Error (Error.defect ~message:"SMOKE_WORKER_GENERATION must be positive")
+            with _ ->
+              Error (Error.defect ~message:"SMOKE_WORKER_GENERATION must be an integer"))
+        | None -> Error (Error.defect ~message:"SMOKE_WORKER_GENERATION must be set")
+      in
+      let* () = clear_replay_diagnostics_before_start replay_diagnostics_file generation in
       let* cancellation_ready_file = Definitions.cancellation_ready_file () in
       (* Clear any marker left by a manually interrupted local run before the
          worker can advertise readiness. The driver performs the same cleanup
@@ -203,6 +250,7 @@ let run () =
               Worker.workflow Definitions.continue_as_new;
               Worker.workflow Definitions.activity_retry;
               Worker.workflow Definitions.activity_heartbeat_retry;
+              Worker.workflow Definitions.async_activity_completion;
               Worker.workflow Definitions.activity_timeout_retry;
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
@@ -212,12 +260,14 @@ let run () =
               Worker.workflow Definitions.parent_cancels_child;
               Worker.workflow Definitions.non_retryable_failure;
               Worker.workflow Definitions.long_running_cancellation;
+              Worker.workflow Definitions.worker_restart_replay;
             ]
           ~activities:
             [
               Worker.activity Definitions.mock_transform;
               Worker.activity Definitions.retry_once_activity;
               Worker.activity Definitions.heartbeat_retry_activity;
+              Worker.activity Definitions.async_delayed_completion_activity;
               Worker.activity Definitions.timeout_retry_activity;
               Worker.activity Definitions.cancellation_ready_activity;
             ]

@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-# Validates the payload-free lifecycle evidence that a future Docker Compose
-# restart/replay controller must emit. The controller is deliberately modeled
+# Validates the payload-free lifecycle evidence emitted by the Docker Compose
+# restart/replay controller. The controller is deliberately modeled
 # as an ordered document rather than inferred from interleaved container logs:
 # a history check, worker replacement, replay marker, terminal result, and
 # volume cleanup must be observed in that order before an acceptance run can
@@ -80,6 +80,8 @@ if ! "$jq_bin" -e \
       type == "string" and test("^[a-f0-9]{12,64}$");
     def positive_count:
       type == "number" and . == floor and . >= 1 and . <= 1000000;
+    def nonnegative_count:
+      type == "number" and . == floor and . >= 0 and . <= 1000000;
     def positive_signed_64:
       type == "string"
       and test("^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[01][0-9]{17}|92[01][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[01][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$");
@@ -87,13 +89,14 @@ if ! "$jq_bin" -e \
     and (keys | sort) == ["events", "run_id", "workflow_id"]
     and (.workflow_id == $expected_workflow and (.workflow_id | identifier))
     and (.run_id == $expected_run and (.run_id | identifier))
-    and (.events | type == "array" and length == 11)
-    and (.events[0] == {
-      "step": "stack_ready",
-      "status": "ok",
-      "remaining_project_volumes_before_start": 0,
-      "temporal_healthy": true
-    })
+    and (.events | type == "array" and length == 13)
+    and (.events[0] | type == "object"
+      and (keys | sort) == ["remaining_project_volumes_before_start", "stale_project_volumes_before_cleanup", "status", "step", "temporal_healthy"]
+      and .step == "stack_ready"
+      and .status == "ok"
+      and (.stale_project_volumes_before_cleanup | nonnegative_count)
+      and .remaining_project_volumes_before_start == 0
+      and .temporal_healthy == true)
     and (.events[1] | type == "object"
       and (keys | sort) == ["run_id", "status", "step", "workflow_id"]
       and .step == "driver_accepted"
@@ -146,7 +149,22 @@ if ! "$jq_bin" -e \
       and .stage == "terminal"
       and (.event_count | positive_count))
     and (.events[9] == {"step": "driver_completed", "status": "ok", "outcome": "completed"})
-    and (.events[10] == {
+    and (.events[10] | type == "object"
+      and (keys | sort) == ["container_id", "exit_code", "generation", "shutdown_marker", "status", "step"]
+      and .step == "generation_two_stopped"
+      and .status == "ok"
+      and .generation == 2
+      and (.container_id | container_id)
+      and .exit_code == 0
+      and .shutdown_marker == true)
+    and (.events[11] | type == "object"
+      and (keys | sort) == ["container_id", "generation", "remaining_worker_containers", "status", "step"]
+      and .step == "generation_two_removed"
+      and .status == "ok"
+      and .generation == 2
+      and (.container_id | container_id)
+      and .remaining_worker_containers == 0)
+    and (.events[12] == {
       "step": "postgres_volume_removed",
       "status": "ok",
       "remaining_project_volumes": 0
@@ -156,9 +174,12 @@ if ! "$jq_bin" -e \
     and (.events[4].container_id != .events[6].container_id)
     and (.events[5].remaining_worker_containers == 0)
     and (.events[6].fresh_container == true)
+    and (.events[10].container_id == .events[11].container_id)
+    and (.events[10].container_id == .events[6].container_id)
+    and (.events[11].remaining_worker_containers == 0)
   ' "$controller" >/dev/null; then
   fail "controller document does not match the strict ordered lifecycle contract"
 fi
 
-printf 'restart_replay_controller workflow_id=%s run_id=%s steps=11 container_replaced=true volume_removed=true\n' \
+printf 'restart_replay_controller workflow_id=%s run_id=%s steps=13 container_replaced=true volume_removed=true\n' \
   "$workflow_id" "$run_id"

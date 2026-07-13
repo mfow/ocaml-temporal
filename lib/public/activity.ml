@@ -13,6 +13,31 @@ type context = Temporal_base.Activity_context.t
 type ('input, 'output) contextual_implementation =
   context -> 'input -> ('output, Error.t) result
 
+(** Opaque capability retained after an asynchronous activity has returned
+    [Will_complete_async]. The private adapter binds it to one accepted
+    Temporal task token and validates every later operation. *)
+type 'output async_handle =
+  'output Temporal_base.Async_activity.handle
+
+(** Context supplied to an asynchronous implementation. It exists only to
+    obtain the attempt's completion capability; it carries no nondeterministic
+    state and is safe to retain until the handle is terminal. *)
+type 'output async_context =
+  'output Temporal_base.Async_activity.context
+
+(** The explicit result of an asynchronous activity callback. Returning a
+    handle is the only way to defer completion; returning [Completed] or
+    [Failed] keeps completion owned by the worker task. *)
+type 'output async_result =
+  | Completed of 'output
+  | Failed of Error.t
+  | Will_complete_async of 'output async_handle
+
+(** Callback form for activities whose completion may occur after the worker
+    task has been acknowledged. *)
+type ('input, 'output) async_implementation =
+  'output async_context -> 'input -> 'output async_result
+
 (** Immutable public activity definition. The paired codecs describe the
     payload boundary, while exactly one implementation mode is retained:
     local, context-aware, or remote-only. Keeping the mode explicit prevents a
@@ -30,6 +55,9 @@ type ('input, 'output) t = {
   (* Context-aware local callback, absent for plain and remote definitions. *)
   contextual_implementation :
     ('input, 'output) contextual_implementation option;
+  (* Asynchronous implementation, absent for ordinary/contextual/remote
+     definitions. *)
+  async_implementation : ('input, 'output) async_implementation option;
 }
 
 (* Maximum byte length accepted by the closed JSON/native identifier contract. *)
@@ -57,6 +85,7 @@ let define ~name ~input ~output implementation =
     output;
     implementation = Some implementation;
     contextual_implementation = None;
+    async_implementation = None;
   }
 
 (** Constructs a local activity that receives an opaque attempt context. *)
@@ -68,6 +97,7 @@ let define_with_context ~name ~input ~output implementation =
     output;
     implementation = None;
     contextual_implementation = Some implementation;
+    async_implementation = None;
   }
 
 (** Constructs a command-only reference to an activity on another worker. *)
@@ -79,6 +109,20 @@ let remote ~name ~input ~output =
     output;
     implementation = None;
     contextual_implementation = None;
+    async_implementation = None;
+  }
+
+(** Constructs a local activity that explicitly chooses whether to complete
+    immediately or retain an opaque completion handle. *)
+let define_async ~name ~input ~output implementation =
+  validate_name name;
+  {
+    name;
+    input;
+    output;
+    implementation = None;
+    contextual_implementation = None;
+    async_implementation = Some implementation;
   }
 
 (* Returns the exact Temporal activity type name used by registration and
@@ -98,6 +142,54 @@ let implementation definition = definition.implementation
 (** Returns the context-aware callback, if this is a local contextual
     definition. *)
 let implementation_with_context definition = definition.contextual_implementation
+
+(** Returns the asynchronous callback, if this is a local deferred
+    definition. *)
+let implementation_async definition = definition.async_implementation
+
+(** Converts one public payload to the private representation while copying
+    mutable bytes so a caller cannot change a request after submission. *)
+let payload_to_base ({ Payload.metadata; data } : Payload.t) : Temporal_base.Payload.t =
+  {
+    Temporal_base.Payload.metadata = List.map (fun (key, value) -> (key, value)) metadata;
+    data = Bytes.copy data;
+  }
+
+(** Operations on a retained asynchronous activity capability. Every method
+    returns a typed error; it never raises for a normal lifecycle or transport
+    failure. *)
+module Async_handle = struct
+  type 'output t = 'output async_handle
+
+  (** Completes the activity with a typed output encoded by its definition. *)
+  let complete handle output =
+    Temporal_base.Async_activity.complete handle output
+    |> Result.map_error Error_private.of_base
+
+  (** Reports an application failure and makes the activity terminal. *)
+  let fail handle error =
+    Temporal_base.Async_activity.fail handle (Error_private.to_base error)
+    |> Result.map_error Error_private.of_base
+
+  (** Reports cancellation with optional detail payloads. *)
+  let cancel handle details =
+    Temporal_base.Async_activity.cancel handle (List.map payload_to_base details)
+    |> Result.map_error Error_private.of_base
+
+  (** Reports heartbeat details while retaining the terminal capability. *)
+  let heartbeat handle details =
+    Temporal_base.Async_activity.heartbeat handle
+      (List.map payload_to_base details)
+    |> Result.map_error Error_private.of_base
+end
+
+(** Accessors for the attempt-scoped asynchronous context. *)
+module Async_context = struct
+  type 'output t = 'output async_context
+
+  (** Returns the retained completion capability. *)
+  let handle context = Temporal_base.Async_activity.handle context
+end
 
 (** Encodes and submits one typed heartbeat value for the current activity. *)
 let heartbeat (context : context) (codec : 'a Codec.t) (value : 'a) =

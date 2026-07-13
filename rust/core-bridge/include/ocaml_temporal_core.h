@@ -136,6 +136,20 @@ ocaml_temporal_core_status ocaml_temporal_core_v1_client_wait_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* Complete an activity after WillCompleteAsync through the namespace-bound
+ * client. The worker task-token ledger is intentionally not consulted. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_client_complete_async_activity_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Record a heartbeat for an admitted asynchronous activity through the
+ * namespace-bound client. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_client_record_async_activity_heartbeat_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
 /*
  * Strictly decode workflow-only worker configuration, construct the official
  * Core worker, and validate its namespace before returning success. A failed

@@ -94,6 +94,26 @@ module Fake_supervisor = struct
   let record_activity_heartbeat _supervisor (_heartbeat : Protocol.heartbeat) =
     Ok ()
 
+  (** This lifecycle fake does not model deferred client completion; explicit
+      rejection prevents an async test from accidentally bypassing its lease
+      assertions. *)
+  let complete_async_activity _supervisor (_completion : Protocol.completion) =
+    Error
+      {
+        code = "unsupported";
+        message = "async client operation is not configured in this fake";
+        retryable = false;
+      }
+
+  let record_async_activity_heartbeat _supervisor
+      (_heartbeat : Protocol.heartbeat) =
+    Error
+      {
+        code = "unsupported";
+        message = "async client operation is not configured in this fake";
+        retryable = false;
+      }
+
   (** Exposes the source classification expected by the adapter signature. *)
   let error_code error = error.code
 

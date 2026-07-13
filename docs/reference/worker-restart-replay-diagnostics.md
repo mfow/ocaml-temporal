@@ -1,24 +1,26 @@
 # Worker restart/replay diagnostic contract
 
-**Status: offline contract only.** This document defines the small,
-payload-free records that the future real-Temporal restart test will use to
-coordinate a worker replacement. The current repository does not yet expose
-the worker activation callback needed to produce a live `is_replaying=true`
-record, and it does not yet have a machine-readable Temporal history adapter.
-`make test-temporal-worker-restart` therefore validates fixtures and rejection
-paths only. A passing command here is not evidence that a worker restarted or
-that Temporal replayed an execution.
+**Status: implemented; live evidence pending.** This document defines the
+small, payload-free records used by the real-Temporal restart test to
+coordinate a worker replacement. The private worker activation callback and
+the machine-readable Temporal CLI adapter are implemented. The contract target
+passes locally; a live run is accepted only after the Compose controller has
+also observed the exact run, replacement, replay marker, terminal result, and
+volume cleanup.
 
 ## Why there is a normalized document
 
 The Temporal CLI's normal history output is intended for people, not a stable
-controller protocol. A controller must never grep that display text to decide
-whether it is safe to stop generation 1. Instead, a future small adapter (for
-example, a Temporal API client in the admin-tools image) will convert the
-server response into the normalized JSON document described by
+controller protocol. The controller never greps display text. Its admin-tools
+container requests JSON, and
+[`normalize-history.sh`](../../test/integration/temporal/scripts/normalize-history.sh)
+converts the response into the normalized JSON document described by
 [`restart-replay-history.schema.json`](../schemas/acceptance/restart-replay-history.schema.json).
-The adapter must preserve the original event IDs and order, omit payload bytes,
-and reject duplicate or unknown JSON fields before invoking the validator.
+The script preserves event IDs and order, omits payload bytes, rejects unknown
+event types and unsafe numeric event IDs, and writes the document atomically
+before the validator reads it. `workflow describe` separately validates the
+exact workflow/run identity because a history event does not carry the current
+run ID in every CLI shape.
 
 The normalized history document contains only the workflow ID, the exact run ID
 returned by `Client.start`, and a bounded list of event IDs and event type
@@ -95,12 +97,11 @@ history length. The record contains no input, output, payload, timestamp, or
 process identifier. The validator also checks that each record has exactly the
 documented fields and that generation/flag combinations cannot be swapped.
 
-The eventual worker log may retain the design document's human-readable
-`phase=replay generation=2 ...` marker for bounded diagnostics, but the
-controller should convert it to this JSON shape with a strict parser before
-making an acceptance decision. If the worker cannot provide the replay bit, a
-successful terminal result may be described as **worker restarted and
-continued** only; it must not be reported as replay evidence.
+The private callback writes this JSON document directly using an atomic
+same-directory replacement; no human-readable worker log is parsed for replay
+proof. If the worker cannot provide the replay bit, a successful terminal
+result may be described as **worker restarted and continued** only; it must not
+be reported as replay evidence.
 
 ## Controller lifecycle evidence
 
@@ -112,10 +113,12 @@ document describes what the test harness did. Its closed, ordered shape is
 defined by
 [`restart-replay-controller.schema.json`](../schemas/acceptance/restart-replay-controller.schema.json).
 
-The checked-in fixture contains exactly eleven records, in this order:
+The checked-in fixture contains exactly thirteen records, in this order:
 
-1. `stack_ready` proves that no project volume was left by a previous run and
-   that Temporal passed its health check.
+1. `stack_ready` records how many project volumes were found before cleanup,
+   then proves that cleanup left zero volumes before Temporal passed its health
+   check. A nonzero stale count is visible evidence of prior interrupted state,
+   not a reason to hide that cleanup occurred.
 2. `driver_accepted` records the workflow ID and the exact run ID returned by
    `Client.start`.
 3. `history_checked` at `initial` records that the pending run reached the
@@ -134,31 +137,36 @@ The checked-in fixture contains exactly eleven records, in this order:
    required completion event sequence.
 10. `driver_completed` proves that the driver received the expected completed
     result.
-11. `postgres_volume_removed` proves that teardown removed the test data.
+11. `generation_two_stopped` records a graceful generation-2 shutdown.
+12. `generation_two_removed` proves that the replacement container was also
+    removed.
+13. `postgres_volume_removed` proves that teardown removed the test data.
 
 Every record has a closed field set and a successful status. The validator
 cross-checks the workflow/run identity, requires generation-2 container
-replacement, and requires zero project volumes at both the start and end. It
-does not create a live Temporal observation: `controller.json` is currently an
-offline contract fixture that a future Compose controller must produce from
-real process, history, replay, and cleanup observations. A passing fixture
-check therefore remains necessary contract coverage, not live restart/replay
-evidence.
+replacement and removal, and requires zero project volumes at both the start
+and end. The live Make target generates this record from real process, history,
+replay, and cleanup observations; `controller.json` remains the deterministic
+fixture for the validator and rejection tests.
 
 ## Local gate and limits
 
-Run the offline contract check with:
+Run the Docker-free contract check with:
 
 ```sh
 make test-temporal-worker-restart
 ```
 
-This target does not start Docker, PostgreSQL, Temporal Server, an OCaml
-worker, or a client. It runs positive fixtures and negative cases through the
-same validators that a future controller will call. It proves the
-schema-level identity/order/replay rules and the ordered lifecycle contract,
-but nothing about a running stack. The real acceptance target still needs a
-worker activation diagnostic hook, a strict Temporal history adapter,
-generation-aware readiness markers, graceful worker replacement, and a failure
-trap that removes the PostgreSQL volume. Those requirements remain in
-[`worker-restart-replay-acceptance.md`](worker-restart-replay-acceptance.md).
+This contract target does not start Docker, PostgreSQL, Temporal Server, an
+OCaml worker, or a client. It runs positive fixtures and negative cases through
+the same validators used by the live controller. To run the real stack, use:
+
+```sh
+OCAML_VERSION=5.5 DUNE_JOBS=1 make test-temporal-worker-restart-live
+```
+
+The live target starts the two OCaml binaries, stops/removes generation 1,
+starts generation 2, validates replay and the exact terminal result, and
+removes the PostgreSQL volume on both success and failure. Its latest local
+attempt was stopped by Docker storage/daemon failure before readiness; that
+run is not evidence for or against the SDK's replay semantics.

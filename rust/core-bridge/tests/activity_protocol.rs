@@ -60,6 +60,21 @@ fn activity_documents_are_closed_and_tokens_are_canonical() {
     );
 }
 
+/// The tagged completion-result enum is itself closed, not just the wrapping
+/// `ActivityCompletion` struct: an unknown member nested inside a `result`
+/// variant's fields must fail closed the same way it does for every
+/// analogous workflow-side tagged enum, instead of being silently dropped by
+/// serde's default behavior.
+#[test]
+fn activity_completion_result_variants_reject_unknown_fields() {
+    assert!(
+        decode_completion(
+            r#"{"task_token":"AA==","result":{"kind":"completed","result":null,"injected":true}}"#
+        )
+        .is_err()
+    );
+}
+
 /// Heartbeats preserve the opaque token and binary detail payloads while
 /// keeping the JSON object closed for forward-compatible validation.
 #[test]

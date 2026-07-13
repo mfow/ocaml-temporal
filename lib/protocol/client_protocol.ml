@@ -409,6 +409,7 @@ let validate_wait_successor execution outcome =
 let client_error_code kind path value =
   let rpc_codes =
     [
+      "ok";
       "cancelled";
       "unknown";
       "invalid_argument";

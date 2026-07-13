@@ -35,7 +35,8 @@ let await_started started =
     latter, valid close-wins outcome as the narrowly identified
     [Invalid_argument] message below; accepting arbitrary invalid arguments
     here would hide a real ABI regression. *)
-let assert_close_race_result = function
+let assert_close_race_result (result : (unit, Bridge.error) result) =
+  match result with
   | Ok () -> ()
   | Error { status = Bridge.Not_ready | Bridge.Invalid_state; _ } -> ()
   | Error { status = Bridge.Invalid_argument; message }

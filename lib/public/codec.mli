@@ -49,5 +49,13 @@ val unit : unit t
     value is wrapped in a distinct envelope so it can never be mistaken for
     [None] on decode. This makes the codec injective: [Some ()], [Some None],
     and [None] all round-trip to different values. Duplicate metadata names are
-    rejected when decoding any representation. *)
+    rejected when decoding any representation.
+
+    The wrapper is used only for the [binary/null]-shaped inner values above; it
+    never appears for ordinary payloads such as [string option] or [int option],
+    which keep the standard [binary/null]/inner-encoding representation that
+    other-language SDKs already understand. If you instead want an option to
+    collapse onto a foreign nullable — deliberately letting [Some ()] read as
+    absent for a non-OCaml consumer — do not use this combinator; define that
+    exact wire representation yourself with {!make}. *)
 val option : 'a t -> 'a option t

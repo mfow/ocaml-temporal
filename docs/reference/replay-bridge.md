@@ -220,10 +220,10 @@ The OCaml bridge test in
 sender-side canonical-payload validation rejects malformed replay input before
 it reaches Rust.
 
-This is **unit-tested native and supervisor plumbing**, not proof that an OCaml
-workflow replays successfully against a real server. The Rust ABI exports,
+This remains **unit-tested native and supervisor plumbing** for the private
+replay handle; it is not a public OCaml replay API. The Rust ABI exports,
 OCaml supervisor operations, strict sender/receiver validation, and lifecycle
-cleanup paths now have focused tests. The live restart design remains in
-[`worker-restart-replay-acceptance.md`](worker-restart-replay-acceptance.md);
-it must not be marked live until a two-generation Compose test observes the
-exact run, replay marker, terminal result, and volume cleanup.
+cleanup paths have focused tests. The separate live restart design is in
+[`worker-restart-replay-acceptance.md`](worker-restart-replay-acceptance.md),
+and its two-generation Compose test now observes the exact run, replay marker,
+terminal result, and volume cleanup in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).

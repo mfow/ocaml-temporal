@@ -1,8 +1,10 @@
 # Two-OCaml-binary Temporal acceptance design
 
 **Status:** The complete [PR #226 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
-verified the current ten scenarios against real Temporal Server and
-PostgreSQL for PR head `ca112b8`. The earlier [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+verified the ten scenarios against real Temporal Server and PostgreSQL for
+PR head `ca112b8`, using the earlier timeout-fixture delay. This branch changes
+that delay to outlive Temporal Core's local timeout buffer; live verification
+of the ordering guard is pending. The earlier [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 verified the previous nine scenarios; that PR used head `47c9a93` and was
 squash-merged as `f877fbf`. The tenth `smoke.activity_timeout_retry` scenario
 has a first activity callback that sleeps beyond its 500 ms start-to-close
@@ -20,8 +22,9 @@ The current implementation starts all ten top-level workflows before waiting
 for any result, and its assertion target requires six exact successes, one
 propagated child failure, one child-cancellation marker, one typed
 non-retryable failure, and one exact-run cancellation. The previous nine
-assertions are backed by the green PR #226 live run; the previous nine also
-remain documented by PR #210. Restart, replay, cache eviction,
+assertions are backed by the green PR #210 live run and were also exercised by
+PR #226. The current timeout ordering still needs a fresh live run. Restart,
+replay, cache eviction,
 and asynchronous activity completion remain separate acceptance work.
 
 The heartbeat assertion has a Docker-free contract in addition to the live
@@ -95,14 +98,17 @@ payload. It also runs `smoke.activity_heartbeat_retry`: the first
 attempt must receive that detail and timeout before returning
 `SMOKE:HEARTBEAT:RETRIED:SMOKE`. The driver also starts
 `smoke.activity_timeout_retry`: its first `smoke.timeout_retry` callback sleeps
-for 1.5 seconds while the workflow's start-to-close timeout is 500 ms, then
+for 6 seconds while the activity's start-to-close timeout is 500 ms, then
 returns a success that is intentionally too late. The second callback returns
 `SMOKE:TIMEOUT:RETRIED:SMOKE`; the exact marker was accepted only after Temporal
 has timed out the first lease and delivered the retry. The workflow disables
 eager activity execution so this assertion crosses the normal worker
-poll/completion path. Its source contract is Docker-free, and its server
-evidence is recorded by the PR #226 Compose run. The driver also
-starts
+poll/completion path. Temporal Core adds a five-second local timeout buffer to
+the 500ms server lease; the six-second delay gives Core time to classify the
+expired token before the callback returns. Its source contract is Docker-free.
+The earlier ten-run path passed in the [PR #226 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182),
+but that run used the shorter delay; live evidence for this timeout-ordering
+guard is pending. The driver also starts
 `smoke.non_retryable_failure` and requires its
 stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
 for its `smoke.cancellation_ready` marker activity (with eager execution
@@ -597,7 +603,9 @@ for PR head `47c9a93`, later squash-merged as `f877fbf`:
 The current fixture keeps all fourteen historical assertions and adds
 `smoke.activity_timeout_retry` as a tenth start and wait. The exact
 `SMOKE:TIMEOUT:RETRIED:SMOKE` result was accepted in the PR #226 live Compose
-run; the historical PR #210 evidence above remains limited to its nine runs.
+run with the shorter delay; the historical PR #210 evidence above remains
+limited to its nine runs, and this branch's ordering guard is pending live
+verification.
 
 The driver logs no-payload phase records for starts, exact-run cancellation,
 exact-run waits, terminal classes, and operation latency. The Makefile requires
@@ -630,9 +638,10 @@ schema, Core conversion, pure-OCaml lifecycle tests, and the PR #210
 real-server assertions for parent/child success, propagated child failure, and
 child cancellation. The activity retry policy has the same separation:
 bilateral policy validation is synthetic, while the PR #210 run makes both the
-ordinary attempt-2 result and heartbeat-detail retry live evidence and the PR
-#226 run adds start-to-close timeout-triggered retry. None of these assertions
-claims coverage of heartbeat timeouts, replay, or recovery behavior.
+ordinary attempt-2 result and heartbeat-detail retry live evidence; the PR #226
+run adds start-to-close timeout-triggered retry for the earlier delay. The
+updated timeout ordering remains pending a fresh live run. None of these
+assertions claims coverage of heartbeat timeouts, replay, or recovery behavior.
 
 ## Completion criteria for this design
 
@@ -640,7 +649,8 @@ The previous nine-workflow acceptance contract was verified by the complete
 [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 for PR head `47c9a93` before the squash merge as `f877fbf`. The current
 ten-workflow contract below was verified by the complete [PR #226 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
-for PR head `ca112b8`:
+for PR head `ca112b8` before this timeout-ordering guard was added. A fresh
+live run is required before treating the updated timing as verified:
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;

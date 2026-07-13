@@ -26,6 +26,8 @@ type child_workflow_state = {
 type t = {
   scheduler : Scheduler.t;
   task_queue : string;
+  mutable activation_timestamp :
+    Temporal_protocol.Workflow_protocol.timestamp option;
   mutable next_sequence : int64;
   activities : (int64, activity_resolution) Hashtbl.t;
   child_workflows : (int64, child_workflow_state) Hashtbl.t;
@@ -66,6 +68,7 @@ let create ?(task_queue = "default") scheduler =
       {
         scheduler;
         task_queue;
+        activation_timestamp = None;
         next_sequence = 0L;
         activities = Hashtbl.create 16;
         child_workflows = Hashtbl.create 16;
@@ -77,6 +80,16 @@ let create ?(task_queue = "default") scheduler =
     workflow code running on different Domains cannot see the wrong context. *)
 let current_key = Domain.DLS.new_key (fun () -> None)
 let current () = Domain.DLS.get current_key
+
+(** Stores the deterministic clock value for the activation being dispatched.
+    The field is mutable because one execution context is reused across many
+    workflow tasks; replacing it before dispatch prevents a later activation
+    from observing the previous task's timestamp. *)
+let set_activation_timestamp context timestamp =
+  context.activation_timestamp <- timestamp
+
+(** Reads the timestamp most recently installed for this execution context. *)
+let activation_timestamp context = context.activation_timestamp
 
 (** Makes [context] current while [action] runs, then restores the previous
     value even if [action] raises. This prevents later code on the same Domain

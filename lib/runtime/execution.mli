@@ -20,6 +20,12 @@ val start :
     execution removed from the cache ignores later calls. *)
 val activate : ('input, 'output) t -> Activation.job list -> Activation.command list
 
+(** Installs the timestamp carried by the activation currently being dispatched.
+    The native protocol adapter calls this before [activate] so deterministic
+    workflow clock reads observe the correct replay value. *)
+val set_activation_timestamp :
+  ('input, 'output) t -> Temporal_protocol.Workflow_protocol.timestamp option -> unit
+
 (** Releases paused fibers and pending operation tables for this execution.
     Idempotent. Call when removing a run from a worker registry if a terminal
     or eviction path has not already shut the execution down. *)

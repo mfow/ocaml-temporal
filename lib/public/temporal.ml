@@ -15,6 +15,7 @@ module Payload = Payload
 module Result_syntax = Result_syntax
 module Runtime_info = Runtime_info
 module Scope = Scope
+module Time = Time
 module Worker = Worker
 module Workflow = Workflow
 module Workflow_context = Workflow_context

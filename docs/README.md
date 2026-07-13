@@ -32,6 +32,9 @@ The remaining reference documents are useful when changing one subsystem:
   the current native worker command slice and two-stage child resolution.
 - [Native activity execution](reference/native-activity-execution.md) documents
   activity dispatch and completion retention.
+- [Deterministic workflow time](reference/workflow-time.md) documents
+  `Temporal.Workflow.now`, its exact timestamp representation, and its replay
+  safety contract.
 - [OCaml SDK logging](reference/observability.md) documents log sources, tags,
   levels, privacy, and Domain behavior.
 - [Local Temporal stack](reference/local-temporal-stack.md) documents the

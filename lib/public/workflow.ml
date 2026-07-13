@@ -84,6 +84,29 @@ let start_sleep duration =
 (** Implements direct-style sleep as timer creation followed by a future wait. *)
 let sleep duration = Future.await (start_sleep duration)
 
+(** Reads the deterministic timestamp captured from the current Temporal
+    activation. The runtime stores it in the workflow context before invoking
+    user code, which means repeated calls during one activation observe the
+    same value and replay does not consult local time. *)
+let now () =
+  match Temporal_runtime.Workflow_context_store.current () with
+  | None ->
+      Error
+        (Error.defect
+           ~message:"Temporal.Workflow.now used outside a workflow execution")
+  | Some context -> (
+      match
+        Temporal_runtime.Workflow_context_store.activation_timestamp context
+      with
+      | None ->
+          Error
+            (Error.defect
+               ~message:
+                 "Temporal.Workflow.now is unavailable for this activation")
+      | Some timestamp ->
+          Time.of_unix ~seconds:timestamp.seconds
+            ~nanoseconds:timestamp.nanoseconds)
+
 (** Requests a fresh run of the same workflow type with [input]. This is a
     terminal direct-style operation: it encodes the successor input, buffers a
     Core continue-as-new command, and aborts the current private workflow

@@ -18,6 +18,18 @@ val validate_task_queue : string -> (unit, string) result
 (** Returns the context installed on the current OCaml Domain, if any. *)
 val current : unit -> t option
 
+(** Records the timestamp attached to the activation that is about to run user
+    workflow code. [None] is used for synthetic runtime activations, such as
+    cache eviction, where no workflow clock is available. *)
+val set_activation_timestamp :
+  t -> Temporal_protocol.Workflow_protocol.timestamp option -> unit
+
+(** Returns the timestamp captured for the current activation, if one exists.
+    The public [Temporal.Workflow.now] wrapper converts it to its abstract
+    deterministic time type. *)
+val activation_timestamp :
+  t -> Temporal_protocol.Workflow_protocol.timestamp option
+
 (** Runs [action] with [t] dynamically installed and restores the previous
     context even if [action] raises. Nested calls are supported. *)
 val with_context : t -> (unit -> 'value) -> 'value

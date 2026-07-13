@@ -11,7 +11,8 @@ current Rust/Core adapter still rejects signal, query, and update activation
 jobs. This page therefore documents a stable OCaml typing and ordering
 contract, not a claim that a live Temporal Server can send an interaction to a
 workflow. Native delivery will reuse these definitions after the bilateral
-activation/completion protocol is extended.
+activation/completion protocol is extended. The planned mapping and response
+lifecycles are described in the [native interaction design](../design/native-interactions.md).
 
 ## Definitions
 

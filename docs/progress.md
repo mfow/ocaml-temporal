@@ -14,22 +14,19 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
-## 2026-07-13: Temporal Core timeout failure information
+## 2026-07-13: Deterministic replay disposal lane-failure regression
 
-Status: locally verified bridge capability; no new live Temporal Server or
-GitHub Actions success is claimed for this slice. The live smoke path has
-reported timeout failures intermittently, so this change is deliberately
-covered by typed conversion and protocol tests rather than inferred from a
-single run.
+Status: locally verified; this is a test-harness reliability fix and makes no
+claim about a new live Temporal Server capability.
 
-The Rust/Core adapter now maps `TimeoutFailureInfo` into a closed semantic
-timeout record containing Core's exact timeout policy and ordered heartbeat
-payloads. OCaml and Rust both reject unknown timeout enum values and validate
-heartbeat payload limits. An absent or empty Core heartbeat collection has the
-documented empty-list semantic representation and is normalized back to the
-absent protobuf field. The focused Rust round-trip/unknown-value test and the
-OCaml bridge round-trip/unknown-value test passed; generated build and target
-directories were removed after verification.
+The replay disposal regression test previously aborted Core's real poll handle
+without first taking ownership of it. On a slow runner that lane could reach
+natural shutdown before the abort, making the test incorrectly expect a join
+failure. The test-only hook now awaits the original handle and installs a
+deliberately aborted pending Tokio handle, so the expected `PollLane` error is
+deterministic and no producer task is detached. The focused replay test passed
+20 repetitions, all ten replay-bridge tests passed, Rust formatting and the
+diff check passed, and the temporary Cargo target was removed afterward.
 
 ## 2026-07-13: Scheduler-owned native workflow signal handlers
 

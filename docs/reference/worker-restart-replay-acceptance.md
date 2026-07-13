@@ -1,25 +1,16 @@
 # Worker restart and replay acceptance design
 
-**Status: live controller implemented; clean-stack execution is awaiting a
-successful CI run.** The private Rust bridge validates and feeds one history at
-a time into a workflow-only Temporal Core replay worker. The public worker now
-reports bounded activation metadata through a private OCaml callback, and the
-Compose fixture replaces generation 1 with a fresh generation 2 while an
-independent OCaml driver waits for the exact run. This document describes the
-implemented acceptance contract; it does not claim that a live restart/replay
-run has passed until its Docker/CI evidence is recorded. Sticky-cache eviction
-remains a separate unimplemented live scenario. The bridge format and
-ownership rules are documented in the [internal replay bridge
-reference](replay-bridge.md).
+**Status: live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The live run passed the baseline smoke first, then verified the exact run identity, generation replacement, replay marker, ordered history, thirteen controller steps, follow-up activity, and PostgreSQL-volume cleanup. Sticky-cache eviction remains a separate unimplemented live scenario. The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
 
 `make test-temporal-worker-restart-contract` is the fast Docker-free contract
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
 Temporal Server, two-generation OCaml worker, and OCaml driver sequence, while
 `make test-temporal-worker-restart` runs both. The standalone CI integration job
-invokes this target after the existing twelve-result smoke. A local cold ARM64
-attempt did not reach the acceptance assertions because the Docker daemon ran
-out of storage during the native build; that is an infrastructure failure, not
-positive replay evidence.
+invokes this target after the existing twelve-result smoke. The successful
+result is recorded in the linked PR #253 run; an earlier cold ARM64 attempt did
+not reach the acceptance assertions because the Docker daemon ran out of
+storage during the native build, which was an infrastructure failure rather
+than replay evidence.
 
 ## What this scenario proves
 
@@ -274,16 +265,17 @@ The implementation should land as a separate acceptance slice, in this order:
    the background, perform the controlled worker replacement, wait for the
    exact assertion, and always remove the PostgreSQL volume. **Done; the CI
    job now invokes it.**
-4. Run the acceptance repeatedly from a clean stack, including a failure-path
-   run that proves diagnostics appear before cleanup. Verify the target on both
-   Linux `amd64` and `arm64` when the existing live job's platform policy
-   permits it; native Windows/macOS jobs must not run this Linux Compose test.
-   **Pending a successful Docker/CI run.**
+4. Run the acceptance from a clean stack in the dedicated Linux `amd64` live
+   job; the separate Linux `arm64` and native Windows/macOS jobs must not run
+   this Linux Compose test. **Done for the success path in the [PR #253
+   Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).**
+   A deliberately failing run that proves diagnostics appear before cleanup is
+   still follow-up work.
 5. After a green CI run, update
    [`live-acceptance-coverage.md`](live-acceptance-coverage.md),
    [`feature-coverage.md`](feature-coverage.md), and `docs/progress.md` with
-   the commit and run URL. Until then, describe restart/replay as implemented
-   but unverified rather than as live-supported.
+   the commit and run URL. **Done:** the current evidence is recorded in those
+   references and this document.
 
 This sequencing keeps a passing terminal result from being mistaken for
 replay evidence and keeps the current one-shot driver/long-lived-worker

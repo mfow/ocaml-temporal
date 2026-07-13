@@ -109,11 +109,11 @@ activity poller. Its focused Rust tests are kept in
 `rust/core-bridge/tests/support/replay_bridge.rs` so production and test code
 remain separate.
 
-This plumbing is unit-tested native evidence plus an implemented acceptance
+This plumbing is unit-tested native evidence plus the implemented acceptance
 controller. The public C/OCaml replay operation remains separate work. The
-two-generation Docker Compose restart target must still prove the exact run,
-replay marker, terminal result, and fresh PostgreSQL-volume cleanup in a
-successful Docker/CI run before replay is called live-supported.
+two-generation Docker Compose restart target now proves the exact run, replay
+marker, terminal result, and fresh PostgreSQL-volume cleanup in the [PR #253
+Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
 
 ## Native client start and exact-run wait
 

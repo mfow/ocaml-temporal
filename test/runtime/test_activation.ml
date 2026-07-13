@@ -1388,6 +1388,7 @@ let test_continue_as_new_terminal () =
     (Execution.activate execution [ Activation.Cancel_workflow ])
 
 
+<<<<<<< HEAD
 (** A continue-as-new whose successor input cannot be encoded must still seal
     the execution: the failure command is terminal, and a later cancellation
     must not emit a second terminal command. *)
@@ -1419,6 +1420,50 @@ let test_continue_as_new_encode_failure_is_terminal () =
         ^ string_of_int (List.length commands)));
   expect "encode-failed continue-as-new seals the execution" []
     (Execution.activate execution [ Activation.Cancel_workflow ])
+=======
+(** A parked fiber discontinued by terminal shutdown must not append cancel
+    commands after the terminal command in the same activation batch. *)
+let test_terminal_finally_cannot_emit_cancel () =
+  let activity =
+    Temporal.Activity.remote ~name:"cleanup_target" ~input:Temporal.Codec.unit
+      ~output:Temporal.Codec.unit
+  in
+  let source =
+    Temporal.Workflow.define ~name:"terminal_cleanup_guard"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let handle = Temporal.Activity.start_handle activity () in
+        Fun.protect
+          ~finally:(fun () -> ignore (Temporal.Activity.cancel handle))
+          (fun () ->
+            match Temporal.Future.await (Temporal.Activity.future handle) with
+            | Ok () | Error _ -> Ok ()))
+  in
+  let execution = Execution.start source () in
+  (* First activation schedules the activity and blocks on await. *)
+  let first = Execution.activate execution [ Activation.Start_workflow ] in
+  (match first with
+  | [ Activation.Schedule_activity _ ] -> ()
+  | _ ->
+      failwith
+        ("expected only Schedule_activity, got "
+        ^ string_of_int (List.length first)));
+  (* Second activation cancels the workflow, discontinuing the await so the
+     finally runs during terminal shutdown. *)
+  let second = Execution.activate execution [ Activation.Cancel_workflow ] in
+  (match second with
+  | [ Activation.Cancel_workflow_execution ] -> ()
+  | commands ->
+      if
+        List.exists
+          (function Activation.Request_cancel_activity _ -> true | _ -> false)
+          commands
+      then
+        failwith
+          "Request_cancel_activity was emitted after Cancel_workflow_execution";
+      failwith
+        ("expected only Cancel_workflow_execution, got "
+        ^ string_of_int (List.length commands)))
+>>>>>>> b69aa4c (fix: seal workflow context against post-terminal emits)
 
 let () =
   test_commands_and_completion ();
@@ -1449,4 +1494,8 @@ let () =
   test_child_resolution_rejections_preserve_lifecycle_state ();
   test_cancel_and_evict ();
   test_continue_as_new_terminal ();
+<<<<<<< HEAD
   test_continue_as_new_encode_failure_is_terminal ()
+=======
+  test_terminal_finally_cannot_emit_cancel ()
+>>>>>>> b69aa4c (fix: seal workflow context against post-terminal emits)

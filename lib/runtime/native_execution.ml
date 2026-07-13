@@ -846,6 +846,11 @@ let completion_of_commands ~run_id commands =
     runtime jobs and translates its resulting command batch. *)
 let activate execution activation =
   let* translated = translate_activation activation in
+  (* Install the activation's deterministic clock before entering user code.
+     The execution context is reused across tasks, so synthetic activations
+     explicitly clear the previous value rather than leaving stale time
+     visible to [Temporal.Workflow.now]. *)
+  Execution.set_activation_timestamp execution translated.timestamp;
   let commands = Execution.activate execution translated.jobs in
   let* completion = completion_of_commands ~run_id:translated.run_id commands in
   match translated.cache_removal with

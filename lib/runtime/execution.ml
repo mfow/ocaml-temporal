@@ -53,6 +53,12 @@ let start ?(task_queue = "default") definition input =
 let workflow_type execution =
   Temporal_base.Definition.name execution.definition
 
+(** Updates the reusable execution context with the current activation clock.
+    Keeping this setter behind the execution abstraction prevents native code
+    from reaching into the context record or bypassing its lifecycle rules. *)
+let set_activation_timestamp execution timestamp =
+  Workflow_context_store.set_activation_timestamp execution.context timestamp
+
 (** Emits the workflow's completion, failure, or cancellation command once and
     immediately releases every paused fiber. *)
 let emit_terminal execution command =

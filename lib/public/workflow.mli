@@ -63,6 +63,13 @@ val start_sleep : Duration.t -> (unit, Error.t) Future.t
     returns a typed defect. *)
 val sleep : Duration.t -> (unit, Error.t) result
 
+(** Returns the exact timestamp attached to the activation currently executing
+    this workflow. Temporal supplies the value for both live execution and
+    replay, so the result is deterministic. Calling this outside workflow
+    execution, or while processing an activation without a timestamp, returns
+    a typed defect rather than reading the host wall clock. *)
+val now : unit -> (Time.t, Error.t) result
+
 (** Ends the current run and starts a new run of [definition] with [input].
     This operation never returns to the calling workflow fiber. It is
     deterministic: the input is encoded through the definition's codec before

@@ -29,6 +29,125 @@ let staging_files path =
   |> Array.to_list
   |> List.filter (fun name -> String.starts_with ~prefix name)
 
+(** Runs the real contextual heartbeat activity twice with an in-memory
+    context. The first attempt must publish one progress payload and return a
+    retryable failure; the second attempt receives that payload and the
+    server-supplied timeout and may return the success value. This is the
+    Docker-free counterpart of the live workflow: it exercises the exact
+    activity callback used by the worker without pretending that a local fake
+    observed Temporal Server retry delivery. *)
+let test_heartbeat_retry_activity_contract () =
+  let implementation =
+    match
+      Temporal.Activity.implementation_with_context
+        Smoke_definitions.heartbeat_retry_activity
+    with
+    | Some implementation -> implementation
+    | None -> failwith "heartbeat acceptance activity lost its context callback"
+  in
+  let timeout_ms = 500L in
+  (* Keep timeout validation at the public boundary: this catches a
+     conversion defect even when the in-memory base context was constructed
+     with the value expected by the fixture. *)
+  let require_timeout context label =
+    match Temporal.Activity.Context.heartbeat_timeout context with
+    | Some timeout when Temporal.Duration.to_ms timeout = timeout_ms -> ()
+    | Some timeout ->
+        failwith
+          (Printf.sprintf "%s saw heartbeat timeout %Ldms, expected %Ldms" label
+             (Temporal.Duration.to_ms timeout) timeout_ms)
+    | None -> failwith (label ^ " saw no heartbeat timeout")
+  in
+  let first_heartbeats = ref [] in
+  let first_context =
+    Temporal_base.Activity_context.create
+      ~heartbeat:(fun payloads ->
+        first_heartbeats := payloads :: !first_heartbeats;
+        Ok ())
+      ~details:[]
+      ~heartbeat_timeout:(Some (Temporal_base.Duration.of_ms timeout_ms))
+  in
+  require_timeout first_context "first attempt";
+  (match implementation first_context "smoke" with
+  | Ok _ -> failwith "first heartbeat attempt unexpectedly succeeded"
+  | Error error ->
+      let view = Temporal.Error.view error in
+      require (view.category = `Activity)
+        "first heartbeat attempt returned the wrong error category";
+      require (not view.non_retryable)
+        "first heartbeat attempt was not retryable";
+      require
+        (String.equal view.message
+           "intentional retry after recording an activity heartbeat")
+        "first heartbeat attempt returned an unexpected message");
+  require (List.length !first_heartbeats = 1)
+    "first heartbeat attempt did not submit exactly one heartbeat";
+  let heartbeat_details =
+    match !first_heartbeats with
+    | [ details ] -> details
+    | _ -> failwith "heartbeat callback retained an unexpected call shape"
+  in
+  let heartbeat_detail =
+    match heartbeat_details with
+    | [ payload ] -> payload
+    | _ -> failwith "first heartbeat did not contain exactly one detail"
+  in
+  require
+    (List.mem ("encoding", "json/plain") heartbeat_detail.metadata)
+    "heartbeat detail did not retain its codec metadata";
+  (match Temporal_base.Codec.decode Temporal_base.Codec.string heartbeat_detail with
+  | Ok value ->
+      require
+        (String.equal value Smoke_definitions.heartbeat_progress_detail)
+        "heartbeat detail payload changed before the retry"
+  | Error error ->
+      failwith
+        ("heartbeat detail could not be decoded: " ^ Temporal_base.Error.message error));
+  let retained_details = Temporal.Activity.Context.details first_context in
+  require (List.length retained_details = 1)
+    "context did not retain the successful heartbeat detail";
+  Temporal_base.Activity_context.invalidate first_context;
+  let callback_calls_after_invalidate = List.length !first_heartbeats in
+  (match
+     Temporal.Activity.Context.heartbeat first_context Temporal.Codec.string
+       "stale-heartbeat"
+   with
+  | Ok () -> failwith "invalidated heartbeat context accepted progress"
+  | Error error ->
+      let view = Temporal.Error.view error in
+      require (view.category = `Bridge)
+        "invalidated heartbeat context returned the wrong error category";
+      require
+        (String.equal view.message "activity context is no longer active")
+        "invalidated heartbeat context returned an unexpected message");
+  require (List.length !first_heartbeats = callback_calls_after_invalidate)
+    "invalidated heartbeat context entered its native callback";
+  let retained_details : Temporal_base.Payload.t list =
+    List.map
+      (fun ({ Temporal.Payload.metadata; data } : Temporal.Payload.t) ->
+        { Temporal_base.Payload.metadata; data = Bytes.copy data })
+      retained_details
+  in
+  let second_heartbeats = ref [] in
+  let second_context =
+    Temporal_base.Activity_context.create
+      ~heartbeat:(fun payloads ->
+        second_heartbeats := payloads :: !second_heartbeats;
+        Ok ())
+      ~details:retained_details
+      ~heartbeat_timeout:(Some (Temporal_base.Duration.of_ms timeout_ms))
+  in
+  require_timeout second_context "retry attempt";
+  (match implementation second_context "smoke" with
+  | Ok value ->
+      require (String.equal value "SMOKE:HEARTBEAT:RETRIED:SMOKE")
+        "retry attempt returned an unexpected result"
+  | Error error ->
+      failwith ("retry attempt unexpectedly failed: " ^ Temporal.Error.message error));
+  require (List.length !second_heartbeats = 0)
+    "retry attempt emitted a duplicate heartbeat";
+  Temporal_base.Activity_context.invalidate second_context
+
 (** Verifies that one publication uses the marker directory, writes the exact
     token, and cleans its unique staging file after the rename. *)
 let test_atomic_publication () =
@@ -57,4 +176,5 @@ let test_atomic_publication () =
 (** Verifies the success path and reports a stable test name in Dune output. *)
 let () =
   test_atomic_publication ();
+  test_heartbeat_retry_activity_contract ();
   print_endline "smoke definitions marker test passed"

@@ -30,3 +30,13 @@
  (deps ../../scripts/render-rust-link-flags.sh test_rust_link_flags.sh)
  (action
   (run sh %{dep:test_rust_link_flags.sh} %{workspace_root})))
+
+(rule
+ (alias runtest)
+ (deps
+  test_temporal_heartbeat_contract.sh
+  ../integration/temporal/common/smoke_definitions.ml
+  ../integration/temporal/driver/smoke_driver.ml
+  ../integration/temporal/worker/smoke_worker.ml)
+ (action
+  (run sh %{dep:test_temporal_heartbeat_contract.sh} %{workspace_root})))

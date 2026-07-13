@@ -847,6 +847,59 @@ let test_activity_command_retires_lease () =
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "activity command left a native lease outstanding"
 
+(** Proves that [discard] disposes an execution that is blocked awaiting an
+    activity result, and therefore lives only in the run registry
+    ([adapter.runs]), never in the pending-completion table. Native worker
+    shutdown's happy path must call [discard] after every activation, even one
+    whose most recent poll left it suspended rather than pending, or the
+    blocked run's scheduler and one-shot continuation would leak until a
+    later GC cycle instead of being torn down deterministically at shutdown.
+    A subsequent job for the same run ID is accepted as [unknown_run_id] only
+    if the run was actually removed from the registry, so this proves
+    disposal rather than merely inferring it from an internal accessor. *)
+let test_discard_shuts_down_blocked_execution () =
+  let supervisor = fake_supervisor () in
+  let activity =
+    Temporal.Activity.remote ~name:"native_worker_discard_activity"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_discard_blocked"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Activity.execute activity ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-discard-blocked"
+       [ initialize ~run_id:"run-discard-blocked"
+           ~workflow_type:"native_worker_discard_blocked" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  begin match Worker.poll worker with
+  | Ok (Adapter.Completed { terminal = false; _ }) -> ()
+  | Ok _ ->
+      failwith "blocked activity fixture unexpectedly completed the workflow"
+  | Error error ->
+      failwith ("blocked activity fixture failed to poll: " ^ error.message)
+  end;
+  (* The workflow task lease is retired as soon as its [Schedule_activity]
+     command is submitted; the run itself stays alive in [adapter.runs],
+     suspended, awaiting a future activation with the activity's result. *)
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "blocked run's workflow task lease was not retired by its poll";
+  Worker.discard worker;
+  enqueue supervisor
+    (activation ~run_id:"run-discard-blocked"
+       [ Protocol.Cancel_workflow { reason = "post-discard probe" } ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Rejected { lease_retired = true; error; _ }) ->
+      if not (String.equal error.code "unknown_run_id") then
+        failwith
+          ("discard left the blocked run reachable under a different code: "
+          ^ error.code)
+  | Ok _ ->
+      failwith "discard did not remove the blocked run from the execution registry"
+  | Error error -> failwith ("post-discard probe failed to poll: " ^ error.message)
+  end
+
 (** Child starts and their two-stage Core resolutions share one worker lease.
     The first completion records the start command, a successful start
     acknowledgment leaves the workflow pending, and the terminal child result
@@ -1544,6 +1597,7 @@ let () =
   test_failure_completion_exception_is_typed ();
   test_resumed_failure_removes_run ();
   test_activity_command_retires_lease ();
+  test_discard_shuts_down_blocked_execution ();
   test_child_command_and_resolution_lifecycle ();
   test_child_terminal_before_start_retires_parent_lease ();
   test_duplicate_child_start_acknowledgment_retires_parent_lease ();

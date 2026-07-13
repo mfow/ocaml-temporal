@@ -556,7 +556,22 @@ let shutdown worker =
     | Ok () ->
         Atomic.set worker.shutdown_retryable false;
         (try
-           match Native.shutdown worker.supervisor with
+           let native_result = Native.shutdown worker.supervisor in
+           (* [Native.shutdown] always asks the supervisor to run
+              [runtime_close], and the bridge invalidates the runtime pointer
+              on both [Ok] and [Error] (Core force-retires every lease even
+              when it reports an outstanding-task diagnostic). That includes
+              any execution still blocked awaiting an activity or timer, which
+              lives in [adapter.runs], not [adapter.pending], so the earlier
+              drain above never touched it. Discarding here -- on either
+              result -- shuts down every remaining scheduler and one-shot
+              continuation deterministically instead of leaving them for a
+              later GC cycle, matching [terminal_cleanup_once] below. Only the
+              exception path leaves the release outcome unproven and must keep
+              the adapters retained. *)
+           Workflow.discard worker.workflows;
+           Activity.discard worker.activities;
+           match native_result with
            | Ok () as result ->
                report Logs.Info ~operation:"worker_shutdown" ();
                result

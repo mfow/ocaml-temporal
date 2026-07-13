@@ -56,6 +56,26 @@ let test_shutdown_policy () =
     callback, so an unexpected callback defect cannot change the public result. *)
 let test_terminal_cleanup_preserves_original_error () =
   let original = "completion could not be retired" in
+  (* A cleanup callback that returns [Ok] also proves the native runtime was
+     released, exactly like an [Error] result -- both mean adapter state may
+     be discarded. This is the exact decision the native worker's successful
+     shutdown path relies on to know it may call [Workflow.discard] and
+     [Activity.discard] after [Native.shutdown] returns [Ok ()]. *)
+  let ok_cleanup_calls = ref 0 in
+  let ok_cleanup_returned, ok_result =
+    Policy.retain_original_error
+      ~cleanup:(fun () ->
+        incr ok_cleanup_calls;
+        Ok ())
+      ~on_cleanup_error:(fun _ -> failwith "unexpected cleanup error")
+      ~on_cleanup_exception:(fun _ -> failwith "unexpected cleanup exception")
+      original
+  in
+  if not ok_cleanup_returned then
+    failwith "successful native cleanup was not recognized as release-complete";
+  if ok_result <> original then
+    failwith "successful native cleanup replaced the original value";
+  if !ok_cleanup_calls <> 1 then failwith "successful native cleanup was not requested";
   let cleanup_calls = ref 0 in
   let reported_error = ref None in
   let reported_exception = ref false in

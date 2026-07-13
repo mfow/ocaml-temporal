@@ -254,3 +254,4 @@ AI models used to help build this project:
 - GPT-5.6 Luna
 - Grok 4.5
 - Fable 5
+- Opus 4.8

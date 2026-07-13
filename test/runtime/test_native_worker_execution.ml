@@ -18,6 +18,16 @@ let base_payload (payload : Temporal.Payload.t) : Temporal_base.Payload.t =
     data = Bytes.copy payload.data;
   }
 
+(** Converts a base payload back into the public representation used by a
+    typed update handler. The copy is intentional: native update input is
+    owned by the execution activation, while a public codec is allowed to
+    retain the payload during its callback. *)
+let public_payload (payload : Temporal_base.Payload.t) : Temporal.Payload.t =
+  {
+    Temporal.Payload.metadata = List.map (fun (key, value) -> (key, value)) payload.metadata;
+    data = Bytes.copy payload.data;
+  }
+
 (** Converts a public structured error to the base error representation used by
     the native execution registry. *)
 let base_error (error : Temporal.Error.t) : Temporal_base.Error.t =
@@ -63,6 +73,44 @@ let encoded_protocol codec value =
   | Error error ->
       failwith ("test payload encoding failed: " ^ Temporal.Error.message error)
 
+(** Builds a protocol update job with the same duplicated identity fields that
+    Temporal Core supplies. Keeping this fixture in one place prevents tests
+    from accidentally bypassing the translator's correlation checks. *)
+let update_job ~id ~protocol_instance_id ~name ~input ~run_validator :
+    Protocol.activation_job =
+  Protocol.Do_update
+    {
+      id;
+      protocol_instance_id;
+      name;
+      input;
+      headers = [];
+      meta = { Protocol.identity = "update-client"; update_id = id };
+      run_validator;
+    }
+
+(** Adapts the public typed update handler to the private runtime callback used
+    by this test's fake native worker. The production [Native_worker] module
+    performs this same one-payload conversion behind its private boundary; the
+    fixture keeps that public contract visible while avoiding a real native
+    Core worker. *)
+let public_update_handler (handler : Temporal.Update.Handler.t) =
+  let name = Temporal.Update.Handler.name handler in
+  Raw_adapter.make_update_handler ~name ~dispatch:(fun ~run_validator update ->
+      match Raw_adapter.update_input update with
+      | [ payload ] ->
+          Temporal.Update.Handler.dispatch ~run_validator handler
+            (public_payload payload)
+          |> Result.map base_payload |> Result.map_error base_error
+      | _ ->
+          Error
+            (Temporal_base.Error.make ~non_retryable:true ~category:`Workflow
+               ~message:
+                 (Printf.sprintf
+                    "update %s must contain exactly one payload for its registered OCaml handler"
+                    name)
+               ()))
+
 (** Rebuilds a public workflow as the private base definition accepted by the
     native worker registry. Public implementation errors are converted only at
     this test boundary, matching the production adapter's ownership rule. *)
@@ -86,8 +134,9 @@ module Adapter = struct
       production public adapter performs the same conversion before calling
       this private registry; keeping the optional query list here lets this
       test exercise the owner-Domain query path without a native handle. *)
-  let register ?(signal_handlers = []) ?(query_handlers = []) definition =
-    Raw_adapter.register ~signal_handlers ~query_handlers
+  let register ?(signal_handlers = []) ?(query_handlers = [])
+      ?(update_handlers = []) definition =
+    Raw_adapter.register ~signal_handlers ~query_handlers ~update_handlers
       (base_workflow definition)
 end
 
@@ -109,6 +158,10 @@ type fake_supervisor = {
   leased : (string, unit) Hashtbl.t;
   (* Completions accepted by the fake source, newest first for assertions. *)
   completions : Protocol.completion list ref;
+  (* Every completion attempt, including rejected attempts, newest first. This
+     lets retry tests compare the retained command value with the later
+     acknowledgement without granting the fake source ownership of it. *)
+  attempts : Protocol.completion list ref;
   (* Optional source error returned by the next poll, modelling a lower-layer
      semantic rejection whose lease has already been retired. *)
   poll_error : source_error option ref;
@@ -129,6 +182,7 @@ let fake_supervisor () =
     queue = Queue.create ();
     leased = Hashtbl.create 8;
     completions = ref [];
+    attempts = ref [];
     poll_error = ref None;
     rejected_poll_count = ref 0;
     reject_next_completion = ref false;
@@ -158,6 +212,7 @@ module Fake_supervisor = struct
   (** Accepts one completion only for an active run ID, then removes that lease
       and records the immutable semantic completion for assertions. *)
   let complete_workflow supervisor (completion : Protocol.completion) =
+    supervisor.attempts := completion :: !(supervisor.attempts);
     if !(supervisor.raise_next_completion) then begin
       supervisor.raise_next_completion := false;
       raise (Failure "injected completion exception")
@@ -226,6 +281,13 @@ let latest_completion supervisor =
   match !(supervisor.completions) with
   | completion :: _ -> completion
   | [] -> failwith "expected the adapter to submit a completion"
+
+(** Extracts the newest native completion attempt, including one rejected by the
+    fake source. The adapter must retain this exact semantic value for retry. *)
+let latest_attempt supervisor =
+  match !(supervisor.attempts) with
+  | completion :: _ -> completion
+  | [] -> failwith "expected the adapter to attempt a completion"
 
 (** Creates a worker around a list of executable workflow definitions. *)
 let worker supervisor workflows =
@@ -553,6 +615,326 @@ let test_public_query_handler_registration () =
   enqueue supervisor
     (activation ~run_id [ Protocol.Fire_timer { seq = timer_seq } ]);
   expect_completed ~terminal:true (Result.get_ok (Worker.poll worker))
+
+(** Public worker registration retains update handlers next to the workflow
+    definition. The deterministic mock backend is sufficient here because the
+    native activation path is covered below; this test proves that public
+    construction accepts one handler and rejects duplicate names before any
+    backend resource is allocated. *)
+let test_public_update_handler_registration () =
+  let update =
+    Temporal.Update.define ~name:"public-update-registration"
+      ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+  in
+  let handler =
+    Temporal.Update.Handler.make update (fun value -> Ok (String.uppercase_ascii value))
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"public-update-workflow"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () -> Ok ())
+  in
+  let create updates =
+    Temporal.Worker.create ~target_url:"mock://public-update-registration"
+      ~namespace:"unit-test" ~task_queue:"unit-test"
+      ~workflows:[ Temporal.Worker.workflow ~updates workflow ] ~activities:[] ()
+  in
+  begin
+    match create [ handler ] with
+    | Ok public_worker -> (
+        match Temporal.Worker.shutdown public_worker with
+        | Ok () -> ()
+        | Error error ->
+            failwith
+              ("public update worker shutdown failed: " ^ Temporal.Error.message error))
+    | Error error ->
+        failwith
+          ("public update handler registration failed: "
+          ^ Temporal.Error.message error)
+  end;
+  begin
+    match create [ handler; handler ] with
+    | Error error when String.equal (Temporal.Error.kind error) "defect" -> ()
+    | Error error ->
+        failwith
+          ("duplicate public update handler returned "
+          ^ Temporal.Error.kind error)
+    | Ok public_worker ->
+        ignore (Temporal.Worker.shutdown public_worker);
+        failwith "duplicate public update handler was accepted"
+  end;
+  let private_supervisor = fake_supervisor () in
+  let private_handler = public_update_handler handler in
+  begin
+    match
+      Worker.create ~supervisor:private_supervisor
+        ~workflows:
+          [ Adapter.register
+              ~update_handlers:[ private_handler; private_handler ] workflow ]
+        ()
+    with
+    | Error { code = "duplicate_update_handler"; _ } -> ()
+    | Error error ->
+        failwith ("private update registration returned " ^ error.code)
+    | Ok private_worker ->
+        Worker.discard private_worker;
+        failwith "duplicate private update handler was accepted"
+  end
+
+(** A DoUpdate for a name that is absent from the workflow registration is a
+    protocol-level rejection, not a workflow-task failure. The adapter must
+    emit one non-retryable UpdateRejected response, keep the sleeping workflow
+    alive, and later allow its timer to complete normally. *)
+let test_unknown_update_handler_rejected () =
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_unknown_update"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-unknown-update" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_unknown_update" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  let timer_seq =
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_timer { seq; _ } ] -> seq
+    | _ -> failwith "unknown-update workflow did not emit its initial timer"
+  in
+  enqueue supervisor
+    (activation ~run_id
+       [ update_job ~id:"unknown-update" ~protocol_instance_id:"protocol-unknown"
+           ~name:"not-registered" ~input:[] ~run_validator:true ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Update_response
+          {
+            protocol_instance_id = "protocol-unknown";
+            response = Protocol.Update_rejected failure;
+          } ] ->
+        if not (Protocol.failure_non_retryable failure) then
+          failwith "unknown update was not rejected non-retryably";
+        if
+          not
+            (String.equal failure.message
+               "unhandled workflow update: not-registered")
+        then failwith "unknown update rejection lost its handler name"
+    | _ -> failwith "unknown update did not emit one rejected response"
+  end;
+  enqueue supervisor
+    (activation ~run_id [ Protocol.Fire_timer { seq = timer_seq } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "unknown update workflow left a native lease outstanding"
+
+(** The public update boundary accepts exactly one payload. Both zero and
+    repeated payloads must be rejected explicitly, preserving Core input rather
+    than silently selecting one element. The workflow remains suspended after
+    both protocol responses, which proves these are update failures rather than
+    terminal workflow failures. *)
+let test_update_input_arity_rejected () =
+  let supervisor = fake_supervisor () in
+  let update =
+    Temporal.Update.define ~name:"arity-checked-update"
+      ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+  in
+  let calls = ref 0 in
+  let public_handler =
+    Temporal.Update.Handler.make update (fun value ->
+        incr calls;
+        Ok (String.uppercase_ascii value))
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_update_arity"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-update-arity" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_update_arity" ]);
+  let worker =
+    worker supervisor
+      [ Adapter.register
+          ~update_handlers:[ public_update_handler public_handler ] workflow ]
+  in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  let first = encoded_protocol Temporal.Codec.string "first" in
+  let second = encoded_protocol Temporal.Codec.string "second" in
+  enqueue supervisor
+    (activation ~run_id
+       [ update_job ~id:"arity-empty" ~protocol_instance_id:"protocol-empty"
+           ~name:"arity-checked-update" ~input:[] ~run_validator:true;
+         update_job ~id:"arity-many" ~protocol_instance_id:"protocol-many"
+           ~name:"arity-checked-update" ~input:[ first; second ]
+           ~run_validator:true ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Update_response
+          {
+            protocol_instance_id = "protocol-empty";
+            response = Protocol.Update_rejected empty_failure;
+          };
+        Protocol.Update_response
+          {
+            protocol_instance_id = "protocol-many";
+            response = Protocol.Update_rejected many_failure;
+          } ] ->
+        if not (Protocol.failure_non_retryable empty_failure) then
+          failwith "empty update input was not rejected non-retryably";
+        if not (Protocol.failure_non_retryable many_failure) then
+          failwith "multi-payload update input was not rejected non-retryably";
+        if !calls <> 0 then
+          failwith "arity rejection invoked the typed update callback"
+    | _ -> failwith "update arity failures did not preserve response order"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "update arity activation left a native lease outstanding"
+
+(** A valid public update is executed once even when the native completion is
+    transiently rejected. The exact accepted/completed command list remains in
+    the adapter's pending map; the next poll retries it without entering the
+    workflow scheduler or calling the typed handler again. *)
+let test_update_completion_retry () =
+  let supervisor = fake_supervisor () in
+  let update =
+    Temporal.Update.define ~name:"retryable-update"
+      ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+  in
+  let calls = ref 0 in
+  let handler =
+    Temporal.Update.Handler.make update (fun value ->
+        incr calls;
+        Ok (String.uppercase_ascii value))
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_update_retry"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-update-retry" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_update_retry" ]);
+  let worker =
+    worker supervisor
+      [ Adapter.register ~update_handlers:[ public_update_handler handler ] workflow ]
+  in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  supervisor.reject_next_completion := true;
+  enqueue supervisor
+    (activation ~run_id
+       [ update_job ~id:"retry-update" ~protocol_instance_id:"protocol-retry"
+           ~name:"retryable-update"
+           ~input:[ encoded_protocol Temporal.Codec.string "ready" ]
+           ~run_validator:true ]);
+  begin
+    match Worker.poll worker with
+    | Error { code = "completion_failed"; _ } -> ()
+    | Error error ->
+        failwith
+          ("update completion returned the wrong error: " ^ error.message)
+    | Ok _ -> failwith "rejected update completion was acknowledged immediately"
+  end;
+  if !calls <> 1 then failwith "rejected update completion reran the handler";
+  if Hashtbl.length supervisor.leased <> 1 then
+    failwith "rejected update completion retired its lease too early";
+  let retained = latest_attempt supervisor in
+  begin
+    match retained.commands with
+    | [ Protocol.Update_response
+          { protocol_instance_id = "protocol-retry"; response = Protocol.Update_accepted };
+        Protocol.Update_response
+          {
+            protocol_instance_id = "protocol-retry";
+            response = Protocol.Update_completed payload;
+          } ]
+      when payload = encoded_protocol Temporal.Codec.string "READY" ->
+        ()
+    | _ -> failwith "retained update completion did not contain both phases"
+  end;
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  if !calls <> 1 then failwith "retrying an update completion reran the handler";
+  if latest_completion supervisor <> retained then
+    failwith "update completion retry changed the retained command bytes";
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "retried update completion left a native lease outstanding"
+
+(** A run that has processed an update must still be removed after its terminal
+    workflow completion. Core may then send a cache-eviction activation; the
+    adapter acknowledges it with an empty completion and rejects any later job
+    for the retired run without invoking the update handler again. *)
+let test_update_terminal_and_eviction_cleanup () =
+  let supervisor = fake_supervisor () in
+  let update =
+    Temporal.Update.define ~name:"cleanup-update"
+      ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+  in
+  let calls = ref 0 in
+  let handler =
+    Temporal.Update.Handler.make update (fun value ->
+        incr calls;
+        Ok value)
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_update_cleanup"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-update-cleanup" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_update_cleanup" ]);
+  let worker =
+    worker supervisor
+      [ Adapter.register ~update_handlers:[ public_update_handler handler ] workflow ]
+  in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  let timer_seq =
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_timer { seq; _ } ] -> seq
+    | _ -> failwith "update cleanup workflow did not emit its initial timer"
+  in
+  enqueue supervisor
+    (activation ~run_id
+       [ update_job ~id:"cleanup-update" ~protocol_instance_id:"protocol-cleanup"
+           ~name:"cleanup-update"
+           ~input:[ encoded_protocol Temporal.Codec.string "retained" ]
+           ~run_validator:true ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  if !calls <> 1 then failwith "cleanup update handler did not run exactly once";
+  enqueue supervisor
+    (activation ~run_id [ Protocol.Fire_timer { seq = timer_seq } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (eviction_activation ~run_id
+       [ Protocol.Remove_from_cache
+           { message = "update run eviction"; reason = Protocol.Cache_full } ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin match (latest_completion supervisor).commands with
+  | [] -> ()
+  | _ -> failwith "terminal update eviction emitted a workflow command"
+  end;
+  enqueue supervisor
+    (activation ~run_id
+       [ update_job ~id:"stale-update" ~protocol_instance_id:"protocol-stale"
+           ~name:"cleanup-update"
+           ~input:[ encoded_protocol Temporal.Codec.string "stale" ]
+           ~run_validator:true ]);
+  begin
+    match Worker.poll worker with
+    | Ok (Adapter.Rejected { error; lease_retired = true; _ })
+      when String.equal error.code "unknown_run_id" -> ()
+    | Ok _ -> failwith "retired update run accepted a stale update"
+    | Error error ->
+        failwith ("stale update cleanup failed: " ^ error.message)
+  end;
+  if !calls <> 1 then failwith "stale update invoked a retired handler";
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "terminal update eviction left a native lease outstanding"
 
 (** Adapter-level failures happen before the normal execution path can
     validate a completion. A query lease still needs one result per query ID;
@@ -1665,6 +2047,11 @@ let () =
   test_cancellation ();
   test_signal_handler_runs_on_scheduler ();
   test_public_query_handler_registration ();
+  test_public_update_handler_registration ();
+  test_unknown_update_handler_rejected ();
+  test_update_input_arity_rejected ();
+  test_update_completion_retry ();
+  test_update_terminal_and_eviction_cleanup ();
   test_query_adapter_failure_uses_query_results ();
   test_unhandled_signal_fails_closed ();
   test_eviction ();

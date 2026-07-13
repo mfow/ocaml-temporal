@@ -1339,18 +1339,13 @@ async fn run_activity_lane(
                 }
             }
             Ok(Admission::Duplicate) => {
-                // A second Start for the same token is a Core/bridge defect
-                // that still carries a poll result Core expects to complete.
-                // A second Cancel is only a repeated notification for an
-                // already-tracked debt and must not complete the activity.
-                if kind == ActivityAdmission::Start {
-                    force_fail_undeliverable_activity(
-                        worker.as_ref(),
-                        &task.task_token,
-                        "duplicate activity start identity",
-                    )
-                    .await;
-                }
+                // Completions are keyed only by task token. Force-failing a
+                // duplicate Start would complete the already-outstanding lease
+                // still queued or held by OCaml. Drop the duplicate delivery
+                // and surface a lane error instead, matching the workflow
+                // duplicate path. A second Cancel is only a repeated
+                // notification and must not complete the activity either.
+                drop(task);
                 if !signal.enqueue(&sender, Err(PollLaneError::DuplicateIdentity)) {
                     return;
                 }

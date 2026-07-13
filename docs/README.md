@@ -142,6 +142,18 @@ For the real server smoke, the Makefile owns Compose project selection,
 readiness checks, failure logs, and volume cleanup; do not run the fixture's
 Compose file from the repository root.
 
+When a GitHub Actions run is still `queued`, it has not produced verification
+evidence. The representative local baseline is `make check OCAML_VERSION=5.2`,
+which combines `make verify` with the package/OCaml license audit. Run
+`make quality` separately for the pinned host scanners, and run
+`make native-verify` on a matching Windows or macOS host for the native
+compatibility path. The locked Cargo license scanner is intentionally a single
+CI-only job; `make license-check` does not claim to replace that scanner. Use
+`make test-temporal-integration` only when a real Temporal Server/PostgreSQL
+result is required. These local results are useful interim evidence, but they
+do not turn an unexecuted matrix, platform, or live-server job green; queued
+required checks still need to finish when Actions becomes available.
+
 `make test-temporal-worker-restart` is deliberately different from the live
 integration command: it uses no Docker and validates the normalized
 history/replay diagnostic contract, the ordered restart-controller lifecycle

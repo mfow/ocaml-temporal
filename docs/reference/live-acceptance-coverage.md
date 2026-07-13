@@ -123,7 +123,7 @@ rows:
 make test-unit                 # definitions, codecs, public API, and errors
 make test-runtime              # scheduler, activations, futures, replay
 make test-bridge               # OCaml/Rust ABI and protocol fixtures
-make verify                    # broad build, lint, Rust, bridge, and quality gates
+make verify                    # broad build, lint, Rust, bridge, and repository contracts
 make test-temporal-integration # real PostgreSQL/Temporal + two OCaml binaries
 ```
 

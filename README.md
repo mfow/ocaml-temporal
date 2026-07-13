@@ -112,10 +112,20 @@ particular Actions run has completed; runs may remain queued while the
 repository quota is exhausted. The workflow cancels superseded runs for the
 same pull request (or the master push ref), while each job timeout starts only
 after GitHub allocates a runner; GitHub does not provide a native timeout for a
-job that is still waiting in the quota queue. `make quality` is the exception to the Docker-only toolchain
-path: it expects the pinned `cargo-deny`, `cargo-machete`, and `typos` binaries
-on the host (CI installs their checksum-verified versions). The license audit
-uses the development container and an isolated official Python container.
+job that is still waiting in the quota queue.
+
+When Actions is queued, use `make check OCAML_VERSION=5.2` as the representative
+Docker-backed local baseline. It combines `make verify` with the package/OCaml
+license audit. Run `make quality` separately when the pinned native
+`cargo-deny`, `cargo-machete`, and `typos` binaries are installed; CI installs
+the checksum-verified versions. On Windows or macOS, `make native-verify`
+exercises the corresponding OCaml 5.5/Rust native compatibility path. The
+locked Cargo license scanner runs once in its isolated CI job and is not
+claimed by `make license-check`; `make test-temporal-integration` is the
+optional, expensive live Temporal Server/PostgreSQL check. Local results are
+interim evidence only and do not turn an unexecuted matrix, platform, or live
+server job green.
+
 On a memory-constrained Docker VM, bound Dune's native build concurrency with
 `make build DUNE_JOBS=1`; leaving `DUNE_JOBS` unset preserves the default
 parallelism used by CI.

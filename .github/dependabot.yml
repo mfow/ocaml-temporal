@@ -9,4 +9,6 @@ updates:
       day: monday
       time: "09:00"
       timezone: Australia/Sydney
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10

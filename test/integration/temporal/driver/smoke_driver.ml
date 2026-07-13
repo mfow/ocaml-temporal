@@ -211,18 +211,16 @@ let require_non_retryable_failure operation expected_message = function
   | Error error -> Error error
 
 (** Requires a parent workflow to fail because its child returned a terminal,
-    non-retryable error. Core decorates the message with child identity and
-    failure-info details, so the assertion checks the stable public category,
-    retryability flag, and diagnostic prefix rather than matching those
-    implementation details byte-for-byte. *)
+    non-retryable error. Core decorates the diagnostic with child identity and
+    failure-info details, and that wording can vary between Core releases; the
+    public client contract is a terminal [Workflow] failure whose retryability
+    still reflects the nested application cause. The more specific
+    [Child_workflow] category is asserted inside the parent workflow when its
+    child future resolves. *)
 let require_non_retryable_child_failure operation = function
   | Ok (Client.Failed error) ->
       let view = Error.view error in
-      if
-        view.category = `Child_workflow
-        && view.non_retryable
-        && String.starts_with ~prefix:"child workflow failed" view.message
-      then Ok ()
+      if view.category = `Workflow && view.non_retryable then Ok ()
       else
         Error
           (Error.defect

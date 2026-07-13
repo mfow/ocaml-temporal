@@ -36,6 +36,22 @@ Local evidence for this entry: `opam exec -- dune build @install
 test/unit/test_interactions.exe`, `opam exec -- dune exec
 ./test/unit/test_interactions.exe`, and `git diff --check`.
 
+## 2026-07-13: Local verification and queued-Actions guidance
+
+Status: documentation-only update. No live Temporal Server result or GitHub
+Actions success is claimed; queued checks remain unexecuted evidence while the
+repository quota is exhausted.
+
+The README, documentation guide, quality-gate reference, and live-acceptance
+command reference now map every CI job to its Makefile command and distinguish
+the local baseline from CI-only checks. `make check OCAML_VERSION=5.2` is the
+representative Docker-backed build, test, and package-license baseline;
+`make quality` covers the pinned host scanners; `make native-verify` covers a
+matching Windows/macOS native host; and `make test-temporal-integration` is the
+optional real Temporal Server/PostgreSQL gate. The locked Cargo license scan
+remains a single isolated CI job, and local results are explicitly not treated
+as a substitute for an unexecuted matrix, platform, or live-server job.
+
 ## 2026-07-13: Docker-free heartbeat acceptance contract
 
 Status: locally verified; no live Temporal Server acceptance is claimed. The

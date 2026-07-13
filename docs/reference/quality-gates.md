@@ -37,23 +37,44 @@ quality`. This runs once on Ubuntu for each pull request and push to `master`;
 the OCaml version matrix and Windows/macOS native compatibility jobs are
 unchanged.
 
+## CI jobs and local equivalents
+
+The workflow has separate jobs because the checks have different toolchain and
+runtime requirements. The Makefile command for each job is shown here so a
+queued Actions run does not make the local verification boundary ambiguous:
+
+| CI job | Workflow command | Local command | What the local result proves |
+| --- | --- | --- | --- |
+| `verify` | `make verify OCAML_VERSION=<matrix version>` | `make verify OCAML_VERSION=5.2` (or another locally available image) | Docker-backed OCaml build/lint, Rust tests, bridge/install tests, and repository quality contracts for one selected compiler image. |
+| `quality` | `make quality` | `make quality` | The pinned native `cargo-deny`, `cargo-machete`, and `typos` scans. The exact binaries must be installed on the host. |
+| `license-audit` | `make license-check OCAML_VERSION=5.2`, plus the two isolated Python Cargo-license checks | `make license-check OCAML_VERSION=5.2` | The package/OCaml dependency license policy. The locked Cargo license scanner remains a single CI-only step and is not repeated in the OCaml matrix. |
+| `native` | `make native-verify` | `make native-verify` on a matching native host | The OCaml 5.5 and Rust native link, format, lint, install, and test path used by the Windows x64 and macOS ARM64 jobs. |
+| `temporal-integration` | `make test-temporal-integration` | `make test-temporal-integration` when Docker and network access are available | The two-OCaml-binary workflow result against real Temporal Server and PostgreSQL. This is intentionally an opt-in, expensive live test. |
+
+`make check OCAML_VERSION=5.2` is a convenient Docker-backed local baseline:
+it combines `make verify` and `make license-check`. It does not run
+`make quality`, the native compatibility path, or the real-server smoke; run
+those separately when their respective evidence is needed.
+
 ## When Actions remain queued
 
 A check whose GitHub Actions status remains `queued` has not run, so it is not
 verification and must not be treated as a pass. If repository quota or runner
 availability leaves a check queued indefinitely, use the documented local
-gates as interim evidence:
+gates as interim evidence. For a normal Docker-backed checkout, the closest
+non-live local baseline is:
 
 ```sh
-make verify
-make quality
-make native-verify
+make check OCAML_VERSION=5.2
+make quality                 # requires the exact pinned host binaries
 ```
 
-These commands exercise the repository's compiler, test, quality, and native
-compatibility checks on the available host. They do not weaken required CI or
-turn an unexecuted check green; required GitHub checks still need to complete
-successfully when Actions is available again.
+On Windows or macOS, also run `make native-verify` to exercise the native
+compatibility path. Run `make test-temporal-integration` only when a live
+Temporal Server/PostgreSQL result is specifically required. These commands
+exercise the available local gates without weakening required CI or turning an
+unexecuted matrix, platform, or live-server job green; required GitHub checks
+still need to complete successfully when Actions is available again.
 
 ## Rust dependency advisories and sources
 

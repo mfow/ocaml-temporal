@@ -28,6 +28,21 @@ let await_started started =
     Domain.cpu_relax ()
   done
 
+(** Accepts every documented completion of the close race while preserving
+    failure visibility for unrelated bridge errors. The waiter can finish
+    before close with [Not_ready] or [Invalid_state], or it can lose the
+    admission race after close detaches the native runtime. Rust reports that
+    latter, valid close-wins outcome as the narrowly identified
+    [Invalid_argument] message below; accepting arbitrary invalid arguments
+    here would hide a real ABI regression. *)
+let assert_close_race_result = function
+  | Ok () -> ()
+  | Error { status = Bridge.Not_ready | Bridge.Invalid_state; _ } -> ()
+  | Error { status = Bridge.Invalid_argument; message }
+    when String.equal message "runtime pointer is null" -> ()
+  | Error error ->
+      failwith ("runtime close race returned an unexpected status: " ^ error.message)
+
 (** Runs one close-versus-blocking-operation race. The waiter owns an OCaml
     root for [runtime], while the C stub releases the OCaml lock during the
     replay readiness wait. [runtime_close] must therefore wait for the native
@@ -48,12 +63,7 @@ let run_close_race () =
      finite even when this Domain is scheduled late. *)
   Unix.sleepf 0.01;
   unwrap (Bridge.runtime_close runtime);
-  match Domain.join waiter with
-  | Ok () -> ()
-  | Error { status = Bridge.Not_ready | Bridge.Invalid_state; _ } -> ()
-  | Error error ->
-      failwith
-        ("runtime close race returned an unexpected status: " ^ error.message)
+  assert_close_race_result (Domain.join waiter)
 
 (** Repeats the race enough times to cover both Domain scheduling orders: the
     waiter may be admitted before close, or it may observe the closing gate and
@@ -110,13 +120,7 @@ let run_close_race_under_gc_pressure () =
   unwrap (Bridge.runtime_close runtime);
   Atomic.set keep_pressing false;
   Domain.join presser;
-  match Domain.join waiter with
-  | Ok () -> ()
-  | Error { status = Bridge.Not_ready | Bridge.Invalid_state; _ } -> ()
-  | Error error ->
-      failwith
-        ("runtime close race under GC pressure returned an unexpected status: "
-        ^ error.message)
+  assert_close_race_result (Domain.join waiter)
 
 (** Repeats the GC-pressured race enough times to make both a promotion-timed
     and a compaction-timed overlap with the waiter's blocking window likely. *)

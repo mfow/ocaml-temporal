@@ -111,10 +111,10 @@ let () =
   assert (Temporal.Codec.decode optional some_payload = Ok (Some "value"));
   (* Bug 5 regression: [option] must be injective even when the inner codec
      produces the same [binary/null] payload used for the outer [None]. Without
-     the [binary/optional] wrapper, [Some ()] and [Some None] silently decoded
-     to [None], corrupting any workflow value typed as [unit option] or nested
-     [option]. Each case below asserts a full encode/decode round-trip and,
-     crucially, that the [Some] encoding is byte-distinct from [None]. *)
+     the [binary/x-ocaml-optional] wrapper, [Some ()] and [Some None] silently
+     decoded to [None], corrupting any workflow value typed as [unit option] or
+     nested [option]. Each case below asserts a full encode/decode round-trip
+     and, crucially, that the [Some] encoding is byte-distinct from [None]. *)
   let unit_option = Temporal.Codec.option Temporal.Codec.unit in
   let none_unit_option = unwrap (Temporal.Codec.encode unit_option None) in
   let some_unit = unwrap (Temporal.Codec.encode unit_option (Some ())) in
@@ -122,7 +122,7 @@ let () =
   assert (Temporal.Codec.decode unit_option some_unit = Ok (Some ()));
   (* [Some ()] is escaped into the wrapper encoding, so it can never share the
      [binary/null] representation reserved for [None]. *)
-  assert (List.assoc "encoding" some_unit.metadata = "binary/optional");
+  assert (List.assoc "encoding" some_unit.metadata = "binary/x-ocaml-optional");
   assert
     (none_unit_option.metadata <> some_unit.metadata
     || none_unit_option.data <> some_unit.data);
@@ -156,6 +156,19 @@ let () =
   (* A wrapper payload whose body is truncated must fail with a typed codec
      error rather than raising. *)
   let truncated_wrapper : Temporal.Payload.t =
-    { metadata = [ ("encoding", "binary/optional") ]; data = Bytes.of_string "\000" }
+    {
+      metadata = [ ("encoding", "binary/x-ocaml-optional") ];
+      data = Bytes.of_string "\000";
+    }
   in
-  assert (Result.is_error (Temporal.Codec.decode unit_option truncated_wrapper))
+  assert (Result.is_error (Temporal.Codec.decode unit_option truncated_wrapper));
+  (* The wrapper encoding is reserved: [make] must reject a user codec that
+     claims it, so no application payload can masquerade as an option envelope
+     and no pre-existing history collides with the new representation. *)
+  (match
+     Temporal.Codec.make ~encoding:"binary/x-ocaml-optional"
+       ~encode:(fun value -> Ok (Bytes.of_string value))
+       ~decode:(fun data -> Ok (Bytes.to_string data))
+   with
+  | exception Invalid_argument _ -> ()
+  | _ -> failwith "reserved option encoding accepted by Codec.make")

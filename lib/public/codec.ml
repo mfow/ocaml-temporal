@@ -28,11 +28,26 @@ let encoding_metadata metadata =
   in
   loop None metadata
 
+(** Encoding name reserved for the envelope that {!option} uses to keep [None]
+    distinct from an inner value whose own encoding is [binary/null]. The name
+    is deliberately namespaced ([x-ocaml-]) so it cannot clash with a standard
+    Temporal encoding, and {!make} refuses to build a user codec that claims it,
+    guaranteeing the [option] combinator owns the marker exclusively. *)
+let optional_wrapper_encoding = "binary/x-ocaml-optional"
+
 (** Builds a codec that writes one exact encoding name and validates that name
     before invoking the decoder. User conversion failures remain typed errors,
     so malformed data never escapes as an exception. Duplicate metadata names
-    are rejected before the callback runs, matching the strict bridge protocol. *)
+    are rejected before the callback runs, matching the strict bridge protocol.
+
+    Claiming {!optional_wrapper_encoding} is a programmer error: that name is
+    reserved for the [option] combinator, so [make] raises [Invalid_argument]
+    rather than letting a user payload masquerade as an option envelope. *)
 let make ~encoding ~encode ~decode =
+  if String.equal encoding optional_wrapper_encoding then
+    invalid_arg
+      (Printf.sprintf "Codec.make: encoding %S is reserved for Codec.option"
+         optional_wrapper_encoding);
   let encode_payload value =
     Result.map
       (fun data -> { metadata = [ ("encoding", encoding) ]; data })
@@ -102,14 +117,6 @@ let unit =
     ~decode:(fun data ->
       if Bytes.length data = 0 then Ok ()
       else Error (Error.codec ~message:"unit payload must be empty"))
-
-(** Encoding name for an option payload whose inner value would otherwise be
-    indistinguishable from the [None] marker. The [option] combinator wraps
-    such inner payloads inside this envelope so that, for example, [Some ()] and
-    [Some None] never share a byte representation with [None]. Only colliding
-    inner payloads are wrapped; ordinary values such as [Some "text"] keep their
-    natural encoding for cross-SDK interoperability. *)
-let optional_wrapper_encoding = "binary/optional"
 
 (** Serializes a payload into a self-describing byte buffer used by the option
     wrapper. Framing is a [u32] metadata count, then each entry as a [u32]

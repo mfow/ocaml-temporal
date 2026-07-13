@@ -253,3 +253,4 @@ AI models used to help build this project:
 - Grok 4.5
 - Fable 5
 - Opus 4.8
+- Sonnet 5

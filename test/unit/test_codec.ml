@@ -108,4 +108,54 @@ let () =
   in
   assert (Result.is_error (Temporal.Codec.decode optional duplicate_null));
   let some_payload = unwrap (Temporal.Codec.encode optional (Some "value")) in
-  assert (Temporal.Codec.decode optional some_payload = Ok (Some "value"))
+  assert (Temporal.Codec.decode optional some_payload = Ok (Some "value"));
+  (* Bug 5 regression: [option] must be injective even when the inner codec
+     produces the same [binary/null] payload used for the outer [None]. Without
+     the [binary/optional] wrapper, [Some ()] and [Some None] silently decoded
+     to [None], corrupting any workflow value typed as [unit option] or nested
+     [option]. Each case below asserts a full encode/decode round-trip and,
+     crucially, that the [Some] encoding is byte-distinct from [None]. *)
+  let unit_option = Temporal.Codec.option Temporal.Codec.unit in
+  let none_unit_option = unwrap (Temporal.Codec.encode unit_option None) in
+  let some_unit = unwrap (Temporal.Codec.encode unit_option (Some ())) in
+  assert (Temporal.Codec.decode unit_option none_unit_option = Ok None);
+  assert (Temporal.Codec.decode unit_option some_unit = Ok (Some ()));
+  (* [Some ()] is escaped into the wrapper encoding, so it can never share the
+     [binary/null] representation reserved for [None]. *)
+  assert (List.assoc "encoding" some_unit.metadata = "binary/optional");
+  assert
+    (none_unit_option.metadata <> some_unit.metadata
+    || none_unit_option.data <> some_unit.data);
+  (* Nested options: [None], [Some None], and [Some (Some "x")] are three
+     distinct values that previously collapsed toward [None]. *)
+  let nested = Temporal.Codec.option (Temporal.Codec.option Temporal.Codec.string) in
+  let none_nested = unwrap (Temporal.Codec.encode nested None) in
+  let some_none = unwrap (Temporal.Codec.encode nested (Some None)) in
+  let some_some = unwrap (Temporal.Codec.encode nested (Some (Some "x"))) in
+  assert (Temporal.Codec.decode nested none_nested = Ok None);
+  assert (Temporal.Codec.decode nested some_none = Ok (Some None));
+  assert (Temporal.Codec.decode nested some_some = Ok (Some (Some "x")));
+  (* [None] and [Some None] must not encode to identical payloads. *)
+  assert (
+    none_nested.metadata <> some_none.metadata
+    || none_nested.data <> some_none.data);
+  (* Triple nesting exercises repeated wrapping and unwrapping. *)
+  let triple =
+    Temporal.Codec.option
+      (Temporal.Codec.option (Temporal.Codec.option Temporal.Codec.string))
+  in
+  List.iter
+    (fun value ->
+      let encoded = unwrap (Temporal.Codec.encode triple value) in
+      assert (Temporal.Codec.decode triple encoded = Ok value))
+    [ None; Some None; Some (Some None); Some (Some (Some "deep")) ];
+  (* A [Some] carrying an ordinary value keeps its interoperable encoding: the
+     wrapper is only introduced when the inner payload would collide with the
+     [None] marker. *)
+  assert (List.assoc "encoding" some_payload.metadata = "json/plain");
+  (* A wrapper payload whose body is truncated must fail with a typed codec
+     error rather than raising. *)
+  let truncated_wrapper : Temporal.Payload.t =
+    { metadata = [ ("encoding", "binary/optional") ]; data = Bytes.of_string "\000" }
+  in
+  assert (Result.is_error (Temporal.Codec.decode unit_option truncated_wrapper))

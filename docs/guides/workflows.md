@@ -172,7 +172,11 @@ built-in codecs are:
 - `Temporal.Codec.bytes`, using `binary/plain`;
 - `Temporal.Codec.unit`, using `binary/null`; and
 - `Temporal.Codec.option codec`, which uses the nested codec for `Some` and
-  `binary/null` for `None`.
+  `binary/null` for `None`. When the nested codec would itself produce a
+  `binary/null` payload — as `unit` and a nested `option`'s own `None` do — the
+  `Some` value is wrapped in a distinct `binary/optional` envelope so that
+  `Some ()`, `Some None`, and `None` remain distinguishable on decode. Ordinary
+  values such as `Some "text"` keep their interoperable encoding untouched.
 
 Payload metadata is object-like on the Temporal wire, so each metadata name
 must occur at most once. The public and private codecs reject duplicate names

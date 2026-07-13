@@ -38,7 +38,12 @@ val bytes : bytes t
 (** Encodes [()] as an empty [binary/null] payload. *)
 val unit : unit t
 
-(** Encodes [None] as [binary/null]. A [Some value] uses the supplied codec and
-    therefore keeps that codec's encoding name. Duplicate metadata names are
-    rejected when decoding either representation. *)
+(** Encodes [None] as [binary/null]. A [Some value] normally uses the supplied
+    codec and keeps that codec's encoding name, preserving cross-SDK
+    interoperability. When the inner codec would itself produce a [binary/null]
+    payload — as [unit] and a nested [option]'s own [None] do — the [Some]
+    value is wrapped in a distinct envelope so it can never be mistaken for
+    [None] on decode. This makes the codec injective: [Some ()], [Some None],
+    and [None] all round-trip to different values. Duplicate metadata names are
+    rejected when decoding any representation. *)
 val option : 'a t -> 'a option t

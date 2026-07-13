@@ -102,6 +102,7 @@ type fake_supervisor = {
   heartbeats : Protocol.heartbeat list ref;
   async_heartbeats : Protocol.heartbeat list ref;
   reject_next_async_completion : bool ref;
+  reject_next_async_completion_terminal : bool ref;
   reject_next_async_heartbeat : bool ref;
 }
 (** Fake native state. [leased] and [async_leased] intentionally model
@@ -118,6 +119,7 @@ let fake_supervisor () =
     heartbeats = ref [];
     async_heartbeats = ref [];
     reject_next_async_completion = ref false;
+    reject_next_async_completion_terminal = ref false;
     reject_next_async_heartbeat = ref false;
   }
 
@@ -180,7 +182,20 @@ module Fake_supervisor = struct
       one-shot rejection proves that the OCaml handle retains and retries the
       exact request without rerunning user code. *)
   let complete_async_activity supervisor (completion : Protocol.completion) =
-    if !(supervisor.reject_next_async_completion) then begin
+    if !(supervisor.reject_next_async_completion_terminal) then begin
+      supervisor.reject_next_async_completion_terminal := false;
+      (* A terminal [NotFound] response means the native task token is no
+         longer a completion capability. Retire the fake native ledger before
+         returning the error so this test models that one-way server state
+         transition rather than leaving an impossible lease behind. *)
+      let _, remaining =
+        remove_token completion.Protocol.task_token !(supervisor.async_leased)
+      in
+      supervisor.async_leased := remaining;
+      Error
+        (source_error "not_found" "async activity no longer exists")
+    end
+    else if !(supervisor.reject_next_async_completion) then begin
       supervisor.reject_next_async_completion := false;
       Error
         (source_error ~retryable:true "temporarily_unavailable"
@@ -465,6 +480,51 @@ let test_async_completion_retry () =
   if List.length !(supervisor.async_completions) <> 1 then
     failwith "async completion retry submitted more than one accepted result"
 
+(** A terminal native rejection closes both sides of the retained capability.
+    The adapter must drop its lease so worker drain cannot wait forever, while
+    the base handle must reject later calls instead of retrying a task token
+    that Temporal has already discarded. *)
+let test_async_terminal_rejection_closes_lease () =
+  let supervisor = fake_supervisor () in
+  let retained = ref None in
+  let activity =
+    Temporal.Activity.define_async ~name:"async_terminal_rejection"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.string
+      (fun context () ->
+        let handle = Temporal.Activity.Async_context.handle context in
+        retained := Some handle;
+        Temporal.Activity.Will_complete_async handle)
+  in
+  let token = Bytes.of_string "async-terminal-token" in
+  enqueue supervisor
+    (start_task ~token ~activity_type:"async_terminal_rejection"
+       ~input:[ encode_input Temporal.Codec.unit () ]);
+  let worker = worker supervisor [ Adapter.register_async activity ] in
+  expect_deferred (Worker.poll worker);
+  supervisor.reject_next_async_completion_terminal := true;
+  let handle = Option.get !retained in
+  begin
+    match Temporal.Activity.Async_handle.complete handle "discarded" with
+    | Error error ->
+        let view = Temporal.Error.view error in
+        if not view.non_retryable then
+          failwith "terminal async rejection was not marked non-retryable"
+    | Ok () -> failwith "terminal async rejection was reported as accepted"
+  end;
+  if !(supervisor.async_leased) <> [] then
+    failwith "terminal async rejection left a native async lease outstanding";
+  begin
+    match Temporal.Activity.Async_handle.complete handle "retry" with
+    | Error _ -> ()
+    | Ok () -> failwith "closed async handle accepted a stale retry"
+  end;
+  begin
+    match Worker.drain worker with
+    | Ok () -> ()
+    | Error error ->
+        failwith ("terminal async rejection blocked drain: " ^ error.message)
+  end
+
 (** Heartbeat retries retain the request while terminal cancellation preserves
     its detail payloads. This checks the non-terminal and terminal state paths
     independently on one admitted handle. *)
@@ -740,6 +800,7 @@ let () =
   test_operation_key_boundaries ();
   test_deferred_lifecycle ();
   test_async_completion_retry ();
+  test_async_terminal_rejection_closes_lease ();
   test_async_heartbeat_and_cancel ();
   test_async_failure ();
   test_async_drain_and_discard ();

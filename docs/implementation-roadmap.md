@@ -19,11 +19,11 @@ cleaner and more maintainable OCaml design.
 |---|---|---|---|
 | 1 | Repository foundation, typed public definitions, codecs, deterministic futures, effect scheduler, and synthetic activations | `make verify` runs from Docker Compose and deterministic command tests pass | Complete |
 | 2 | Rust static library, OCaml C stubs, private owner-Domain mailbox, live worker poll/completion loop, minimum OCaml client, and the real Compose smoke-test topology | An OCaml test-client container starts workflows executed by a separate OCaml worker against Temporal Server and PostgreSQL | Complete: the initial two-binary fan-out and timer/activity success paths pass in Linux CI |
-| 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | In progress: fan-out, timer/activity, parent/child, ordinary activity retry, heartbeat-detail retry, typed non-retryable workflow failure, child failure/cancellation, and marker-guarded exact-run cancellation are live-verified by the complete [PR #210 run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859). Restart/replay/cache recovery, timeout-triggered retry, asynchronous completion, and broader failure coverage remain |
+| 3 | Expand the same smoke suite across payloads, durable timers, mock activities, concurrent scheduling, failures, retries, cancellation, restart replay, and cache eviction | Every implemented essential path has a live success test and its important failure/lifecycle tests | In progress: fan-out, timer/activity, parent/child, ordinary activity retry, heartbeat-detail retry, timeout-triggered retry, typed non-retryable workflow failure, child failure/cancellation, continue-as-new, delayed asynchronous completion, and marker-guarded exact-run cancellation passed the local OCaml 5.5 Compose run. Restart/replay/cache recovery, broader failure coverage, and CI evidence for this newer twelve-result path remain |
 | 4 | Child workflows and structured concurrency (`both`, `all`, `race`, `first`, scopes), added to the live smoke suite | Parent workflows fan out to mock activities and children, await one/all, and cancel safely through the real cluster | In progress: child command and two-stage start/terminal resolution translation are complete; focused tests cover child start rejection/failure, duplicate or out-of-order lifecycle events, cancellation-policy translation, explicit child retry-policy Core conversion, and lease cleanup. Parent/child success, propagated failure, and child cancellation are live-verified in [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859); live child start failure/retry/replay/recovery and server-side cancellation remain |
 | 5 | Signals, queries, updates, validators, conditions, and handler policies | CLI-driven interactive workflow tests pass, including mode violations | In progress: typed definitions, validator ordering, deterministic local dispatch, and native scheduler-owned signal-handler delivery with fail-closed missing/invalid-signal tests are implemented; native query/update completion, conditions, handler policies, and live signal acceptance remain |
-| 6 | Continue-as-new, patches, side effects, external workflow operations, memo, search attributes, priority, and fairness | Recorded histories replay and advanced command integration tests pass | In progress: the public continue-as-new command, bilateral JSON validation, and Core conversion are implemented and unit-tested; live server coverage and the remaining Phase 6 features are pending |
-| 7 | OCaml activities, local activities, heartbeats, async completion, interceptors, payload codecs, and graceful shutdown | Activity conformance and Kubernetes-style termination tests pass | In progress: remote activities, context-aware heartbeat detail/retry, graceful shutdown, and the typed asynchronous completion bridge are implemented and focused-tested; remote activity, heartbeat-detail, and shutdown paths are live-verified in [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859). A live delayed-completion scenario, Core heartbeat response flags, dedicated async `NotFound` handling, bounded native waits, local activities, interceptors, and broader conformance remain |
+| 6 | Continue-as-new, patches, side effects, external workflow operations, memo, search attributes, priority, and fairness | Recorded histories replay and advanced command integration tests pass | In progress: the public continue-as-new command, bilateral JSON validation, and Core conversion are implemented and unit-tested; successor following is verified by the local OCaml 5.5 Compose run, while the remaining Phase 6 features and CI evidence are pending |
+| 7 | OCaml activities, local activities, heartbeats, async completion, interceptors, payload codecs, and graceful shutdown | Activity conformance and Kubernetes-style termination tests pass | In progress: remote activities, context-aware heartbeat detail/retry, graceful shutdown, and the typed asynchronous completion bridge are implemented and focused-tested; ordinary, heartbeat-detail, timeout-triggered retry, delayed asynchronous completion, and shutdown paths are live-verified locally. Core heartbeat response flags, heartbeat-timeout retry, local activities, interceptors, and broader conformance remain |
 | 8 | Client API, schedules, visibility, reset/terminate/cancel, update handles, Nexus, and test-server controls | Client conformance suite passes against supported Temporal Server versions | In progress: public client start, exact-run wait, exact-run cancellation, and idempotent shutdown are implemented, focused-tested, and live-verified in [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859); schedules, visibility, reset/terminate, updates, Nexus, and test-server controls remain |
 | 9 | Performance, observability, security, packaging, API stability, and release automation | Published benchmark report, SBOM/license audit, OPAM lint, docs, and release dry run pass | In progress: structured `logs` observability, quality/security checks, permissive-license audits, and OPAM packaging/lint gates are implemented; benchmarks, SBOM, API-stability validation, and release automation remain |
 | 10 | Parity closure | Every parity-matrix row links to implementation, tests, and documentation | Planned |
@@ -86,17 +86,20 @@ essential-feature tests:
 - A separate OCaml test-client container links the same library, starts each
   test workflow, waits for its result, and checks the expected outcome.
 
-The smoke suite now contains ten top-level scenarios: fan-out, timer/activity,
+The smoke suite now contains twelve top-level scenarios: fan-out, timer/activity,
 continue-as-new successor following, ordinary activity retry, heartbeat-detail
-activity retry, successful parent/child execution, propagated child failure,
-child cancellation, typed non-retryable workflow failure, and marker-guarded
-exact-run cancellation. The current driver starts all ten before waiting,
-asserts each expected terminal outcome, and records bounded operation-phase and
-shutdown diagnostics. The first nine scenarios have live evidence in PR #210;
-the continue-as-new scenario is included in the next live gate and remains
-pending until that run passes. Every subsequent essential capability adds
-scenarios to the same suite. It is not considered complete while an essential
-SDK capability is exercised only by the synthetic interpreter.
+activity retry, delayed asynchronous activity completion, start-to-close timeout
+retry, successful parent/child execution, propagated child failure, child
+cancellation, typed non-retryable workflow failure, and marker-guarded exact-run
+cancellation. The current driver starts eleven before its first terminal wait,
+then starts the timeout-retry workflow after heartbeat completion. It asserts
+each expected terminal outcome and records bounded operation-phase and shutdown
+diagnostics. A local `OCAML_VERSION=5.5 DUNE_JOBS=1
+make test-temporal-integration` run passed all twelve against Temporal Server and
+PostgreSQL; the corresponding CI evidence is still pending. Every subsequent
+essential capability adds scenarios to the same suite. It is not considered
+complete while an essential SDK capability is exercised only by the synthetic
+interpreter.
 
 ## Dependency and licensing gate
 

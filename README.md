@@ -49,22 +49,23 @@ opaque bytes and applications may choose another deterministic codec.
 | --- | --- |
 | Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
-| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, and records activity heartbeats. The complete nine-scenario Compose gate passed against real Temporal Server and PostgreSQL in [PR #210's full CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859), including heartbeat-detail retry and child failure/cancellation. |
-| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, and exact-run cancellation. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result. The same full CI run live-verified nine workflows: four exact successes, ordinary activity retry, heartbeat-detail retry, parent/child success, propagated child failure, child cancellation, a typed non-retryable workflow failure, and exact-run cancellation. |
+| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, records activity heartbeats, and supports retained asynchronous activity completion. The historical nine-scenario Compose gate passed against real Temporal Server and PostgreSQL in [PR #210's full CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859); a local OCaml 5.5 run additionally passed timeout retry, delayed asynchronous completion, and continue-as-new. |
+| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, and exact-run cancellation. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result. A local OCaml 5.5 Compose run passed all twelve current workflow assertions; the earlier [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859) remains the linked CI evidence for the original nine-workflow slice. |
 | Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
 | Safety boundary | Rust/Core protobuf handling stays in Rust. OCaml/Rust JSON validation, copied payloads, one-owner lifecycle serialization, and idempotent cleanup are covered by focused tests. |
 
 ## What is deliberately still pending
 
-- The two-public-OCaml-binary gate now has live evidence for all nine scenarios
-  in the complete [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859),
-  which passed before the PR was squash-merged as `f877fbf`. The driver starts
-  nine workflows before waiting, and the separate long-lived worker returns
-  their exact results or typed terminal outcomes. This proves the implemented
-  success, retry, heartbeat-detail, child-lifecycle, typed-failure, and
-  exact-run cancellation paths against one Temporal/PostgreSQL deployment.
-  Restart, replay, cache-eviction, timeout-triggered retry, and asynchronous
-  activity-completion scenarios remain separate acceptance work.
+- The two-public-OCaml-binary gate has a local OCaml 5.5 run covering all twelve
+  current workflow assertions against one fresh Temporal/PostgreSQL deployment.
+  The driver starts eleven workflows before waiting, observes delayed
+  asynchronous completion, follows a continue-as-new successor, and starts the
+  timeout-retry workflow after heartbeat completion. The historical [PR #210 CI
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859) remains
+  CI evidence for the earlier nine-workflow slice. Restart, replay,
+  cache-eviction, heartbeat-timeout-triggered retry, and broader recovery
+  scenarios remain separate acceptance work; CI for the newer twelve-result path
+  is still pending.
 - Child-workflow commands can be authored and are translated by the semantic
   layer. The native worker now accepts a parent completion containing a child
   start, retains the parent future through the start acknowledgment, and
@@ -78,10 +79,12 @@ opaque bytes and applications may choose another deterministic codec.
   interaction delivery, conditions, handler policies, versioning, local
   activities, Nexus, and the remaining cross-SDK parity surface are roadmap
   work. Continue-as-new is implemented and locally tested at the
-  workflow/native bridge boundary, but still needs live Temporal Server
-  acceptance. Context-aware activity heartbeats are live-verified for a
-  server-delivered heartbeat detail and retry; timeout-triggered retry and
-  asynchronous completion remain separate work.
+  workflow/native bridge boundary and is verified by the local Compose run.
+  Context-aware activity heartbeats are live-verified for a server-delivered
+  heartbeat detail and retry; timeout-triggered retry and delayed asynchronous
+  completion are also covered locally. Heartbeat-timeout retry, native
+  interaction delivery beyond the current signal/query slice, replay, and
+  recovery remain separate work.
 - The public API, native protocol, and Temporal Core pin remain experimental
   and may change before a stable release.
 
@@ -141,15 +144,20 @@ runs the OCaml supervisor lifecycle acceptance executable, starts a public
 OCaml worker, and runs a separate public OCaml driver. The worker is the
 long-lived process that registers and executes the workflows and mock activity.
 The driver is a one-shot OCaml test runner: it does not register a worker. Its
-current implementation starts nine smoke workflows, sends an exact-run
-cancellation request for the long-running one, waits for every exact terminal
-result, and exits nonzero if any expected result is not returned. The complete
+current implementation starts eleven smoke workflows before waiting, including
+delayed asynchronous activity completion and continue-as-new, then starts the
+timeout-retry workflow after heartbeat completion. It sends an exact-run
+cancellation request for the long-running workflow, waits for all twelve exact
+terminal results, and exits nonzero if any expected result is not returned. A
+local `OCAML_VERSION=5.5 DUNE_JOBS=1 make test-temporal-integration` run passed
+all twelve assertions against Temporal Server 1.31 and PostgreSQL. The earlier
 [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
-live-verified all nine assertions: four exact successes, ordinary activity
-retry, heartbeat-detail retry, parent/child success, propagated child failure,
-child cancellation, a typed non-retryable workflow failure, and marker-guarded
-exact-run cancellation. That PR was squash-merged as `f877fbf`. The Makefile
-stops the worker and checks its graceful-shutdown marker when the target runs.
+live-verified the original nine assertions: four exact successes, ordinary
+activity retry, heartbeat-detail retry, parent/child success, propagated child
+failure, child cancellation, a typed non-retryable workflow failure, and
+marker-guarded exact-run cancellation. That PR was squash-merged as `f877fbf`.
+The Makefile stops the worker and checks its graceful-shutdown marker when the
+target runs.
 The target removes the PostgreSQL data volume before and after the run, so no
 database state is preserved between acceptance runs. Child
 start-failure/cancellation, restart, replay, and recovery coverage remain

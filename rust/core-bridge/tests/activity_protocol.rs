@@ -216,7 +216,7 @@ fn activity_cancellation_details_survive_core_to_json_round_trip() {
             variant: Some(core_activity_task::activity_task::Variant::Cancel(
                 core_activity_task::Cancel {
                     reason: reason as i32,
-                    details: Some(details.clone()),
+                    details: Some(details),
                 },
             )),
         };

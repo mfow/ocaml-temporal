@@ -778,6 +778,280 @@ fn rejects_signal_identity_with_nul() {
     assert!(error.path.contains("identity"));
 }
 
+/// Proves query jobs preserve the query identifier, repeated arguments, and
+/// headers when translating the pinned Core activation into the semantic
+/// protocol. Query activations are deliberately isolated from ordinary
+/// workflow jobs so the owner-domain dispatcher can answer synchronously.
+#[test]
+fn converts_query_workflow_activation_losslessly() {
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::temporal::api::common::v1::Payload as CorePayload;
+
+    let payload = CorePayload {
+        metadata: [("encoding".to_owned(), b"binary/plain".to_vec())].into(),
+        data: b"query-argument".to_vec(),
+        ..Default::default()
+    };
+    let activation = core_activation::WorkflowActivation {
+        run_id: "run-query".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::QueryWorkflow(core_activation::QueryWorkflow {
+                query_id: "query-42".to_owned(),
+                query_type: "status".to_owned(),
+                arguments: vec![payload.clone(), payload.clone()],
+                headers: [("trace".to_owned(), payload.clone())].into(),
+            })),
+        }],
+        ..Default::default()
+    };
+
+    let semantic = workflow_protocol::activation_from_core(&activation).unwrap();
+    match semantic.jobs.as_slice() {
+        [
+            workflow_protocol::ActivationJob::QueryWorkflow {
+                query_id,
+                query_type,
+                arguments,
+                headers,
+            },
+        ] => {
+            assert_eq!(query_id, "query-42");
+            assert_eq!(query_type, "status");
+            assert_eq!(arguments.len(), 2);
+            assert_eq!(arguments[0].data, b"query-argument");
+            assert_eq!(headers["trace"].data, b"query-argument");
+        }
+        jobs => panic!("unexpected query activation jobs: {jobs:?}"),
+    }
+    let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
+
+    // Core identifies the legacy PollWFTResp query by a reserved ID. The
+    // bridge must retain that exact value for its legacy response routing.
+    let mut legacy = activation;
+    let Some(Variant::QueryWorkflow(query)) = legacy.jobs[0].variant.as_mut() else {
+        panic!("query activation must contain a query job");
+    };
+    query.query_id = "legacy_query".to_owned();
+    let legacy_semantic = workflow_protocol::activation_from_core(&legacy).unwrap();
+    assert!(matches!(
+        &legacy_semantic.jobs[0],
+        workflow_protocol::ActivationJob::QueryWorkflow { query_id, .. }
+            if query_id == "legacy_query"
+    ));
+}
+
+/// Proves successful and failed query results map to Core's query oneof and
+/// back without losing payload bytes or recursive failure information. The
+/// activation-aware conversion also rejects a missing or extra query result,
+/// preventing an answer from being assigned to the wrong query.
+#[test]
+fn converts_query_results_and_matches_activation_ids() {
+    use core_commands::query_result::Variant as QueryVariant;
+
+    let payload = workflow_protocol::Payload {
+        metadata: [("encoding".to_owned(), b"binary/plain".to_vec())].into(),
+        data: b"query-result".to_vec(),
+    };
+    let activation = workflow_protocol::Activation {
+        run_id: "run-query".to_owned(),
+        timestamp: Some(workflow_protocol::Timestamp {
+            seconds: 0,
+            nanoseconds: 0,
+        }),
+        is_replaying: false,
+        history_length: 1,
+        jobs: vec![workflow_protocol::ActivationJob::QueryWorkflow {
+            query_id: "query-42".to_owned(),
+            query_type: "status".to_owned(),
+            arguments: Vec::new(),
+            headers: BTreeMap::new(),
+        }],
+        metadata: None,
+    };
+    let succeeded = workflow_protocol::Completion {
+        run_id: "run-query".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::QueryResult {
+            query_id: "query-42".to_owned(),
+            result: workflow_protocol::QueryResult::Succeeded {
+                payload: payload.clone(),
+            },
+        }],
+    };
+    let core = workflow_protocol::completion_to_core_for_activation(&activation, &succeeded)
+        .expect("matching query result must convert");
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("query completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::RespondToQuery(query)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("query result must map to RespondToQuery");
+    };
+    assert_eq!(query.query_id, "query-42");
+    assert!(matches!(
+        query.variant.as_ref(),
+        Some(QueryVariant::Succeeded(_))
+    ));
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        succeeded
+    );
+
+    let failure = workflow_protocol::Failure {
+        message: "query failed".to_owned(),
+        source: "ocaml".to_owned(),
+        stack_trace: String::new(),
+        encoded_attributes: None,
+        cause: None,
+        info: workflow_protocol::FailureInfo::Application {
+            type_name: "QueryError".to_owned(),
+            non_retryable: true,
+            details: Vec::new(),
+        },
+    };
+    let failed = workflow_protocol::Completion {
+        run_id: "run-query".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::QueryResult {
+            query_id: "query-42".to_owned(),
+            result: workflow_protocol::QueryResult::Failed {
+                failure: failure.clone(),
+            },
+        }],
+    };
+    let failed_core =
+        workflow_protocol::completion_to_core_for_activation(&activation, &failed).unwrap();
+    assert_eq!(
+        workflow_protocol::completion_from_core(&failed_core).unwrap(),
+        failed
+    );
+
+    let second_query_activation = workflow_protocol::Activation {
+        jobs: vec![
+            workflow_protocol::ActivationJob::QueryWorkflow {
+                query_id: "query-42".to_owned(),
+                query_type: "status".to_owned(),
+                arguments: Vec::new(),
+                headers: BTreeMap::new(),
+            },
+            workflow_protocol::ActivationJob::QueryWorkflow {
+                query_id: "query-43".to_owned(),
+                query_type: "status".to_owned(),
+                arguments: Vec::new(),
+                headers: BTreeMap::new(),
+            },
+        ],
+        ..activation.clone()
+    };
+    let missing = workflow_protocol::Completion {
+        run_id: "run-query".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::QueryResult {
+            query_id: "query-42".to_owned(),
+            result: workflow_protocol::QueryResult::Succeeded {
+                payload: workflow_protocol::Payload {
+                    metadata: BTreeMap::new(),
+                    data: b"one".to_vec(),
+                },
+            },
+        }],
+    };
+    assert_eq!(
+        workflow_protocol::completion_to_core_for_activation(&second_query_activation, &missing)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+
+    let extra = workflow_protocol::Completion {
+        run_id: "run-query".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::QueryResult {
+                query_id: "query-42".to_owned(),
+                result: workflow_protocol::QueryResult::Succeeded {
+                    payload: workflow_protocol::Payload {
+                        metadata: BTreeMap::new(),
+                        data: b"one".to_vec(),
+                    },
+                },
+            },
+            workflow_protocol::CompletionCommand::QueryResult {
+                query_id: "query-42".to_owned(),
+                result: workflow_protocol::QueryResult::Succeeded {
+                    payload: workflow_protocol::Payload {
+                        metadata: BTreeMap::new(),
+                        data: b"duplicate".to_vec(),
+                    },
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        workflow_protocol::completion_to_core_for_activation(&activation, &extra)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+
+    let ordinary_activation = workflow_protocol::Activation {
+        jobs: vec![workflow_protocol::ActivationJob::FireTimer { seq: 1 }],
+        ..activation.clone()
+    };
+    assert_eq!(
+        workflow_protocol::completion_to_core_for_activation(&ordinary_activation, &failed)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+
+    let mixed = workflow_protocol::Completion {
+        run_id: "run-query".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::QueryResult {
+                query_id: "query-42".to_owned(),
+                result: workflow_protocol::QueryResult::Succeeded {
+                    payload: workflow_protocol::Payload {
+                        metadata: BTreeMap::new(),
+                        data: b"answer".to_vec(),
+                    },
+                },
+            },
+            workflow_protocol::CompletionCommand::StartTimer {
+                seq: 1,
+                start_to_fire_timeout: workflow_protocol::Duration {
+                    seconds: 1,
+                    nanoseconds: 0,
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        workflow_protocol::completion_to_core_for_activation(&activation, &mixed)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+
+    let mismatched = workflow_protocol::Completion {
+        run_id: "run-query".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::QueryResult {
+            query_id: "other-query".to_owned(),
+            result: workflow_protocol::QueryResult::Succeeded { payload },
+        }],
+    };
+    assert_eq!(
+        workflow_protocol::completion_to_core_for_activation(&activation, &mismatched)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+}
+
 /// Proves ordinary first-task metadata survives Core conversion and semantic
 /// JSON instead of being rejected as an unsupported default-only initializer.
 #[test]

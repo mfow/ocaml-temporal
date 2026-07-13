@@ -33,6 +33,10 @@ type t = {
   child_workflows : (int64, child_workflow_state) Hashtbl.t;
   timers : (int64, unit -> unit) Hashtbl.t;
   mutable commands_rev : Activation.command list;
+  (* Once true, [emit] ignores new commands. Set at the start of [shutdown]
+     before waiters are discontinued so Fun.protect finally blocks cannot
+     append cancel commands after a terminal command. *)
+  mutable sealed : bool;
 }
 
 (** Validates the worker queue before it becomes an implicit activity option.
@@ -74,6 +78,7 @@ let create ?(task_queue = "default") scheduler =
         child_workflows = Hashtbl.create 16;
         timers = Hashtbl.create 16;
         commands_rev = [];
+        sealed = false;
       }
 
 (** Stores the currently running workflow separately on each OCaml Domain, so
@@ -137,8 +142,12 @@ let allocate_sequence context =
   context.next_sequence
 
 (** Adds a command to the front of the internal list; [take_commands] restores
-    creation order before returning it. *)
-let emit context command = context.commands_rev <- command :: context.commands_rev
+    creation order before returning it. After [shutdown] has sealed the context,
+    further emissions are ignored so discontinued waiters cannot append
+    cancellation commands after a terminal completion. *)
+let emit context command =
+  if not context.sealed then
+    context.commands_rev <- command :: context.commands_rev
 
 (** Records a terminal command before aborting the current scheduler. The
     command is therefore retained even though the calling continuation is not
@@ -428,8 +437,11 @@ let take_commands context =
   commands
 
 (** Closes pending futures before clearing activity and timer callbacks. This
-    releases paused workflow fibers and the OCaml values they reference. *)
+    releases paused workflow fibers and the OCaml values they reference. The
+    context is sealed first so discontinued waiters cannot emit new commands
+    while their Fun.protect cleanups run. *)
 let shutdown context =
+  context.sealed <- true;
   Scheduler.shutdown context.scheduler;
   Hashtbl.clear context.activities;
   Hashtbl.clear context.child_workflows;

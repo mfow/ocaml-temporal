@@ -12,6 +12,17 @@ type signal = {
     closure or calls one from a native thread. *)
 type signal_handler
 
+(** Query input retained by the private dispatch layer. Arguments and headers
+    remain available for future typed-input APIs even though the public API is
+    currently output-only. *)
+type query = {
+  arguments : Temporal_base.Codec.payload list;
+  headers : (string * Temporal_base.Codec.payload) list;
+}
+
+(** A synchronous, non-suspending query callback owned by one execution. *)
+type query_handler
+
 (** Creates a handler for one validated signal name. The callback receives the
     complete runtime signal and returns a typed workflow error when delivery
     should fail the execution. *)
@@ -22,6 +33,15 @@ val make_signal_handler :
 
 (** Returns the stable Temporal name used to look up a handler. *)
 val signal_handler_name : signal_handler -> string
+
+(** Builds a query handler invoked inline on the execution owner Domain. *)
+val make_query_handler :
+  name:string ->
+  dispatch:(query -> (Temporal_base.Codec.payload, Temporal_base.Error.t) result) ->
+  query_handler
+
+(** Returns the stable query name used by registration validation. *)
+val query_handler_name : query_handler -> string
 
 (** The in-memory state for one running workflow. It contains the workflow's
     scheduler and the activities and timers whose results are still pending. *)
@@ -34,6 +54,7 @@ type ('input, 'output) t
 val start :
   ?task_queue:string ->
   ?signal_handlers:signal_handler list ->
+  ?query_handlers:query_handler list ->
   ( 'input,
     'output,
     'input -> ('output, Temporal_base.Error.t) result )

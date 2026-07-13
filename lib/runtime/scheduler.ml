@@ -6,6 +6,11 @@ type runnable = Runnable of int * (unit -> unit)
     declared in the signature so only package-internal modules can perform it. *)
 type _ Effect.t += Abort_workflow : 'value Effect.t
 
+(** Private control exception used only to settle an aborted fiber.
+    It must not be converted into a workflow failure by user-code
+    try/with wrappers; the deep handler treats it like shutdown. *)
+exception Workflow_aborted
+
 (** State for one workflow scheduler. [pending] counts futures without results,
     and [teardowns] stores one removable cleanup token for each pending future.
     Settling a future removes its token so completed values are not retained by
@@ -95,7 +100,7 @@ let handle scheduler thunk =
           (* Scheduler_shutdown only releases paused fibers during teardown; it
              is control flow, not a workflow defect. *)
           match exception_ with
-          | Future_store.Scheduler_shutdown -> ()
+          | Future_store.Scheduler_shutdown | Workflow_aborted -> ()
           | _ -> scheduler.failures <- exception_ :: scheduler.failures);
       effc =
         (fun (type result) (operation : result Effect.t) ->
@@ -106,10 +111,16 @@ let handle scheduler thunk =
                   Future_store.add_waiter future continuation)
           | Abort_workflow ->
               Some
-                (fun (_continuation : (result, unit) Effect.Deep.continuation) ->
-                  (* A terminal command has already been buffered. Do not run
-                     sibling fibers that could append commands after it. *)
-                  scheduler.abort_requested <- true)
+                (fun (continuation : (result, unit) Effect.Deep.continuation) ->
+                  (* A terminal command has already been buffered. Stop sibling
+                     fibers from appending further commands, then settle this
+                     one-shot continuation so Fun.protect cleanups still run.
+                     Use [Workflow_aborted] rather than [Scheduler_shutdown] so
+                     workflow try/with wrappers re-raise it instead of turning
+                     a deliberate abort into Fail_workflow. *)
+                  scheduler.abort_requested <- true;
+                  try Effect.Deep.discontinue continuation Workflow_aborted
+                  with Workflow_aborted -> ())
           | _ -> None);
     }
 
@@ -151,7 +162,7 @@ let run scheduler =
             if scheduler.active then
               scheduler.trace_rev <- sequence :: scheduler.trace_rev;
             (try thunk ()
-             with Future_store.Scheduler_shutdown -> ()
+             with Future_store.Scheduler_shutdown | Workflow_aborted -> ()
              | exception_ ->
                  scheduler.failures <- exception_ :: scheduler.failures)
           done;
@@ -190,7 +201,7 @@ let shutdown scheduler =
       while not (Queue.is_empty scheduler.queue) do
         let (Runnable (_, thunk)) = Queue.pop scheduler.queue in
         try thunk () with
-        | Future_store.Scheduler_shutdown -> ()
+        | Future_store.Scheduler_shutdown | Workflow_aborted -> ()
         | exception_ -> scheduler.failures <- exception_ :: scheduler.failures
       done)
 

@@ -16,6 +16,14 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  (** A synchronous query request. Query jobs carry no sequence because they
+      answer a read-only request directly and never resolve a workflow future. *)
+  | Query_workflow of {
+      query_id : string;
+      query_type : string;
+      arguments : Temporal_base.Codec.payload list;
+      headers : (string * Temporal_base.Codec.payload) list;
+    }
   (** A validated incoming signal. The runtime keeps the complete event while
       the execution resolves its name against the private handler registry;
       missing or invalid public handlers fail closed rather than dropping the
@@ -95,6 +103,11 @@ type command =
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; milliseconds : int64 }
   | Cancel_timer of { seq : int64 }
+  (** Answers a synchronous query without entering the workflow scheduler. *)
+  | Query_result of {
+      query_id : string;
+      result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
+    }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t
   (** Ends this run and asks Temporal to start the same workflow type with a

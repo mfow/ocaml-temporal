@@ -2,11 +2,12 @@
 
 This document specifies how Temporal Core signals, queries, and updates cross
 the private Rust/OCaml boundary. It is both a design reference and an
-implementation-status record. The bilateral bridge now transports a
-`SignalWorkflow` activation safely through Rust, semantic JSON, and the OCaml
-runtime, then dispatches a registered public OCaml signal handler on the
-workflow scheduler. Query and update delivery remain unsupported until their
-activation and completion records are implemented and tested together.
+implementation-status record. The bilateral bridge now transports
+`SignalWorkflow` and the first `QueryWorkflow` activation safely through Rust,
+semantic JSON, and the OCaml runtime. Signals are queued on the workflow
+scheduler; queries are answered synchronously by a registered read-only
+handler. Update delivery remains unsupported until its activation and
+two-stage completion records are implemented and tested together.
 
 For the public, in-memory typing that already exists, see
 [Signals, queries, and updates](../reference/interactive-workflows.md). That
@@ -37,13 +38,14 @@ the Rust side while giving the OCaml runtime a small type-checked vocabulary.
 ## Current boundary
 
 The current semantic protocol supports initialization, activity and child
-resolutions, timers, cancellation, eviction, and the `SignalWorkflow`
-activation. A signal is validated in Rust, encoded as semantic JSON, decoded
-and copied by OCaml, and represented as a runtime signal job in the original
-activation order. Query and update jobs are still rejected by the Rust Core
-conversion because the semantic protocol has no query-result or
-update-response command; Rust rejects those Core command variants rather than
-dropping them.
+resolutions, timers, cancellation, eviction, `SignalWorkflow`, and
+`QueryWorkflow`/`QueryResult`. A signal is validated in Rust, encoded as
+semantic JSON, decoded and copied by OCaml, and represented as a runtime signal
+job in the original activation order. A query activation is validated as a
+query-only batch, answered inline on the execution owner Domain, and returned
+as query-only completion commands. Update jobs are still rejected by the Rust
+Core conversion because the semantic protocol has no update-response command;
+Rust rejects those Core command variants rather than dropping them.
 
 Consequently:
 
@@ -53,8 +55,13 @@ Consequently:
   accepts exactly one payload; a missing handler or unsupported arity is logged
   and completed as a non-retryable workflow failure rather than acknowledged
   as a no-op.
-- `QueryWorkflow` and `DoUpdate` are not currently deliverable to an OCaml
-  workflow worker.
+- `QueryWorkflow` is deliverable to a registered output-only OCaml query
+  handler. Core's repeated arguments and headers remain in the private runtime
+  record. Until a typed-input public query API exists, any non-empty argument
+  list returns `QueryResult.failed` and is not silently truncated. Missing
+  handlers and handler errors use the same failed-query response and leave the
+  workflow execution unchanged.
+- `DoUpdate` is not currently deliverable to an OCaml workflow worker.
 - `Temporal.Interaction` can exercise typed handler registration, codec
   validation, duplicate-name rejection, and validator ordering locally.
 - The signal transport test proves only the native activation boundary. It is
@@ -91,8 +98,10 @@ Each stage validates before handing ownership to the next stage:
 3. OCaml validates and copies payload bytes, then translates the semantic job
    into a private runtime job. For `SignalWorkflow`, this retains the signal
    name, ordered inputs, identity, and headers, resolves the registered handler,
-   and queues it on the execution scheduler. No Rust future, pointer, protobuf
-   value, or callback crosses into workflow code.
+   and queues it on the execution scheduler. For `QueryWorkflow`, it retains
+   the query ID, type, repeated arguments, and headers, resolves the handler,
+   invokes it inline, and emits a result without running ordinary fibers. No
+   Rust future, pointer, protobuf value, or callback crosses into workflow code.
 4. OCaml handlers emit typed semantic commands. The OCaml encoder validates and
    round-trips the complete completion before the supervisor hands owned bytes
    to Rust. Rust validates the bytes again and converts them to Core protobuf.
@@ -174,12 +183,14 @@ and that queries are delivered in their own activation. A query must therefore
 observe the workflow state after the preceding activation work, but it must not
 mutate that state.
 
-The native query path is planned as a read-only, non-suspending handler mode:
+The native query path is implemented as a read-only, non-suspending handler
+mode:
 
-1. decode the query arguments using the registered definition;
-2. invoke the handler without allowing workflow commands, timers, activities,
-   child workflows, or arbitrary effects;
-3. encode the typed result; and
+1. validate and copy the query arguments and headers at the semantic boundary;
+2. invoke the output-only handler inline on the owner Domain without allowing
+   workflow commands, timers, activities, child workflows, or arbitrary
+   effects;
+3. encode the result or typed failure; and
 4. emit exactly one `QueryResult` command with the same `query_id`.
 
 `QueryResult` is either `succeeded` with one payload or `failed` with a
@@ -196,10 +207,10 @@ argument.
 
 The query mode is intentionally stricter than a normal workflow fiber. A
 query cannot suspend on an activity, child, timer, or future that requires a
-later activation. If a query implementation attempts one of those operations,
-the runtime returns a typed defect in `QueryResult.failed` and leaves no
-pending continuation behind. The query handler's result and failure must be
-isolated from the workflow's normal command buffer.
+later activation. The current public handler is output-only, so a non-empty
+argument list returns a typed non-retryable failure in `QueryResult.failed`.
+The query handler's result and failure are emitted without running the normal
+workflow scheduler, so no pending continuation is retained.
 
 ## Update delivery and two-phase response
 
@@ -308,8 +319,10 @@ single side accepting a new variant early:
    public handler registration, scheduler delivery, exact-one arity validation,
    and fail-closed missing-handler tests.
 2. Add `QueryWorkflow` and `QueryResult`, including the no-suspension query
-   mode and query-only completion tests. Add explicit tests for the current
-   no-input public query API and for rejected extra arguments.
+   mode and query-only completion tests. **Implemented in the current
+   semantic/runtime slice:** bilateral Core conversion, exact query-ID
+   preservation (including Core's `legacy_query` path), output-only handler
+   dispatch, and rejected extra arguments. Live Server coverage remains open.
 3. Add `DoUpdate` and `UpdateResponse`, including immediate acceptance,
    validator skip during replay, suspended handler completion, duplicate
    protocol-instance rejection, shutdown, and eviction cleanup tests.
@@ -322,9 +335,9 @@ single side accepting a new variant early:
    through the two OCaml binaries. Record live success separately from
    synthetic and bridge-only evidence.
 
-Until the later query and update completion stages have passed, the overall
-feature status remains experimental: native `SignalWorkflow` transport and
-public scheduler-owned signal delivery are implemented, while queries and
-updates remain unsupported and live signal acceptance is pending.
+Until the later update completion stages have passed, the overall feature
+status remains experimental: native `SignalWorkflow` transport and
+output-only `QueryWorkflow` delivery are implemented and focused-tested, while
+updates and live interaction acceptance remain pending.
 `Temporal.Interaction` remains the public local-testing path for all three
 interaction kinds.

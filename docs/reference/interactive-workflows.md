@@ -13,8 +13,9 @@ first time, so it separates three things that are easy to confuse:
 The definitions and handler types are available in `Temporal.Signal`,
 `Temporal.Query`, and `Temporal.Update`. `Temporal.Interaction` provides the
 deterministic local routing path for tests. Native workflow signal delivery is
-now available when a handler is attached to `Temporal.Worker.workflow`; native
-queries and updates remain experimental and unsupported.
+now available when a handler is attached to `Temporal.Worker.workflow`. Native
+output-only query delivery is also implemented at the bridge boundary; native
+updates remain experimental and unsupported.
 
 ## Current status: local handlers and a partial native boundary
 
@@ -34,12 +35,15 @@ validated and retained by the runtime, but the first public handler API exposes
 only the typed payload; a later API can add those metadata fields without
 changing the transport contract.
 
-Query and update activation jobs are still rejected because their handler
-registration, suspension, and completion records have not been implemented.
-The focused native worker test proves scheduler delivery and the fail-closed
-missing-handler path. It is still not live-server evidence; the [feature
-coverage table](feature-coverage.md) and [implementation roadmap](../implementation-roadmap.md#delivery-order)
-record that the Compose acceptance path must add a real signal round trip.
+Query activations are delivered to a registered output-only handler on the
+execution owner Domain and produce a matching query result. The current public
+query definition has no input argument, so an activation containing one or more
+arguments returns a typed non-retryable query failure rather than silently
+dropping them. Query callbacks are synchronous and non-suspending; they do not
+enter the workflow scheduler. Native updates remain unsupported. The focused
+native tests prove this bridge behavior but are not live-server evidence; the
+[feature coverage table](feature-coverage.md) and [implementation roadmap](../implementation-roadmap.md#delivery-order)
+record that a Compose acceptance path must add a real signal/query round trip.
 
 ## The three-step model
 
@@ -48,15 +52,16 @@ An interaction is assembled in three steps:
 1. Define a stable name and the codec for each value that crosses the
    interaction boundary.
 2. Pair that definition with a typed OCaml callback to make a handler.
-3. Attach a signal handler to a worker workflow, or put handlers in an
-   `Interaction` dispatcher when writing a local test.
+3. Attach signal and/or output-only query handlers to a worker workflow, or
+   put handlers in an `Interaction` dispatcher when writing a local test.
 
 The definition and handler preserve the relationship between a Temporal name,
 its codec, and its OCaml type. A caller cannot accidentally pass a string to a
 handler that was defined for bytes without receiving a typed codec error. The
 native transport and the remaining handler/response lifecycles are described
 in the [native interaction design](../design/native-interactions.md). Signal
-activation delivery is implemented; query and update responses are not.
+and output-only query activation delivery are implemented; update responses
+and typed query inputs are not.
 
 ## Definitions
 
@@ -99,10 +104,11 @@ programmer or configuration defect detected while building the workflow,
 not a routine runtime failure.
 
 Signals carry one input and do not return a result. Queries have no input in
-this initial API and return one typed value; a query that needs parameters can
-use a record or tuple as its output value, or wait for a future query-input
-extension. Updates carry one input, run an optional validator, and return one
-typed result.
+this initial public API and return one typed value. A record or tuple codec
+changes only the query's output type; it does not add arguments to the native
+query request. Callers that need typed query inputs must wait for the future
+query-input extension. Updates carry one input, run an optional validator, and
+return one typed result.
 
 ### Codecs and payloads
 
@@ -269,10 +275,12 @@ The supervisor remains the sole owner of the Rust handle graph, and native
 readiness is observed through its scheduler-safe boundary. Rust never calls an
 OCaml closure. The focused runtime tests prove scheduler delivery, metadata
 retention, and fail-closed handling, but they are not live Temporal Server
-acceptance. The remaining native interaction work is:
+acceptance. Native query delivery now uses the same private registration path:
+query IDs, repeated arguments, and headers are retained, output-only handlers
+run synchronously on the owner Domain, and non-empty arguments produce a
+failed query result rather than being discarded. The remaining native
+interaction work is:
 
-- query activation and `QueryResult` completion records with a strict
-  non-suspending handler mode;
 - update activation and two-stage `UpdateResponse` records; and
-- a Docker Compose acceptance scenario that sends a signal through Temporal
-  Server and observes its workflow-side effect.
+- a Docker Compose acceptance scenario that sends a signal, issues a query,
+  and observes the workflow-side effects through Temporal Server.

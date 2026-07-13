@@ -81,8 +81,33 @@ missing registrations, codec failures, and callback errors fail the workflow
 through the typed non-retryable path instead of silently acknowledging an
 event. Rust never calls an OCaml closure. Focused adapter tests prove scheduler
 delivery, deterministic `Workflow.now`, metadata retention, and unhandled
-signal cleanup. Native query/update response records and a live Compose signal
-round trip remain roadmap work.
+signal cleanup. Native output-only query delivery is documented and verified in
+the following entry; native updates and a live Compose signal/query round trip
+remain roadmap work.
+
+## 2026-07-13: Native output-only query activation slice
+
+Status: focused OCaml protocol, runtime, and public-registration tests and the
+focused Rust/Core conversion suite pass locally. No live Temporal Server or
+GitHub Actions success is claimed for this slice.
+
+The semantic bridge now carries Core `QueryWorkflow` jobs and `QueryResult`
+commands without collapsing query IDs, repeated argument payloads, or headers.
+The pinned Core conversion preserves the reserved `legacy_query` identifier and
+routes successful and failed answers through Core's `RespondToQuery` oneof. A
+query activation is required to contain only query jobs, and its completion
+must contain exactly one result for every query ID. Conversely, a stray query
+result on an ordinary activation is rejected rather than silently dropped.
+
+The OCaml runtime registers output-only `Temporal.Query.Handler.t` callbacks in
+the existing worker registration. They run synchronously on the execution
+owner Domain, never enter the workflow scheduler, and return a typed
+non-retryable query failure when Core supplies arguments that the current
+public API cannot decode. Missing handlers and callback errors become failed
+query answers without failing the workflow itself. Public registration tests,
+private worker-adapter tests, semantic JSON round trips, malformed mixed-query
+cases, and bilateral Rust/Core conversion tests cover this behavior. A typed
+query-input API, updates, and live query acceptance remain future work.
 
 ## 2026-07-13: Typed continue-as-new successor handles
 

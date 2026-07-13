@@ -373,6 +373,129 @@ let test_signal_workflow_translation_and_activation () =
   | _ -> failwith "unhandled signal did not fail the workflow explicitly"
   end
 
+(** Proves the native query slice preserves query identity and executes the
+    handler synchronously without running the workflow scheduler. A second
+    handler demonstrates that non-empty arguments become a failed query
+    result, not a dropped field or workflow failure. *)
+let test_query_workflow_translation_and_activation () =
+  let query_protocol_payload text = protocol_payload text in
+  let query_runtime_payload text = runtime_payload text in
+  let query_job ?(arguments = []) ?(headers = []) query_id query_type =
+    Protocol.Query_workflow { query_id; query_type; arguments; headers }
+  in
+  let translated =
+    unwrap "query translation"
+      (Native_execution.translate_activation
+         (activation
+            [
+              query_job
+                ~headers:[ ("trace", query_protocol_payload "header") ]
+                "legacy_query"
+                "current-state";
+            ]))
+  in
+  begin match translated.jobs with
+  | [
+   Activation.Query_workflow
+     {
+       query_id = "legacy_query";
+       query_type = "current-state";
+       arguments = [];
+       headers = [ ("trace", header) ];
+     } ] when header = query_runtime_payload "header" ->
+      ()
+  | _ -> failwith "query activation did not preserve ID, type, or headers"
+  end;
+  let workflow =
+    Temporal_base.Definition.make ~name:"native_query" ~input:Temporal_base.Codec.unit
+      ~output:Temporal_base.Codec.unit ~implementation:(Some (fun () -> Ok ()))
+  in
+  let handler =
+    Execution.make_query_handler ~name:"current-state" ~dispatch:(fun query ->
+        match query.arguments with
+        | [] -> Ok (query_runtime_payload "answer")
+        | _ ->
+            Error
+              (Temporal_base.Error.make ~non_retryable:true ~category:`Workflow
+                 ~message:"query arguments are unsupported" ()))
+  in
+  let execution = Execution.start ~query_handlers:[ handler ] workflow () in
+  let completion =
+    unwrap "query activation"
+      (Native_execution.activate execution
+         (activation [ query_job "query-1" "current-state" ]))
+  in
+  begin match completion.commands with
+  | [ Protocol.Query_result { query_id = "query-1"; result = Query_succeeded payload } ]
+    when payload = { Protocol.metadata = []; data = Bytes.of_string "answer" } ->
+      ()
+  | _ -> failwith "query handler did not return a successful query result"
+  end;
+  let rejected =
+    unwrap "query argument rejection"
+      (Native_execution.activate execution
+         (activation
+            [ query_job
+                ~arguments:[ query_protocol_payload "unexpected" ] "query-2"
+                "current-state" ]))
+  in
+  begin match rejected.commands with
+  | [ Protocol.Query_result { query_id = "query-2"; result = Query_failed failure } ]
+    when Protocol.failure_non_retryable failure ->
+      ()
+  | _ -> failwith "query arguments were not returned as a failed query result"
+  end;
+  let query_activation =
+    activation [ query_job "query-expected" "current-state" ]
+  in
+  let query_completion query_id =
+    Protocol.
+      {
+        run_id = "run-native-translation";
+        commands =
+          [ Query_result
+              { query_id; result = Query_succeeded (protocol_payload "answer") } ];
+      }
+  in
+  expect_error_code "stray query result" "invalid_message"
+    (Native_execution.validate_completion_for_activation
+       (activation [ Protocol.Fire_timer { seq = 1L } ])
+       (query_completion "query-expected"));
+  expect_error_code "missing query result" "invalid_message"
+    (Native_execution.validate_completion_for_activation query_activation
+       { Protocol.run_id = "run-native-translation"; commands = [] });
+  expect_error_code "mismatched query result" "invalid_message"
+    (Native_execution.validate_completion_for_activation query_activation
+       (query_completion "query-other"));
+  expect_error_code "mixed query activation" "invalid_message"
+    (Native_execution.validate_completion_for_activation
+       (activation
+          [ query_job "query-expected" "current-state";
+            Protocol.Fire_timer { seq = 9L } ])
+       (query_completion "query-expected"));
+  expect_error_code "duplicate query activation ID" "invalid_message"
+    (Native_execution.validate_completion_for_activation
+       (activation
+          [ query_job "query-expected" "current-state";
+            query_job "query-expected" "current-state" ])
+       (query_completion "query-expected"));
+  expect_error_code "extra query result" "invalid_message"
+    (Native_execution.validate_completion_for_activation query_activation
+       {
+         Protocol.run_id = "run-native-translation";
+         commands =
+           [ Query_result
+               {
+                 query_id = "query-expected";
+                 result = Query_succeeded (protocol_payload "one");
+               };
+             Query_result
+               {
+                 query_id = "query-expected";
+                 result = Query_succeeded (protocol_payload "two");
+               } ];
+       })
+
 (** Confirms that both malformed identity forms are rejected before a signal
     can become runtime state.  OCaml strings may contain arbitrary bytes, so
     this exercises the boundary that JSON received from Rust cannot express
@@ -835,6 +958,7 @@ let () =
   test_activity_failure_details_are_preserved ();
   test_child_resolution_translation ();
   test_signal_workflow_translation_and_activation ();
+  test_query_workflow_translation_and_activation ();
   test_signal_identity_validation ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();

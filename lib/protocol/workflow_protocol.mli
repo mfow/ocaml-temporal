@@ -219,6 +219,15 @@ type activation_job =
       seq : int64;
       result : child_workflow_resolution;
     }
+  (** Delivers one synchronous query. Arguments and headers are retained even
+      though the current public handler API is output-only; non-empty
+      arguments are rejected by that adapter rather than silently discarded. *)
+  | Query_workflow of {
+      query_id : string;
+      query_type : string;
+      arguments : payload list;
+      headers : (string * payload) list;
+    }
   (** Delivers a signal's deterministic name, payloads, sender identity, and
       headers. Core does not assign a command sequence to an incoming signal. *)
   | Signal_workflow of {
@@ -271,6 +280,12 @@ type retry_policy = {
   non_retryable_error_types : string list;
 }
 
+(** The successful or failed answer for one synchronous query. Query failures
+    are returned to the caller and do not fail the workflow run. *)
+type query_result =
+  | Query_succeeded of payload
+  | Query_failed of failure
+
 (** Supported workflow commands in scheduler emission order. *)
 type completion_command =
   | Schedule_activity of {
@@ -305,6 +320,9 @@ type completion_command =
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; start_to_fire_timeout : duration }
   | Cancel_timer of { seq : int64 }
+  (** Answers a Core query request. The exact query ID is required for modern
+      and legacy Core routing; it must not be generated or normalized. *)
+  | Query_result of { query_id : string; result : query_result }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
   (** Ends this run and starts a successor run of [workflow_type] with the

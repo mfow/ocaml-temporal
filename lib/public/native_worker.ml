@@ -204,12 +204,35 @@ let runtime_signal_handler (handler : Signal.Handler.t) =
                     name)
                ()))
 
+(** Converts one public output-only query handler into the private synchronous
+    callback package. Query arguments and headers remain available at the
+    boundary; until a typed-input public API exists, non-empty arguments fail
+    closed rather than being ignored. The callback is executed inline on the
+    worker owner Domain and cannot retain a workflow continuation. *)
+let runtime_query_handler (handler : Query.Handler.t) =
+  let name = Query.Handler.name handler in
+  Workflow_adapter.make_query_handler ~name ~dispatch:(fun query ->
+      match Workflow_adapter.query_arguments query with
+      | [] ->
+          Query.Handler.dispatch handler
+          |> Result.map Payload_private.to_base
+          |> Result.map_error Error_private.to_base
+      | _ ->
+          Error
+            (Base_error.make ~non_retryable:true ~category:`Workflow
+               ~message:
+                 (Printf.sprintf
+                    "query %s received arguments but its OCaml handler is output-only"
+                    name)
+               ()))
+
 (** Packs a workflow definition and its handlers for the private runtime
     adapter. The public [Worker] module validates names and duplicates before
     native resources are allocated. *)
-let register_workflow ?(signals = []) definition =
+let register_workflow ?(signals = []) ?(queries = []) definition =
   let signal_handlers = List.map runtime_signal_handler signals in
-  Workflow_adapter.register ~signal_handlers definition
+  let query_handlers = List.map runtime_query_handler queries in
+  Workflow_adapter.register ~signal_handlers ~query_handlers definition
 
 (** Packs an activity definition for [Activity.create]. *)
 let register_activity definition = Activity_adapter.register definition

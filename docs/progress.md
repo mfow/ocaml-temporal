@@ -2114,3 +2114,44 @@ cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 
 The live Temporal Compose scenario remains deferred because it requires a
 running Temporal service and is intentionally not substituted by unit tests.
+
+## 2026-07-13: Stable runtime owner allocation across blocking-section GC moves
+
+Status: fixed and verified locally; the regression test reproducibly hangs
+against the pre-fix code and passes against the fix.
+
+`invoke_runtime_json`, `invoke_runtime`, and `ocaml_temporal_runtime_close` in
+`lib/core_bridge/native_stubs.c` each captured the `owned_runtime *` interior
+pointer of the `runtime` custom block once, then kept dereferencing it across
+a `caml_enter_blocking_section` / `caml_leave_blocking_section` window during
+which the OCaml runtime lock is released. A stop-the-world minor GC or
+major-heap compaction on another Domain can run during that window and
+relocate the custom block, leaving the cached pointer stale. `release_runtime`
+would then decrement an `active_calls` counter at a stale address, and
+`ocaml_temporal_runtime_close`'s `wait_for_runtime_calls` could spin forever
+reading a count that would never reach zero at the address it actually holds
+open.
+
+The fix moves `owned_runtime` out of the OCaml-managed heap entirely: the
+custom block payload now stores only a `malloc`-allocated pointer, nulled
+immediately after allocation so an out-of-memory `malloc` leaves the finalizer
+a safe no-op. `Runtime_val` dereferences that stored pointer once; because the
+pointer's value never changes regardless of where the GC relocates the
+enclosing custom block, every borrower can keep using it across a released
+lock without re-fetching, including the `runtime_close` wait loop that
+dereferences it for the loop's entire (possibly long) duration.
+`finalize_runtime` is the sole `free` site, since a given custom block is
+finalized at most once.
+
+`test/bridge/test_ocaml_runtime_lifetime.ml` gained
+`run_close_race_under_gc_pressure`, which races `runtime_close` against an
+in-flight `replay_worker_wait_workflow` (a ~100ms bounded native wait) while a
+third Domain forces `Gc.minor`/`Gc.compact` throughout the window. Reverting
+the fix and running this test hangs indefinitely, confirming the test catches
+the defect; with the fix it passes reliably across repeated runs.
+
+```text
+dune build --root . @install
+dune build --root . @runtest --force
+sh scripts/check-format.sh
+```

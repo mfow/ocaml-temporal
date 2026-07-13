@@ -1238,7 +1238,21 @@ async fn run_workflow_lane(
             .admit_polled_workflow(&activation.run_id);
         match admission {
             Ok(Admission::New) => {
+                let run_id = activation.run_id.clone();
                 if !signal.enqueue(&sender, Ok(activation)) {
+                    // The ready channel is closed. Retire the just-admitted
+                    // identity and complete Core so disposal cannot leave an
+                    // uncompleted poll debt behind.
+                    ledger
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .abandon_workflow_admission(&run_id);
+                    force_fail_undeliverable_workflow(
+                        worker.as_ref(),
+                        &run_id,
+                        "workflow ready channel closed after admission",
+                    )
+                    .await;
                     return;
                 }
             }
@@ -1334,7 +1348,23 @@ async fn run_activity_lane(
             .admit_polled_activity(&task.task_token, kind);
         match admission {
             Ok(Admission::New | Admission::ExistingCancellation) => {
+                let task_token = task.task_token.clone();
+                let admitted_start = kind == ActivityAdmission::Start;
                 if !signal.enqueue(&sender, Ok(task)) {
+                    // Ready channel closed after admission. Only Start-shaped
+                    // debts need a Core completion; cancel notifications do not.
+                    if admitted_start {
+                        ledger
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .abandon_activity_admission(&task_token);
+                        force_fail_undeliverable_activity(
+                            worker.as_ref(),
+                            &task_token,
+                            "activity ready channel closed after admission",
+                        )
+                        .await;
+                    }
                     return;
                 }
             }

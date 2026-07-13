@@ -1,27 +1,71 @@
 name: Build
 
 on:
-  push:
-    branches:
-      - master
-  schedule:
-    # GitHub Actions cron is UTC. Sydney is UTC+10 in standard time, so this
-    # runs at 05:00 Sydney time during the repository's standard-time season.
-    - cron: '0 19 * * *'
+  # Keep the workflow trigger unconditional so the license audit runs for
+  # documentation-only and other non-code pull requests as well.
+  pull_request:
 
 permissions:
   contents: read
 
 concurrency:
   # A pull-request number remains stable across synchronize events, so a new
-  # commit replaces an older queued or running PR run. The master ref is the
-  # fallback for the push trigger. This cancellation is intentionally scoped
-  # to the same change and never cancels an unrelated PR.
-  group: build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # commit replaces an older queued or running PR run.
+  group: build-${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changed code paths
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.changed-paths.outputs.code }}
+      smoke: ${{ steps.changed-paths.outputs.smoke }}
+    steps:
+      - name: Check out pull-request head
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Classify changed paths
+        id: changed-paths
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          code=false
+          smoke=false
+
+          while IFS= read -r path; do
+            # The live Temporal/PostgreSQL acceptance fixture is the only
+            # smoke-specific path. Its changes must not enable the ordinary
+            # build matrix, but they must enable the smoke job.
+            if [[ "$path" == test/integration/temporal/* ]]; then
+              smoke=true
+              continue
+            fi
+
+            # OCaml, native bridge, and Rust source changes enable all PR
+            # builds. Rust manifests and OCaml library build files are also
+            # included by their source trees because they change those builds.
+            case "$path" in
+              *.ml|*.mli|*.mll|*.mly|*.re|*.rei|*.c|*.h|*.rs|lib/*|rust/*)
+                code=true
+                smoke=true
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          {
+            echo "code=$code"
+            echo "smoke=$smoke"
+          } >> "$GITHUB_OUTPUT"
+
   quality:
+    if: needs.changes.outputs.code == 'true'
+    needs: changes
     name: Quality and security scans
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -65,6 +109,8 @@ jobs:
                 python3 scripts/check-cargo-licenses.py --metadata -
 
   temporal-integration:
+    if: needs.changes.outputs.smoke == 'true'
+    needs: changes
     name: Temporal/PostgreSQL integration smoke (OCaml 5.5)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -79,6 +125,8 @@ jobs:
         run: make test-temporal-integration
 
   verify:
+    if: needs.changes.outputs.code == 'true'
+    needs: changes
     name: OCaml ${{ matrix.ocaml }} / ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -100,6 +148,8 @@ jobs:
         run: make verify OCAML_VERSION=${{ matrix.ocaml }}
 
   native:
+    if: needs.changes.outputs.code == 'true'
+    needs: changes
     name: OCaml 5.5 / ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45

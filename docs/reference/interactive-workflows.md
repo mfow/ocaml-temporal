@@ -43,6 +43,9 @@ An interaction is assembled in three steps:
 The definition and handler preserve the relationship between a Temporal name,
 its codec, and its OCaml type. A caller cannot accidentally pass a string to a
 handler that was defined for bytes without receiving a typed codec error.
+The planned activation and response lifecycles are described in the [native
+interaction design](../design/native-interactions.md); that design is not yet
+implemented by the worker.
 
 ## Definitions
 

@@ -183,18 +183,37 @@ cover:
   Core emits after its empty replay completion; and
 - retention and reporting of a still-shared Core worker during disposal,
   reporting of a joined poll-lane failure, and successful retry after each
-  retained owner is safe to release.
+  retained owner is safe to release; and
+- a deterministic guard that the shared history fixture initializes the
+  workflow rather than delivering a fatal-machines-error eviction, so an
+  invalid fixture cannot silently reintroduce the shutdown-race panic below.
 
 The ABI-focused integration test in
 [`tests/replay_abi.rs`](../../rust/core-bridge/tests/replay_abi.rs) adds null
 handle, missing-worker, malformed-document, semantic lease matching, natural
 shutdown, and idempotent-disposal coverage.
 
-The leased-disposal regression protects the failure observed in the OCaml 5.2
-replay lifecycle CI: live-worker failure completion was sent after Core had
-already closed the workflow stream, triggering Core's
-“A non-empty completion was not processed” panic. Replay disposal now uses an
-empty acknowledgement and drains the eviction that follows it.
+Two OCaml 5.2 replay-lifecycle CI failures shaped this coverage, both surfacing
+as Core's “A non-empty completion was not processed” panic. The first was
+bridge-originated: a live-worker failure completion was sent after Core had
+already closed the workflow stream. Replay disposal now uses an empty
+acknowledgement and drains the eviction that follows it, protected by the
+leased-disposal regression.
+
+The second was Core-originated and intermittent. The shared unit-test history
+fixture omitted the mandatory `WorkflowTaskStarted` timestamp. Core's
+structural replay-invariant validator accepted the document, but its workflow
+machines hit a fatal error while applying the task. That fatal error is raised
+outside any language completion, so Core auto-fails the workflow task by
+submitting a **non-empty** completion through its own internal poll loop. With
+`ignore_evicts_on_shutdown` enabled, Core's workflow stream can reach terminal
+shutdown during disposal before that in-flight completion is processed, tripping
+the same panic. The bridge cannot intercept Core's internal auto-fail, so the
+fixture is now a genuinely valid history (every event carries a timestamp,
+matching the ABI fixture). A valid history produces no autonomous non-empty
+completion, so the race cannot occur, and
+`replay_history_first_activation_initializes_workflow` fails deterministically
+if the invalid fixture is reintroduced.
 
 The OCaml bridge test in
 [`test_ocaml_bridge.ml`](../../test/bridge/test_ocaml_bridge.ml) proves that

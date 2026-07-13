@@ -22,12 +22,27 @@ use temporalio_sdk_core::{
     PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, WorkerVersioningStrategy,
 };
 
+/// Builds a small monotonic protobuf timestamp for a history event.
+///
+/// Core's workflow machines reject a `WorkflowTaskStarted` event that has no
+/// `event_time`, so every event carries one. A missing timestamp is not caught
+/// by Core's structural replay-invariant validator; it only surfaces as a fatal
+/// machines error while the task is applied, which in turn makes Core emit an
+/// autonomous non-empty auto-fail completion. That completion can race replay
+/// disposal's stream teardown and trip Core's "A non-empty completion was not
+/// processed" panic, so the fixture must supply valid timestamps.
+fn event_time(seconds: i64) -> prost_wkt_types::Timestamp {
+    prost_wkt_types::Timestamp { seconds, nanos: 0 }
+}
+
 /// Builds a minimal complete history accepted by Core's replay invariant
-/// validator without importing Core's test-only history-builder feature.
+/// validator and by its workflow machines without importing Core's test-only
+/// history-builder feature.
 fn complete_history() -> History {
     let started = HistoryEvent {
         event_id: 1,
         event_type: EventType::WorkflowExecutionStarted as i32,
+        event_time: Some(event_time(1)),
         attributes: Some(
             history_event::Attributes::WorkflowExecutionStartedEventAttributes(
                 WorkflowExecutionStartedEventAttributes {
@@ -48,6 +63,7 @@ fn complete_history() -> History {
     let scheduled = HistoryEvent {
         event_id: 2,
         event_type: EventType::WorkflowTaskScheduled as i32,
+        event_time: Some(event_time(2)),
         attributes: Some(
             history_event::Attributes::WorkflowTaskScheduledEventAttributes(
                 WorkflowTaskScheduledEventAttributes::default(),
@@ -58,6 +74,7 @@ fn complete_history() -> History {
     let task_started = HistoryEvent {
         event_id: 3,
         event_type: EventType::WorkflowTaskStarted as i32,
+        event_time: Some(event_time(3)),
         attributes: Some(
             history_event::Attributes::WorkflowTaskStartedEventAttributes(
                 WorkflowTaskStartedEventAttributes {
@@ -71,6 +88,7 @@ fn complete_history() -> History {
     let task_completed = HistoryEvent {
         event_id: 4,
         event_type: EventType::WorkflowTaskCompleted as i32,
+        event_time: Some(event_time(4)),
         attributes: Some(
             history_event::Attributes::WorkflowTaskCompletedEventAttributes(
                 WorkflowTaskCompletedEventAttributes {
@@ -84,6 +102,7 @@ fn complete_history() -> History {
     let completed = HistoryEvent {
         event_id: 5,
         event_type: EventType::WorkflowExecutionCompleted as i32,
+        event_time: Some(event_time(5)),
         attributes: Some(
             history_event::Attributes::WorkflowExecutionCompletedEventAttributes(
                 WorkflowExecutionCompletedEventAttributes {
@@ -273,12 +292,65 @@ fn replay_worker_accepts_one_history_document() {
         .expect("replay activation should be queued")
         .expect("replay activation should satisfy bridge admission");
     assert_eq!(activation.run_id, "run-replay-test");
+    // A genuinely valid history replays into a real workflow-initialization
+    // activation, not a fatal-machines-error eviction. See `event_time` for why
+    // the distinction matters to replay disposal safety.
+    assert!(
+        activation_is_initialize_workflow(&activation),
+        "first replay activation should initialize the workflow, got {:?}",
+        activation.jobs
+    );
     handle
         .block_on(worker.complete_workflow(WorkflowActivationCompletion::empty(&activation.run_id)))
         .expect("replay activation should accept an empty deterministic completion");
     worker.finish_input();
-    wait_until_workflow_shutdown(&mut worker);
+    // Because no workflow code runs in this bridge-only test, the empty
+    // completion is a replay nondeterminism: Core responds with a cache
+    // eviction that must be acknowledged with an empty completion before the
+    // lane can reach its terminal shutdown.
+    drain_replay_evictions_until_shutdown(&mut worker, &handle);
     finalize_or_panic(worker, &handle);
+}
+
+/// Reports whether an activation's jobs initialize a workflow rather than only
+/// evicting it. The pre-fix history fixture omitted the `WorkflowTaskStarted`
+/// timestamp, so Core delivered a fatal-error eviction here instead; this guard
+/// keeps that regression from returning silently.
+fn activation_is_initialize_workflow(activation: &WorkflowActivation) -> bool {
+    activation
+        .jobs
+        .iter()
+        .any(|job| format!("{:?}", job.variant).contains("InitializeWorkflow"))
+}
+
+/// Drains replay cache evictions with empty completions until the workflow lane
+/// reports its terminal shutdown. Each eviction is a legitimate replay-only
+/// activation, so it is acknowledged rather than treated as unexpected work.
+fn drain_replay_evictions_until_shutdown(
+    worker: &mut ReplayWorker,
+    handle: &tokio::runtime::Handle,
+) {
+    for _ in 0..40 {
+        match worker.wait_workflow() {
+            crate::worker_bridge::ReadinessWait::Shutdown => return,
+            crate::worker_bridge::ReadinessWait::TimedOut => {}
+            crate::worker_bridge::ReadinessWait::Ready => {
+                if let Some(Ok(activation)) = worker.try_take_workflow(handle) {
+                    handle
+                        .block_on(
+                            worker.complete_workflow(WorkflowActivationCompletion::empty(
+                                &activation.run_id,
+                            )),
+                        )
+                        .expect("replay eviction should accept an empty completion");
+                }
+            }
+            crate::worker_bridge::ReadinessWait::Error(error) => {
+                panic!("replay workflow lane failed while draining evictions: {error:?}")
+            }
+        }
+    }
+    panic!("replay worker did not reach shutdown within the bounded eviction drain");
 }
 
 /// A feeder close alone does not prove that Core processed the queued history.
@@ -313,6 +385,68 @@ fn replay_worker_rejects_finalize_before_history_is_drained() {
     // replay disposal acknowledges the queued activation with an empty Core
     // completion, then joins and finalizes all native resources.
     dispose_or_panic(worker, &handle);
+}
+
+/// The replay history fixture must be valid for Core's workflow machines, not
+/// only for its structural replay-invariant validator.
+///
+/// This is a deterministic regression guard for the intermittent OCaml 5.2 CI
+/// failure. When the fixture omitted the `WorkflowTaskStarted` timestamp, Core
+/// accepted the document but hit a fatal machines error while applying the
+/// task. That fatal error made Core emit an autonomous, non-empty auto-fail
+/// completion through its internal poll loop. During replay disposal, Core's
+/// workflow stream could terminate before that in-flight completion was
+/// processed, tripping Core's "A non-empty completion was not processed"
+/// panic. A genuinely valid history never produces that autonomous completion,
+/// so the panic cannot occur. The first activation is therefore asserted to be
+/// a real workflow initialization rather than a fatal-machines-error eviction,
+/// which fails deterministically if the invalid history is reintroduced.
+#[test]
+fn replay_history_first_activation_initializes_workflow() {
+    let core = core_runtime();
+    let handle = core.tokio_handle().clone();
+    let mut worker =
+        ReplayWorker::start(&core, replay_config()).expect("replay worker should construct");
+    let document = encode_history_document("workflow-replay-test", &complete_history())
+        .expect("history should encode");
+    worker
+        .feed_json(&handle, &document)
+        .expect("bounded feeder should accept one history");
+    worker.finish_input();
+
+    let mut activation = None;
+    for _ in 0..20 {
+        match worker.wait_workflow() {
+            crate::worker_bridge::ReadinessWait::Ready => {
+                activation = worker
+                    .try_take_workflow(&handle)
+                    .and_then(|taken| taken.ok());
+                break;
+            }
+            crate::worker_bridge::ReadinessWait::TimedOut => {}
+            crate::worker_bridge::ReadinessWait::Shutdown => {
+                panic!("replay lane shut down before delivering its first activation")
+            }
+            crate::worker_bridge::ReadinessWait::Error(error) => {
+                panic!("replay lane failed before its first activation: {error:?}")
+            }
+        }
+    }
+    let activation = activation.expect("replay worker should deliver a first activation");
+    assert_eq!(activation.run_id, "run-replay-test");
+    assert!(
+        activation_is_initialize_workflow(&activation),
+        "a valid replay history must initialize the workflow; a fatal machines \
+         error would instead deliver an eviction and spawn an autonomous \
+         non-empty completion that races disposal shutdown. Jobs: {:?}",
+        activation.jobs
+    );
+    // Acknowledge and drain so the worker finalizes without a retained owner.
+    handle
+        .block_on(worker.complete_workflow(WorkflowActivationCompletion::empty(&activation.run_id)))
+        .expect("replay activation should accept an empty deterministic completion");
+    drain_replay_evictions_until_shutdown(&mut worker, &handle);
+    finalize_or_panic(worker, &handle);
 }
 
 /// Disposal reports a terminal Core finalization failure while retaining the

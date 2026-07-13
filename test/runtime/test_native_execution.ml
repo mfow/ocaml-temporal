@@ -331,6 +331,62 @@ let test_activate_terminal_completion () =
   | [ Protocol.Complete_workflow { result = None } ] -> ()
   | _ -> failwith "unit workflow did not produce nullable protocol completion"
 
+(** Proves that the native activation adapter installs Core's deterministic
+    timestamp before the workflow implementation runs. The implementation
+    reads the public [Temporal.Workflow.now] API and compares both integer
+    components, so a missing or stale context timestamp produces a workflow
+    failure rather than a false-positive completion. *)
+let test_activate_installs_workflow_time () =
+  let timestamp : Protocol.timestamp =
+    { seconds = 123L; nanoseconds = 456_789_012 }
+  in
+  let workflow =
+    Temporal_base.Definition.make ~name:"native_workflow_time"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:
+        (Some
+           (fun () ->
+             match Temporal.Workflow.now () with
+             | Error error ->
+                 Error
+                   (Temporal_base.Error.defect
+                      ~message:
+                        ("workflow clock was unavailable: "
+                        ^ Temporal.Error.message error))
+             | Ok instant
+               when Int64.equal (Temporal.Time.seconds instant) timestamp.seconds
+                    && Int.equal (Temporal.Time.nanoseconds instant)
+                         timestamp.nanoseconds ->
+                 Ok ()
+             | Ok _ ->
+                 Error
+                   (Temporal_base.Error.defect
+                      ~message:
+                        "workflow clock did not match the activation timestamp")))
+  in
+  let execution = Execution.start workflow () in
+  let completion =
+    unwrap "workflow time activation"
+      (Native_execution.activate execution
+         (activation ~timestamp:(Some timestamp)
+            [
+              Protocol.Initialize_workflow
+                {
+                  workflow_id = "workflow-time";
+                  workflow_type = "native_workflow_time";
+                  arguments = [];
+                  randomness_seed = "1";
+                  attempt = 1;
+                  context = None;
+                };
+            ]))
+  in
+  match completion.commands with
+  | [ Protocol.Complete_workflow { result = None } ] -> ()
+  | [ Protocol.Fail_workflow { failure } ] ->
+      failwith ("workflow time implementation failed: " ^ failure.message)
+  | _ -> failwith "workflow time activation did not complete with unit result"
+
 (** Cache eviction acknowledges Core without running or emitting workflow
     commands, while retaining the exact run identity. *)
 let test_activate_eviction_completion () =
@@ -637,6 +693,7 @@ let () =
   test_child_resolution_translation ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();
+  test_activate_installs_workflow_time ();
   test_activate_eviction_completion ();
   test_command_order_and_validation ();
   test_activity_command_translation_and_validation ();

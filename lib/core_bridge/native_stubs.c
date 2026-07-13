@@ -79,9 +79,12 @@ static void runtime_thread_yield(void) {
 #endif
 }
 
-/* Wait for every operation that was admitted before close to finish. This is
- * called only after [caml_enter_blocking_section], so a long-running Rust
- * operation cannot strand another OCaml Domain behind the runtime lock. */
+/* Wait for every operation that was admitted before close to finish. The
+ * function touches only C atomics and yields the OS thread; callers that can
+ * block must invoke it only from a path which is already outside the OCaml
+ * runtime lock. The custom-block finalizer is an exception to that general
+ * rule: it is only a defensive ownership barrier, and it must never call an
+ * OCaml runtime API. */
 static void wait_for_runtime_calls(owned_runtime *owned) {
   while (atomic_load_explicit(&owned->active_calls, memory_order_seq_cst) != 0) {
     runtime_thread_yield();
@@ -145,17 +148,17 @@ static void finalize_response(value response) {
 static void finalize_runtime(value runtime) {
   owned_runtime *owned = Runtime_val(runtime);
   ocaml_temporal_core_runtime *native_runtime = detach_runtime(owned);
-  /* Finalizers run while the OCaml runtime lock is held. A concurrently
-   * admitted native call may have released that lock and still need to
-   * reacquire it before decrementing [active_calls]. Entering a blocking
-   * section here is therefore required for progress: waiting while retaining
-   * the lock would deadlock finalization against that normal completion path. */
-  caml_enter_blocking_section();
+  /* Custom-block finalizers have a deliberately tiny contract: they may
+   * inspect their C payload and release foreign resources, but they must not
+   * call OCaml runtime operations such as [caml_enter_blocking_section]. The
+   * runtime value is rooted by every admitted C primitive, so an ordinary
+   * finalizer cannot overlap an active call; retain the atomic wait as a
+   * defensive barrier for unusual shutdown/GC ordering without releasing or
+   * reacquiring the OCaml lock here. */
   wait_for_runtime_calls(owned);
   if (native_runtime != NULL) {
     (void)ocaml_temporal_core_v1_runtime_dispose(&native_runtime);
   }
-  caml_leave_blocking_section();
 }
 
 /* Custom operations deliberately use identity/default behavior; responses are
@@ -240,10 +243,14 @@ static value invoke_runtime_json(value runtime, value input,
   admitted = acquire_runtime(owned, &native_runtime);
   caml_enter_blocking_section();
   (void)operation(native_runtime, input_copy, input_length, &native_result);
-  caml_leave_blocking_section();
   if (admitted) {
+    /* Release the C borrow while the OCaml lock is still released. A
+     * defensive finalizer can then observe the completed native call without
+     * waiting for this thread to reacquire the lock merely to decrement an
+     * atomic counter. */
     release_runtime(owned);
   }
+  caml_leave_blocking_section();
   free(input_copy);
   Response_val(response)->result = native_result;
   CAMLreturn(response);
@@ -262,10 +269,12 @@ static value invoke_runtime(value runtime, runtime_operation operation) {
   admitted = acquire_runtime(owned, &native_runtime);
   caml_enter_blocking_section();
   (void)operation(native_runtime, &native_result);
-  caml_leave_blocking_section();
   if (admitted) {
+    /* See [invoke_runtime_json]: the borrow is independent of the OCaml
+     * runtime lock and is released before lock reacquisition. */
     release_runtime(owned);
   }
+  caml_leave_blocking_section();
   Response_val(response)->result = native_result;
   CAMLreturn(response);
 }

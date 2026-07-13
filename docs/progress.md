@@ -1389,8 +1389,9 @@ commit.
 The OCaml-owned executable can now create and close a real Temporal Core/Tokio
 runtime through the statically linked Rust bridge. The runtime remains an
 abstract private OCaml value. Explicit shutdown waits for complete destruction
-while the OCaml runtime lock is released; the garbage-collector fallback
-transfers destruction to a dedicated Rust cleanup thread without waiting.
+while the OCaml runtime lock is released; the garbage-collector fallback uses a
+C-only borrow barrier and transfers destruction to a dedicated Rust cleanup
+thread without calling OCaml runtime lock operations.
 
 The C stub atomically detaches the sole native pointer, making explicit close,
 repeated close, and finalization safe against one another. Blocking Rust calls

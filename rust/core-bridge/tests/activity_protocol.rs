@@ -5,8 +5,8 @@ use ocaml_temporal_core_bridge::activity_protocol::{
     task_from_core,
 };
 use ocaml_temporal_core_bridge::workflow_protocol::Payload;
-use temporalio_protos::coresdk::activity_task as core_activity_task;
 use std::collections::BTreeMap;
+use temporalio_protos::coresdk::activity_task as core_activity_task;
 
 /// A complete start-task fixture exercises every nullable field, the retry
 /// policy, priority, headers, and both payload collection shapes.
@@ -220,14 +220,15 @@ fn activity_cancellation_details_survive_core_to_json_round_trip() {
                 },
             )),
         };
-        let expected_details = ocaml_temporal_core_bridge::activity_protocol::ActivityCancellationDetails {
-            is_not_found: details.is_not_found,
-            is_cancelled: details.is_cancelled,
-            is_paused: details.is_paused,
-            is_timed_out: details.is_timed_out,
-            is_worker_shutdown: details.is_worker_shutdown,
-            is_reset: details.is_reset,
-        };
+        let expected_details =
+            ocaml_temporal_core_bridge::activity_protocol::ActivityCancellationDetails {
+                is_not_found: details.is_not_found,
+                is_cancelled: details.is_cancelled,
+                is_paused: details.is_paused,
+                is_timed_out: details.is_timed_out,
+                is_worker_shutdown: details.is_worker_shutdown,
+                is_reset: details.is_reset,
+            };
 
         let semantic = task_from_core(&core).expect("Core cancellation should convert");
         let ActivityTaskVariant::Cancel(cancel) = &semantic.variant else {

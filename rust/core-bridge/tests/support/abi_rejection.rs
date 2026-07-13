@@ -232,8 +232,8 @@ fn cancellation_rejection_retains_all_heartbeat_flags() {
     let mut pending = HashMap::new();
     retain_activity_task(&mut pending, vec![0, 1, 2], cancellation.clone());
 
-    let encoded = activity_protocol::encode_task(&cancellation)
-        .expect("flagged cancellation update encodes");
+    let encoded =
+        activity_protocol::encode_task(&cancellation).expect("flagged cancellation update encodes");
     let rejection = activity_rejection_task(&pending, encoded.as_bytes())
         .expect("flagged cancellation update correlates");
     assert_eq!(rejection.task, cancellation);

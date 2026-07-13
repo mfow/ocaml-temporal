@@ -247,6 +247,7 @@ ongoing maintenance. No unreviewed model output is released.
 AI models used to help build this project:
 
 ### OpenAI
+- OpenAI GPT-5 Codex
 - GPT 5.6 Sol
 - OpenAI GPT 5.6 Terra
 - OpenAI GPT-5.6 Luna

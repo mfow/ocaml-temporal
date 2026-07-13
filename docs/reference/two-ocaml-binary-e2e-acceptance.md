@@ -1,28 +1,36 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The complete [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
-verified all nine scenarios against real Temporal Server and PostgreSQL. The
-run used PR head `47c9a93` and the PR was squash-merged as `f877fbf`. It covers
-fan-out, timer/activity, ordinary activity retry, heartbeat-detail retry,
-parent/child success, propagated child failure, child cancellation, a typed
-non-retryable workflow failure, and marker-guarded exact-run cancellation. The
-retry workflow still uses an explicit two-attempt policy, while the heartbeat
-workflow proves that Temporal returns the first attempt's detail and timeout to
-the second attempt. The worker and driver remain guarded by
+**Status:** The complete [PR #226 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
+verified the current ten scenarios against real Temporal Server and
+PostgreSQL for PR head `ca112b8`. The earlier [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+verified the previous nine scenarios; that PR used head `47c9a93` and was
+squash-merged as `f877fbf`. The tenth `smoke.activity_timeout_retry` scenario
+has a first activity callback that sleeps beyond its 500 ms start-to-close
+timeout, and PR #226 accepted its exact second-attempt marker. The earlier run
+covers fan-out, timer/activity,
+ordinary activity retry, heartbeat-detail retry, parent/child success,
+propagated child failure, child cancellation, a typed non-retryable workflow
+failure, and marker-guarded exact-run cancellation. The retry workflow still
+uses an explicit two-attempt policy, while the heartbeat workflow proves that
+Temporal returns the first attempt's detail and timeout to the second attempt.
+The worker and driver remain guarded by
 `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
 
-The current implementation starts all nine top-level workflows before waiting
-for any result, and its assertion target requires five exact successes, one
+The current implementation starts all ten top-level workflows before waiting
+for any result, and its assertion target requires six exact successes, one
 propagated child failure, one child-cancellation marker, one typed
-non-retryable failure, and one exact-run cancellation. Those nine assertions
-are now backed by the green PR #210 live run. Restart, replay, cache eviction,
-timeout-triggered retry, and asynchronous activity completion remain separate
-acceptance work.
+non-retryable failure, and one exact-run cancellation. The previous nine
+assertions are backed by the green PR #226 live run; the previous nine also
+remain documented by PR #210. Restart, replay, cache eviction,
+and asynchronous activity completion remain separate acceptance work.
 
 The heartbeat assertion has a Docker-free contract in addition to the live
 driver and worker. `test/smoke/test_temporal_heartbeat_contract.sh` checks the
 source-level role boundary, registration, start-before-wait ordering, exact
-retry result, and marker cleanup. The Dune test in
+retry result, and marker cleanup. The Docker-free
+`test/smoke/test_temporal_activity_timeout_contract.sh` separately checks the
+timeout-only activity's late first callback, short start-to-close lease,
+worker registration, and exact second-attempt marker. The Dune test in
 `test/integration/temporal/common/marker_test/test_smoke_definitions.ml` then
 invokes the same context-aware activity callback with an in-memory context: it
 checks the first typed heartbeat and retryable failure, copies the heartbeat
@@ -42,12 +50,12 @@ atomic readiness marker. Compose waits for that health check before
 `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts all nine top-level workflows before
+later acceptance run. The driver starts all ten top-level workflows before
 waiting for any result. The cancellation scenario waits for the
 `smoke.cancellation_ready` activity marker after the long-running workflow has
 issued its durable-timer and marker commands in one activation, then
 acknowledges cancellation for `two-binary-long-running-cancellation` before
-the first terminal wait. Five must complete with exact payloads, one must
+the first terminal wait. Six must complete with exact payloads, one must
 propagate a typed child failure, one must return `SMOKE:CHILD:CANCELLED` after
 child cancellation, one must return a typed non-retryable workflow failure,
 and the cancelled execution
@@ -86,12 +94,22 @@ payload. It also runs `smoke.activity_heartbeat_retry`: the first
 500 ms heartbeat timeout, returns a retryable activity error, and the second
 attempt must receive that detail and timeout before returning
 `SMOKE:HEARTBEAT:RETRIED:SMOKE`. The driver also starts
+`smoke.activity_timeout_retry`: its first `smoke.timeout_retry` callback sleeps
+for 1.5 seconds while the workflow's start-to-close timeout is 500 ms, then
+returns a success that is intentionally too late. The second callback returns
+`SMOKE:TIMEOUT:RETRIED:SMOKE`; the exact marker was accepted only after Temporal
+has timed out the first lease and delivered the retry. The workflow disables
+eager activity execution so this assertion crosses the normal worker
+poll/completion path. Its source contract is Docker-free, and its server
+evidence is recorded by the PR #226 Compose run. The driver also
+starts
 `smoke.non_retryable_failure` and requires its
 stable typed error metadata. It starts `smoke.long_running_cancellation`, waits
 for its `smoke.cancellation_ready` marker activity (with eager execution
 disabled), sends an exact-run cancellation request, and requires the same
-handle to return a typed `Cancelled` error. This nine-run path passed in the
-[PR #210 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859).
+handle to return a typed `Cancelled` error. This ten-run path passed in the
+[PR #226 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182);
+the historical nine-run path passed in [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859).
 Heartbeat-timeout-triggered retries, child start failures,
 activity asynchronous completion, replay, and worker recovery remain separate
 scenarios. The
@@ -333,21 +351,22 @@ The driver must:
 1. connect through `Temporal.Client` to the fixture namespace;
 2. start `smoke.fan_out`, `smoke.timer_then_activity`,
    `smoke.activity_retry`, `smoke.activity_heartbeat_retry`,
+   `smoke.activity_timeout_retry`,
    `smoke.parent_awaits_child`, `smoke.parent_awaits_failed_child`,
    `smoke.parent_cancels_child`, `smoke.non_retryable_failure`, and
    `smoke.long_running_cancellation` with distinct, known workflow IDs before
    it waits for any of them;
-3. retain the nine public workflow handles returned by `start`;
+3. retain the ten public workflow handles returned by `start`;
 4. call `Temporal.Client.cancel` on the exact long-running handle and require
    its positive acknowledgement before waiting for any terminal result;
 5. wait for each handle's terminal result through the public client API; and
-6. decode and compare the five successful results, require the child-failure
+6. decode and compare the six successful results, require the child-failure
    result to be a typed non-retryable child-workflow failure, require the
    child-cancellation result to equal `SMOKE:CHILD:CANCELLED`, require the
    typed non-retryable workflow failure and exact-run `Cancelled` outcome with
    expected metadata, then exit zero only if every assertion succeeded.
 
-Starting all nine executions before the first wait is material. It demonstrates
+Starting all ten executions before the first wait is material. It demonstrates
 that a client can hold independent workflow handles while a control request is
 issued for one exact run, and that the worker can service separate workflow
 executions rather than passing a single serial request through a readiness-only
@@ -411,8 +430,8 @@ continued-as-new execution (including the successor run ID), or a bridge
 transport failure. An exact-run wait does not silently follow
 continued-as-new: it returns that typed successor outcome so callers can
 explicitly decide whether to await the new run. The public OCaml API keeps the
-the nine workflow results as typed workflow-result outcomes and reserves bridge transport
-failure for `Error`.
+ten workflow results as typed workflow-result outcomes and reserves bridge
+transport failure for `Error`.
 
 The worker operations use `request`/terminal `response` or `error` envelopes
 with ordinary correlations. A poll response carries an activation/task only
@@ -525,7 +544,7 @@ thread.
 
 ## Required assertions and failure evidence
 
-The current driver's successful exit establishes all of the following against
+The prior driver's successful exit established all of the following against
 the live stack. These assertions passed in the complete [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 for PR head `47c9a93`, later squash-merged as `f877fbf`:
 
@@ -568,6 +587,11 @@ for PR head `47c9a93`, later squash-merged as `f877fbf`:
    `non_retryable=false` and the stable message `workflow execution was
     cancelled`.
 
+The current fixture keeps all fourteen historical assertions and adds
+`smoke.activity_timeout_retry` as a tenth start and wait. The exact
+`SMOKE:TIMEOUT:RETRIED:SMOKE` result was accepted in the PR #226 live Compose
+run; the historical PR #210 evidence above remains limited to its nine runs.
+
 The driver logs no-payload phase records for starts, exact-run cancellation,
 exact-run waits, terminal classes, and operation latency. The Makefile requires
 the driver's `client_shutdown status=ok` marker, and after that stops the
@@ -599,28 +623,30 @@ schema, Core conversion, pure-OCaml lifecycle tests, and the PR #210
 real-server assertions for parent/child success, propagated child failure, and
 child cancellation. The activity retry policy has the same separation:
 bilateral policy validation is synthetic, while the PR #210 run makes both the
-ordinary attempt-2 result and heartbeat-detail retry live evidence. None of
-these assertions claims coverage of retry timeouts, replay, or recovery
-behavior.
+ordinary attempt-2 result and heartbeat-detail retry live evidence and the PR
+#226 run adds start-to-close timeout-triggered retry. None of these assertions
+claims coverage of heartbeat timeouts, replay, or recovery behavior.
 
 ## Completion criteria for this design
 
-The full current acceptance contract is verified by the complete [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859),
-which satisfied all of the following for PR head `47c9a93` before the squash
-merge as `f877fbf`:
+The previous nine-workflow acceptance contract was verified by the complete
+[PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+for PR head `47c9a93` before the squash merge as `f877fbf`. The current
+ten-workflow contract below was verified by the complete [PR #226 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
+for PR head `ca112b8`:
 
 * the nested Compose fixture starts real PostgreSQL and Temporal Server;
 * it builds two separate OCaml executables that both link `temporal-sdk`;
 * the worker's live Core poll/complete loops execute the registered OCaml
   workflow and mock activity code;
-* the driver starts all nine top-level workflows through `temporal-sdk`, sends
+* the driver starts all ten top-level workflows through `temporal-sdk`, sends
   an exact-run cancellation request, waits for their results through
   `temporal-sdk`, and performs the listed success, typed-failure, and
   cancellation assertions;
 * the fixture exits nonzero for a failed driver assertion, a workflow failure,
   a worker crash, or a cleanup timeout; and
 * the focused test plus the normal Makefile verification and dependency
-  quality gates passed for the change that introduced the gate.
+  quality gates pass for this change.
 
 Passing infrastructure readiness alone remains insufficient evidence. The
 success criteria above do not claim live coverage for the follow-up scenarios

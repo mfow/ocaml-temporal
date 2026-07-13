@@ -1463,6 +1463,55 @@ let test_terminal_finally_cannot_emit_cancel () =
         ("expected only Cancel_workflow_execution, got "
         ^ string_of_int (List.length commands)))
 
+(** [continue_as_new] uses [terminate] rather than [emit_terminal], which
+    historically left the context unsealed while the abort unwound the
+    calling fiber. A [Fun.protect] cleanup that runs during that unwind (e.g.
+    cancelling an activity started just before the continue-as-new) must not
+    be able to append its command after the buffered [Continue_as_new].
+    Regression test for the terminate/emit_terminal seal asymmetry. *)
+let test_continue_as_new_finally_cannot_emit_cancel () =
+  let activity =
+    Temporal.Activity.remote ~name:"cleanup_target" ~input:Temporal.Codec.unit
+      ~output:Temporal.Codec.unit
+  in
+  let successor =
+    Temporal.Workflow.remote ~name:"continuation_target"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let source =
+    Temporal.Workflow.define ~name:"continue_as_new_cleanup_guard"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let handle = Temporal.Activity.start_handle activity () in
+        Fun.protect
+          ~finally:(fun () -> ignore (Temporal.Activity.cancel handle))
+          (fun () ->
+            let continue : unit -> unit =
+              Temporal.Workflow.continue_as_new successor
+            in
+            continue ());
+        Ok ())
+  in
+  let execution = Execution.start source () in
+  (* The activity schedules and the continue-as-new both happen synchronously
+     within the first activation, with no await in between. *)
+  let first = Execution.activate execution [ Activation.Start_workflow ] in
+  (match first with
+  | [ Activation.Schedule_activity _; Activation.Continue_as_new _ ] -> ()
+  | commands ->
+      if
+        List.exists
+          (function Activation.Request_cancel_activity _ -> true | _ -> false)
+          commands
+      then
+        failwith "Request_cancel_activity was emitted after Continue_as_new"
+      else
+        failwith
+          (Printf.sprintf
+             "expected [Schedule_activity; Continue_as_new], got %d commands"
+             (List.length commands)));
+  expect "continue-as-new activation is terminal" []
+    (Execution.activate execution [ Activation.Start_workflow ])
+
 let () =
   test_commands_and_completion ();
   test_activity_options_and_queue ();
@@ -1493,4 +1542,5 @@ let () =
   test_cancel_and_evict ();
   test_continue_as_new_terminal ();
   test_continue_as_new_encode_failure_is_terminal ();
-  test_terminal_finally_cannot_emit_cancel ()
+  test_terminal_finally_cannot_emit_cancel ();
+  test_continue_as_new_finally_cannot_emit_cancel ()

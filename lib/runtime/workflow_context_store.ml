@@ -142,18 +142,22 @@ let allocate_sequence context =
   context.next_sequence
 
 (** Adds a command to the front of the internal list; [take_commands] restores
-    creation order before returning it. After [shutdown] has sealed the context,
-    further emissions are ignored so discontinued waiters cannot append
-    cancellation commands after a terminal completion. *)
+    creation order before returning it. After [shutdown] or [terminate] has
+    sealed the context, further emissions are ignored so discontinued waiters
+    cannot append cancellation commands after a terminal completion. *)
 let emit context command =
   if not context.sealed then
     context.commands_rev <- command :: context.commands_rev
 
 (** Records a terminal command before aborting the current scheduler. The
     command is therefore retained even though the calling continuation is not
-    resumed. *)
+    resumed. The context is sealed before the abort unwinds the fiber, exactly
+    as [emit_terminal]/[shutdown] seal the sibling terminal path, so a
+    [Fun.protect] cleanup running during that unwind cannot append a command
+    after this terminal one. *)
 let terminate context command =
   emit context command;
+  context.sealed <- true;
   Scheduler.abort_workflow ()
 
 (** Records the successor command before aborting the current scheduler. The

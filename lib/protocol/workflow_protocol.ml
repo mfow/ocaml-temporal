@@ -178,6 +178,16 @@ type activation_job =
       seq : int64;
       result : child_workflow_resolution;
     }
+  (** Delivers one synchronous query request. Query jobs carry no sequence and
+      never resume a workflow fiber; preserving the repeated argument and
+      header fields lets the runtime apply its typed handler policy without
+      losing Core data at the bridge boundary. *)
+  | Query_workflow of {
+      query_id : string;
+      query_type : string;
+      arguments : payload list;
+      headers : (string * payload) list;
+    }
   (** Delivers one signal received by this workflow. Signal jobs have no
       sequence number: Core replays their name, payloads, sender identity, and
       headers as one ordinary workflow activation job. *)
@@ -225,6 +235,12 @@ type retry_policy = {
   non_retryable_error_types : string list;
 }
 
+(** The result sent for one synchronous query. A failed query answers the
+    request without failing or changing the workflow execution itself. *)
+type query_result =
+  | Query_succeeded of payload
+  | Query_failed of failure
+
 type completion_command =
   | Schedule_activity of {
       seq : int64;
@@ -252,6 +268,10 @@ type completion_command =
   | Request_cancel_activity of { seq : int64 }
   | Start_timer of { seq : int64; start_to_fire_timeout : duration }
   | Cancel_timer of { seq : int64 }
+  (** Answers a query request identified by Core. The [query_id] is retained
+      exactly, including Core's legacy-query identifier, because Core uses it
+      to choose its legacy response path. *)
+  | Query_result of { query_id : string; result : query_result }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
   | Continue_as_new of { workflow_type : string; input : payload list }
@@ -867,6 +887,38 @@ let activity_resolution_json = function
       let* failure = failure_json value in
       Ok (`Assoc [ ("kind", `String "cancelled"); ("failure", failure) ])
 
+(** Decodes the closed query-answer union. Query success requires one payload;
+    query failure retains Core's structured failure for exact error delivery. *)
+let query_result path json =
+  let* entries =
+    match json with
+    | `Assoc entries -> Ok entries
+    | _ -> Error (invalid path "expected JSON object")
+  in
+  let* kind_json = field path "kind" entries in
+  let* kind = string (path ^ ".kind") kind_json in
+  match kind with
+  | "succeeded" ->
+      let* entries = exact_object path [ "kind"; "payload" ] json in
+      let* payload_json = field path "payload" entries in
+      let* payload = payload (path ^ ".payload") payload_json in
+      Ok (Query_succeeded payload)
+  | "failed" ->
+      let* entries = exact_object path [ "kind"; "failure" ] json in
+      let* failure_json = field path "failure" entries in
+      let* failure = failure (path ^ ".failure") failure_json in
+      Ok (Query_failed failure)
+  | _ -> Error (invalid (path ^ ".kind") "unknown query result kind")
+
+(** Encodes a query answer without changing the result payload or failure. *)
+let query_result_json = function
+  | Query_succeeded payload ->
+      let* payload = payload_json payload in
+      Ok (`Assoc [ ("kind", `String "succeeded"); ("payload", payload) ])
+  | Query_failed failure ->
+      let* failure = failure_json failure in
+      Ok (`Assoc [ ("kind", `String "failed"); ("failure", failure) ])
+
 (** Decodes the initial child-workflow start result. A successful start carries
     only the run identity; the child remains pending until a later terminal
     child resolution is delivered. *)
@@ -1278,6 +1330,20 @@ let activation_job path json =
       let* result_json = field path "result" entries in
       let* result = child_workflow_resolution (path ^ ".result") result_json in
       Ok (Resolve_child_workflow { seq; result })
+  | "query_workflow" ->
+      let* entries =
+        exact_object path [ "kind"; "query_id"; "query_type"; "arguments"; "headers" ]
+          json
+      in
+      let* query_id_json = field path "query_id" entries in
+      let* query_id = identifier (path ^ ".query_id") query_id_json in
+      let* query_type_json = field path "query_type" entries in
+      let* query_type = identifier (path ^ ".query_type") query_type_json in
+      let* arguments_json = field path "arguments" entries in
+      let* arguments = list (path ^ ".arguments") payload arguments_json in
+      let* headers_json = field path "headers" entries in
+      let* headers = payload_map (path ^ ".headers") headers_json in
+      Ok (Query_workflow { query_id; query_type; arguments; headers })
   | "signal_workflow" ->
       let* entries =
         exact_object path [ "kind"; "signal_name"; "input"; "identity"; "headers" ]
@@ -1355,6 +1421,18 @@ let activation_job_json = function
             ("seq", `Intlit (Int64.to_string seq));
             ("result", result);
           ])
+  | Query_workflow { query_id; query_type; arguments; headers } ->
+      let* arguments = payloads_json arguments in
+      let* headers = payload_map_json "$.headers" headers in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "query_workflow");
+            ("query_id", `String query_id);
+            ("query_type", `String query_type);
+            ("arguments", arguments);
+            ("headers", headers);
+          ])
   | Signal_workflow { signal_name; input; identity; headers } ->
       let* input = payloads_json input in
       let* headers = payload_map_json "$.headers" headers in
@@ -1413,6 +1491,29 @@ let validate_initialize_jobs path jobs =
   in
   loop 0 false jobs
 
+(** Core delivers queries in a query-only activation. Keeping that invariant
+    explicit prevents the runtime from accidentally resuming ordinary workflow
+    continuations while answering a synchronous read-only request. *)
+let validate_query_jobs path jobs =
+  let query_count =
+    List.fold_left
+      (fun count -> function Query_workflow _ -> count + 1 | _ -> count)
+      0 jobs
+  in
+  if query_count = 0 then Ok ()
+  else if query_count <> List.length jobs then
+    Error (invalid path "query_workflow jobs must be the activation's only jobs")
+  else
+    let rec loop seen = function
+      | [] -> Ok ()
+      | Query_workflow { query_id; _ } :: rest ->
+          if List.mem query_id seen then
+            Error (invalid (path ^ ".query_id") "duplicate query ID")
+          else loop (query_id :: seen) rest
+      | _ :: _ -> Error (invalid path "query activation contains a non-query job")
+    in
+    loop [] jobs
+
 (** Accepts a missing activation timestamp only for Core's synthetic eviction
     activation, whose official constructor deliberately sets [timestamp] to
     [None]. *)
@@ -1444,6 +1545,7 @@ let activation_from_json json =
   let* jobs = list "$.jobs" activation_job jobs_json in
   let* () = validate_eviction_jobs "$.jobs" jobs in
   let* () = validate_initialize_jobs "$.jobs" jobs in
+  let* () = validate_query_jobs "$.jobs" jobs in
   let* () = validate_activation_timestamp "$.timestamp" timestamp jobs in
   let* metadata =
     if has_metadata then
@@ -1821,6 +1923,13 @@ let completion_command path json =
       let* seq_json = field path "seq" entries in
       let* seq = uint32 (path ^ ".seq") seq_json in
       Ok (Cancel_timer { seq })
+  | "query_result" ->
+      let* entries = exact_object path [ "kind"; "query_id"; "result" ] json in
+      let* query_id_json = field path "query_id" entries in
+      let* query_id = identifier (path ^ ".query_id") query_id_json in
+      let* result_json = field path "result" entries in
+      let* result = query_result (path ^ ".result") result_json in
+      Ok (Query_result { query_id; result })
   | "complete_workflow" ->
       let* entries = exact_object path [ "kind"; "result" ] json in
       let* result_json = field path "result" entries in
@@ -1919,6 +2028,15 @@ let completion_command_json = function
       Ok
         (`Assoc
           [ ("kind", `String "cancel_timer"); ("seq", `Intlit (Int64.to_string seq)) ])
+  | Query_result { query_id; result } ->
+      let* result = query_result_json result in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "query_result");
+            ("query_id", `String query_id);
+            ("result", result);
+          ])
   | Complete_workflow { result } ->
       let* result = match result with None -> Ok `Null | Some value -> payload_json value in
       Ok (`Assoc [ ("kind", `String "complete_workflow"); ("result", result) ])
@@ -1954,6 +2072,29 @@ let validate_terminal_order path commands =
   in
   loop commands
 
+(** Query answers are the only commands valid for a query activation. Enforcing
+    this at the semantic layer avoids sending a query response alongside a
+    workflow command that Core would reject or that could mutate history. *)
+let validate_query_results path commands =
+  let query_count =
+    List.fold_left
+      (fun count -> function Query_result _ -> count + 1 | _ -> count)
+      0 commands
+  in
+  if query_count = 0 then Ok ()
+  else if query_count <> List.length commands then
+    Error (invalid path "query_result commands must be the completion's only commands")
+  else
+    let rec loop seen = function
+      | [] -> Ok ()
+      | Query_result { query_id; _ } :: rest ->
+          if List.mem query_id seen then
+            Error (invalid (path ^ ".query_id") "duplicate query ID")
+          else loop (query_id :: seen) rest
+      | _ :: _ -> Error (invalid path "query completion contains a non-query command")
+    in
+    loop [] commands
+
 (** Converts a strict completion object to typed values. *)
 let completion_from_json json =
   let* entries = exact_object "$" [ "run_id"; "commands" ] json in
@@ -1962,6 +2103,7 @@ let completion_from_json json =
   let* commands_json = field "$" "commands" entries in
   let* commands = list "$.commands" completion_command commands_json in
   let* () = validate_terminal_order "$.commands" commands in
+  let* () = validate_query_results "$.commands" commands in
   Ok { run_id; commands }
 
 (** Strictly decodes one completion through the shared JSON foundation. *)

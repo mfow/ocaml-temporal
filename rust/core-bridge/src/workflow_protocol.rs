@@ -4,7 +4,7 @@
 //! Protobuf values exist only in the conversion functions at the bottom of
 //! this module and can therefore never escape into the OCaml API.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -439,6 +439,18 @@ pub enum ActivationJob {
         identity: String,
         headers: BTreeMap<String, Payload>,
     },
+    /// Synchronously evaluates one read-only workflow query.
+    ///
+    /// Core gives query jobs their own activation. The bridge keeps the
+    /// repeated arguments and headers lossless even though the first public
+    /// OCaml query handler accepts no arguments; a non-empty argument list is
+    /// rejected by that typed adapter rather than discarded.
+    QueryWorkflow {
+        query_id: String,
+        query_type: String,
+        arguments: Vec<Payload>,
+        headers: BTreeMap<String, Payload>,
+    },
     FireTimer {
         seq: u32,
     },
@@ -573,6 +585,26 @@ pub enum CompletionCommand {
         input: Vec<Payload>,
     },
     CancelWorkflow,
+    /// Returns one query result to Core without scheduling workflow work.
+    ///
+    /// The nested result mirrors Core's oneof: success carries an optional
+    /// payload (the payload itself is required by the semantic validator),
+    /// while failure carries the complete recursive Temporal failure.
+    QueryResult {
+        query_id: String,
+        result: QueryResult,
+    },
+}
+
+/// Outcome of one synchronous read-only workflow query.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QueryResult {
+    /// Query handler returned one payload.
+    Succeeded { payload: Payload },
+    /// Query handler could not produce a value; Core receives this failure
+    /// without failing the workflow execution itself.
+    Failed { failure: Failure },
 }
 
 /// Successful activation completion for one workflow run.
@@ -970,6 +1002,32 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
             "initialize_workflow must occur at most once and first",
         ));
     }
+    let query_count = value
+        .jobs
+        .iter()
+        .filter(|job| matches!(job, ActivationJob::QueryWorkflow { .. }))
+        .count();
+    // Query activations are intentionally isolated by Core. Rejecting a
+    // mixed activation here prevents a malformed bridge document from
+    // running ordinary workflow work while a query is expected to be
+    // answered synchronously.
+    if query_count != 0 && query_count != value.jobs.len() {
+        return Err(ProtocolError::invalid(
+            "$.jobs",
+            "query_workflow jobs must be the activation's only jobs",
+        ));
+    }
+    let mut query_ids = BTreeSet::new();
+    for job in &value.jobs {
+        if let ActivationJob::QueryWorkflow { query_id, .. } = job
+            && !query_ids.insert(query_id)
+        {
+            return Err(ProtocolError::invalid(
+                "$.jobs.query_id",
+                "query identifiers must be unique within one activation",
+            ));
+        }
+    }
     for job in &value.jobs {
         match job {
             ActivationJob::InitializeWorkflow {
@@ -1098,6 +1156,18 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
             } => {
                 identifier(signal_name, "$.jobs.signal_name")?;
                 signal_identity(identity, "$.jobs.identity")?;
+                for key in headers.keys() {
+                    identifier(key, "$.jobs.headers")?;
+                }
+            }
+            ActivationJob::QueryWorkflow {
+                query_id,
+                query_type,
+                headers,
+                ..
+            } => {
+                identifier(query_id, "$.jobs.query_id")?;
+                identifier(query_type, "$.jobs.query_type")?;
                 for key in headers.keys() {
                     identifier(key, "$.jobs.headers")?;
                 }
@@ -1236,6 +1306,20 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
             )?,
             CompletionCommand::FailWorkflow { failure } => {
                 validate_failure(failure, "$.commands.failure")?
+            }
+            CompletionCommand::QueryResult { query_id, result } => {
+                identifier(query_id, "$.commands.query_id")?;
+                match result {
+                    QueryResult::Succeeded { payload } => {
+                        // The semantic shape uses a required payload even
+                        // though the protobuf field is optional. This avoids
+                        // silently turning a successful query into null.
+                        let _ = payload;
+                    }
+                    QueryResult::Failed { failure } => {
+                        validate_failure(failure, "$.commands.result.failure")?
+                    }
+                }
             }
             _ => {}
         }
@@ -1945,6 +2029,25 @@ pub fn activation_from_core(
                         .map(|(key, payload)| Ok((key.clone(), payload_from_core(payload)?)))
                         .collect::<Result<BTreeMap<_, _>, CoreConversionError>>()?,
                 }),
+                Variant::QueryWorkflow(value) => Ok(ActivationJob::QueryWorkflow {
+                    // Preserve the exact Core identifier. In particular, the
+                    // pinned Core revision uses `legacy_query` for the
+                    // legacy PollWFTResp query; completion conversion below
+                    // deliberately leaves that identifier intact so Core can
+                    // route the answer through its legacy response path.
+                    query_id: value.query_id.clone(),
+                    query_type: value.query_type.clone(),
+                    arguments: value
+                        .arguments
+                        .iter()
+                        .map(payload_from_core)
+                        .collect::<Result<_, _>>()?,
+                    headers: value
+                        .headers
+                        .iter()
+                        .map(|(key, payload)| Ok((key.clone(), payload_from_core(payload)?)))
+                        .collect::<Result<BTreeMap<_, _>, CoreConversionError>>()?,
+                }),
                 Variant::FireTimer(value) => Ok(ActivationJob::FireTimer { seq: value.seq }),
                 Variant::CancelWorkflow(value) => Ok(ActivationJob::CancelWorkflow {
                     reason: value.reason.clone(),
@@ -2237,6 +2340,22 @@ fn command_to_core(
         CompletionCommand::CancelWorkflow => {
             Variant::CancelWorkflowExecution(core_commands::CancelWorkflowExecution {})
         }
+        CompletionCommand::QueryResult { query_id, result } => {
+            let variant = match result {
+                QueryResult::Succeeded { payload } => {
+                    core_commands::query_result::Variant::Succeeded(core_commands::QuerySuccess {
+                        response: Some(payload_to_core(payload)?),
+                    })
+                }
+                QueryResult::Failed { failure } => {
+                    core_commands::query_result::Variant::Failed(failure_to_core(failure)?)
+                }
+            };
+            Variant::RespondToQuery(core_commands::QueryResult {
+                query_id: query_id.clone(),
+                variant: Some(variant),
+            })
+        }
     };
     Ok(core_commands::WorkflowCommand {
         variant: Some(variant),
@@ -2402,6 +2521,28 @@ fn command_from_core(
             })
         }
         Variant::CancelWorkflowExecution(_) => Ok(CompletionCommand::CancelWorkflow),
+        Variant::RespondToQuery(value) => {
+            let result = match value
+                .variant
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core query result variant is absent"))?
+            {
+                core_commands::query_result::Variant::Succeeded(success) => {
+                    QueryResult::Succeeded {
+                        payload: payload_from_core(success.response.as_ref().ok_or_else(
+                            || invalid_core("Core successful query result has no payload"),
+                        )?)?,
+                    }
+                }
+                core_commands::query_result::Variant::Failed(failure) => QueryResult::Failed {
+                    failure: failure_from_core(failure)?,
+                },
+            };
+            Ok(CompletionCommand::QueryResult {
+                query_id: value.query_id.clone(),
+                result,
+            })
+        }
         _ => Err(unsupported("Core workflow command kind is not supported")),
     }
 }
@@ -2492,6 +2633,44 @@ fn completion_to_core_for_activation_with_optional_namespace(
         return Err(invalid_core(
             "cache eviction activation must have an empty completion",
         ));
+    }
+    let query_ids: BTreeSet<&str> = activation
+        .jobs
+        .iter()
+        .filter_map(|job| match job {
+            ActivationJob::QueryWorkflow { query_id, .. } => Some(query_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    if query_ids.is_empty() {
+        if completion
+            .commands
+            .iter()
+            .any(|command| matches!(command, CompletionCommand::QueryResult { .. }))
+        {
+            return Err(invalid_core(
+                "query result command requires a query activation",
+            ));
+        }
+    } else {
+        let mut result_ids = BTreeSet::new();
+        for command in &completion.commands {
+            let CompletionCommand::QueryResult { query_id, .. } = command else {
+                return Err(invalid_core(
+                    "query activation completion may contain only query results",
+                ));
+            };
+            if !query_ids.contains(query_id.as_str()) || !result_ids.insert(query_id.as_str()) {
+                return Err(invalid_core(
+                    "query completion identifier does not match its activation",
+                ));
+            }
+        }
+        if result_ids != query_ids {
+            return Err(invalid_core(
+                "query activation must receive exactly one result per query",
+            ));
+        }
     }
     completion_to_core_with_child_namespace(completion, child_workflow_namespace)
 }

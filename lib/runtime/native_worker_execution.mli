@@ -56,6 +56,8 @@ type registered_workflow
     continuation or native handle. *)
 type signal = Execution.signal
 type signal_handler = Execution.signal_handler
+type query = Execution.query
+type query_handler = Execution.query_handler
 
 (** Builds a private handler that is invoked only on its workflow scheduler. *)
 val make_signal_handler :
@@ -76,6 +78,21 @@ val signal_headers :
 
 (** Returns a handler's stable Temporal name for registration validation. *)
 val signal_handler_name : signal_handler -> string
+
+(** Builds a synchronous query handler invoked inline on the owner Domain. *)
+val make_query_handler :
+  name:string ->
+  dispatch:(query -> (Temporal_base.Codec.payload, Temporal_base.Error.t) result) ->
+  query_handler
+
+(** Returns query arguments retained at the protocol boundary. *)
+val query_arguments : query -> Temporal_base.Codec.payload list
+
+(** Returns query headers retained at the protocol boundary. *)
+val query_headers : query -> (string * Temporal_base.Codec.payload) list
+
+(** Returns a query handler's stable registration name. *)
+val query_handler_name : query_handler -> string
 
 (** One worker-loop outcome. [Rejected] means a valid lease was completed with
     a non-retryable bridge failure, so the caller can log the typed rejection
@@ -149,6 +166,7 @@ end
     silently pretending they are executable. *)
 val register :
   ?signal_handlers:signal_handler list ->
+  ?query_handlers:query_handler list ->
   ('input, 'output,
    'input -> ('output, Temporal_base.Error.t) result)
   Temporal_base.Definition.t ->

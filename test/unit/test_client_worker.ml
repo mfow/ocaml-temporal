@@ -123,6 +123,33 @@ let test_workflow_signal_registration () =
          [ Temporal.Worker.workflow ~signals:[ handler; handler ] workflow ]
        ~activities:[] ())
 
+(** Query handlers use the same public registration ergonomics while retaining
+    their output-only callback contract. The mock backend does not synthesize a
+    native query activation, so this test focuses on registration ownership and
+    duplicate-name rejection; the owner-Domain dispatch path is covered by the
+    private native-worker runtime test. *)
+let test_workflow_query_registration () =
+  let query =
+    Temporal.Query.define ~name:"unit.query" ~output:Temporal.Codec.string
+  in
+  let handler = Temporal.Query.Handler.make query (fun () -> Ok "ready") in
+  let calls = Atomic.make 0 in
+  let workflow = unit_workflow calls in
+  let worker =
+    unwrap
+      (Temporal.Worker.create ~target_url:"mock://dispatch"
+         ~namespace:"unit-test" ~task_queue:"unit-test"
+         ~workflows:[ Temporal.Worker.workflow ~queries:[ handler ] workflow ]
+         ~activities:[] ())
+  in
+  unwrap (Temporal.Worker.shutdown worker);
+  expect_error "defect"
+    (Temporal.Worker.create ~target_url:"mock://dispatch"
+       ~namespace:"unit-test" ~task_queue:"unit-test"
+       ~workflows:
+         [ Temporal.Worker.workflow ~queries:[ handler; handler ] workflow ]
+       ~activities:[] ())
+
 (** Duplicate activity names use the same registration invariant as workflows. *)
 let test_duplicate_activities () =
   let calls = Atomic.make 0 in
@@ -359,6 +386,7 @@ let test_native_worker_configuration_boundary () =
 let () =
   test_duplicate_workflows ();
   test_workflow_signal_registration ();
+  test_workflow_query_registration ();
   test_duplicate_activities ();
   test_remote_registration_is_rejected ();
   test_worker_registration_and_dispatch ();

@@ -6,9 +6,10 @@
     workflow scheduler, so accidental use of a scheduler-owned operation
     returns a typed lifecycle error rather than blocking a thread. *)
 
-(** A validated query name paired with the type of its result. Queries have no
-    input payload in this API; use a record or tuple codec when a query needs
-    parameters. *)
+(** A validated query name paired with the type of its result. The current
+    native handler API is output-only: query callbacks receive no input. A
+    future typed-input API may add arguments without changing this definition;
+    a record or tuple output does not add arguments to today's wire contract. *)
 type 'output definition
 
 (** Public name for a query definition. *)

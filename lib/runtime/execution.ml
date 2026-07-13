@@ -21,6 +21,23 @@ type signal_handler = {
   dispatch : signal -> (unit, Temporal_base.Error.t) result;
 }
 
+(** The complete input available to a synchronous query handler. The current
+    public API intentionally rejects non-empty arguments, but the internal
+    representation preserves them so the boundary can evolve without losing
+    Core data. *)
+type query = {
+  arguments : Temporal_base.Codec.payload list;
+  headers : (string * Temporal_base.Codec.payload) list;
+}
+
+(** A query callback is run inline on the owner Domain. It may inspect
+    read-only application state but cannot suspend a workflow continuation or
+    append a workflow command. *)
+type query_handler = {
+  name : string;
+  dispatch : query -> (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
+}
+
 (** Uses the same bounded identifier contract as workflow and activity names.
     Invalid names are internal registration defects because public signal
     definitions have already performed this validation. *)
@@ -34,17 +51,41 @@ let validate_signal_name name =
     invalid_arg "signal handler name must be valid UTF-8"
 
 (** Builds one scheduler-owned callback package. *)
-let make_signal_handler ~name ~dispatch =
+let make_signal_handler ~name ~dispatch : signal_handler =
   validate_signal_name name;
   { name; dispatch }
 
 (** Returns the stable lookup key of an internal handler. *)
-let signal_handler_name handler = handler.name
+let signal_handler_name (handler : signal_handler) = handler.name
+
+(** Uses the same bounded identifier contract as signal names for query
+    registration. A violation is an internal registration defect because the
+    public query module validates names before constructing a worker. *)
+let validate_query_name name =
+  if String.equal name "" then invalid_arg "query handler name is empty";
+  if String.contains name '\000' then
+    invalid_arg "query handler name contains NUL";
+  if String.length name > 65_536 then
+    invalid_arg "query handler name exceeds 65536 bytes";
+  if not (Temporal_base.Codec.valid_utf_8 name) then
+    invalid_arg "query handler name must be valid UTF-8"
+
+(** Builds one synchronous query callback package. *)
+let make_query_handler ~name ~dispatch : query_handler =
+  validate_query_name name;
+  { name; dispatch }
+
+(** Returns the stable lookup key of an internal query handler. *)
+let query_handler_name (handler : query_handler) = handler.name
 
 (** Signal names are resolved through an immutable map. Construction validates
     duplicates in caller order; execution lookup never depends on hash-table
     iteration or mutable global state. *)
 module Signal_map = Map.Make (String)
+
+(** Query handlers are immutable after execution creation, making dispatch
+    deterministic and independent of map mutation or hash iteration order. *)
+module Query_map = Map.Make (String)
 
 (** Reports with workflow context masked so an application reporter cannot
     re-enter workflow APIs and mutate the deterministic command buffer. *)
@@ -62,6 +103,7 @@ type ('input, 'output) t = {
   scheduler : Scheduler.t;
   context : Workflow_context_store.t;
   signal_handlers : signal_handler Signal_map.t;
+  query_handlers : query_handler Query_map.t;
   mutable started : bool;
   mutable terminal : bool;
   mutable evicted : bool;
@@ -69,24 +111,35 @@ type ('input, 'output) t = {
 
 (** Creates execution state without calling user workflow code. The code starts
     only after Temporal delivers a start job, matching replay behavior. *)
-let start ?(task_queue = "default") ?(signal_handlers = []) definition input =
-  let signal_handlers =
+let start ?(task_queue = "default") ?(signal_handlers = []) ?(query_handlers = [])
+    definition input =
+  let signal_handler_map : signal_handler Signal_map.t =
     List.fold_left
-      (fun handlers handler ->
+      (fun (handlers : signal_handler Signal_map.t) (handler : signal_handler) ->
         let name = signal_handler_name handler in
         if Signal_map.mem name handlers then
           invalid_arg ("duplicate signal handler: " ^ name)
         else Signal_map.add name handler handlers)
       Signal_map.empty signal_handlers
   in
+  let query_handler_map : query_handler Query_map.t =
+    List.fold_left
+      (fun (handlers : query_handler Query_map.t) (handler : query_handler) ->
+        let name = query_handler_name handler in
+        if Query_map.mem name handlers then
+          invalid_arg ("duplicate query handler: " ^ name)
+        else Query_map.add name handler handlers)
+      Query_map.empty query_handlers
+  in
   let scheduler = Scheduler.create () in
-  let execution =
+  let execution : ('input, 'output) t =
     {
       definition;
       input;
       scheduler;
       context = Workflow_context_store.create ~task_queue scheduler;
-      signal_handlers;
+      signal_handlers = signal_handler_map;
+      query_handlers = query_handler_map;
       started = false;
       terminal = false;
       evicted = false;
@@ -128,7 +181,7 @@ let emit_terminal execution command =
     | Fail_workflow _ | Cancel_workflow_execution
     | Schedule_activity _ | Start_child_workflow _ | Request_cancel_activity _
     | Cancel_child_workflow _ | Start_timer _ | Cancel_timer _
-    | Continue_as_new _ -> ())
+    | Query_result _ | Continue_as_new _ -> ())
 
 (** Fails the workflow through the same one-terminal-command check. *)
 let fail execution error =
@@ -220,6 +273,52 @@ let process_job execution = function
       with
       | Ok () -> ()
       | Error error -> fail execution error)
+  | Activation.Query_workflow { query_id; query_type; arguments; headers } ->
+      (* Queries are deliberately answered inline. A missing handler or a
+         typed handler failure becomes QueryResult.failed; it must never fail
+         the workflow or resume a paused workflow continuation. *)
+      let query = { arguments; headers } in
+      let result =
+        match Query_map.find_opt query_type execution.query_handlers with
+        | None ->
+            let tags =
+              Observability.tags ~operation:"workflow_query_unhandled"
+                ~workflow_type:(workflow_type execution) ()
+            in
+            report ~src:Observability.Source.workflow Logs.Warning ~tags
+              "workflow query has no registered handler";
+            Error
+              (bridge_error ("unhandled workflow query: " ^ query_type))
+        | Some handler -> (
+            let dispatched =
+              try handler.dispatch query with
+              | exn ->
+                  Error
+                    (Temporal_base.Error.defect
+                       ~message:
+                         ("query handler raised: " ^ Printexc.to_string exn))
+            in
+            match dispatched with
+            | Ok payload ->
+                let tags =
+                  Observability.tags ~operation:"workflow_query_completed"
+                    ~workflow_type:(workflow_type execution) ()
+                in
+                report ~src:Observability.Source.workflow Logs.Debug ~tags
+                  "workflow query completed";
+                Ok payload
+            | Error error ->
+                let tags =
+                  Observability.tags ~operation:"workflow_query_failed"
+                    ~workflow_type:(workflow_type execution)
+                    ~error_kind:(Temporal_base.Error.kind error) ()
+                in
+                report ~src:Observability.Source.workflow Logs.Warning ~tags
+                  "workflow query failed";
+                Error error)
+      in
+      Workflow_context_store.emit execution.context
+        (Activation.Query_result { query_id; result })
   | Activation.Signal_workflow { signal_name; input; identity; headers } ->
       (* Signals are queued as scheduler work rather than dispatched inline.
          This preserves FIFO ordering with root and resolver continuations and
@@ -315,6 +414,11 @@ let shutdown execution =
     in-memory execution. *)
 let activate execution jobs =
   let job_count = List.length jobs in
+  let query_only =
+    match jobs with
+    | [] -> false
+    | _ -> List.for_all (function Activation.Query_workflow _ -> true | _ -> false) jobs
+  in
   let commands, duration_ms =
     Observability.measure_ms (fun () ->
         if execution.evicted then (
@@ -333,7 +437,10 @@ let activate execution jobs =
             jobs;
           if execution.evicted then []
           else (
-            if not execution.terminal then run_scheduler execution;
+            (* A query-only activation must not run ordinary workflow fibers:
+               doing so could append commands while Core is expecting only
+               query answers and could retain a continuation at the boundary. *)
+            if not execution.terminal && not query_only then run_scheduler execution;
             let commands = Workflow_context_store.take_commands execution.context in
             (* Terminal commands emitted through [terminate] (continue-as-new or
                a Fail_workflow from a failed continue-as-new encode) do not go

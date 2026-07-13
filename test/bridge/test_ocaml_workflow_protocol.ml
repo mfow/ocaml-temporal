@@ -97,6 +97,94 @@ let test_valid_completion () =
   check_string "completion" expected (unwrap (Protocol.encode_completion value));
   ignore (unwrap (Protocol.decode_completion expected))
 
+(** Proves that modern and legacy query IDs, repeated arguments, and headers
+    survive the OCaml semantic JSON boundary. Query activations and
+    completions are query-only, and duplicate IDs are rejected before bytes
+    reach the Rust bridge. *)
+let test_query_protocol_slice () =
+  let payload text : Protocol.payload =
+    { metadata = [ ("encoding", Bytes.of_string "binary/plain") ]; data = Bytes.of_string text }
+  in
+  let query query_id : Protocol.activation_job =
+    Protocol.Query_workflow
+      {
+        query_id;
+        query_type = "current-state";
+        arguments = [ payload "first"; payload "second" ];
+        headers = [ ("trace", payload "header") ];
+      }
+  in
+  let activation : Protocol.activation =
+    {
+      run_id = "query-run";
+      timestamp = Some { seconds = 2L; nanoseconds = 3 };
+      is_replaying = true;
+      history_length = 9L;
+      jobs = [ query "query-1"; query "legacy_query" ];
+      metadata = None;
+    }
+  in
+  let encoded = unwrap (Protocol.encode_activation activation) in
+  if unwrap (Protocol.decode_activation encoded) <> activation then
+    failwith "query activation did not preserve repeated fields or IDs";
+  let successful : Protocol.completion =
+    {
+      run_id = "query-run";
+      commands =
+        [
+          Protocol.Query_result
+            { query_id = "query-1"; result = Query_succeeded (payload "answer") };
+          Protocol.Query_result
+            {
+              query_id = "legacy_query";
+              result = Query_failed
+                         {
+                           message = "not available";
+                           source = "test";
+                           stack_trace = "";
+                           encoded_attributes = None;
+                           cause = None;
+                           info = Application { type_name = "QueryFailure"; non_retryable = true; details = [] };
+                         };
+            };
+        ];
+    }
+  in
+  let completion_json = unwrap (Protocol.encode_completion successful) in
+  if unwrap (Protocol.decode_completion completion_json) <> successful then
+    failwith "query completion did not round-trip";
+  require_error
+    (Protocol.encode_activation
+       { activation with jobs = [ query "query-1"; Protocol.Fire_timer { seq = 1L } ] });
+  require_error
+    (Protocol.encode_completion
+       {
+         successful with
+         commands =
+           [
+             Protocol.Query_result
+               { query_id = "query-1"; result = Query_succeeded (payload "answer") };
+             Protocol.Query_result
+               { query_id = "query-1"; result = Query_succeeded (payload "duplicate") };
+           ];
+       })
+  ;
+  require_error
+    (Protocol.encode_completion
+       {
+         successful with
+         commands =
+           [
+             Protocol.Query_result
+               { query_id = "query-1"; result = Query_succeeded (payload "answer") };
+             Protocol.Start_timer
+               {
+                 seq = 1L;
+                 start_to_fire_timeout = { seconds = 0L; nanoseconds = 1_000_000 };
+               };
+           ];
+       })
+
 (** Proves the child-workflow start command uses the same canonical payload
     representation as activities while retaining its workflow identity. *)
 let test_start_child_workflow_command () =
@@ -842,6 +930,7 @@ let run name test =
 let () =
   run "workflow activations" test_valid_activations;
   run "workflow completion" test_valid_completion;
+  run "query protocol slice" test_query_protocol_slice;
   run "start child workflow command" test_start_child_workflow_command;
   run "all child cancellation policies" test_all_child_cancellation_policies;
   run "child cancellation validation" test_child_cancellation_validation;

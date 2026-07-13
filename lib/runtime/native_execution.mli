@@ -80,6 +80,13 @@ val completion_of_commands :
   (Temporal_protocol.Workflow_protocol.completion, error) result
 (** Converts an ordered command batch into a checked protocol completion. *)
 
+val validate_completion_for_activation :
+  Temporal_protocol.Workflow_protocol.activation ->
+  Temporal_protocol.Workflow_protocol.completion ->
+  (unit, error) result
+(** Verifies that query results are neither missing nor attached to the wrong
+    activation before a completion reaches the native supervisor. *)
+
 val activate :
   ('input, 'output) Execution.t ->
   Temporal_protocol.Workflow_protocol.activation ->

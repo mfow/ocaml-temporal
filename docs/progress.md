@@ -1421,6 +1421,10 @@ Next phase: Phase 1 documentation and clean-checkout handoff.
 
 ## 2026-07-11: Phase 1 deterministic runtime handoff
 
+Historical snapshot: this handoff predates the native bridge and the typed
+interaction slice documented above. Its known limitations describe the
+repository at this commit and are not the current feature status.
+
 Status: verified.
 
 Phase 1 establishes the typed public kernel, effect scheduler, and synthetic

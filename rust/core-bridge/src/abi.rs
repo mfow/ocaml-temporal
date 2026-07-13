@@ -420,12 +420,26 @@ impl Runtime {
                 message: "Temporal runtime is already closed".to_owned(),
             })?
             .tokio_handle();
+        // Capture validated request identities before the request is moved into
+        // the Core start call so an unencodable server response can still report
+        // an Unknown outcome rather than dropping an accepted start.
+        let request_id = request.request_id.clone();
+        let workflow_id = request.workflow_id.clone();
         let response = handle
             .block_on(client_protocol::start_workflow(connection, request))
             .map_err(client_operation_failure)?;
-        let encoded =
-            client_protocol::encode_start_response(&response).map_err(protocol_failure)?;
-        Ok(encoded.into_bytes())
+        match client_protocol::encode_start_response(&response) {
+            Ok(encoded) => Ok(encoded.into_bytes()),
+            Err(_) => {
+                let fallback = client_protocol::StartWorkflowOutcome::Unknown {
+                    request_id,
+                    workflow_id,
+                };
+                let encoded =
+                    client_protocol::encode_start_outcome(&fallback).map_err(protocol_failure)?;
+                Ok(encoded.into_bytes())
+            }
+        }
     }
 
     /// Requests cancellation of one exact workflow run through the official
@@ -634,23 +648,37 @@ impl Runtime {
             pending.task.abort();
         }
 
+        let request_id = pending.request.request_id.clone();
+        let workflow_id = pending.request.workflow_id.clone();
         let outcome = match result {
             Some(Ok(response)) => client_protocol::StartWorkflowOutcome::Accepted(response),
             Some(Err(error)) if error.uncertain_start() => {
                 client_protocol::StartWorkflowOutcome::Unknown {
-                    request_id: pending.request.request_id.clone(),
-                    workflow_id: pending.request.workflow_id.clone(),
+                    request_id: request_id.clone(),
+                    workflow_id: workflow_id.clone(),
                 }
             }
             Some(Err(error)) => client_protocol::StartWorkflowOutcome::Rejected(error),
             None => client_protocol::StartWorkflowOutcome::Unknown {
-                request_id: pending.request.request_id.clone(),
-                workflow_id: pending.request.workflow_id.clone(),
+                request_id: request_id.clone(),
+                workflow_id: workflow_id.clone(),
             },
         };
-        client_protocol::encode_start_outcome(&outcome)
-            .map(|encoded| encoded.into_bytes())
-            .map_err(protocol_failure)
+        // The ticket is already retired. Prefer an always-encodable Unknown
+        // outcome built from the validated request identities over returning a
+        // protocol error that permanently loses an accepted or rejected start.
+        match client_protocol::encode_start_outcome(&outcome) {
+            Ok(encoded) => Ok(encoded.into_bytes()),
+            Err(_) => {
+                let fallback = client_protocol::StartWorkflowOutcome::Unknown {
+                    request_id,
+                    workflow_id,
+                };
+                client_protocol::encode_start_outcome(&fallback)
+                    .map(|encoded| encoded.into_bytes())
+                    .map_err(protocol_failure)
+            }
+        }
     }
 
     /// Aborts every in-flight start and returns handles that need cleanup.

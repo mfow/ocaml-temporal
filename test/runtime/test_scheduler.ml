@@ -222,6 +222,61 @@ let test_race_order_and_loser () =
     (Some (Ok (Temporal.Future.Right "right")))
     (Temporal.Future.peek pending_race)
 
+(** A race winner must not be retained by a pending loser after the caller
+    drops the aggregate handle. The loser remains a valid operation, so its
+    observer stays registered, but the observer must release the aggregate
+    resolver and its resolved payload immediately after selecting a winner. *)
+let test_race_releases_winner_from_pending_loser () =
+  let scheduler, weak_payload =
+    let scheduler = Scheduler.create () in
+    let weak_payload = Weak.create 1 in
+    let build_race () =
+      let payload = Bytes.create 1_048_576 in
+      Weak.set weak_payload 0 (Some payload);
+      let left, resolve_left = promise scheduler ~outside_error in
+      let _right, _resolve_right = promise scheduler ~outside_error in
+      let _race = Temporal.Future.race left _right in
+      resolve_left (Ok payload);
+      expect "race winner processing" "blocked" (Scheduler.run_label scheduler)
+    in
+    build_race ();
+    scheduler, weak_payload
+  in
+  ignore (Sys.opaque_identity scheduler);
+  if Option.is_none (Weak.get weak_payload 0) then
+    failwith "race payload was already gone before collection";
+  Gc.full_major ();
+  expect "race loser remains pending" "blocked" (Scheduler.run_label scheduler);
+  if Option.is_some (Weak.get weak_payload 0) then
+    failwith "pending race loser retained the resolved winner payload"
+
+(** The homogeneous [first] combinator has the same retention contract as
+    [race]: selecting one result must not keep that result alive solely through
+    an observer attached to an unfinished losing operation. *)
+let test_first_releases_winner_from_pending_loser () =
+  let scheduler, weak_payload =
+    let scheduler = Scheduler.create () in
+    let weak_payload = Weak.create 1 in
+    let build_first () =
+      let payload = Bytes.create 1_048_576 in
+      Weak.set weak_payload 0 (Some payload);
+      let leading, resolve_leading = promise scheduler ~outside_error in
+      let _loser, _resolve_loser = promise scheduler ~outside_error in
+      let _first = Temporal.Future.first leading [ _loser ] in
+      resolve_leading (Ok payload);
+      expect "first winner processing" "blocked" (Scheduler.run_label scheduler)
+    in
+    build_first ();
+    scheduler, weak_payload
+  in
+  ignore (Sys.opaque_identity scheduler);
+  if Option.is_none (Weak.get weak_payload 0) then
+    failwith "first payload was already gone before collection";
+  Gc.full_major ();
+  expect "first loser remains pending" "blocked" (Scheduler.run_label scheduler);
+  if Option.is_some (Weak.get weak_payload 0) then
+    failwith "pending first loser retained the resolved winner payload"
+
 (** Confirms [first] settles on an error as a completion event and does not
     wait for or cancel later candidates. *)
 let test_first_completion_error () =
@@ -481,6 +536,8 @@ let () =
   test_all_order_and_errors ();
   test_all_empty ();
   test_race_order_and_loser ();
+  test_race_releases_winner_from_pending_loser ();
+  test_first_releases_winner_from_pending_loser ();
   test_first_completion_error ();
   test_mapper_defect_is_contained ();
   test_both_observes_sibling_after_error ();

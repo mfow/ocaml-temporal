@@ -418,7 +418,10 @@ the first error in the input list after all siblings have settled. `race` can
 combine different output types and returns `Left value` or `Right value`;
 `first` is the homogeneous non-empty-list form. An error is a completion, so it
 may win a race. The combinator itself does not cancel losing operations; they
-continue according to their normal Temporal lifecycle.
+continue according to their normal Temporal lifecycle. Once a winner is
+selected, the aggregate releases its captured resolver and result immediately;
+an unfinished loser therefore cannot keep the winner's value alive until the
+loser completes or the workflow shuts down.
 
 All inputs to a combinator must belong to the same workflow execution. A
 future from another execution is not silently adopted: the result is a ready

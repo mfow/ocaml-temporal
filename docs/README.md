@@ -35,6 +35,9 @@ The remaining reference documents are useful when changing one subsystem:
 - [Deterministic workflow time](reference/workflow-time.md) documents
   `Temporal.Workflow.now`, its exact timestamp representation, and its replay
   safety contract.
+- [Interactive workflows](reference/interactive-workflows.md) documents the
+  experimental typed signal, query, and update definitions, deterministic
+  handler dispatcher, and the remaining native-delivery boundary.
 - [OCaml SDK logging](reference/observability.md) documents log sources, tags,
   levels, privacy, and Domain behavior.
 - [Local Temporal stack](reference/local-temporal-stack.md) documents the

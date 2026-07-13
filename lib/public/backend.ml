@@ -121,25 +121,56 @@ type activity_completion =
     result, which mirrors Temporal's immutable execution history. *)
 type mock_terminal = Mock_pending | Mock_completed | Mock_cancelled
 
+(** A mock signal delivery records the request identity and payload. Retaining
+    this small value lets the deterministic transport model Temporal's
+    idempotency rule: repeating the same request is harmless, while reusing an
+    ID for different signal data is rejected. *)
+type mock_signal = {
+  signal_name : string;
+  input : Payload.t;
+}
+
 (** A mock execution is retained so repeated exact waits return the same
-    terminal result and cancellation can only affect work still pending. *)
+    terminal result and cancellation can only affect work still pending. The
+    execution also owns its accepted signal IDs so separate client handles
+    connected to the same mock endpoint observe one service ledger. *)
 type mock_execution = {
   run_id : string;
   input : Payload.t;
   mutable terminal : mock_terminal;
+  signal_requests : (string, mock_signal) Hashtbl.t;
 }
 
-(** A client graph has one mutable lifecycle bit and an exact-run ledger.
-    The mutex covers both fields because unit tests may exercise ordinary
-    client calls from more than one Domain even though the native supervisor
-    itself already serializes its own graph. *)
-type mock_client = {
-  _namespace : string;
-  mutable closed : bool;
+(** A deterministic mock endpoint is a process-local service ledger. Multiple
+    public [Client.t] values for the same target URL and namespace share this
+    ledger, which mirrors separate handles talking to one Temporal service and
+    lets tests exercise exact-run operations across clients. *)
+type mock_service = {
+  key : string * string;
+  mutable clients : int;
   mutable next_run : int;
   mutex : Mutex.t;
   executions : (string, mock_execution) Hashtbl.t;
 }
+
+(** A client graph contributes one lifecycle bit to a shared mock service.
+    The service mutex protects the shared ledger; the client bit is read and
+    written under that same mutex so a shutdown cannot race an operation. *)
+type mock_client = {
+  service : mock_service;
+  mutable closed : bool;
+}
+
+(** Serializes creation and retirement of process-local mock services. A
+    service is removed when its last client shuts down so unit-test endpoints
+    do not retain execution payloads for the lifetime of the process. *)
+let mock_services_mutex = Mutex.create ()
+
+(** Maps one endpoint identity to its shared deterministic ledger. The pair
+    key avoids ambiguities that a separator-based concatenated string could
+    introduce if a caller used that separator in a URL or namespace. *)
+let mock_services : ((string * string), mock_service) Hashtbl.t =
+  Hashtbl.create 8
 
 (** Native client state retained by the private backend.
 
@@ -400,6 +431,48 @@ let validate_config { target_url; namespace; identity; task_queue } =
             | None -> Ok ()
             | Some task_queue -> valid_nonempty "task queue" task_queue))
 
+(** Acquires the shared deterministic ledger for one mock endpoint. The
+    registry lock protects the service reference count; operations on the
+    returned service use its own mutex so unrelated endpoints can progress
+    independently. *)
+let acquire_mock_service ~target_url ~namespace =
+  Mutex.lock mock_services_mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock mock_services_mutex)
+    (fun () ->
+      let key = (target_url, namespace) in
+      match Hashtbl.find_opt mock_services key with
+      | Some service ->
+          service.clients <- service.clients + 1;
+          service
+      | None ->
+          let service : mock_service =
+            {
+              key;
+              clients = 1;
+              next_run = 0;
+              mutex = Mutex.create ();
+              executions = Hashtbl.create 16;
+            }
+          in
+          Hashtbl.add mock_services key service;
+          service)
+
+(** Releases one client reference to a mock service. The final reference
+    removes the service from the registry, allowing its execution payloads and
+    signal history to be collected after the last client shuts down. *)
+let release_mock_service (service : mock_service) =
+  Mutex.lock mock_services_mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock mock_services_mutex)
+    (fun () ->
+      if service.clients > 0 then service.clients <- service.clients - 1;
+      if service.clients = 0 then
+        match Hashtbl.find_opt mock_services service.key with
+        | Some registered when registered == service ->
+            Hashtbl.remove mock_services service.key
+        | Some _ | None -> ())
+
 (** Constructs either the deterministic mock ledger or the real native client.
     Native creation first validates the endpoint, then creates the complete
     supervisor graph, connects the official Rust client, and cleans up the
@@ -412,11 +485,10 @@ let client_create config =
         Ok
           (Mock_client
              {
-               _namespace = config.namespace;
+               service =
+                 acquire_mock_service ~target_url:config.target_url
+                   ~namespace:config.namespace;
                closed = false;
-               next_run = 0;
-               mutex = Mutex.create ();
-               executions = Hashtbl.create 16;
              })
       else
         match
@@ -518,22 +590,28 @@ let native_client_start (client : native_client) (request : start_request) :
 
 (** Starts a mock execution and preserves the exact request payload. *)
 let mock_client_start (client : mock_client) (request : start_request) =
-  Mutex.lock client.mutex;
+  let service = client.service in
+  Mutex.lock service.mutex;
   Fun.protect
-    ~finally:(fun () -> Mutex.unlock client.mutex)
+    ~finally:(fun () -> Mutex.unlock service.mutex)
     (fun () ->
       if client.closed then Error (bridge_error "client is shut down")
-      else if Hashtbl.mem client.executions request.workflow_id then
+      else if Hashtbl.mem service.executions request.workflow_id then
         Error
           (Error.make ~non_retryable:true ~category:`Workflow
              ~message:"workflow id already exists" ())
       else
         let run_id =
-          client.next_run <- client.next_run + 1;
-          Printf.sprintf "mock-run-%d" client.next_run
+          service.next_run <- service.next_run + 1;
+          Printf.sprintf "mock-run-%d" service.next_run
         in
-        Hashtbl.add client.executions request.workflow_id
-          { run_id; input = copy_payload request.input; terminal = Mock_pending };
+        Hashtbl.add service.executions request.workflow_id
+          {
+            run_id;
+            input = copy_payload request.input;
+            terminal = Mock_pending;
+            signal_requests = Hashtbl.create 8;
+          };
         let response : start_response =
           { workflow_id = request.workflow_id; run_id }
         in
@@ -575,13 +653,14 @@ let native_client_wait (client : native_client) (request : wait_request) =
     Echoing is sufficient to test typed output decoding without coupling this
     private transport to any application workflow implementation. *)
 let mock_client_wait (client : mock_client) (request : wait_request) =
-  Mutex.lock client.mutex;
+  let service = client.service in
+  Mutex.lock service.mutex;
   Fun.protect
-    ~finally:(fun () -> Mutex.unlock client.mutex)
+    ~finally:(fun () -> Mutex.unlock service.mutex)
     (fun () ->
       if client.closed then Error (bridge_error "client is shut down")
       else
-        match Hashtbl.find_opt client.executions request.workflow_id with
+        match Hashtbl.find_opt service.executions request.workflow_id with
         | None -> Error (bridge_error "workflow execution was not started")
         | Some execution
           when not (String.equal execution.run_id request.run_id) ->
@@ -675,13 +754,14 @@ let native_client_signal (client : native_client) (request : signal_request) :
     A completed execution is deliberately left unchanged: terminal history is
     immutable even when a caller sends a late cancellation request. *)
 let mock_client_cancel (client : mock_client) (request : cancel_request) =
-  Mutex.lock client.mutex;
+  let service = client.service in
+  Mutex.lock service.mutex;
   Fun.protect
-    ~finally:(fun () -> Mutex.unlock client.mutex)
+    ~finally:(fun () -> Mutex.unlock service.mutex)
     (fun () ->
       if client.closed then Error (bridge_error "client is shut down")
       else
-        match Hashtbl.find_opt client.executions request.workflow_id with
+        match Hashtbl.find_opt service.executions request.workflow_id with
         | None -> Error (bridge_error "workflow execution was not started")
         | Some execution
           when not (String.equal execution.run_id request.run_id) ->
@@ -699,21 +779,42 @@ let client_cancel client request =
   | Native_client client -> native_client_cancel client request
 
 (** Accepts a signal for a pending mock run. The deterministic mock does not
-    execute workflow code, so it records no signal history; it still enforces
-    exact identity and rejects delivery to an already closed run. *)
+    execute workflow code, but it records each request ID and its signal data
+    so retries remain idempotent and accidental ID reuse is visible in tests.
+    The shared service ledger means a handle rebuilt through another public
+    [Client.t] still addresses the same synthetic execution. *)
 let mock_client_signal (client : mock_client) (request : signal_request) =
-  Mutex.lock client.mutex;
+  let service = client.service in
+  Mutex.lock service.mutex;
   Fun.protect
-    ~finally:(fun () -> Mutex.unlock client.mutex)
+    ~finally:(fun () -> Mutex.unlock service.mutex)
     (fun () ->
       if client.closed then Error (bridge_error "client is shut down")
       else
-        match Hashtbl.find_opt client.executions request.workflow_id with
+        match Hashtbl.find_opt service.executions request.workflow_id with
         | None -> Error (bridge_error "workflow execution was not started")
         | Some execution
           when not (String.equal execution.run_id request.run_id) ->
             Error (bridge_error "workflow run id does not match the started run")
-        | Some { terminal = Mock_pending; _ } -> Ok ()
+        | Some ({ terminal = Mock_pending; _ } as execution) -> (
+            let delivery =
+              { signal_name = request.signal_name; input = copy_payload request.input }
+            in
+            match Hashtbl.find_opt execution.signal_requests request.request_id with
+            | None ->
+                Hashtbl.add execution.signal_requests request.request_id delivery;
+                Ok ()
+            | Some previous
+              when String.equal previous.signal_name delivery.signal_name
+                   && previous.input.metadata = delivery.input.metadata
+                   && Bytes.equal previous.input.data delivery.input.data ->
+                Ok ()
+            | Some _ ->
+                Error
+                  (Error.make ~category:`Workflow
+                     ~message:
+                       "signal request ID was already used for different signal data"
+                     ()))
         | Some _ ->
             Error
               (Error.make ~category:`Workflow
@@ -733,12 +834,19 @@ let client_signal client request =
     public closed bit before returning an error cannot strand a live handle. *)
 let client_shutdown = function
   | Mock_client client ->
-      Mutex.lock client.mutex;
-      Fun.protect
-        ~finally:(fun () -> Mutex.unlock client.mutex)
-        (fun () ->
-          client.closed <- true;
-          Ok ())
+      let service = client.service in
+      let should_release =
+        Mutex.lock service.mutex;
+        Fun.protect
+          ~finally:(fun () -> Mutex.unlock service.mutex)
+          (fun () ->
+            if client.closed then false
+            else (
+              client.closed <- true;
+              true))
+      in
+      if should_release then release_mock_service service;
+      Ok ()
   | Native_client client ->
       if Atomic.exchange client.closed true then Ok ()
       else

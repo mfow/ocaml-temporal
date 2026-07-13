@@ -442,6 +442,47 @@ let test_exact_run_signal () =
        ~signal:add_document_signal ~input:"late");
   unwrap (Temporal.Client.shutdown client)
 
+(** Default signal request IDs are shared across independent client handles.
+    The two clients below connect to one deterministic endpoint and rebuild a
+    typed handle for the exact execution started by the first client. The mock
+    transport rejects reuse of one ID for different signal data, so the second
+    call proves that the allocator is process-wide rather than scoped to each
+    [Client.t]. *)
+let test_default_signal_request_ids_are_process_wide () =
+  let client_a =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let client_b =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let handle_a =
+    unwrap
+      (Temporal.Client.start client_a ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"unit-global-signal" ~input:"ignored"
+         ())
+  in
+  let handle_b =
+    unwrap
+      (Temporal.Client.follow client_b ~workflow:echo_workflow
+         {
+           namespace = "unit-test";
+           workflow_id = Temporal.Client.workflow_id handle_a;
+           run_id = Temporal.Client.run_id handle_a;
+         })
+  in
+  unwrap
+    (Temporal.Client.signal handle_a ~signal:add_document_signal
+       ~input:"first");
+  unwrap
+    (Temporal.Client.signal handle_b ~signal:add_document_signal
+       ~input:"second");
+  unwrap (Temporal.Client.shutdown client_b);
+  unwrap (Temporal.Client.shutdown client_a)
+
 (** Invalid client settings are values rather than exceptions, and a malformed
     durable workflow id is rejected before the backend receives it. *)
 let test_client_validation_errors () =
@@ -543,6 +584,7 @@ let () =
   test_exact_run_cancellation ();
   test_completed_mock_run_is_immutable ();
   test_exact_run_signal ();
+  test_default_signal_request_ids_are_process_wide ();
   test_client_validation_errors ();
   test_client_identifier_size_validation ();
   test_native_client_configuration_boundary ();

@@ -248,9 +248,12 @@ shape again before constructing Temporal's official
 used for the RPC; callers cannot provide a second identity or redirect the
 request to another namespace.
 
-When `request_id` is omitted, OCaml allocates a fresh ID for each call. Supply
-an explicit ID when retrying an uncertain transport result so Temporal can
-deduplicate the same logical signal. A successful native response is exactly:
+When `request_id` is omitted, OCaml allocates a fresh process-wide ID shared by
+all `Temporal.Client.t` values in that process. This keeps two independent
+handles from accidentally presenting the same signal as a retry of an earlier
+delivery. Supply an explicit ID when retrying an uncertain transport result so
+Temporal can deduplicate the same logical signal. A successful native response
+is exactly:
 
 ```json
 {"acknowledged":true}

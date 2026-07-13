@@ -17,10 +17,6 @@ type t = {
   (* The first shutdown outcome is retained so every caller observes the same
      terminal result, including a native teardown error. *)
   mutable shutdown_result : (unit, Error.t) result option;
-  (* Signals without an explicit request ID receive a fresh process-local
-     sequence value. Atomic allocation keeps concurrent callers distinct
-     without adding a second synchronization path around the native graph. *)
-  next_signal_request_id : int Atomic.t;
 }
 
 (** A handle retains the definition codecs and exact execution identity. *)
@@ -72,6 +68,13 @@ type 'output terminal_result =
     randomness, which keeps client construction straightforward in tests. *)
 let default_identity = "ocaml-temporal-client"
 
+(** All public client values in one process share this allocator. Signal
+    request IDs are Temporal idempotency keys, so allocating from the client
+    record would allow two independent handles to generate the same first ID
+    for one exact execution. The atomic counter keeps concurrent callers
+    distinct without introducing another lock around the native graph. *)
+let next_signal_request_id = Atomic.make 0
+
 (** Rejects empty, oversized, or NUL-containing identifiers before they can
     enter a backend request. The 65,536-byte bound is shared by the JSON
     protocol and native bridge, so mock and native transports reject the same
@@ -107,7 +110,6 @@ let create ?(identity = default_identity) ~target_url ~namespace () =
                 closed = Atomic.make false;
                 shutdown_mutex = Mutex.create ();
                 shutdown_result = None;
-                next_signal_request_id = Atomic.make 0;
               })
             (Backend.client_create config))
 
@@ -296,8 +298,8 @@ let cancel ?request_id ?(reason = "") handle =
     one. Unlike cancellation, separate signal calls are distinct messages by
     default, even when they target the same run and signal name. Supplying an
     explicit ID gives a caller retry-safe idempotency semantics. *)
-let generated_signal_request_id (client : t) =
-  let sequence = Atomic.fetch_and_add client.next_signal_request_id 1 in
+let generated_signal_request_id () =
+  let sequence = Atomic.fetch_and_add next_signal_request_id 1 in
   Printf.sprintf "ocaml-client-signal-%d" sequence
 
 (** Sends one typed signal to the exact run retained by [handle]. The input is
@@ -317,7 +319,7 @@ let signal ?request_id handle ~(signal : 'signal Signal.t) ~input =
             let request_id =
               match request_id with
               | Some request_id -> request_id
-              | None -> generated_signal_request_id handle.client
+              | None -> generated_signal_request_id ()
             in
             let request : Backend.signal_request =
               {

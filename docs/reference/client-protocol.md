@@ -199,10 +199,10 @@ Both OCaml and Rust validate every field, reject unknown/duplicate members,
 and validate the positive acknowledgement before it crosses the FFI boundary.
 The exact-run cancellation path is covered by local mock, supervisor, OCaml
 bridge, and Rust protocol tests. The live driver contains the same scenario,
-but the available green live evidence covers the baseline start and wait paths;
-cancellation remains local-only until that scenario completes successfully
-against a real Temporal Server. See the [live acceptance coverage](live-acceptance-coverage.md)
-for the evidence boundary.
+and the complete [PR #210 run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+verified start, exact-run wait, and exact-run cancellation against a real
+Temporal Server. See the [live acceptance coverage](live-acceptance-coverage.md)
+for the remaining evidence boundary.
 
 ## Wait for one exact run
 

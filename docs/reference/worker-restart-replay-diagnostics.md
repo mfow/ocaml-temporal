@@ -59,9 +59,12 @@ otherwise turn an unrelated completion into restart/replay evidence.
 
 The terminal stage requires the ordered subsequence
 `WorkflowExecutionStarted`, `WorkflowTaskCompleted`, `TimerStarted`,
-`TimerFired`, `ActivityTaskScheduled`, `ActivityTaskCompleted`, and
-`WorkflowExecutionCompleted`, with the workflow-completed event last. Other
-known Temporal scheduling/started events may appear between those boundaries.
+`TimerFired`, `ActivityTaskScheduled`, `ActivityTaskStarted`,
+`ActivityTaskFailed`, `ActivityTaskStarted`, `ActivityTaskCompleted`, and
+`WorkflowExecutionCompleted`, with the workflow-completed event last. Temporal
+records one activity schedule for the logical command and a second start for
+the retry; other known scheduling/started events may appear between those
+boundaries.
 Event IDs must be positive canonical decimal strings in strict ascending order
 in both documents, and the document's workflow/run IDs must exactly match the
 driver record. The JSON Schemas describe each document independently; the

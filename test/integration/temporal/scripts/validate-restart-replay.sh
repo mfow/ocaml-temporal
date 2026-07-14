@@ -223,7 +223,7 @@ validate_initial_stage() {
 validate_terminal_stage() {
   history_path=$1
   if ! "$jq_bin" -e \
-    --argjson required '["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted", "TimerFired", "ActivityTaskScheduled", "ActivityTaskFailed", "ActivityTaskScheduled", "ActivityTaskCompleted", "WorkflowExecutionCompleted"]' \
+    --argjson required '["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted", "TimerFired", "ActivityTaskScheduled", "ActivityTaskStarted", "ActivityTaskFailed", "ActivityTaskStarted", "ActivityTaskCompleted", "WorkflowExecutionCompleted"]' \
     --argjson terminal_types "$terminal_types" \
     "$has_order
      has_order(\$required)

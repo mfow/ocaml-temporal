@@ -22,7 +22,7 @@ Temporal Server and GitHub Actions verification are pending.
 The two-generation restart/replay fixture now uses the existing bounded
 two-attempt activity policy after generation 2 replays the pending timer. The
 first activity task must fail with a retryable typed error, Temporal must emit
-a second activity schedule, and the driver must receive the exact
+a second activity start for the retry, and the driver must receive the exact
 `SMOKE:AFTER-REPLAY:ATTEMPT:2` result. The normalized history contract rejects
 a successful-looking completion that omits that failure/retry path, while the
 checked-in fixture and Docker-free negative tests keep the validation

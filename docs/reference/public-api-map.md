@@ -68,10 +68,13 @@ for those rules.
 ### Application lifecycle and interactions
 
 - `Temporal.Client` starts typed workflow executions, retains the exact
-  workflow/run identity, requests exact-run cancellation or signals, and waits
-  for typed terminal outcomes. A successful cancel or signal acknowledges the
-  server request; it does not claim that workflow code has already processed
-  it.
+  workflow/run identity, rebuilds a typed handle for a `Continued_as_new`
+  successor with `Client.follow`, requests exact-run cancellation or signals,
+  and waits for typed terminal outcomes. `Client.follow` only validates and
+  combines the existing client, workflow definition, and successor identity;
+  it does not start or implicitly follow a run. A successful cancel or signal
+  acknowledges the server request; it does not claim that workflow code has
+  already processed it.
 - `Temporal.Worker` registers workflows and activities, owns one supervisor
   graph, runs the poll loops, and performs idempotent shutdown. The final
   executable remains an OCaml application; Rust is a private linked

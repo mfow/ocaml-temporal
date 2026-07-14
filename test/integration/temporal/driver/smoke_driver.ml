@@ -3,7 +3,7 @@
     This executable is a deliberately small, typed harness. It starts the
     fan-out, timer, ordinary-retry, heartbeat-detail/retry, delayed
     asynchronous activity completion, timeout-triggered-retry, parent/child
-    success, parent/child failure,
+    success, parent/child failure, typed signal/condition,
     parent/child cancellation, typed-failure, long-running cancellation, and
     continue-as-new scenarios before waiting for any of them, then checks the
     exact terminal outcomes returned by the public client API. Without
@@ -289,6 +289,30 @@ let cancel_workflow handle =
         ~duration_ms:(elapsed_ms started) ();
       Error error
 
+(** Sends the typed signal to the exact run returned by [Client.start].  The
+    acknowledgement proves only that Temporal accepted the request; the later
+    [wait_workflow] assertion proves that the worker delivered it to the
+    registered handler and that the suspended condition resumed. *)
+let signal_workflow handle =
+  let operation = "signal:" ^ Client.workflow_id handle in
+  let started = Unix.gettimeofday () in
+  phase ~operation ~status:"begin" ~workflow_id:(Client.workflow_id handle)
+    ~run_id:(Client.run_id handle) ();
+  match
+    Client.signal ~request_id:"two-binary-signal-1" handle
+      ~signal:Definitions.signal_value ~input:"accepted"
+  with
+  | Ok () ->
+      phase ~operation ~status:"acknowledged"
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Ok ()
+  | Error error ->
+      phase ~operation ~status:("error:" ^ Error.kind error)
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Error error
+
 (** Starts one workflow and records the server-issued run identity only after
     the typed client has accepted it. *)
 let start_workflow client ~workflow ~task_queue ~id ~input =
@@ -441,7 +465,12 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-long-running-cancellation" ~input:cancellation_token
         in
-        (* Eleven starts intentionally happen before the first wait. The
+        let* signal_handle =
+          start_workflow client ~workflow:Definitions.signal_condition_workflow
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-signal-condition" ~input:"smoke"
+        in
+        (* Twelve starts intentionally happen before the first wait. The
            cancellation workflow's marker activity proves that its timer and
            marker commands were accepted in one activation before this exact
            run is cancelled; the timer keeps the execution outstanding. The
@@ -463,6 +492,7 @@ let run () =
            waits for Core's child cancellation acknowledgement. The continuation
            is also already started, so its successor wait is an explicit client
            operation rather than a latest-run lookup. *)
+        let* () = signal_workflow signal_handle in
         let* () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token
         in
@@ -536,8 +566,13 @@ let run () =
             "intentional terminal workflow failure" (Ok failure_result)
         in
         let* cancellation_result = wait_workflow cancellation_handle in
-        require_cancelled "smoke.long_running_cancellation"
-          (Ok cancellation_result)
+        let* () =
+          require_cancelled "smoke.long_running_cancellation"
+            (Ok cancellation_result)
+        in
+        let* signal_result = wait_workflow signal_handle in
+        require_completed "smoke.signal_condition" "SMOKE:SIGNAL:ACCEPTED"
+          (Ok signal_result)
       in
       finish result
 

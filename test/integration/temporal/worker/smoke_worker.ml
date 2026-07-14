@@ -234,6 +234,10 @@ let run () =
       in
       let* () = clear_replay_diagnostics_before_start replay_diagnostics_file generation in
       let* cancellation_ready_file = Definitions.cancellation_ready_file () in
+      (* This fixture's signal handler closes over one deliberately bounded
+         test-state cell. Reset it before registration so a worker replacement
+         cannot inherit a value from an earlier process lifetime. *)
+      let () = Definitions.reset_signal_value_state () in
       (* Clear any marker left by a manually interrupted local run before the
          worker can advertise readiness. The driver performs the same cleanup
          immediately before starting workflows, closing the stale-marker race
@@ -245,6 +249,8 @@ let run () =
           ~task_queue:Definitions.task_queue
           ~workflows:
             [
+              Worker.workflow ~signals:[ Definitions.signal_value_handler ]
+                Definitions.signal_condition_workflow;
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;
               Worker.workflow Definitions.continue_as_new;

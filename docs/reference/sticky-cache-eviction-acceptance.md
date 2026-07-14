@@ -155,7 +155,10 @@ The schema validates each JSON record. The shell validator adds the
 cross-document requirements that JSON Schema cannot express, including exact
 workflow/run identity, history-prefix preservation, event ordering, and
 absence of a fired timer in the initial snapshot. Its checked-in fixtures make
-those assertions testable without Docker.
+those assertions testable without Docker. Before the pressure workflow is
+started, the controller invokes that same validator in its `initial` stage;
+the fast contract exercises the identical pending-timer predicate so the
+polling gate cannot silently diverge from the final evidence checks.
 
 This does **not** prove crash recovery, worker restart, every cache-removal
 reason, or arbitrary sticky-cache performance. Worker restart has its own

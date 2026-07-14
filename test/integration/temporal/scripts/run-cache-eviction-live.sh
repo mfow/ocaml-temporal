@@ -110,21 +110,12 @@ query_history() {
     --output "$destination" <"$raw_history"
 }
 
-# Establishes the target's durable timer before pressure is allowed. It avoids
-# guessing from a sleep: the target must have a TimerStarted event, no timer
-# fire, and no terminal event when the second execution is started.
+# Establishes the target's durable timer before pressure is allowed. The same
+# validator is exercised by the Docker-free contract, so this polling path
+# cannot drift from the checked cache-eviction invariants.
 initial_history_is_pending() {
-  jq -e '
-    [.events[].type] as $types
-    | ($types | index("WorkflowExecutionStarted") != null)
-      and ($types | index("WorkflowTaskCompleted") != null)
-      and ($types | index("TimerStarted") != null)
-      and ($types | index("TimerFired") == null)
-      and (["WorkflowExecutionCompleted", "WorkflowExecutionFailed",
-            "WorkflowExecutionCanceled", "WorkflowExecutionTerminated",
-            "WorkflowExecutionTimedOut", "WorkflowExecutionContinuedAsNew"]
-           | all(.[] as $terminal | ($types | index($terminal) == null)))
-  ' "$initial_history" >/dev/null
+  sh "$validator" --stage initial --initial-history "$initial_history" \
+    --workflow-id "$workflow_id" --run-id "$run_id" >/dev/null 2>&1
 }
 
 # This exactly mirrors the schema/validator's three required private records,

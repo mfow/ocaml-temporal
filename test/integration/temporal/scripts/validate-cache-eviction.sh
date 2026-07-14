@@ -8,7 +8,10 @@ set -eu
 
 usage() {
   cat >&2 <<'EOF'
-usage: validate-cache-eviction.sh --diagnostics FILE --initial-history FILE
+usage: validate-cache-eviction.sh --stage initial --initial-history FILE
+       --workflow-id ID --run-id ID
+
+       validate-cache-eviction.sh --diagnostics FILE --initial-history FILE
        --terminal-history FILE --workflow-id ID --run-id ID
 EOF
   exit 2
@@ -27,6 +30,7 @@ initial_history=''
 terminal_history=''
 workflow_id=''
 run_id=''
+stage=terminal
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --diagnostics)
@@ -54,6 +58,11 @@ while [ "$#" -gt 0 ]; do
       run_id=$2
       shift 2
       ;;
+    --stage)
+      [ "$#" -ge 2 ] || usage
+      stage=$2
+      shift 2
+      ;;
     --help|-h)
       usage
       ;;
@@ -63,14 +72,17 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ -n "$diagnostics" ] || usage
 [ -n "$initial_history" ] || usage
-[ -n "$terminal_history" ] || usage
 [ -n "$workflow_id" ] || usage
 [ -n "$run_id" ] || usage
-[ -r "$diagnostics" ] || fail "diagnostics file is not readable"
+[ "$stage" = initial ] || [ "$stage" = terminal ] || usage
 [ -r "$initial_history" ] || fail "initial history is not readable"
-[ -r "$terminal_history" ] || fail "terminal history is not readable"
+if [ "$stage" = terminal ]; then
+  [ -n "$diagnostics" ] || usage
+  [ -n "$terminal_history" ] || usage
+  [ -r "$diagnostics" ] || fail "diagnostics file is not readable"
+  [ -r "$terminal_history" ] || fail "terminal history is not readable"
+fi
 
 jq_bin=${JQ_BIN:-jq}
 command -v "$jq_bin" >/dev/null 2>&1 || fail "jq is required (set JQ_BIN to its path)"
@@ -105,7 +117,6 @@ validate_history_shape() {
 }
 
 validate_history_shape "$initial_history"
-validate_history_shape "$terminal_history"
 
 # Checks a required event-type subsequence without caring about polling events
 # inserted by Temporal Server between the durable workflow boundaries.
@@ -121,20 +132,37 @@ has_order='def has_order($required):
 # Before the pressure workflow starts, the target must have scheduled a timer
 # but not fired it or reached any terminal state. This means the one-entry
 # cache has an idle sticky execution to evict rather than a finished run.
-if ! "$jq_bin" -e --argjson terminal_types '[
-  "WorkflowExecutionCompleted", "WorkflowExecutionFailed",
-  "WorkflowExecutionCanceled", "WorkflowExecutionTerminated",
-  "WorkflowExecutionTimedOut", "WorkflowExecutionContinuedAsNew"
-]' "$has_order"'
-  has_order(["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted"])
-  and (all(.events[];
-    . as $event
-    | $event.type != "TimerFired"
-      and all($terminal_types[]; . != $event.type)
-  ))
-' "$initial_history" >/dev/null; then
-  fail "initial history does not prove an outstanding durable timer"
+validate_initial_stage() {
+  history_path=$1
+  if ! "$jq_bin" -e --argjson terminal_types '[
+    "WorkflowExecutionCompleted", "WorkflowExecutionFailed",
+    "WorkflowExecutionCanceled", "WorkflowExecutionTerminated",
+    "WorkflowExecutionTimedOut", "WorkflowExecutionContinuedAsNew"
+  ]' "$has_order"'
+    has_order(["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted"])
+    and (all(.events[];
+      . as $event
+      | $event.type != "TimerFired"
+        and all($terminal_types[]; . != $event.type)
+    ))
+  ' "$history_path" >/dev/null; then
+    fail "initial history does not prove an outstanding durable timer"
+  fi
+}
+
+validate_initial_stage "$initial_history"
+
+# The controller polls this stage before it creates the pressure workflow. A
+# standalone success proves only the safe pre-pressure boundary; terminal and
+# diagnostic evidence remains mandatory for the default full validation.
+if [ "$stage" = initial ]; then
+  event_count=$("$jq_bin" -r '.events | length' "$initial_history")
+  printf 'cache_eviction_history stage=initial workflow_id=%s run_id=%s event_count=%s\n' \
+    "$workflow_id" "$run_id" "$event_count"
+  exit 0
 fi
+
+validate_history_shape "$terminal_history"
 
 # The completed target history must preserve the exact initial event prefix,
 # then show its timer firing and a successful terminal completion. A rewritten

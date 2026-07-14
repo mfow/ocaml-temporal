@@ -29,6 +29,13 @@ sh "$validator" \
   --terminal-history "$fixture/history.terminal.json" \
   --workflow-id "$workflow_id" --run-id "$run_id" >/dev/null
 
+# The live controller must establish this stage before it releases cache
+# pressure. Exercise that exact shared validator here so a jq scoping mistake
+# cannot turn a valid pending timer into a live-only false negative.
+sh "$validator" --stage initial \
+  --initial-history "$fixture/history.initial.json" \
+  --workflow-id "$workflow_id" --run-id "$run_id" >/dev/null
+
 # Runs a negative assertion without printing an expected failure into normal
 # test output. Every mutation below corresponds to an invariant that the live
 # controller must reject before claiming a real CacheFull/replay observation.
@@ -68,10 +75,19 @@ expect_failure sh "$validator" \
 
 jq '.events += [{"event_id":"6","type":"TimerFired"}]' \
   "$fixture/history.initial.json" >"$tmp/initial-timer-fired.json"
+expect_failure sh "$validator" --stage initial \
+  --initial-history "$tmp/initial-timer-fired.json" \
+  --workflow-id "$workflow_id" --run-id "$run_id"
 expect_failure sh "$validator" \
   --diagnostics "$fixture/diagnostics.json" \
   --initial-history "$tmp/initial-timer-fired.json" \
   --terminal-history "$fixture/history.terminal.json" \
+  --workflow-id "$workflow_id" --run-id "$run_id"
+
+jq '.events += [{"event_id":"6","type":"WorkflowExecutionCompleted"}]' \
+  "$fixture/history.initial.json" >"$tmp/initial-terminal.json"
+expect_failure sh "$validator" --stage initial \
+  --initial-history "$tmp/initial-terminal.json" \
   --workflow-id "$workflow_id" --run-id "$run_id"
 
 jq '.events[4].type = "WorkflowTaskScheduled"' \

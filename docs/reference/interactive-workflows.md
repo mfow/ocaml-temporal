@@ -182,15 +182,33 @@ let workflow =
     ~output:Temporal.Codec.string (fun () -> Ok "ready")
 
 let registered =
-  Temporal.Worker.workflow ~signals:[ approval_handler ] workflow
+  Temporal.Worker.workflow
+    ~signals:[ approval_handler ]
+    ~queries:[ status_handler ]
+    ~updates:[ add_tool_handler ]
+    workflow
 ```
 
-The worker keeps the handler private to this workflow registration. A matching
-native activation is scheduled on the workflow's owner scheduler; it is not
-called from Rust or from a native callback thread. Signal handlers return
-`(unit, Temporal.Error.t) result` and can call deterministic workflow helpers,
-including operations that suspend. Their commands are included in the
-containing workflow-task completion.
+The same `Temporal.Worker.workflow` registration accepts all three handler
+lists independently. Each list is optional, and a handler is private to this
+workflow registration; a name is not made available to every workflow in the
+worker. The execution mode depends on the interaction kind:
+
+- A matching signal activation is queued on the workflow's owner scheduler,
+  never called from Rust or a native callback thread. Signal handlers return
+  `(unit, Temporal.Error.t) result` and can call deterministic workflow
+  helpers, including operations that suspend. Their commands are included in
+  the containing workflow-task completion.
+- A query handler is invoked synchronously on the execution owner Domain. It
+  must be read-only and non-suspending; it cannot await a future, schedule an
+  activity, or mutate durable workflow state. Its encoded result is returned
+  as the query response rather than as a workflow-task command.
+- An update handler currently has one input and must finish in the activation
+  that delivered it. Its validator runs before the implementation for a live
+  request and is skipped when Core replays an already-validated update. A
+  handler that needs to suspend is not compatible with this first native
+  update slice; use a signal or an ordinary workflow operation until update
+  continuations are implemented.
 
 The `ref` above is deliberately small synthetic-test state. It demonstrates
 that a handler can close over ordinary OCaml values; it is not a substitute

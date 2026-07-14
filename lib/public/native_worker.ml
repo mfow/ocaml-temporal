@@ -619,6 +619,7 @@ let write_cache_eviction_marker state ~reason =
 (** Validates an optional payload-free cache-eviction marker path. *)
 let optional_marker_path name = function
   | None -> Ok None
+  | Some "" -> Ok None
   | Some path
     when path <> "" && not (String.contains path '\000')
          && not (Filename.is_relative path) ->

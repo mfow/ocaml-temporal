@@ -38,24 +38,19 @@ require_source "$driver" 'Client.cancel ~request_id ~reason:'
 require_source "$driver" 'Client.wait first'
 require_source "$driver" 'Client.wait second'
 require_source "$root/lib/public/worker.mli" '?max_cached_workflows:int'
+require_source "$root/lib/public/native_worker.ml" '| Some "" -> Ok None'
 require_source "$root/lib/runtime/native_worker_execution.ml" 'cache_removal_reason'
 
-command -v jq >/dev/null 2>&1 || {
-  echo "jq is required for the cache eviction contract" >&2
+expected='{"workflow_id":"two-binary-cache-eviction-a","run_id":"22222222-2222-4222-8222-222222222222","reason":"cache_full"}'
+normalized=$(tr -d '[:space:]' <"$fixture")
+if [ "$normalized" != "$expected" ]; then
+  echo "cache eviction fixture does not match its strict marker schema" >&2
   exit 1
-}
-
-jq -e '
-  type == "object"
-  and (keys | sort) == ["reason", "run_id", "workflow_id"]
-  and (.workflow_id == "two-binary-cache-eviction-a")
-  and (.run_id | type == "string" and length > 0)
-  and (.reason == "cache_full")
-' "$fixture" >/dev/null
+fi
 
 invalid="$temporary_directory/invalid-marker.json"
-jq '.reason = "lang_requested"' "$fixture" >"$invalid"
-if jq -e '.reason == "cache_full"' "$invalid" >/dev/null 2>&1; then
+sed 's/cache_full/lang_requested/' "$fixture" >"$invalid"
+if [ "$(tr -d '[:space:]' <"$invalid")" = "$expected" ]; then
   echo "cache eviction marker contract accepted the wrong eviction reason" >&2
   exit 1
 fi

@@ -1,7 +1,9 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
-verified the current thirteen-result baseline, including typed signal delivery and condition wake-up against real Temporal Server and PostgreSQL. The complete
+**Status:** The [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364)
+verified the current sixteen-result baseline, including typed signal delivery,
+activity retry classification, heartbeat-timeout retry, and child-workflow
+retry against real Temporal Server and PostgreSQL. The complete
 [PR #253 Actions run](https://github.com/ocaml-temporal/actions/runs/29286560471) verified the separate two-generation worker restart/replay acceptance against real Temporal Server and PostgreSQL.
 The PR #253 run passed the supported Linux and native platform matrix. The
 earlier [PR #229 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016)
@@ -28,12 +30,15 @@ For the current checkout, `OCAML_VERSION=5.5 DUNE_JOBS=1 make
 test-temporal-integration` also passes locally against Temporal Server 1.31
 and PostgreSQL. The accepted CI run adds delayed asynchronous activity
 completion, continue-as-new successor following, and typed signal/condition acceptance to the timeout path, for
-thirteen top-level assertions in total.
+sixteen top-level assertions in total.
 
-The current implementation starts twelve top-level workflows before waiting
+The current implementation starts fourteen top-level workflows before waiting
 for any terminal result, including the delayed asynchronous completion,
 continue-as-new successor and signal/condition workflows. It waits for the signal workflow's worker-visible readiness marker before signaling its exact run. After the heartbeat-retry workflow reaches
-its terminal result, it starts the timeout workflow and waits for that result.
+its terminal result, it starts the start-to-close timeout workflow, then starts
+the heartbeat-timeout workflow after that result. The sixteen-result assertion
+also includes the activity-level non-retryable policy and a parent whose child
+returns `SMOKE:CHILD_RETRY:ATTEMPT:2` on its second server-owned attempt.
 This ordering keeps the six-second callback from occupying the serialized
 activity adapter while the heartbeat lease is still being exercised. The
 assertion target requires the exact success payloads, one propagated child
@@ -41,7 +46,7 @@ failure, one child-cancellation marker, one typed non-retryable failure, one
 delayed asynchronous result, one continue-as-new successor result, one timeout
 retry result, and one exact-run cancellation. The separate restart/replay
 acceptance now passes in [PR #253](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471);
-cache eviction and heartbeat-timeout-triggered retry remain separate work.
+cache eviction and broader recovery remain separate work.
 
 The heartbeat assertion has a Docker-free contract in addition to the live
 driver and worker. `test/smoke/test_temporal_heartbeat_contract.sh` checks the
@@ -69,10 +74,11 @@ atomic readiness marker. Compose waits for that health check before
 `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts twelve top-level workflows before its
+later acceptance run. The driver starts fourteen top-level workflows before its
 first terminal wait, including the delayed asynchronous-completion and
 continue-as-new scenarios. Once the heartbeat-retry workflow has completed, it
-starts the timeout-retry workflow and waits for that separate result. The cancellation scenario waits for the
+starts the timeout-retry workflow, then the heartbeat-timeout retry workflow,
+and waits for those separate results. The cancellation scenario waits for the
 `smoke.cancellation_ready` activity marker after the long-running workflow has
 issued its durable-timer and marker commands in one activation, then
 acknowledges cancellation for `two-binary-long-running-cancellation` before
@@ -141,11 +147,14 @@ handle to return a typed `Cancelled` error. Those historical ten-run paths,
 including the updated timeout ordering, passed in the [PR #229 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016)
 and the [PR #226 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182);
 the historical nine-run path passed in [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859).
-The current thirteen-result run additionally verifies asynchronous completion, typed signal delivery, and
-continue-as-new successor following. The [PR #266 run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
-The [PR #253 run](https://github.com/ocaml-temporal/actions/runs/29286560471) also verifies the separate worker restart/replay controller. Heartbeat-timeout-
-triggered retries, child start failures, sticky-cache eviction, and crash
-recovery remain separate scenarios. The
+The current sixteen-result run additionally verifies asynchronous completion,
+typed signal delivery, continue-as-new successor following, activity-level
+non-retryable classification, heartbeat-timeout retry, and child-workflow
+retry. The [PR #279 run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364)
+also carries the initial child retry policy through the private Rust/OCaml
+activation bridge. The [PR #253 run](https://github.com/ocaml-temporal/actions/runs/29286560471)
+also verifies the separate worker restart/replay controller. Child start
+failures, sticky-cache eviction, and crash recovery remain separate scenarios. The
 intentionally broader follow-up requirements are listed in [Required
 assertions and failure evidence](#required-assertions-and-failure-evidence).
 
@@ -462,7 +471,7 @@ bilateral validation and focused native tests, and the two-binary fixture
 invokes them in its heartbeat-detail retry scenario. The PR #210 live run
 verified detail and timeout delivery. The current local OCaml 5.5 run also
 verifies the closed asynchronous-completion handoff and start-to-close timeout
-retry; heartbeat-timeout-triggered retry remains a separate capability.
+retry; the PR #279 run also verifies heartbeat-timeout-triggered retry.
 
 `client.start_workflow` accepts workflow type, workflow ID, task queue, and
 typed input payloads. It returns the server-issued run ID. `client.wait_workflow_result`
@@ -474,7 +483,7 @@ continued-as-new execution (including the successor run ID), or a bridge
 transport failure. An exact-run wait does not silently follow
 continued-as-new: it returns that typed successor outcome so callers can
 explicitly decide whether to await the new run. The public OCaml API keeps the
-twelve current workflow results as typed workflow-result outcomes and reserves
+sixteen current workflow results as typed workflow-result outcomes and reserves
 bridge transport failure for `Error`.
 
 The worker operations use `request`/terminal `response` or `error` envelopes
@@ -631,13 +640,15 @@ for PR head `47c9a93`, later squash-merged as `f877fbf`:
    `non_retryable=false` and the stable message `workflow execution was
     cancelled`.
 
-The current fixture keeps all fourteen historical assertions and adds
-`smoke.async_activity_completion`, `smoke.continue_as_new`, and
-`smoke.activity_timeout_retry` to make thirteen top-level starts and waits, including the typed signal/condition scenario. The
-local OCaml 5.5 Compose run accepted the exact asynchronous result, successor
-result, timeout-retry marker, and the original fourteen assertions. The exact
-six-second late callback, dedicated 7-second retry policy, and ordering guard
-remain covered by the historical PR #229/PR #226 CI runs.
+The current fixture starts fourteen top-level workflows before its first wait,
+then starts `smoke.activity_timeout_retry` and
+`smoke.activity_heartbeat_timeout_retry` in serialized order, for sixteen
+top-level starts and waits. The complete PR #279 run accepted the exact
+asynchronous result, successor result, timeout-retry markers, activity
+non-retryable classification, child-retry marker, typed signal/condition
+result, and the earlier assertions. The exact six-second late callbacks,
+dedicated retry policies, and ordering guards remain protected by the
+Docker-free contracts and historical PR #229/PR #226 CI runs.
 
 The driver logs no-payload phase records for starts, exact-run cancellation,
 exact-run waits, terminal classes, and operation latency. The Makefile requires
@@ -651,16 +662,12 @@ not log text, are the workflow success oracle. Per-activation/task identifiers
 and completion latency are a future observability enhancement and must remain
 payload-free if added.
 
-The first live test is intentionally small. With the current thirteen-result
-success path verified locally, extend the same two-binary topology rather than
+The first live test is intentionally small. With the current sixteen-result
+success path verified in CI, extend the same two-binary topology rather than
 adding a separate pseudo-worker test:
 
-* heartbeat-timeout-triggered retry and activity-level non-retryable
-  classification (the heartbeat-detail, timeout-retry, and asynchronous
-  completion paths are now live-verified locally);
+* child workflow start failure, replay, and recovery;
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
-* child workflow start failure, cancellation, retry policy, and non-success
-  terminal handling through the worker;
 * sticky-cache eviction and broader recovery beyond the live worker
   restart/replay path; and
 * cancellation of child/activity work and graceful shutdown while multiple
@@ -669,21 +676,22 @@ adding a separate pseudo-worker test:
 Child-start commands and both child-resolution jobs have a closed bilateral
 schema, Core conversion, pure-OCaml lifecycle tests, and the PR #210
 real-server assertions for parent/child success, propagated child failure, and
-child cancellation. The activity retry policy has the same separation:
+child cancellation and retry. The activity retry policy has the same separation:
 bilateral policy validation is synthetic, while the PR #210 run makes both the
 ordinary attempt-2 result and heartbeat-detail retry live evidence; the PR #226
 run adds start-to-close timeout-triggered retry for the earlier delay. The PR
 #229 run verifies the delayed retry policy and ordering guard against the live
-server. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-adds live worker restart/replay evidence; none of these assertions claims
-coverage of heartbeat timeouts, sticky-cache eviction, or crash recovery.
+server. PR #279 adds heartbeat-timeout, non-retryable activity, and child retry
+evidence; the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+adds live worker restart/replay evidence. None of these assertions claims
+coverage of sticky-cache eviction or crash recovery.
 
 ## Completion criteria for this design
 
-The current thirteen-result baseline
-was verified by the [PR #266 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247). The separate two-generation restart/replay acceptance was verified by the complete [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471).
+The current sixteen-result baseline
+was verified by the complete [PR #279 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364). The separate two-generation restart/replay acceptance was verified by the complete [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471).
 The baseline driver assertions and the restart controller are separate gates:
-the former waits for all thirteen exact workflow outcomes, while the latter
+the former waits for all sixteen exact workflow outcomes, while the latter
 replaces generation 1, validates replay on generation 2, and removes the
 PostgreSQL volume. The older entries below retain the history of the earlier
 nine- and ten-workflow milestones.

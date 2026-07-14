@@ -52,12 +52,14 @@ sh "$validator" \
   --stage terminal \
   --require-replay >/dev/null
 
-# The restart acceptance must also prove that the replacement worker can
-# deliver a retryable activity failure to Temporal and receive the next
-# attempt. The checked-in fixture is intentionally still the old contract at
-# this point; keeping this assertion explicit prevents a future implementation
-# from claiming restart coverage while only exercising a successful activity.
-jq -e '[.events[].type] | index("ActivityTaskFailed") != null' \
+# Temporal compacts activity retries in workflow history, so the normalized
+# terminal fixture cannot assert an intermediate ActivityTaskFailed event.
+# The live driver proves the retry instead by requiring the exact
+# SMOKE:AFTER-REPLAY:ATTEMPT:2 result; this fixture still proves that the
+# terminal history contains the activity command and its successful completion.
+jq -e '[.events[].type] | index("ActivityTaskScheduled") != null
+  and index("ActivityTaskStarted") != null
+  and index("ActivityTaskCompleted") != null' \
   "$fixture/history.terminal.json" >/dev/null
 
 # Terminal validation cannot be used without retaining the initial snapshot;
@@ -238,6 +240,22 @@ expect_failure sh "$validator" \
   --workflow-id "$workflow_id" \
   --run-id "$run_id" \
   --stage terminal
+
+# Temporal compacts intermediate activity retry events. A synthetic failure
+# inserted into the normalized terminal history must therefore be rejected
+# rather than mistaken for live retry evidence.
+jq '.events = .events[0:10]
+  + [{"event_id": "11", "type": "ActivityTaskFailed"}]
+  + (.events[10:] | map(.event_id = ((.event_id | tonumber) + 1 | tostring)))' \
+  "$fixture/history.terminal.json" >"$tmp/history-uncompacted-retry.json"
+expect_failure sh "$validator" \
+  --history "$tmp/history-uncompacted-retry.json" \
+  --initial-history "$fixture/history.initial.json" \
+  --diagnostics "$fixture/diagnostics.json" \
+  --workflow-id "$workflow_id" \
+  --run-id "$run_id" \
+  --stage terminal \
+  --require-replay
 
 # The baseline must be the exact initial event prefix, not merely a valid
 # pending-timer history for the same workflow/run identity. This mutation keeps

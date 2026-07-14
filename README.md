@@ -71,8 +71,10 @@ opaque bytes and applications may choose another deterministic codec.
   evidence for the prior fifteen-result slice, and [PR #266](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
   remains the focused evidence for the earlier thirteen-result signal path.
   The separate restart/replay controller now also requires the replacement
-  worker's retryable activity failure and second activity start; live
-  verification of that extension is pending.
+  worker to complete the retrying activity at attempt two; the exact result
+  marker proves the retry because Temporal compacts intermediate activity
+  retry events out of workflow history. Live verification of that extension is
+  pending.
   Sticky-cache eviction, crash recovery, and broader child lifecycle scenarios
   remain separate acceptance work.
 - Child-workflow commands can be authored and are translated by the semantic

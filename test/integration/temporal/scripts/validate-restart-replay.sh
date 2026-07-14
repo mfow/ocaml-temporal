@@ -217,22 +217,24 @@ validate_initial_stage() {
   fi
 }
 
-# Checks that one history contains the complete timer/activity path, including
-# a retryable activity failure followed by a second schedule, and ends with a
-# successful workflow completion rather than a failure or cancellation.
+# Checks that one history contains the complete timer/activity path and ends
+# with a successful workflow completion rather than a failure or cancellation.
+# Temporal intentionally elides intermediate activity retry events from
+# workflow history: the final ActivityTaskStarted event records the attempt
+# that ultimately completed, while the driver separately asserts the exact
+# attempt-two result marker.
 validate_terminal_stage() {
   history_path=$1
   if ! "$jq_bin" -e \
-    --argjson required '["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted", "TimerFired", "ActivityTaskScheduled", "ActivityTaskStarted", "ActivityTaskFailed", "ActivityTaskStarted", "ActivityTaskCompleted", "WorkflowExecutionCompleted"]' \
+    --argjson required '["WorkflowExecutionStarted", "WorkflowTaskCompleted", "TimerStarted", "TimerFired", "ActivityTaskScheduled", "ActivityTaskStarted", "ActivityTaskCompleted", "WorkflowExecutionCompleted"]' \
     --argjson terminal_types "$terminal_types" \
     "$has_order
      has_order(\$required)
      and .events[-1].type == \"WorkflowExecutionCompleted\"
-     and (all(.events[0:-1][];
-       . as \$event
-       | (all(\$terminal_types[]; . != \$event.type)
-          or \$event.type == \"ActivityTaskFailed\")
-     ))" "$history_path" >/dev/null; then
+      and (all(.events[0:-1][];
+        . as \$event
+        | all(\$terminal_types[]; . != \$event.type)
+      ))" "$history_path" >/dev/null; then
     fail "terminal history does not prove timer, activity retry, and completion order"
   fi
 }

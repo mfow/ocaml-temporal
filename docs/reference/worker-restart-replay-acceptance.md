@@ -1,6 +1,6 @@
 # Worker restart and replay acceptance design
 
-**Status: the original path is live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471); the retry-after-restart extension is pending its first green live run.** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The extension now requires generation 2 to deliver a retryable activity failure and receive a second activity task before the exact result is accepted. Sticky-cache eviction remains a separate unimplemented live scenario. The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
+**Status: the original path is live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471); the retry-after-restart extension is pending its first green live run.** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The extension now requires generation 2 to complete the retrying activity at attempt two, proven by the exact result marker; Temporal compacts intermediate activity retry events out of workflow history. Sticky-cache eviction remains a separate unimplemented live scenario. The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
 
 `make test-temporal-worker-restart-contract` is the fast Docker-free contract
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
@@ -27,8 +27,8 @@ The live restart target proves a narrower recovery contract:
    namespace and task queue;
 4. Temporal/Core delivers the pending execution to the new worker, which
    replays the recorded history, waits for the timer, runs the follow-up
-   activity, observes its first retryable failure, receives a second activity
-   task, and completes the workflow; and
+   activity, observes its first retryable failure, completes the second
+   attempt, and completes the workflow; and
 5. the one-shot driver asserts the exact terminal payload and exits nonzero if
    any result, terminal class, or timeout is unexpected.
 
@@ -137,8 +137,10 @@ uses this bounded sequence:
    that proof is a test failure.
 7. The controller waits for generation-2 readiness before allowing the driver
    to finish, then waits for a replay marker and the exact result. The marker
-   is diagnostic evidence; the driver's exact result and the retry history
-   remain the acceptance oracle.
+   is diagnostic evidence; the driver's exact attempt-two result and the
+   logical terminal history remain the acceptance oracle. Temporal's compact
+   retry history is intentional, so an intermediate failure event is not
+   required in the normalized document.
 8. On success, the controller verifies the ordered history and the exact
    driver assertion, then runs `temporal-clean`. On failure, it first preserves
    the driver output, both worker generations' bounded logs, and the workflow
@@ -192,10 +194,11 @@ The acceptance command may exit zero only when all of the following are true:
   readiness marker and writable process state could not be reused;
 - generation 2 became healthy and emitted the same run ID with
   `is_replaying=true` before the timer-result activity completed;
-- the history contains the ordered timer firing, first activity scheduling,
-  retryable `ActivityTaskFailed`, second activity scheduling and completion,
-  and workflow completion events for that run; event IDs may vary, but their
-  order and run identity must not;
+- the history contains the ordered timer firing, logical activity scheduling,
+  final activity start and completion, and workflow completion events for that
+  run; event IDs may vary, but their order and run identity must not. The
+  driver's exact `SMOKE:AFTER-REPLAY:ATTEMPT:2` result proves that this final
+  activity event represents the retry's second attempt;
 - `smoke-driver` returned zero only after `Client.wait` reported
   `Completed` for that exact run and its decoded payload equaled
   `SMOKE:AFTER-REPLAY:ATTEMPT:2`; and
@@ -227,8 +230,8 @@ guessing:
 | Timer exists, but generation 1 does not stop | Worker shutdown/drain or native wait lifecycle bug. |
 | Generation-1 container remains, its ID is reused, or its readiness marker is present before `Worker.create` | Replacement orchestration is invalid; generation 2 must not be accepted. |
 | Generation 2 is healthy, but no `is_replaying=true` marker | Replacement worker did not receive/replay the pending execution, or replay instrumentation is missing. |
-| Replay marker exists, but no retryable activity failure | Timer resolution or generation-2 activity dispatch did not reach the intended retry path. |
-| Retryable activity failure exists, but no second activity task | Temporal retry policy delivery, Core retry translation, or activity polling failed. |
+| Replay marker exists, but the driver does not return the exact attempt-two marker | Timer resolution, generation-2 activity dispatch, Temporal retry policy delivery, Core retry translation, or activity polling failed. |
+| Final activity history is missing or incomplete | The replacement worker did not persist the retry's terminal activity outcome, or the history query/normalizer lost it. |
 | Second activity completes, but driver reports a non-completed/mismatched result | Workflow determinism, payload decoding, or exact-run waiting failed. |
 | History belongs to another run or is missing | Driver/run identity or server persistence/query synchronization failed. |
 | Cleanup leaves a PostgreSQL volume | Fixture lifecycle is incorrect; the result must not be accepted. |

@@ -59,7 +59,7 @@
       "step": "history_checked",
       "status": "ok",
       "stage": "terminal",
-      "event_count": 18
+      "event_count": 16
     },
     {
       "step": "driver_completed",

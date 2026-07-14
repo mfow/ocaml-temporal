@@ -329,12 +329,16 @@ client response.
 
 Neither endpoint reads or retires the worker's activity-task ledger. The
 worker lease was already handed off, and the OCaml async-activity state machine
-keeps its copied token until the terminal client request is accepted. A
-`NotFound` response is treated as a terminal inactive-handle condition because
-retrying cannot make that token valid again. Other RPC failures do not prove
-whether Temporal consumed the request, so they remain generic connection
-errors and callers must treat the operation as unresolved rather than issue a
-different operation for the same handle.
+keeps its copied token while a client operation is in flight. A successful
+terminal request retires that lease; a terminal non-retryable bridge failure
+closes the handle and removes the lease. A `NotFound` response is treated as a
+terminal inactive-handle condition because retrying cannot make that token
+valid again. Other async-client RPC failures are returned as generic
+`Connection` bridge errors. The current public worker policy is deliberately
+fail-closed: only the explicit bilateral `Retryable` status authorizes replay,
+and these async-client endpoints do not produce that status, so callers must
+not issue a different operation for the same handle after a generic RPC
+failure.
 
 The request shapes are defined by
 [`activity-async-completion.schema.json`](../schemas/bridge/activity-async-completion.schema.json)

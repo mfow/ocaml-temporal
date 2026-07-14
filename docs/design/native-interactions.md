@@ -76,10 +76,13 @@ Consequently:
   terminal responses. It rejects duplicate acceptance or terminal responses.
 - `Temporal.Interaction` can exercise typed handler registration, codec
   validation, duplicate-name rejection, and validator ordering locally.
-- The signal transport test proves only the native activation boundary. It is
-  not evidence that a Temporal Server can invoke a public OCaml signal
-  handler; the focused scheduler test is not a live Temporal Server acceptance
-  test yet.
+- The signal transport tests prove the native activation boundary. Separately,
+  the typed signal/condition success path is live-verified against Temporal
+  Server in the [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247):
+  the driver signals an exact run only after its worker-visible readiness
+  marker, and the handler wakes a deterministic condition before returning its
+  terminal value. That run does not establish live query or update delivery;
+  the focused scheduler and bridge tests remain the evidence for those paths.
 
 Unsupported Core fields and oneof variants still fail explicitly. This is
 intentional: a newer Core field or update metadata field must not silently
@@ -392,15 +395,18 @@ single side accepting a new variant early:
    tests under `test/`, and bilateral JSON round-trip tests for every supported
    variant. Run the representative local Makefile gates; queued GitHub
    Actions checks remain unexecuted evidence until the repository quota clears.
-6. Add a Docker Compose acceptance scenario with Temporal Server and
-   PostgreSQL that sends a signal, issues a query, and waits for an update
-   through the two OCaml binaries. Record live success separately from
-   synthetic and bridge-only evidence.
+6. Expand the Docker Compose acceptance scenario with Temporal Server and
+   PostgreSQL to issue a query and wait for an update through the two OCaml
+   binaries. The typed signal/condition path is already live-verified by the
+   [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247);
+   record the query and update results separately from synthetic and
+   bridge-only evidence.
 
 Until the later update continuation stages have passed, the overall feature
-status remains experimental: native `SignalWorkflow` transport,
-output-only `QueryWorkflow` delivery, and immediate non-suspending update
-dispatch are implemented and focused-tested, while suspended updates and live
-interaction acceptance remain pending.
+status remains experimental: native `SignalWorkflow` transport and its typed
+signal/condition success path, output-only `QueryWorkflow` delivery, and
+immediate non-suspending update dispatch are implemented and focused-tested.
+Live query/update delivery, suspended updates, and broader interaction
+acceptance remain pending.
 `Temporal.Interaction` remains the public local-testing path for all three
 interaction kinds.

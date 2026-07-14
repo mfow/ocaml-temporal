@@ -5,16 +5,22 @@ activation currently executing a workflow. It is an exact pair of signed Unix
 seconds and a normalized nanosecond fraction:
 
 ```ocaml
-match Temporal.Workflow.now () with
-| Ok instant ->
-    Printf.printf "%Ld.%09d\n"
-      (Temporal.Time.seconds instant)
-      (Temporal.Time.nanoseconds instant)
-| Error error ->
-    (* Handle a typed SDK defect, for example when called outside a workflow. *)
-    Logs.err (fun log -> log "workflow clock unavailable: %s"
-      (Temporal.Error.message error))
+let workflow_timestamp () =
+  match Temporal.Workflow.now () with
+  | Ok instant ->
+      Ok (Printf.sprintf "%Ld.%09d"
+        (Temporal.Time.seconds instant)
+        (Temporal.Time.nanoseconds instant))
+  | Error error ->
+      (* Return the typed defect to the caller; report it outside the workflow. *)
+      Error error
 ```
+
+Formatting a value into a string is deterministic, but printing or logging is
+I/O. Keep that reporting outside workflow execution: have the workflow return
+the formatted value (or its typed error), then let the worker or application
+boundary decide how to display it. This keeps the example compatible with
+replay as well as live execution.
 
 The value is supplied by the activation protocol and is installed before the
 workflow function runs. Live execution and replay therefore observe the same

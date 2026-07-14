@@ -49,6 +49,7 @@ The operation-specific documents therefore start at their own schema root:
 | --- | --- | --- |
 | Client start, ticket poll/wait | start request, ticket, or start outcome | [client protocol](client-protocol.md) |
 | Client exact-run wait/cancel | wait or cancellation request and response | [client protocol](client-protocol.md) |
+| Client asynchronous activity completion/heartbeat | async completion or heartbeat request | [client protocol](client-protocol.md) |
 | Workflow worker poll/complete/reject | activation or completion | This document's workflow sections |
 | Remote activity worker poll/complete/heartbeat | task, completion, or heartbeat | [activity protocol](activity-protocol.md) |
 

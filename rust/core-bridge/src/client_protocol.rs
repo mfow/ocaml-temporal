@@ -18,7 +18,7 @@ use temporalio_common::protos::temporal::api::{
     taskqueue::v1::TaskQueue,
     workflowservice::v1::{
         GetWorkflowExecutionHistoryRequest, RequestCancelWorkflowExecutionRequest,
-        StartWorkflowExecutionRequest,
+        SignalWorkflowExecutionRequest, StartWorkflowExecutionRequest,
     },
 };
 
@@ -139,6 +139,32 @@ pub struct CancelWorkflowRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CancelWorkflowResponse {
+    /// Always true for a response emitted by this bridge.
+    pub acknowledged: bool,
+}
+
+/// Request to deliver one signal to one exact workflow run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignalWorkflowRequest {
+    /// Namespace containing the execution.
+    pub namespace: String,
+    /// Stable workflow identifier.
+    pub workflow_id: String,
+    /// Concrete run identifier; an empty run is never treated as "latest".
+    pub run_id: String,
+    /// Registered Temporal signal name.
+    pub signal_name: String,
+    /// Caller-owned idempotency key for this logical signal operation.
+    pub request_id: String,
+    /// Ordered signal input payloads.
+    pub input: Vec<workflow_protocol::Payload>,
+}
+
+/// Positive acknowledgement returned after Temporal accepts a signal RPC.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignalWorkflowResponse {
     /// Always true for a response emitted by this bridge.
     pub acknowledged: bool,
 }
@@ -434,6 +460,17 @@ pub fn decode_cancel_request(
     Ok(request)
 }
 
+/// Strictly parses one exact-run signal request.
+pub fn decode_signal_request(
+    input: &str,
+) -> Result<SignalWorkflowRequest, protocol::ProtocolError> {
+    protocol::decode_object(input)?;
+    let request = serde_json::from_str(input)
+        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client signal request"))?;
+    validate_signal_request(&request)?;
+    Ok(request)
+}
+
 /// Encodes and reparses a start response before ownership leaves Rust.
 pub fn encode_start_response(
     response: &StartWorkflowResponse,
@@ -451,6 +488,20 @@ pub fn encode_cancel_response(
         return Err(protocol::ProtocolError::invalid(
             "$.acknowledged",
             "cancellation acknowledgement must be true",
+        ));
+    }
+    encode_document(response)
+}
+
+/// Encodes and reparses a positive signal acknowledgement before it crosses
+/// the native boundary.
+pub fn encode_signal_response(
+    response: &SignalWorkflowResponse,
+) -> Result<String, protocol::ProtocolError> {
+    if !response.acknowledged {
+        return Err(protocol::ProtocolError::invalid(
+            "$.acknowledged",
+            "signal acknowledgement must be true",
         ));
     }
     encode_document(response)
@@ -496,6 +547,50 @@ pub async fn cancel_workflow(
         }
     }
     Ok(CancelWorkflowResponse { acknowledged: true })
+}
+
+/// Delivers one signal to one exact workflow run through Temporal's official
+/// workflow service. The request identity and payloads are copied into the
+/// protobuf message; no OCaml memory is retained by the asynchronous RPC.
+pub async fn signal_workflow(
+    connection: Connection,
+    request: SignalWorkflowRequest,
+) -> Result<SignalWorkflowResponse, ClientOperationError> {
+    // Signal delivery is a control-plane acknowledgement rather than a wait
+    // for workflow code to process the message. Keep the owner Domain
+    // responsive when the server is unavailable; callers can retry the same
+    // request ID after an uncertain timeout.
+    const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(1);
+    let payloads = payloads_to_core(&request.input).map_err(ClientOperationError::Core)?;
+    let mut service = connection.workflow_service();
+    let request = SignalWorkflowExecutionRequest {
+        namespace: request.namespace,
+        workflow_execution: Some(WorkflowExecution {
+            workflow_id: request.workflow_id,
+            run_id: request.run_id,
+        }),
+        signal_name: request.signal_name,
+        input: Some(payloads),
+        identity: connection.identity().to_owned(),
+        request_id: request.request_id,
+        ..Default::default()
+    };
+    match tokio::time::timeout(
+        CONTROL_RPC_TIMEOUT,
+        service.signal_workflow_execution(request.into_request()),
+    )
+    .await
+    {
+        Ok(result) => {
+            result.map_err(map_rpc_status)?;
+        }
+        Err(_) => {
+            return Err(ClientOperationError::Rpc {
+                code: "deadline_exceeded".to_owned(),
+            });
+        }
+    }
+    Ok(SignalWorkflowResponse { acknowledged: true })
 }
 
 /// Encodes one terminal asynchronous-start outcome and reparses the bytes
@@ -879,6 +974,21 @@ fn validate_cancel_request(value: &CancelWorkflowRequest) -> Result<(), protocol
     Ok(())
 }
 
+/// Validates one exact-run signal request and every payload conversion before
+/// it can reach the official Temporal service.
+fn validate_signal_request(value: &SignalWorkflowRequest) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.namespace, "$.namespace")?;
+    validate_identifier(&value.workflow_id, "$.workflow_id")?;
+    validate_identifier(&value.run_id, "$.run_id")?;
+    validate_identifier(&value.signal_name, "$.signal_name")?;
+    validate_identifier(&value.request_id, "$.request_id")?;
+    for payload in &value.input {
+        workflow_protocol::payload_to_core(payload)
+            .map_err(|_| protocol::ProtocolError::invalid("$.input", "invalid Temporal payload"))?;
+    }
+    Ok(())
+}
+
 /// Validates one execution reference.
 fn validate_execution(value: &ExecutionRef, path: &str) -> Result<(), protocol::ProtocolError> {
     validate_identifier(&value.namespace, &format!("{path}.namespace"))?;
@@ -1045,6 +1155,19 @@ mod tests {
             "run_id":"run-1",
             "request_id":"cancel-1",
             "reason":"operator requested cancellation"
+        })
+        .to_string()
+    }
+
+    /// Builds a valid exact-run signal request used by strict protocol tests.
+    fn signal_json() -> String {
+        serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "signal_name":"add_document",
+            "request_id":"signal-1",
+            "input":[]
         })
         .to_string()
     }
@@ -1244,6 +1367,75 @@ mod tests {
         );
         assert!(
             serde_json::from_str::<CancelWorkflowResponse>(
+                r#"{"acknowledged":true,"unexpected":true}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    /// Signals preserve exact-run identity, payload ordering, and positive
+    /// acknowledgement semantics across the closed JSON boundary.
+    fn signal_request_and_acknowledgement_round_trip() {
+        let request = decode_signal_request(&signal_json()).expect("signal request decodes");
+        assert_eq!(request.namespace, "default");
+        assert_eq!(request.workflow_id, "workflow-1");
+        assert_eq!(request.run_id, "run-1");
+        assert_eq!(request.signal_name, "add_document");
+        assert_eq!(request.request_id, "signal-1");
+        assert!(request.input.is_empty());
+
+        let encoded = encode_signal_response(&SignalWorkflowResponse { acknowledged: true })
+            .expect("positive signal acknowledgement encodes");
+        assert_eq!(encoded, r#"{"acknowledged":true}"#);
+    }
+
+    #[test]
+    /// Rejects signal documents that could redirect a message or silently
+    /// discard an input field through duplicate/unknown JSON members.
+    fn signal_request_is_closed_and_bounded() {
+        let mut unknown = signal_json();
+        unknown.insert_str(unknown.len() - 1, ",\"unexpected\":true");
+        assert!(decode_signal_request(&unknown).is_err());
+
+        let duplicate = r#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","signal_name":"add_document","request_id":"signal-1","request_id":"other","input":[]}"#;
+        assert!(decode_signal_request(duplicate).is_err());
+
+        for field in [
+            "namespace",
+            "workflow_id",
+            "run_id",
+            "signal_name",
+            "request_id",
+        ] {
+            let document = serde_json::json!({
+                "namespace":"default",
+                "workflow_id":"workflow-1",
+                "run_id":"run-1",
+                "signal_name":"add_document",
+                "request_id":"signal-1",
+                "input":[]
+            });
+            let mut object = document.as_object().unwrap().clone();
+            object.insert(field.to_owned(), serde_json::Value::String(String::new()));
+            assert!(
+                decode_signal_request(&serde_json::Value::Object(object).to_string()).is_err(),
+                "empty {field} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    /// Refuses false signal acknowledgements and unknown response members.
+    fn signal_acknowledgement_must_be_true_and_closed() {
+        assert!(
+            encode_signal_response(&SignalWorkflowResponse {
+                acknowledged: false
+            })
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<SignalWorkflowResponse>(
                 r#"{"acknowledged":true,"unexpected":true}"#
             )
             .is_err()

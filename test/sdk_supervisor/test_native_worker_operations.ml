@@ -208,6 +208,14 @@ let test_client_protocol_adapter () =
       reason = "operator requested shutdown";
     }
   in
+  let signal_request : Client.signal_request =
+    {
+      execution = wait_request;
+      signal_name = "add_document";
+      request_id = "signal-request-1";
+      input = [];
+    }
+  in
   let start_json =
     {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"}}|}
   in
@@ -232,12 +240,24 @@ let test_client_protocol_adapter () =
   in
   if not (contains_substring (Bytes.to_string cancel_bytes) "cancel-request-1")
   then failwith "typed cancellation request was not encoded";
+  let signal_bytes =
+    require_bridge
+      (Supervisor.Protocol_adapter.encode_client_signal_request signal_request)
+  in
+  if not (contains_substring (Bytes.to_string signal_bytes) "signal-request-1")
+  then failwith "typed signal request was not encoded";
   (match
      Supervisor.Protocol_adapter.decode_client_cancel_result
        (Ok (Bytes.of_string {|{"acknowledged":true}|}))
    with
   | Ok (Ok ()) -> ()
   | _ -> failwith "positive cancellation acknowledgement was not typed");
+  (match
+     Supervisor.Protocol_adapter.decode_client_signal_result
+       (Ok (Bytes.of_string {|{"acknowledged":true}|}))
+   with
+  | Ok (Ok ()) -> ()
+  | _ -> failwith "positive signal acknowledgement was not typed");
   (match
      Supervisor.Protocol_adapter.decode_client_start_result start_request
        (Ok (Bytes.of_string start_json))
@@ -326,6 +346,16 @@ let test_client_protocol_adapter () =
   | Ok (Error (Client.Rpc { code = "deadline_exceeded" })) -> ()
   | _ -> failwith "structured cancellation RPC error was not typed");
   (match
+     Supervisor.Protocol_adapter.decode_client_signal_result
+       (Error
+          {
+            Bridge.status = Connection;
+            message = {|{"kind":"rpc","code":"deadline_exceeded"}|};
+          })
+   with
+  | Ok (Error (Client.Rpc { code = "deadline_exceeded" })) -> ()
+  | _ -> failwith "structured signal RPC error was not typed");
+  (match
      Supervisor.Protocol_adapter.decode_client_cancel_result
        (Error
           {
@@ -336,6 +366,17 @@ let test_client_protocol_adapter () =
    with
   | Error { Bridge.status = Protocol; _ } -> ()
   | _ -> failwith "impossible cancellation error status was accepted");
+  (match
+     Supervisor.Protocol_adapter.decode_client_signal_result
+       (Error
+          {
+            Bridge.status = Already_started;
+            message =
+              {|{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":null}|};
+          })
+   with
+  | Error { Bridge.status = Protocol; _ } -> ()
+  | _ -> failwith "impossible signal error status was accepted");
   (match
      Supervisor.Protocol_adapter.decode_client_start_result start_request
        (Ok
@@ -490,6 +531,18 @@ let test_native_client_lifecycle_guards () =
    with
   | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
   | _ -> failwith "client cancellation without connection was accepted");
+  (match
+     Supervisor.perform supervisor
+       (Supervisor.Client_signal_workflow
+          {
+            execution = wait_request;
+            signal_name = "add_document";
+            request_id = "signal-before-connect";
+            input = [];
+          })
+   with
+  | Error (Supervisor.Backend { Bridge.status = Invalid_state; _ }) -> ()
+  | _ -> failwith "client signal without connection was accepted");
   expect "client lifecycle shutdown" (Ok ()) (Supervisor.shutdown supervisor)
 
 let () =

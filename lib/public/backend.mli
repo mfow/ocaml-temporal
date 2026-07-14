@@ -48,6 +48,17 @@ type cancel_request = {
   reason : string;
 }
 
+(** Exact workflow/run pair and typed payload for one signal request. The
+    connected client supplies the namespace to the native protocol so callers
+    cannot redirect a handle to another namespace. *)
+type signal_request = {
+  workflow_id : string;
+  run_id : string;
+  signal_name : string;
+  request_id : string;
+  input : Payload.t;
+}
+
 (** Terminal outcomes are kept separate from bridge transport errors so a
     completed Temporal failure remains an ordinary typed value. *)
 type terminal_result =
@@ -131,6 +142,10 @@ val client_wait : client -> wait_request -> (terminal_result, Error.t) result
 (** Requests cancellation of one exact workflow run. Success acknowledges the
     server RPC; a later [client_wait] observes the terminal cancellation. *)
 val client_cancel : client -> cancel_request -> (unit, Error.t) result
+
+(** Sends one signal to one exact workflow run. Success acknowledges the
+    server RPC; it does not wait for workflow code to process the message. *)
+val client_signal : client -> signal_request -> (unit, Error.t) result
 
 (** Closes a client backend. Native shutdown is serialized and terminal even
     when it returns an error; the public client caches that exact result so a

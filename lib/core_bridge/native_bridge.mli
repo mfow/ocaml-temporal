@@ -88,6 +88,11 @@ val client_start_workflow_json : runtime -> bytes -> (bytes, error) result
     operation to observe the eventual [Cancelled] terminal outcome. *)
 val client_cancel_workflow_json : runtime -> bytes -> (bytes, error) result
 
+(** Sends one typed signal to one exact workflow run. A successful response is
+    only the server acknowledgement; it does not wait for workflow code to
+    process the signal. *)
+val client_signal_workflow_json : runtime -> bytes -> (bytes, error) result
+
 (** Admits one asynchronous workflow start and returns a strict opaque ticket
     document. Rust owns the pending task and its request metadata until a
     later poll or bounded wait reaches a terminal outcome. *)

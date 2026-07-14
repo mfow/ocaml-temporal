@@ -9,9 +9,9 @@ decision about how a workflow result is exposed.
 The public `Temporal.Client` module does not expose these JSON documents,
 start tickets, or native status codes. On an HTTP(S) client, `start` returns a
 typed exact-run handle, `wait` hides the bounded polling loop and returns a
-typed terminal value, and `cancel` returns after Temporal acknowledges the
-request. The sections below describe the private steps that make those public
-operations safe.
+typed terminal value, while `cancel` and `signal` return after Temporal
+acknowledges their control-plane requests. The sections below describe the
+private steps that make those public operations safe.
 
 ## Why this protocol exists
 
@@ -203,6 +203,75 @@ and the complete [PR #210 run](https://github.com/mfow/ocaml-temporal/actions/ru
 verified start, exact-run wait, and exact-run cancellation against a real
 Temporal Server. See the [live acceptance coverage](live-acceptance-coverage.md)
 for the remaining evidence boundary.
+
+## Send one signal to an exact run
+
+The public `Temporal.Client.signal` operation sends a typed, fire-and-forget
+message to the exact workflow run retained by a client handle. It does not
+start a workflow, wait for a handler, or follow a continued-as-new successor.
+The signal definition supplies the stable Temporal name and its input codec;
+the caller receives `Ok ()` only after Temporal acknowledges the RPC.
+
+The private request is a closed object with the same exact-run identity fields
+used by cancellation, plus the signal name, idempotency key, and ordered
+payload list:
+
+```json
+{
+  "namespace": "default",
+  "workflow_id": "summarize-1",
+  "run_id": "server-assigned-run-id",
+  "signal_name": "add_document",
+  "request_id": "signal-summarize-1-1",
+  "input": [
+    {
+      "metadata": {
+        "encoding": {
+          "encoding": "base64",
+          "data": "anNvbi9wbGFpbg=="
+        }
+      },
+      "data": {
+        "encoding": "base64",
+        "data": "eyJ0ZXh0IjoiSGkifQ=="
+      }
+    }
+  ]
+}
+```
+
+OCaml validates the signal name when `Temporal.Signal.define` constructs the
+definition and encodes the input before transport. Rust validates the exact
+identifiers, request ID, signal name, payload conversions, and closed JSON
+shape again before constructing Temporal's official
+`SignalWorkflowExecutionRequest` protobuf. The connected client's identity is
+used for the RPC; callers cannot provide a second identity or redirect the
+request to another namespace.
+
+When `request_id` is omitted, OCaml allocates a fresh process-wide ID shared by
+all `Temporal.Client.t` values in that process. This keeps two independent
+handles from accidentally presenting the same signal as a retry of an earlier
+delivery. Supply an explicit ID when retrying an uncertain transport result so
+Temporal can deduplicate the same logical signal. A successful native response
+is exactly:
+
+```json
+{"acknowledged":true}
+```
+
+This acknowledgement says only that Temporal accepted the signal request; a
+workflow task may process it later or the run may already be closing. Signal
+failures use the closed `rpc` and `protocol` client error documents, while the
+start-only `already_started` category is rejected as impossible. Both sides
+reject unknown or duplicate members and validate the positive acknowledgement.
+The bridge bounds this control-plane RPC to one second, matching cancellation:
+an unavailable server cannot hold the supervisor's single owner Domain
+indefinitely, and a timeout is returned as a typed `deadline_exceeded` error.
+Callers that retry an uncertain result should reuse the same `request_id`.
+The request and response shapes are defined by
+[`client-signal-request.schema.json`](../schemas/bridge/client-signal-request.schema.json)
+and
+[`client-signal-response.schema.json`](../schemas/bridge/client-signal-response.schema.json).
 
 ## Wait for one exact run
 

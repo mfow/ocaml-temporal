@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-signal-request.schema.json",
+  "title": "OCaml Temporal native client exact-run signal request",
+  "description": "Closed JSON document used only by the private Rust client bridge. The request names one exact workflow run, carries a stable signal request ID, and preserves the ordered payload list. Runtime validators also reject duplicate keys, NUL bytes, and strings over the 65,536-byte safety limit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "workflow_id", "run_id", "signal_name", "request_id", "input"],
+  "properties": {
+    "namespace": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+    "workflow_id": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+    "signal_name": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+    "input": {
+      "type": "array",
+      "items": {"$ref": "temporal-payload.schema.json"}
+    }
+  }
+}

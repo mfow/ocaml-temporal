@@ -121,7 +121,7 @@ result when it receives that cancellation task, and only that terminal path
 removes the worker token from its ledger. An asynchronous heartbeat instead
 uses the namespace-bound client path and is checked by Core's async activity
 handle; its separate async lease remains non-terminal until an async terminal
-operation is accepted.
+operation is accepted or a non-retryable bridge failure closes and removes it.
 
 The schema is [`activity-heartbeat.schema.json`](../schemas/bridge/activity-heartbeat.schema.json).
 The focused bilateral tests are
@@ -167,8 +167,11 @@ continue to use the normal force-failure path.
 `will_complete_async` is accepted only as the worker handoff. The
 namespace-bound client endpoint rejects a second defer marker and accepts only
 completed, failed, or canceled terminal results. The adapter keeps the copied
-async lease until native acceptance, so a transport error cannot cause the
-activity callback to run again.
+async lease while a request is in flight and retains it for retry only when the
+native supervisor explicitly returns the bilateral `Retryable` status. A
+successful terminal request retires the lease; a generic `Connection`,
+`NotFound`, or other non-retryable bridge failure closes and removes it. No
+transport result reruns the activity callback.
 
 ## Schemas and tests
 

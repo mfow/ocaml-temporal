@@ -79,10 +79,12 @@ also has a higher-level lifecycle record:
 | `temporal.sdk.workflow` | `execution_created`, `workflow_started`, `workflow_completed`, `workflow_failed`, `workflow_query_unhandled`, `workflow_query_completed`, `workflow_query_failed`, `workflow_update_unhandled`, `workflow_signal_unhandled`, `workflow_signal_received`, `workflow_signal_handled`, `workflow_cancelled`, `execution_evicted`, `activation_ignored`, `activate` |
 
 The bridge source emits a completion record for every bridge call and a
-second error record when the typed result is unsuccessful. Applications that
-need a broad worker view should filter `temporal.sdk.lifecycle`; applications
-diagnosing deterministic workflow execution should filter
-`temporal.sdk.workflow`.
+second status record when the typed result is unsuccessful. That second record
+uses the status-specific level policy above: normal `Not_ready` progress is
+`Debug`, `Outstanding_tasks` during shutdown is `Warning`, and failures that
+need intervention are `Error`. Applications that need a broad worker view
+should filter `temporal.sdk.lifecycle`; applications diagnosing deterministic
+workflow execution should filter `temporal.sdk.workflow`.
 
 Latency is measured around the local OCaml operation with the portable Unix
 wall clock, expressed as fractional milliseconds, and clamped to zero if the

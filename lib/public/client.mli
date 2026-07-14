@@ -113,6 +113,20 @@ val cancel :
   ('input, 'output) handle ->
   (unit, Error.t) result
 
+(** Sends one typed signal to the exact run retained by [handle]. A successful
+    call acknowledges Temporal's signal RPC; it does not wait for workflow code
+    to process the message. [request_id] is optional: when omitted, the SDK
+    allocates a fresh process-wide ID shared by all client handles. Supply the
+    same ID when retrying an uncertain transport result. Signal names are
+    validated when their definitions are created and input is encoded before
+    transport. *)
+val signal :
+  ?request_id:string ->
+  ('workflow_input, 'workflow_output) handle ->
+  signal:'signal Signal.t ->
+  input:'signal ->
+  (unit, Error.t) result
+
 (** Returns the durable workflow ID supplied to [start]. *)
 val workflow_id : ('input, 'output) handle -> string
 

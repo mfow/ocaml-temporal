@@ -43,6 +43,16 @@ let execution : Protocol.execution =
 let cancel_request : Protocol.cancel_request =
   { execution; request_id = "cancel-1"; reason = "operator requested cancellation" }
 
+(** Signal requests carry the exact run, stable operation ID, and ordered
+    payloads that the Rust bridge forwards to Temporal's signal RPC. *)
+let signal_request : Protocol.signal_request =
+  {
+    execution;
+    signal_name = "add_document";
+    request_id = "signal-1";
+    input = [];
+  }
+
 (** Start requests use the same workflow identity as the response fixtures. *)
 let start_request : Protocol.start_request =
   {
@@ -156,6 +166,18 @@ let test_request_validation () =
     (unwrap
        (Protocol.encode_cancel_request
           { cancel_request with reason = "" }))
+  ;
+  let encoded_signal = unwrap (Protocol.encode_signal_request signal_request) in
+  require_fragment "signal name" "add_document" encoded_signal;
+  require_fragment "signal request ID" "signal-1" encoded_signal;
+  List.iter
+    (fun request -> require_error (Protocol.encode_signal_request request))
+    [
+      { signal_request with execution = { execution with namespace = "" } };
+      { signal_request with execution = { execution with run_id = "" } };
+      { signal_request with signal_name = "" };
+      { signal_request with request_id = "contains\000nul" };
+    ]
 
 (** Checks the cancellation acknowledgement's closed shape. A false value is
     rejected because the native bridge exposes only positively acknowledged
@@ -176,6 +198,31 @@ let test_cancellation_protocol () =
       {|{"acknowledged":true,"acknowledged":false}|};
       {|{"acknowledged":"true"}|};
     ]
+
+(** Checks that signal acknowledgement and operation-specific error decoding
+    fail closed in the same way as cancellation. *)
+let test_signal_protocol () =
+  let acknowledged =
+    unwrap (Protocol.decode_signal_response {|{"acknowledged":true}|})
+  in
+  if not acknowledged.acknowledged then
+    failwith "positive signal acknowledgement changed shape";
+  List.iter
+    (fun document -> require_error (Protocol.decode_signal_response document))
+    [
+      {|{"acknowledged":false}|};
+      {|{"acknowledged":true,"unexpected":true}|};
+      {|{"acknowledged":"true"}|};
+    ];
+  require_error
+    (Protocol.decode_signal_error
+       {|{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":null}|});
+  (match
+     unwrap
+       (Protocol.decode_signal_error {|{"kind":"rpc","code":"unavailable"}|})
+   with
+  | Protocol.Rpc { code = "unavailable" } -> ()
+  | _ -> failwith "signal RPC error was not typed")
 
 (** Exercises the asynchronous-start capability and all three terminal outcome
     variants. The request-bound ticket is deliberately opaque: this test can
@@ -343,6 +390,7 @@ let () =
   run "client successor identity" test_successor_identity_validation;
   run "client request validation" test_request_validation;
   run "client cancellation protocol" test_cancellation_protocol;
+  run "client signal protocol" test_signal_protocol;
   run "client asynchronous starts" test_async_start_protocol;
   run "client closed response shape" test_closed_response_shape;
   run "client response correlation" test_response_execution_correlation;

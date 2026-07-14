@@ -431,6 +431,14 @@ module Protocol_adapter = struct
     | Ok output -> Ok (Bytes.of_string output)
     | Error error -> client_error "client cancellation request encoding" error
 
+  (** Canonically serializes a typed exact-run signal request before it
+      reaches the native bridge. Payloads are validated by the shared client
+      codec, so malformed signal input cannot be mistaken for a server error. *)
+  let encode_client_signal_request request =
+    match Client.encode_signal_request request with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> client_error "client signal request encoding" error
+
   (** Decodes the opaque ticket returned by native asynchronous-start
       admission. The ticket is bound to [request] before it is published to
       the supervisor caller, so later poll operations cannot mix identities. *)
@@ -551,6 +559,34 @@ module Protocol_adapter = struct
           }
     | _ -> Error native_error
 
+  (** Decodes and status-checks one structured signal failure. Signals share
+      the generic RPC/protocol error vocabulary with cancellation; a
+      start-only [Already_started] status is rejected as an impossible native
+      result. *)
+  let decode_client_signal_failure native_error =
+    match native_error.Bridge.status with
+    | Connection | Protocol -> (
+        match Client.decode_signal_error native_error.message with
+        | Error error -> malformed_client_error "client signal" error
+        | Ok client_error ->
+            if native_error.Bridge.status = client_error_status client_error then
+              Ok (Error client_error)
+            else
+              Error
+                {
+                  Bridge.status = Protocol;
+                  message =
+                    "client signal error status does not match its JSON kind";
+                })
+    | Already_started ->
+        Error
+          {
+            Bridge.status = Protocol;
+            message =
+              "client signal returned an impossible already-started status";
+          }
+    | _ -> Error native_error
+
   (** Validates a successful native start response and translates it to the
       typed protocol result. Response identity correlation happens in the
       codec using the original request. *)
@@ -596,6 +632,15 @@ module Protocol_adapter = struct
         | Ok _response -> Ok (Ok ())
         | Error error -> client_error "client cancellation response decoding" error)
     | Error native_error -> decode_client_cancel_failure native_error
+
+  (** Decodes the positive signal acknowledgement or preserves a structured
+      server failure as an inner typed client error. *)
+  let decode_client_signal_result = function
+    | Ok input -> (
+        match Client.decode_signal_response (Bytes.to_string input) with
+        | Ok _response -> Ok (Ok ())
+        | Error error -> client_error "client signal response decoding" error)
+    | Error native_error -> decode_client_signal_failure native_error
 end
 
 (** The production backend owns one runtime-client-worker graph. Every
@@ -626,6 +671,9 @@ module Native_backend = struct
         (Client.wait_response, Client.client_error) result operation
     | Client_cancel_workflow :
         Client.cancel_request ->
+        (unit, Client.client_error) result operation
+    | Client_signal_workflow :
+        Client.signal_request ->
         (unit, Client.client_error) result operation
     | Start_worker : Bridge.worker_config -> unit operation
     | Start_replay_worker : Bridge.worker_config -> unit operation
@@ -705,6 +753,12 @@ module Native_backend = struct
         | Ok input ->
             Protocol_adapter.decode_client_cancel_result
               (Bridge.client_cancel_workflow_json runtime input))
+    | Client_signal_workflow request -> (
+        match Protocol_adapter.encode_client_signal_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_signal_result
+              (Bridge.client_signal_workflow_json runtime input))
     | Start_worker config -> Bridge.worker_start runtime config
     | Start_replay_worker config -> Bridge.replay_worker_start runtime config
     | Feed_replay_history input ->
@@ -805,6 +859,9 @@ module Native = struct
         (Client.wait_response, Client.client_error) result operation
     | Client_cancel_workflow :
         Client.cancel_request ->
+        (unit, Client.client_error) result operation
+    | Client_signal_workflow :
+        Client.signal_request ->
         (unit, Client.client_error) result operation
     | Start_worker : worker_config -> unit operation
     | Start_replay_worker : worker_config -> unit operation

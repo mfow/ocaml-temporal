@@ -152,6 +152,21 @@ For the real server smoke, the Makefile owns Compose project selection,
 readiness checks, failure logs, and volume cleanup; do not run the fixture's
 Compose file from the repository root.
 
+### CI lanes
+
+A code pull request runs representative compatibility lanes: Linux amd64 on
+OCaml 5.2 and 5.5, Linux arm64 on OCaml 5.5, macOS ARM64 on OCaml 5.5, the
+quality and dependency-license audits, and the OCaml 5.5 Temporal/PostgreSQL
+smoke. The Windows x64 OCaml 5.5 native lane is enabled when native bridge,
+build/toolchain, workflow, or composite-action configuration changes.
+Documentation-only pull requests still run the standalone license audit; JSON
+protocol schemas under `docs/schemas/` are instead treated as code. A pull
+request that changes only the live acceptance fixture under
+`test/integration/temporal/` runs the license audit and its live smoke rather
+than the representative matrix. A push to `master` and the scheduled run are
+the exhaustive gate: OCaml 5.2–5.5 on both Linux architectures, both OCaml 5.5
+native desktop jobs, quality, license audit, and the live smoke.
+
 When a GitHub Actions run is still `queued`, it has not produced verification
 evidence. The representative local baseline is `make check OCAML_VERSION=5.2`,
 which combines `make verify` with the package/OCaml license audit. Run

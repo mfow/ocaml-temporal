@@ -55,7 +55,21 @@ publish_release() {
 driver_pid=''
 driver_container="${project}-smoke-cache-eviction-driver"
 release_tmp=''
+scratch_dir=''
+driver_log=''
 driver_log_printed=false
+
+diagnostics_file="$fixture/.cache-eviction-diagnostics.json"
+accepted_file="$fixture/.cache-eviction-accepted"
+release_file="$fixture/.cache-eviction-release"
+pressure_file="$fixture/.cache-eviction-pressure"
+result_file="$fixture/.cache-eviction-result"
+legacy_driver_log="$fixture/.cache-eviction-driver.log"
+initial_history="$fixture/.cache-eviction-history.initial.json"
+terminal_history="$fixture/.cache-eviction-history.terminal.json"
+normalizer="$fixture/scripts/normalize-history.sh"
+identity_validator="$fixture/scripts/validate-restart-replay-identity.sh"
+validator="$fixture/scripts/validate-cache-eviction.sh"
 
 # Prints only the final 64 KiB of the one-shot driver log. Failure output must
 # remain useful on a hosted runner, but a line-count cap alone would still let
@@ -76,16 +90,38 @@ cleanup_driver() {
   compose rm --stop --force smoke-cache-eviction-driver >/dev/null 2>&1 || true
 }
 
+# Removes the private directory that can temporarily contain unprojected
+# Temporal responses. It is intentionally outside the bind-mounted checkout:
+# an uncatchable process death can leave only an OS-temporary file, never an
+# application payload in repository evidence.
+cleanup_scratch() {
+  [ -z "$scratch_dir" ] && return 0
+  if [ -d "$scratch_dir" ] && ! rm -rf "$scratch_dir"; then
+    echo "cache-eviction scratch cleanup failed" >&2
+    return 1
+  fi
+  scratch_dir=''
+}
+
 cleanup() {
   status=$?
   trap - EXIT HUP INT TERM
-  [ -z "$release_tmp" ] || rm -f "$release_tmp"
+  if [ -n "$release_tmp" ] && ! rm -f "$release_tmp"; then
+    echo "cache-eviction release-token cleanup failed" >&2
+    [ "$status" -ne 0 ] || status=1
+  fi
   cleanup_driver
   if [ "$status" -ne 0 ]; then
     print_driver_log
     make_target temporal-logs || true
   fi
-  make_target temporal-clean || true
+  if ! cleanup_scratch; then
+    [ "$status" -ne 0 ] || status=1
+  fi
+  if ! make_target temporal-clean; then
+    echo "cache-eviction Compose cleanup failed" >&2
+    [ "$status" -ne 0 ] || status=1
+  fi
   exit "$status"
 }
 
@@ -94,31 +130,56 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-diagnostics_file="$fixture/.cache-eviction-diagnostics.json"
-accepted_file="$fixture/.cache-eviction-accepted"
-release_file="$fixture/.cache-eviction-release"
-pressure_file="$fixture/.cache-eviction-pressure"
-result_file="$fixture/.cache-eviction-result"
-driver_log="$fixture/.cache-eviction-driver.log"
-initial_history="$fixture/.cache-eviction-history.initial.json"
-terminal_history="$fixture/.cache-eviction-history.terminal.json"
-normalizer="$fixture/scripts/normalize-history.sh"
-identity_validator="$fixture/scripts/validate-restart-replay-identity.sh"
-validator="$fixture/scripts/validate-cache-eviction.sh"
+# Allocates the only location that may hold raw CLI JSON. A fixed path below
+# [/tmp] avoids trusting [TMPDIR], which a caller could otherwise point back at
+# the bind-mounted repository. [mktemp] creates this directory with restrictive
+# permissions; [chmod] makes that requirement explicit for unusual platforms.
+if ! scratch_dir=$(mktemp -d /tmp/ocaml-temporal-cache-eviction.XXXXXX); then
+  echo "cache-eviction could not create private scratch storage" >&2
+  exit 1
+fi
+if ! chmod 700 "$scratch_dir"; then
+  echo "cache-eviction could not secure private scratch storage" >&2
+  exit 1
+fi
+driver_log="$scratch_dir/driver.log"
+
+# Tests a response size without emitting its contents. The live fixture needs
+# only a small history/describe document; rejecting unusually large input keeps
+# a malformed server response from consuming unbounded parser resources.
+is_bounded_file() {
+  path=$1
+  maximum_bytes=$2
+  [ -f "$path" ] && [ -r "$path" ] || return 1
+  bytes=$(wc -c <"$path" | tr -d '[:space:]') || return 1
+  case "$bytes" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$bytes" -le "$maximum_bytes" ]
+}
 
 # Normalizes only event IDs and type names after each CLI query. The raw JSON
-# is short-lived and removed by cleanup; the saved acceptance evidence remains
-# payload-free.
+# exists only in private scratch storage and is removed after every attempt;
+# the saved acceptance evidence in the repository remains payload-free.
 query_history() {
   destination=$1
-  raw_history="${destination}.raw"
+  raw_history="$scratch_dir/history.json"
   if ! compose run --rm --no-deps temporal-admin-tools \
     temporal workflow show --workflow-id "$workflow_id" --run-id "$run_id" \
     --namespace temporal-sdk-test --output json >"$raw_history" 2>/dev/null; then
+    rm -f "$raw_history" || true
     return 1
   fi
-  sh "$normalizer" --workflow-id "$workflow_id" --run-id "$run_id" \
-    --output "$destination" <"$raw_history"
+  if ! is_bounded_file "$raw_history" 8388608; then
+    rm -f "$raw_history" || true
+    return 1
+  fi
+  if ! sh "$normalizer" --workflow-id "$workflow_id" --run-id "$run_id" \
+    --output "$destination" <"$raw_history" >/dev/null 2>&1; then
+    rm -f "$raw_history" || true
+    return 1
+  fi
+  rm -f "$raw_history"
 }
 
 # Establishes the target's durable timer before pressure is allowed. The same
@@ -133,7 +194,8 @@ initial_history_is_pending() {
 # but is usable while the target timer is still pending. It makes a malformed
 # or unrelated diagnostic file fail before the driver result is accepted.
 cache_evidence_is_complete() {
-  [ -s "$diagnostics_file" ] && jq -e \
+  [ -s "$diagnostics_file" ] && is_bounded_file "$diagnostics_file" 1048576 \
+    && jq -e \
     --arg workflow_id "$workflow_id" --arg run_id "$run_id" '
       type == "object"
       and (keys | sort) == ["records", "run_id", "workflow_id"]
@@ -166,13 +228,17 @@ wait_for_marker() {
   return 1
 }
 
-# Begin with a volume-removing cleanup so neither a previous PostgreSQL data
-# volume nor a previous diagnostic can affect this run's evidence.
-make_target temporal-clean
-rm -f "$diagnostics_file" "$accepted_file" "$release_file" "$pressure_file" \
-  "$result_file" "$driver_log" "$initial_history" "$terminal_history" \
+# Begin by purging the legacy raw artifacts independently of Compose teardown.
+# Old controller versions wrote these unprojected CLI documents in the checkout;
+# removal must not depend on a Docker failure path reaching Make's cleanup rule.
+if ! rm -f "$diagnostics_file" "$accepted_file" "$release_file" "$pressure_file" \
+  "$result_file" "$legacy_driver_log" "$initial_history" "$terminal_history" \
   "${initial_history}.raw" "${terminal_history}.raw" \
-  "${terminal_history}.describe.json"
+  "${initial_history}.describe.json" "${terminal_history}.describe.json"; then
+  echo "cache-eviction could not purge legacy acceptance artifacts" >&2
+  exit 1
+fi
+make_target temporal-clean
 
 make_target temporal-start
 make_target temporal-start-cache-eviction-worker
@@ -193,12 +259,25 @@ run_id=$(sed -n 's/^run_id=//p' "$accepted_file" | sed -n '1p')
   exit 1
 }
 
-describe_file="${terminal_history}.describe.json"
-compose run --rm --no-deps temporal-admin-tools \
+describe_file="$scratch_dir/describe.json"
+if ! compose run --rm --no-deps temporal-admin-tools \
   temporal workflow describe --workflow-id "$workflow_id" --run-id "$run_id" \
-  --namespace temporal-sdk-test --output json >"$describe_file"
-sh "$identity_validator" --input "$describe_file" --workflow-id "$workflow_id" \
-  --run-id "$run_id" >/dev/null
+  --namespace temporal-sdk-test --output json >"$describe_file" 2>/dev/null; then
+  rm -f "$describe_file" || true
+  echo "cache-eviction workflow identity lookup failed" >&2
+  exit 1
+fi
+if ! is_bounded_file "$describe_file" 1048576 \
+  || ! sh "$identity_validator" --input "$describe_file" \
+    --workflow-id "$workflow_id" --run-id "$run_id" >/dev/null 2>&1; then
+  rm -f "$describe_file" || true
+  echo "cache-eviction workflow identity did not match the accepted run" >&2
+  exit 1
+fi
+if ! rm -f "$describe_file"; then
+  echo "cache-eviction could not remove private identity response" >&2
+  exit 1
+fi
 
 initial_ready=false
 for attempt in $(seq 1 120); do
@@ -281,8 +360,7 @@ remaining_volumes=$(docker volume ls -q \
   exit 1
 }
 
-# The Make cleanup also removes short-lived raw history and diagnostic files.
-# The CI job's zero exit status is the durable test record; failure output is
-# deliberately retained only long enough for the failure trap above.
-trap - EXIT HUP INT TERM
-make_target temporal-clean
+# The EXIT trap removes private scratch and the Compose stack together. The CI
+# job's zero exit status is the durable test record; no raw CLI document is
+# retained in the repository after either a success or a recoverable failure.
+exit 0

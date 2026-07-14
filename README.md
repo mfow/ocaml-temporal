@@ -66,8 +66,10 @@ opaque bytes and applications may choose another deterministic codec.
   a continue-as-new successor, checks the activity-level non-retryable policy
   result, and requires a child workflow to reach its second server-owned retry
   attempt. The complete [PR #289 CI
-  run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) verifies this
-  expanded acceptance against Temporal Server and PostgreSQL; the [PR #277
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) verifies the
+  preceding seventeen-result acceptance against Temporal Server and PostgreSQL;
+  the new eighteen-result path, including the larger backoff, awaits its live
+  run. The [PR #277
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069) remains
   evidence for the prior fifteen-result slice, and [PR #266](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
   remains the focused evidence for the earlier thirteen-result signal path.

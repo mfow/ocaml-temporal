@@ -214,11 +214,13 @@ and
 cover the copied heartbeat context and cancellation details. The live
 acceptance contract
 [`test_temporal_activity_timeout_contract.sh`](../../test/smoke/test_temporal_activity_timeout_contract.sh)
-currently proves the analogous **start-to-close** timeout retry; it is not a
-heartbeat-timeout substitute. Only a Docker Compose run against Temporal
-Server can prove a no-heartbeat attempt reaches the server timeout and that a
-new attempt is subsequently delivered. A local OCaml timer would compete with
-Core and would not provide that evidence.
+proves the analogous **start-to-close** timeout retry. The dedicated
+[`test_temporal_heartbeat_timeout_contract.sh`](../../test/smoke/test_temporal_heartbeat_timeout_contract.sh)
+protects the two-process registration and marker contract for the separate
+server-timeout scenario. The complete [PR #276 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29315361326)
+then live-verifies that a no-heartbeat attempt reaches Temporal's heartbeat
+timeout and that a new attempt is subsequently delivered. A local OCaml timer
+would compete with Core and would not provide that evidence.
 
 An implementation exception is caught at this boundary and becomes a typed
 non-retryable failure.  Exceptions are therefore a last-resort defect guard,
@@ -320,10 +322,15 @@ including binary detail preservation, prior-attempt detail delivery, lease
 retention, copied context payloads, callback-exception classification, and
 context invalidation. The complete [PR #253 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 also live-verifies server-delivered heartbeat detail/retry, delayed
-asynchronous activity completion, and start-to-close timeout retry. A
-heartbeat-timeout-triggered retry still requires a dedicated acceptance
-scenario because it must be driven by Temporal's timeout decision rather than
-a local timer.
+asynchronous activity completion, and start-to-close timeout retry. The
+complete [PR #276 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29315361326)
+also live-verifies heartbeat-timeout-triggered retry, driven by Temporal's
+timeout decision rather than a local timer. The companion
+[`test_temporal_non_retryable_activity_contract.sh`](../../test/smoke/test_temporal_non_retryable_activity_contract.sh)
+protects activity error-type policy matching, and the complete [PR #277
+Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069)
+live-verifies that a public `Activity` error named by
+`non_retryable_error_types` is observed without an unintended second attempt.
 
 The worker handoff uses `Will_complete_async` only for `define_async` callbacks.
 The later client endpoint rejects that marker and accepts only completed,

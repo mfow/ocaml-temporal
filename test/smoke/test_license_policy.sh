@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# Build temporary opam manifests to verify the repository's narrow license
+# allow-list. The fixtures cover ordinary approval, missing/prohibited
+# licenses, and the two version-scoped OCaml linking exceptions without
+# mutating the checked-in dependency inventory.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# Exercise both sides of the Cargo license policy with the same scanner used
+# by CI. The denied fixture must name every prohibited or malformed package;
+# checking those diagnostics prevents a parser branch from becoming a silent
+# allow or an unreviewed rejection.
 scanner=scripts/check-cargo-licenses.py
 fixtures=test/fixtures/cargo-licenses
 python=${PYTHON:-python3}

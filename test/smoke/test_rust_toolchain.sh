@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# This native smoke gate proves both halves of the pinned-toolchain contract:
+# the compiler version is exact, and that compiler can build the locked Rust
+# bridge into the archive consumed by the OCaml build. It is a compatibility
+# check, not a replacement for the bridge tests or the broader verification.
 expected_rust_version=1.94.1
 
 actual_rust_version=$(rustc --version | awk '{ print $2 }')

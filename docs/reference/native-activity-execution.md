@@ -332,9 +332,11 @@ Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069)
 live-verifies that a public `Activity` error named by
 `non_retryable_error_types` is observed without an unintended second attempt.
 The later complete [PR #279 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
-re-verifies these activity paths together in the current sixteen-result gate,
-including the child-retry scenario that shares the same worker and activity
-adapter.
+re-verified these activity paths together in the prior sixteen-result gate.
+The complete [PR #289 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368)
+is the current seventeen-result evidence, including the child-retry and
+duplicate-ID child-start-failure scenarios that share the same worker and
+activity adapter.
 
 The worker handoff uses `Will_complete_async` only for `define_async` callbacks.
 The later client endpoint rejects that marker and accepts only completed,

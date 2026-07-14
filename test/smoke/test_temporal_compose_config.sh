@@ -150,6 +150,20 @@ require_source_text "$driver" 'SMOKE:TIMEOUT:RETRIED:SMOKE'
 require_source_text "$worker" 'Worker.workflow Definitions.activity_timeout_retry'
 require_source_text "$worker" 'Worker.activity Definitions.timeout_retry_activity'
 
+require_source_text "$definitions" 'let long_backoff_retry_policy ='
+require_source_text "$definitions" \
+  '~initial_interval:(Temporal.Duration.of_ms 2_000L)'
+require_source_text "$definitions" \
+  'Temporal.Activity.define ~name:"smoke.long_backoff_retry"'
+require_source_text "$definitions" \
+  'let activity_long_backoff_retry ='
+require_source_text "$driver" 'two-binary-activity-long-backoff-retry'
+require_source_text "$driver" 'SMOKE:BACKOFF:RETRIED:SMOKE'
+require_source_text "$worker" \
+  'Worker.workflow Definitions.activity_long_backoff_retry'
+require_source_text "$worker" \
+  'Worker.activity Definitions.long_backoff_retry_activity'
+
 require_source_text "$definitions" \
   'Temporal.Activity.define_with_context ~name:"smoke.heartbeat_timeout_retry"'
 require_source_text "$definitions" \

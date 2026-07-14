@@ -245,6 +245,64 @@ let retry_policy =
     ~backoff_coefficient:1.0
     ~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:2 ()
 
+(** The deliberately delayed policy used by [activity_long_backoff_retry]. A
+    two-second interval is long enough for the activity itself to reject an
+    immediate second attempt, while keeping the live acceptance bounded and
+    independent of the much slower timeout-triggered scenarios. *)
+let long_backoff_retry_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 2_000L)
+    ~backoff_coefficient:1.0
+    ~maximum_interval:(Temporal.Duration.of_ms 2_000L) ~maximum_attempts:2 ()
+
+(** Counts callbacks for the delayed retry in the worker process. The counter
+    is intentionally outside workflow code: worker-local state is valid test
+    instrumentation for an activity, while the workflow result remains the
+    only cross-process acceptance oracle. *)
+let long_backoff_retry_attempts = Atomic.make 0
+
+(** Records when the first delayed-retry callback ran. The second callback
+    checks elapsed worker time so an accidentally removed server backoff cannot
+    still produce the expected second-attempt marker. *)
+let long_backoff_retry_first_attempt_at = Atomic.make 0.0
+
+(** Lower bound accepted by the activity-side delay assertion. It is below the
+    configured two-second policy to tolerate scheduler and container clock
+    jitter without accepting an immediate application retry. *)
+let long_backoff_retry_minimum_delay_seconds = 1.0
+
+(** Fails once, then succeeds only after Temporal has waited through the
+    configured long retry interval. The elapsed-time guard makes this a useful
+    live backoff test rather than another ordinary attempt-two assertion. *)
+let long_backoff_retry_activity =
+  Temporal.Activity.define ~name:"smoke.long_backoff_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
+      let attempt = Atomic.fetch_and_add long_backoff_retry_attempts 1 + 1 in
+      match attempt with
+      | 1 ->
+          Atomic.set long_backoff_retry_first_attempt_at (Unix.gettimeofday ());
+          Error
+            (Temporal.Error.make ~category:`Activity
+               ~message:"intentional delayed retry for acceptance" ())
+      | 2 ->
+          let elapsed =
+            Unix.gettimeofday () -. Atomic.get long_backoff_retry_first_attempt_at
+          in
+          if elapsed < long_backoff_retry_minimum_delay_seconds then
+            Error
+              (Temporal.Error.defect
+                 ~message:
+                   (Printf.sprintf
+                      "long-backoff retry arrived after only %.3fs" elapsed))
+          else Ok ("SMOKE:BACKOFF:RETRIED:" ^ String.uppercase_ascii input)
+      | attempt ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "long-backoff retry activity received unexpected attempt %d"
+                    attempt)))
+
 (** The heartbeat acceptance activity and workflow use a deliberately short
     timeout. It is long enough for the Core heartbeat manager to flush one
     request over the local Compose network, while still proving that the
@@ -424,6 +482,18 @@ let activity_retry =
       | Ok policy ->
           Temporal.Activity.execute ~retry_policy:policy retry_once_activity
             seed)
+
+(** Schedules [long_backoff_retry_activity] with the delayed policy. Eager
+    execution is disabled so both attempts cross the normal worker poll and
+    completion path used by the other live retry scenarios. *)
+let activity_long_backoff_retry =
+  Temporal.Workflow.define ~name:"smoke.activity_long_backoff_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match long_backoff_retry_policy with
+      | Error error -> Error error
+      | Ok policy ->
+          Temporal.Activity.execute ~retry_policy:policy
+            ~do_not_eagerly_execute:true long_backoff_retry_activity seed)
 
 (** Schedules [heartbeat_retry_activity] with both an explicit heartbeat
     timeout and the same bounded two-attempt retry policy used elsewhere in the

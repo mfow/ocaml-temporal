@@ -14,6 +14,29 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-14: Heartbeat-timeout retry acceptance fixture
+
+Status: focused fixture and Docker-free contracts verified locally; live
+Temporal Server and GitHub Actions verification are pending for this change.
+
+The two-binary Compose acceptance now includes
+`smoke.activity_heartbeat_timeout_retry`. Its first activity callback stops
+sending heartbeats and remains active for six seconds, while its start-to-close
+lease is ten seconds and its heartbeat lease is the shared 500 ms timeout. The
+callback returns a deliberately late first-attempt marker; the second attempt
+requires empty heartbeat details and returns
+`SMOKE:HEARTBEAT_TIMEOUT:RETRIED:SMOKE`. This distinguishes a server-managed
+heartbeat timeout from the existing application-error heartbeat retry and the
+existing start-to-close timeout retry.
+
+The driver starts this scenario only after the start-to-close timeout scenario
+has completed because the activity adapter serializes callback ownership. The
+worker registers the workflow and context-aware activity in the separate
+process, and both the dedicated heartbeat-timeout contract and the shared
+Compose source contract check that boundary without claiming live behavior.
+Focused binaries, `dune build @all`, `dune runtest test/smoke`, formatting, and
+the source contracts pass locally.
+
 ## 2026-07-14: Live worker restart/replay acceptance (#253)
 
 Status: verified in the complete [PR #253 GitHub Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)

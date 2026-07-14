@@ -1,9 +1,9 @@
 (** Worker process for the two-OCaml-binary live acceptance test.
 
     The worker registers the same shared workflow definitions as the driver,
-    including the context-aware heartbeat/retry and timeout-triggered-retry
-    scenarios, and keeps the public native worker loop alive until graceful
-    shutdown. The executable remains
+    including the context-aware heartbeat/retry, timeout-triggered-retry, and
+    heartbeat-timeout-triggered-retry scenarios, and keeps the public native
+    worker loop alive until graceful shutdown. The executable remains
     guarded by [TEMPORAL_TWO_BINARY_LIVE] so a local run cannot accidentally
     connect to a developer's Temporal endpoint; the Compose job is the only
     place that enables the live gate. *)
@@ -260,6 +260,7 @@ let run () =
               Worker.workflow Definitions.activity_heartbeat_retry;
               Worker.workflow Definitions.async_activity_completion;
               Worker.workflow Definitions.activity_timeout_retry;
+              Worker.workflow Definitions.activity_heartbeat_timeout_retry;
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
               Worker.workflow Definitions.child_non_retryable_failure;
@@ -277,6 +278,7 @@ let run () =
               Worker.activity Definitions.heartbeat_retry_activity;
               Worker.activity Definitions.async_delayed_completion_activity;
               Worker.activity Definitions.timeout_retry_activity;
+              Worker.activity Definitions.heartbeat_timeout_retry_activity;
               Worker.activity Definitions.cancellation_ready_activity;
               Worker.activity Definitions.signal_condition_ready_activity;
             ]

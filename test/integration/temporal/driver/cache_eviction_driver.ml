@@ -10,6 +10,13 @@ module Client = Temporal.Client
 module Error = Temporal.Error
 module Definitions = Smoke_definitions
 
+(** Records one client-driver phase without exposing payloads or native
+    connection details. The phase markers distinguish setup, start, marker,
+    cancellation, and wait failures when a live RPC returns a generic bridge
+    status. *)
+let phase operation status =
+  Printf.eprintf "cache eviction phase=%s status=%s\n%!" operation status
+
 (** Reads a required non-empty environment value as a typed configuration
     result rather than raising while the executable is initializing. *)
 let required_env name =
@@ -133,34 +140,54 @@ let run () =
       let* marker = required_env "SMOKE_CACHE_EVICTION_FILE" in
       let* ready = required_env "SMOKE_CACHE_EVICTION_READY_FILE" in
       let* timeout = timeout_seconds () in
+      phase "client_create" "begin";
       let* client =
         Client.create ~target_url ~namespace
           ~identity:"ocaml-temporal-cache-eviction-driver" ()
       in
+      phase "client_create" "ok";
       let finish result =
         match Client.shutdown client with
-        | Ok () -> result
+        | Ok () ->
+            phase "client_shutdown" "ok";
+            result
         | Error error -> Error error
       in
       let result =
         let* () = clear_marker marker in
         let* () = clear_marker ready in
+        phase "start_a" "begin";
         let* first =
           Client.start client ~workflow:Definitions.cache_eviction
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-cache-eviction-a" ~input:"first" ()
         in
+        phase "start_a" "ok";
+        phase "ready_marker" "begin";
         let* () = wait_for_marker ~expected:"initial-completion\n" ready ~timeout in
+        phase "ready_marker" "observed";
+        phase "start_b" "begin";
         let* second =
           Client.start client ~workflow:Definitions.cache_eviction
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-cache-eviction-b" ~input:"second" ()
         in
+        phase "start_b" "ok";
+        phase "eviction_marker" "begin";
         let* () = wait_for_marker marker ~timeout in
+        phase "eviction_marker" "observed";
+        phase "cancel_a" "begin";
         let* () = cancel first ~request_id:"two-binary-cache-eviction-cancel-a" in
+        phase "cancel_a" "ok";
+        phase "cancel_b" "begin";
         let* () = cancel second ~request_id:"two-binary-cache-eviction-cancel-b" in
+        phase "cancel_b" "ok";
+        phase "wait_a" "begin";
         let* first_outcome = Client.wait first in
+        phase "wait_a" "ok";
+        phase "wait_b" "begin";
         let* second_outcome = Client.wait second in
+        phase "wait_b" "ok";
         let* () = require_cancelled "cache eviction run A" first_outcome in
         require_cancelled "cache eviction run B" second_outcome
       in

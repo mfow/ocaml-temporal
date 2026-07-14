@@ -32,13 +32,51 @@ let timeout_seconds () =
           (Error.defect
              ~message:"SMOKE_DRIVER_TIMEOUT_SECONDS must be a number"))
 
-(** Waits for an atomically published non-empty worker marker. A bounded wait
-    keeps a missing eviction activation a normal driver failure instead of
-    letting CI hang until its global job timeout. *)
-let wait_for_marker path ~timeout =
+(** Removes a prior coordination marker and verifies that the shared bind
+    mount no longer exposes it. Failing closed here prevents an interrupted
+    acceptance run from being mistaken for the current workflow's readiness or
+    eviction event. *)
+let clear_marker path =
+  try
+    if Sys.file_exists path then Sys.remove path;
+    if Sys.file_exists path then
+      Error (Error.defect ~message:("cannot remove stale marker " ^ path))
+    else Ok ()
+  with exception_ ->
+    Error
+      (Error.defect
+         ~message:
+           (Printf.sprintf "cannot remove stale marker %s: %s" path
+              (Printexc.to_string exception_)))
+
+(** Returns whether a shared marker is non-empty and, when requested, exactly
+    matches its expected payload. Atomic publication makes a complete read
+    possible, while the payload check prevents a previous run's readiness token
+    from satisfying the current run. *)
+let marker_matches path expected =
+  if not (Sys.file_exists path) || (Unix.stat path).Unix.st_size = 0 then false
+  else
+    match expected with
+    | None -> true
+    | Some expected -> (
+        try
+          let channel = open_in_bin path in
+          Fun.protect
+            ~finally:(fun () -> close_in_noerr channel)
+            (fun () ->
+              let contents =
+                really_input_string channel (in_channel_length channel)
+              in
+              String.equal contents expected)
+        with _ -> false)
+
+(** Waits for an atomically published worker marker. A bounded wait keeps a
+    missing eviction activation a normal driver failure instead of letting CI
+    hang until its global job timeout. *)
+let wait_for_marker ?expected path ~timeout =
   let deadline = Unix.gettimeofday () +. timeout in
   let rec loop () =
-    if Sys.file_exists path && (Unix.stat path).Unix.st_size > 0 then Ok ()
+    if marker_matches path expected then Ok ()
     else if Unix.gettimeofday () >= deadline then
       Error (Error.defect ~message:"cache eviction marker was not published")
     else begin
@@ -105,12 +143,14 @@ let run () =
         | Error error -> Error error
       in
       let result =
+        let* () = clear_marker ready_marker in
+        let* () = clear_marker marker in
         let* first =
           Client.start client ~workflow:Definitions.cache_eviction
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-cache-eviction-a" ~input:"first" ()
         in
-        let* () = wait_for_marker ready_marker ~timeout in
+        let* () = wait_for_marker ~expected:"first\n" ready_marker ~timeout in
         let* second =
           Client.start client ~workflow:Definitions.cache_eviction
             ~task_queue:Definitions.task_queue

@@ -1031,17 +1031,23 @@ let worker_restart_replay =
           Ok ("SMOKE:" ^ transformed))
 
 (** Keeps a workflow run in Core's sticky cache while a second run is
-    admitted. The readiness activity completes only after the first workflow
-    task has scheduled it, giving the independent driver a durable boundary
-    before it starts the second execution. The live eviction fixture configures
-    the worker with one cache slot, so the second workflow task must then
-    deliver a [RemoveFromCache(CacheFull)] activation for the older run. A long
-    timer keeps both runs open until the driver observes that marker and
-    cancels both exact executions. *)
+    admitted. The first workflow task schedules both a ten-minute timer and a
+    readiness activity; the activity marker therefore proves that the timer is
+    already durable before the independent driver starts the second execution.
+    The live eviction fixture configures the worker with one cache slot, so the
+    second workflow task must then deliver a [RemoveFromCache(CacheFull)]
+    activation for the older run. The timer keeps both runs open until the
+    driver observes that marker and cancels both exact executions. *)
 let cache_eviction =
   Temporal.Workflow.define ~name:"smoke.cache_eviction"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
-      let open Temporal.Result_syntax in
-      let* () = Temporal.Activity.execute cancellation_ready_activity seed in
-      let* () = Temporal.Workflow.sleep (Temporal.Duration.of_ms 60_000L) in
-      Ok ("SMOKE:CACHE:" ^ String.uppercase_ascii seed))
+      let timer =
+        Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 600_000L)
+      in
+      let marker =
+        Temporal.Activity.start ~do_not_eagerly_execute:true
+          cancellation_ready_activity seed
+      in
+      match Temporal.Future.await (Temporal.Future.both timer marker) with
+      | Error error -> Error error
+      | Ok ((), ()) -> Ok ("SMOKE:CACHE:" ^ String.uppercase_ascii seed))

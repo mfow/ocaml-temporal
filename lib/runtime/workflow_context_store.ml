@@ -26,6 +26,7 @@ type child_workflow_state = {
 type t = {
   scheduler : Scheduler.t;
   task_queue : string;
+  conditions : Condition_store.t;
   mutable activation_timestamp :
     Temporal_protocol.Workflow_protocol.timestamp option;
   mutable next_sequence : int64;
@@ -72,6 +73,7 @@ let create ?(task_queue = "default") scheduler =
       {
         scheduler;
         task_queue;
+        conditions = Condition_store.create scheduler;
         activation_timestamp = None;
         next_sequence = 0L;
         activities = Hashtbl.create 16;
@@ -129,6 +131,18 @@ let resolved context result =
     command. The normal scheduler teardown releases it if the workflow ends
     before the owning helper signals it. *)
 let create_signal context = Scheduler.promise context.scheduler ~outside_error
+
+(** Evaluates a workflow-local condition and suspends its current fiber only
+    when the predicate is false.  Keeping this wrapper beside the other
+    scheduler-owned operations prevents public code from reaching into the
+    condition store or retaining its callbacks directly. *)
+let wait_until context ~predicate =
+  Condition_store.wait_until context.conditions ~predicate
+
+(** Rechecks all condition predicates after one activation drain.  The boolean
+    tells the execution loop whether it must drain newly queued continuations
+    before completing the activation. *)
+let notify_conditions context = Condition_store.notify context.conditions
 
 (** Returns an already-failed future when an SDK operation is called without an
     active workflow, without creating fake global workflow state. *)
@@ -446,6 +460,7 @@ let take_commands context =
     while their Fun.protect cleanups run. *)
 let shutdown context =
   context.sealed <- true;
+  Condition_store.shutdown context.conditions;
   Scheduler.shutdown context.scheduler;
   Hashtbl.clear context.activities;
   Hashtbl.clear context.child_workflows;

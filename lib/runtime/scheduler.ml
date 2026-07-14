@@ -54,6 +54,18 @@ let create () =
     abort_requested = false;
   }
 
+(** Returns the stable identity assigned to this workflow scheduler.  Runtime
+    stores use it with the Domain-local owner marker to reject cross-workflow
+    waits before they retain a continuation. *)
+let id scheduler = scheduler.id
+
+(** Reports whether a scheduler is currently draining queued workflow work. *)
+let is_running scheduler = scheduler.running
+
+(** Reports whether the scheduler still accepts workflow futures and queued
+    callbacks.  Shutdown flips this flag before releasing continuations. *)
+let is_active scheduler = scheduler.active
+
 (** Assigns FIFO sequence numbers at enqueue time. Work submitted after shutdown
     is intentionally discarded only by internal callbacks already being torn down. *)
 let enqueue scheduler thunk =

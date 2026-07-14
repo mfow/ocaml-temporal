@@ -19,6 +19,15 @@ exception Workflow_aborted
     other scheduler in this process. *)
 val create : unit -> t
 
+(** Returns the process-local identity of this scheduler. *)
+val id : t -> int
+
+(** Reports whether this scheduler is in a [run] drain on its owner Domain. *)
+val is_running : t -> bool
+
+(** Reports whether this scheduler has not yet been shut down. *)
+val is_active : t -> bool
+
 (** Creates a pending future owned by this scheduler and the function that will
     provide its result. *)
 val promise :

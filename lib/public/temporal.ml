@@ -8,6 +8,7 @@ module Activity = Activity
 module Child_workflow = Child_workflow
 module Client = Client
 module Codec = Codec
+module Condition = Condition
 module Duration = Duration
 module Error = Error
 module Future = Future

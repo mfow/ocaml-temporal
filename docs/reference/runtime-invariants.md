@@ -42,6 +42,16 @@ and bridge, read the [documentation guide](../README.md) first.
 - `Future.race` and `Future.first` settle on the first completion, including an
   error, without cancelling losers. Already-ready inputs use registration order;
   pending inputs use deterministic callback order.
+- A `Temporal.Condition` predicate is evaluated immediately and then only by
+  the owning execution's activation drain. A false predicate owns one private
+  scheduler future and one callback; a true predicate or typed predicate error
+  creates no waiter. Notification snapshots waiters in registration order,
+  removes each waiter before resolving it, and re-drains newly queued
+  continuations so a state mutation in the same activation can release a
+  condition without a synthetic timer. Predicates must be deterministic,
+  non-blocking, and non-suspending. Context teardown deactivates every waiter
+  before scheduler shutdown, so a late notification cannot retain or resume
+  an ended workflow.
 - A `Temporal.Scope` signal belongs to the same scheduler as the workflow
   futures it observes. Cancellation resolves only that private signal, never
   the underlying activity, child-workflow, or timer future. Every scope

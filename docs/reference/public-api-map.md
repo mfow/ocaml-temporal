@@ -33,13 +33,18 @@ for those rules.
   ends the current run and starts a successor.
 - `Temporal.Activity` defines local, remote, context-aware, and asynchronous
   activities. `start` schedules an activity without waiting; `execute` is the
-  convenience composition of `start` and `Future.await`. Activity callbacks
-  are the boundary for external I/O, and their context/heartbeat rules are
-  described in the [activity reference](native-activity-execution.md).
+  convenience composition of `start` and `Future.await`. Keep the handle from
+  `start_handle` when the workflow may need to cancel one exact activity or
+  inspect its future separately; `Retry_policy` and the cancellation policy
+  control the durable command options. Activity callbacks are the boundary for
+  external I/O, and their context/heartbeat rules are described in the
+  [activity reference](native-activity-execution.md).
 - `Temporal.Child_workflow` schedules a child workflow and exposes its typed
-  future. Child scheduling and completion are durable workflow operations, not
-  ordinary function calls; the [workflow guide](../guides/workflows.md) marks
-  the authoring/native-support boundary.
+  future. Use its operation handle when the parent must cancel one exact child;
+  child retry and cancellation policies are passed to the durable command.
+  Child scheduling and completion are durable workflow operations, not ordinary
+  function calls; the [workflow guide](../guides/workflows.md) marks the
+  authoring/native-support boundary.
 - `Temporal.Future` combines and observes workflow-owned results. A future is
   tied to the execution that created it; `await` suspends the current workflow
   fiber rather than blocking an OS thread. `Temporal.Condition` waits on

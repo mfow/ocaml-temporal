@@ -286,6 +286,37 @@ which includes the same signal/condition path. The acknowledgement therefore
 remains distinct from handler execution, while the two runs together preserve
 the focused and complete live evidence for this client operation.
 
+## Shut down the client graph
+
+`Temporal.Client.shutdown` is a lifecycle operation rather than another
+client JSON request. It closes the private supervisor graph that owns the
+transport, Core client, and runtime; it does not send a cancellation or other
+terminal command to any workflow execution on the server. A workflow that is
+still running remains a server-side execution and must be observed or
+cancelled through a client that is still open.
+
+Shutdown has one linearization point at the public client. The first caller
+serializes with other shutdown callers, closes admission before native
+teardown, and then caches the exact `(unit, Error.t) result`. Calls that race
+with that transition but have already entered the supervisor are allowed to
+finish in supervisor mailbox order. Calls that have not entered it fail with
+the typed bridge error `client is shut down`; this applies to `start`, `wait`,
+`cancel`, `signal`, and `follow`, including calls made through handles retained
+before shutdown.
+
+For an HTTP(S) client, the supervisor admits one terminal shutdown request,
+waits for earlier admitted operations, and joins its owner Domain. The native
+backend then attempts the reverse ownership sequence: replay worker disposal,
+worker shutdown, client disconnect, and runtime close. It preserves the first
+failure while still running the defensive cleanup steps. Consequently, a
+returned teardown error is terminal evidence that the native graph was
+consumed or invalidated, not an invitation to retry an operation on the old
+client. Repeating `Temporal.Client.shutdown` returns the same cached result,
+including that error, without entering native teardown again. The
+deterministic `mock://` transport follows the same public closed-state and
+idempotency contract, although its cleanup only releases the in-memory
+service.
+
 ## Wait for one exact run
 
 The wait request contains exactly the three identity fields:

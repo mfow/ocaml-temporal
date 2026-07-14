@@ -47,7 +47,7 @@ opaque bytes and applications may choose another deterministic codec.
 
 | Area | Current status |
 | --- | --- |
-| Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
+| Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, workflow-local conditions, cooperative cancellation scopes, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
 | Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, records activity heartbeats, and supports retained asynchronous activity completion. The complete [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) live-verifies the seventeen-result Compose acceptance, including Temporal-driven heartbeat-timeout retry, activity-level non-retryable error-type matching, child-workflow retry, and duplicate-ID child-start failure; the [PR #298 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291) live-verifies the separate two-generation restart/replay acceptance, including a replacement worker retrying the activity to attempt two. |
 | Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, exact-run cancellation, and typed exact-run signals. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result; signal acknowledgement likewise does not claim that a worker handler has already run. The [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) live-verifies the current seventeen workflow assertions, including typed signal delivery and condition wake-up; earlier runs remain linked below as historical evidence for smaller slices. |
@@ -93,6 +93,12 @@ opaque bytes and applications may choose another deterministic codec.
   paths against Temporal Server, including a child that retries to a second
   server-owned attempt and a duplicate-ID child-start failure. Child replay and
   recovery remain follow-up scenarios.
+- `Temporal.Scope` provides an experimental, workflow-local cancellation
+  boundary for observing futures. It returns typed cancellation and ownership
+  errors without blocking an OS thread, but it is intentionally cooperative:
+  cancelling a scope does not emit Temporal activity or child-workflow
+  cancellation commands. Use activity cancellation options or the public client
+  cancel operation when server-side cancellation is required.
 - Typed signal, query, and update definitions plus deterministic local handler
   dispatch are available as an experimental slice. Native signal delivery,
   output-only query delivery, immediate one-input non-suspending updates, and

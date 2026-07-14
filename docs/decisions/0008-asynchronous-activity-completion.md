@@ -1,7 +1,8 @@
 # ADR 0008: Asynchronous activity completion boundary
 
-- Status: implemented locally; normal delayed completion is live-verified, while
-  CI and remaining Core edge cases are pending
+- Status: implemented; normal delayed completion is live-verified in the
+  complete [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061),
+  while Core response-flag handling and broader edge cases remain pending
 - Date: 2026-07-13
 - Decision owners: OCaml Temporal maintainers
 
@@ -168,12 +169,12 @@ reviewable:
    client requests, rejection of `will_complete_async` on that endpoint,
    duplicate/unknown fields, malformed tokens, payload limits, and canonical
    re-encoding.
-4. **Live Compose acceptance.** Extend the two-OCaml-binary stack with an
-   activity that returns the async outcome, a separate completion action, and a
-   workflow assertion that waits for the later result. Include cancellation,
-   heartbeat details, retry/timeout, duplicate completion, and graceful
-   shutdown scenarios. These are live feature tests; focused fake-supervisor
-   tests must remain separate.
+4. **Live Compose acceptance.** The complete [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
+   verifies the two-OCaml-binary stack's delayed asynchronous completion,
+   timeout, cancellation, and graceful-shutdown integration paths. Focused
+   fake-supervisor tests remain authoritative for duplicate completion and
+   other adapter-only state transitions; broader Core response-flag and
+   recovery cases remain follow-up work.
 
 ## Current implementation boundary and heartbeat limits
 

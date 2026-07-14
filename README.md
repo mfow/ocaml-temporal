@@ -291,6 +291,7 @@ are excluded from log messages. See the [observability reference](docs/reference
 - [Private JSON control protocol](docs/reference/core-protocol.md)
 - [Native client JSON protocol](docs/reference/client-protocol.md)
 - [Native workflow execution](docs/reference/native-worker-execution.md)
+- [Native execution translation](docs/reference/native-execution-translation.md)
 - [Native activity protocol and execution](docs/reference/activity-protocol.md)
   and [activity execution lifecycle](docs/reference/native-activity-execution.md)
 - [Deterministic workflow time](docs/reference/workflow-time.md)

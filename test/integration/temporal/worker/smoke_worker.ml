@@ -267,6 +267,7 @@ let run () =
               Worker.workflow Definitions.parent_retries_child;
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
+              Worker.workflow Definitions.parent_observes_child_start_failure;
               Worker.workflow Definitions.child_non_retryable_failure;
               Worker.workflow Definitions.parent_awaits_failed_child;
               Worker.workflow Definitions.child_long_running;

@@ -786,6 +786,14 @@ let child_after_timer =
       | Error error -> Error error
       | Ok () -> Ok (String.uppercase_ascii (seed ^ ":child")))
 
+(** Reuses the already-running top-level cancellation execution as the child
+    ID in the live start-failure scenario. Temporal IDs are namespace-wide, so
+    the parent can only observe a child-start rejection if this conflicting
+    execution has been accepted before the parent asks Core to start its child.
+    The value is shared by the workflow and driver contract to keep the
+    conflict deterministic and visible in source review. *)
+let child_start_conflict_id = "two-binary-long-running-cancellation"
+
 (** Starts [child_after_timer] with an identity derived only from the parent
     input, then waits through the public direct-style child helper. The fixed
     prefix keeps this fixture's child execution distinct from the driver's
@@ -797,6 +805,37 @@ let parent_awaits_child =
       Temporal.Child_workflow.execute
         ~id:("two-binary-parent-child-" ^ seed)
         child_after_timer seed)
+
+(** Attempts to start a child using [child_start_conflict_id], which is held by
+    the live top-level cancellation workflow. A successful child result would
+    prove that the duplicate-ID guard was lost, so the parent turns that path
+    into a defect. The expected [Child_workflow] and non-retryable metadata are
+    checked inside the workflow before returning a stable driver marker. *)
+let parent_observes_child_start_failure =
+  Temporal.Workflow.define ~name:"smoke.parent_observes_child_start_failure"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match
+        Temporal.Child_workflow.execute ~id:child_start_conflict_id
+          child_after_timer seed
+      with
+      | Ok value ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "duplicate child ID unexpectedly started child with %S"
+                    value))
+      | Error error ->
+          let view = Temporal.Error.view error in
+          if view.category = `Child_workflow && view.non_retryable then
+            Ok "SMOKE:CHILD:START_FAILED"
+          else
+            Error
+              (Temporal.Error.defect
+                 ~message:
+                   (Printf.sprintf
+                      "duplicate child ID returned unexpected metadata (category=%s, non_retryable=%b)"
+                      (Temporal.Error.kind error) view.non_retryable)))
 
 (** A child workflow that fails with a deterministic, non-retryable workflow
     error. Keeping the failure in the child (rather than failing the parent

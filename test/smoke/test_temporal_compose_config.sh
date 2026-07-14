@@ -227,6 +227,23 @@ require_source_text "$driver" 'SMOKE:CHILD:CANCELLED'
 require_source_text "$worker" 'Worker.workflow Definitions.parent_awaits_failed_child'
 require_source_text "$worker" 'Worker.workflow Definitions.parent_cancels_child'
 
+# Child start rejection is kept as a separate live boundary: the parent uses
+# the already-running top-level cancellation ID, checks Core's typed metadata,
+# and exposes a stable marker only after the rejection has crossed the bridge.
+require_source_text "$definitions" \
+  'let child_start_conflict_id = "two-binary-long-running-cancellation"'
+require_source_text "$definitions" \
+  'let parent_observes_child_start_failure ='
+require_source_text "$definitions" \
+  'Temporal.Child_workflow.execute ~id:child_start_conflict_id'
+require_source_text "$definitions" 'view.category = `Child_workflow'
+require_source_text "$definitions" 'SMOKE:CHILD:START_FAILED'
+require_source_text "$driver" \
+  'two-binary-parent-observes-child-start-failure'
+require_source_text "$driver" 'SMOKE:CHILD:START_FAILED'
+require_source_text "$worker" \
+  'Worker.workflow Definitions.parent_observes_child_start_failure'
+
 makefile="$root/Makefile"
 if ! grep -F 'temporal workflow describe' "$makefile" >/dev/null; then
   echo "failure diagnostics must use the official Temporal CLI workflow describe command" >&2

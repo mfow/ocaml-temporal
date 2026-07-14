@@ -14,6 +14,25 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-14: Retry-after-restart acceptance extension
+
+Status: implementation and Docker-free contract verified locally; live
+Temporal Server and GitHub Actions verification are pending.
+
+The two-generation restart/replay fixture now uses the existing bounded
+two-attempt activity policy after generation 2 replays the pending timer. The
+first activity task must fail with a retryable typed error, the replacement
+worker must complete the second attempt, and the driver must receive the exact
+`SMOKE:AFTER-REPLAY:ATTEMPT:2` result. Temporal compacts intermediate activity
+retry events out of workflow history, so the normalized history contract
+checks the logical activity path and completion while the exact result marker
+proves that the retry reached attempt two. The checked-in fixture and
+Docker-free negative tests keep the validation deterministic.
+
+This extends the original live restart/replay evidence without claiming
+sticky-cache eviction or crash recovery. The live result will be recorded here
+after the dedicated CI acceptance job passes.
+
 ## 2026-07-14: Live child-workflow retry acceptance (#279)
 
 Status: verified in the complete [PR #279 GitHub Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364).

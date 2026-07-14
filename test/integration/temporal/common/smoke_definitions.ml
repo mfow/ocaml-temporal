@@ -943,8 +943,9 @@ let long_running_cancellation =
 (** Keeps one workflow run outstanding across a worker replacement. The timer
     is long enough for the controller to observe [TimerStarted] and stop the
     first worker before the server delivers [TimerFired]. Once the replacement
-    worker replays the pending timer, the workflow schedules the ordinary
-    mock activity and returns a stable marker that the restart driver asserts. *)
+    worker replays the pending timer, the workflow schedules the deliberately
+    transient activity with the bounded two-attempt policy. The final marker
+    therefore proves both replay and a server-delivered retry on generation 2. *)
 let worker_restart_replay =
   Temporal.Workflow.define ~name:"smoke.worker_restart_replay"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun _seed ->
@@ -952,7 +953,9 @@ let worker_restart_replay =
       | Error error -> Error error
       | Ok () ->
           let open Temporal.Result_syntax in
+          let* policy = retry_policy in
           let* transformed =
-            Temporal.Activity.execute mock_transform "after-replay"
+            Temporal.Activity.execute ~retry_policy:policy retry_once_activity
+              "after-replay"
           in
           Ok ("SMOKE:" ^ transformed))

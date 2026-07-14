@@ -80,16 +80,21 @@ history.
   but both language implementations can prove exact coefficient preservation.
 - `None` and an explicit policy remain distinguishable, which prevents an
   omitted option from being accidentally normalized into a concrete default.
-- Retry behavior is validated and translated, but real-server retry, failure,
-  cancellation, and replay acceptance scenarios remain separate follow-up
-  work; focused tests do not claim live feature parity.
+- Retry behavior is validated and translated. The complete
+  [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
+  live-verifies ordinary, heartbeat-detail, start-to-close-timeout,
+  heartbeat-timeout, and non-retryable activity retry delivery. Broader
+  activity failure/cancellation behavior and replay acceptance remain
+  separate follow-up work; focused tests continue to cover policy encoding and
+  malformed-input boundaries.
 
 ## Evidence
 
 The public constructor and accessors are covered by
-NaNtest/unit/test_activity_retry_policy.ml`. The runtime command representation
-is covered by `test/runtime/test_activity_retry_policy.ml`. OCaml protocol
-encoding and bilateral validation are covered by
-NaNtest/bridge/test_ocaml_workflow_protocol.ml`; Rust JSON/Core conversion and
-strict malformed inputs are covered by
-NaNrust/core-bridge/tests/workflow_retry_policy.rs`.
+[`test/unit/test_activity_retry_policy.ml`](../../test/unit/test_activity_retry_policy.ml).
+The runtime command representation is covered by
+[`test/runtime/test_activity_retry_policy.ml`](../../test/runtime/test_activity_retry_policy.ml).
+OCaml protocol encoding and bilateral validation are covered by
+[`test/bridge/test_ocaml_workflow_protocol.ml`](../../test/bridge/test_ocaml_workflow_protocol.ml);
+Rust JSON/Core conversion and strict malformed inputs are covered by
+[`rust/core-bridge/tests/workflow_retry_policy.rs`](../../rust/core-bridge/tests/workflow_retry_policy.rs).

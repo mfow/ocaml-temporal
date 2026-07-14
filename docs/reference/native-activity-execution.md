@@ -331,7 +331,7 @@ protects activity error-type policy matching, and the complete [PR #277
 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069)
 live-verifies that a public `Activity` error named by
 `non_retryable_error_types` is observed without an unintended second attempt.
-The later complete [PR #279 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364)
+The later complete [PR #279 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
 re-verifies these activity paths together in the current sixteen-result gate,
 including the child-retry scenario that shares the same worker and activity
 adapter.

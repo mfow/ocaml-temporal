@@ -427,7 +427,7 @@ live-verified native client starts and exact-run waits alongside the current
 heartbeat-detail retry and exact-run cancellation assertions against a public
 worker and real Temporal Server. The signal-specific readiness and handler
 assertion is documented above with [PR #266](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247).
-The later complete [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364)
+The later complete [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
 re-verifies the client start, exact-run wait, cancellation, and graceful
 shutdown paths in the current sixteen-result gate.
 The boundary and remaining cases are tracked in the

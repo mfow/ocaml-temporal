@@ -14,6 +14,26 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-14: Activity non-retryable policy acceptance fixture
+
+Status: focused fixture and Docker-free contracts verified locally; live
+Temporal Server and GitHub Actions verification are pending for this change.
+
+The two-binary Compose acceptance now includes
+`smoke.activity_non_retryable_failure`. Its activity returns a retryable typed
+`Activity` error on the first attempt, while the workflow retry policy names
+the public `activity` error type in `non_retryable_error_types`. The workflow
+observes the activity future directly and requires the runtime to preserve its
+`Activity` category and non-retryable decision. A second-attempt success branch
+returns a different marker, so an incorrect server retry becomes an explicit
+workflow defect rather than a false passing result.
+
+The driver starts this scenario before its first terminal wait, and the worker
+registers both the workflow and activity in the separate process. The
+dedicated source contract and the shared Compose contract check the policy,
+registration, two-process boundary, and exact marker without claiming that a
+Docker-free run has observed Temporal's retry state machine.
+
 ## 2026-07-14: Heartbeat-timeout retry acceptance fixture
 
 Status: focused fixture and Docker-free contracts verified locally; live

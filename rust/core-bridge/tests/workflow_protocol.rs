@@ -27,6 +27,26 @@ fn fixture(parts: &[&str]) -> String {
     fs::read_to_string(fixture_path(parts)).expect("workflow fixture must be readable")
 }
 
+/// Builds a normalized Core retry policy for activation conversion tests.
+/// Keeping the protobuf value valid exercises the same required-duration and
+/// coefficient invariants that a real retry-enabled child workflow supplies.
+fn valid_core_retry_policy() -> temporalio_protos::temporal::api::common::v1::RetryPolicy {
+    temporalio_protos::temporal::api::common::v1::RetryPolicy {
+        initial_interval: Some(prost_wkt_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        }),
+        backoff_coefficient: 2.0,
+        maximum_interval: Some(prost_wkt_types::Duration {
+            seconds: 5,
+            nanos: 0,
+        }),
+        maximum_attempts: 2,
+        non_retryable_error_types: vec!["PermanentChildFailure".to_owned()],
+        ..Default::default()
+    }
+}
+
 /// Requires a malformed activation to fail as the stable protocol error type.
 /// The path and message assertions ensure callers receive bounded diagnostics
 /// instead of a serde panic or an untyped transport failure.
@@ -612,14 +632,14 @@ fn converts_pinned_core_values_losslessly() {
 }
 
 /// Proves Core's inherited continuation options do not make a valid successor
-/// activation fail admission. The first protocol slice has no OCaml fields
-/// for these options yet, so they are accepted only when continuation
-/// provenance is present; an ordinary root activation still rejects the same
-/// unrepresented metadata instead of silently dropping it.
+/// activation fail admission. Retry policy is retained as typed context, while
+/// the other options remain compatibility metadata accepted only when
+/// continuation provenance is present; an ordinary root activation still
+/// rejects the unrepresented metadata instead of silently dropping it.
 #[test]
 fn accepts_inherited_initialize_options_on_continuation() {
     use core_activation::workflow_activation_job::Variant;
-    use temporalio_protos::temporal::api::common::v1::{Memo, RetryPolicy, SearchAttributes};
+    use temporalio_protos::temporal::api::common::v1::{Memo, SearchAttributes};
 
     let inherited = core_activation::InitializeWorkflow {
         workflow_type: "workflow".to_owned(),
@@ -629,7 +649,7 @@ fn accepts_inherited_initialize_options_on_continuation() {
         first_execution_run_id: "first-run".to_owned(),
         continued_from_execution_run_id: "previous-run".to_owned(),
         continued_initiator: 1,
-        retry_policy: Some(RetryPolicy::default()),
+        retry_policy: Some(valid_core_retry_policy()),
         cron_schedule: "0 * * * * *".to_owned(),
         workflow_execution_expiration_time: Some(prost_wkt_types::Timestamp {
             seconds: 1,
@@ -652,8 +672,22 @@ fn accepts_inherited_initialize_options_on_continuation() {
         ..Default::default()
     };
 
-    workflow_protocol::activation_from_core(&activation)
-        .expect("inherited continuation options should be compatibility metadata");
+    let context = workflow_protocol::activation_from_core(&activation)
+        .expect("inherited continuation options should be compatibility metadata")
+        .jobs
+        .into_iter()
+        .find_map(|job| match job {
+            workflow_protocol::ActivationJob::InitializeWorkflow { context, .. } => context,
+            _ => None,
+        })
+        .expect("initialize context should be present");
+    assert_eq!(
+        context
+            .retry_policy
+            .expect("Core retry policy should be represented")
+            .maximum_attempts,
+        2
+    );
 
     let mut root = inherited;
     root.continued_from_execution_run_id.clear();
@@ -1543,6 +1577,7 @@ fn preserves_child_workflow_identity() {
             workflow_id: "root-1".to_owned(),
             run_id: "root-run".to_owned(),
         }),
+        retry_policy: Some(valid_core_retry_policy()),
         ..Default::default()
     };
     let core = core_activation::WorkflowActivation {
@@ -1568,6 +1603,14 @@ fn preserves_child_workflow_identity() {
     assert_eq!(
         context.root_workflow.as_ref().unwrap().workflow_id,
         "root-1"
+    );
+    assert_eq!(
+        context
+            .retry_policy
+            .as_ref()
+            .expect("child retry policy should cross the bridge")
+            .maximum_attempts,
+        2
     );
     let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
     assert_eq!(

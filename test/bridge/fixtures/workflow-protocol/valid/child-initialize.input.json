@@ -21,6 +21,7 @@
       "start_time": null,
       "root_workflow": {"workflow_id": "root-1", "run_id": "root-run"},
       "priority": null,
+      "retry_policy": null,
       "continuation": null
     }
   }]

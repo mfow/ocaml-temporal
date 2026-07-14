@@ -121,6 +121,15 @@ let test_continuation_initialize_metadata () =
       last_completion_result = Some [ payload ];
     }
   in
+  let retry_policy : Protocol.retry_policy =
+    {
+      initial_interval = { seconds = 1L; nanoseconds = 0 };
+      backoff_coefficient_bits = "4611686018427387904";
+      maximum_interval = { seconds = 5L; nanoseconds = 0 };
+      maximum_attempts = 2;
+      non_retryable_error_types = [ "PermanentChildFailure" ];
+    }
+  in
   let jobs =
     List.map
       (function
@@ -140,7 +149,13 @@ let test_continuation_initialize_metadata () =
                 arguments;
                 randomness_seed;
                 attempt;
-                context = Some { context with continuation = Some continuation };
+                context =
+                  Some
+                    {
+                      context with
+                      retry_policy = Some retry_policy;
+                      continuation = Some continuation;
+                    };
               }
         | _ -> failwith "realistic fixture did not contain initialization")
       initialized.jobs
@@ -151,6 +166,8 @@ let test_continuation_initialize_metadata () =
     not
       (contains_substring ~needle:"continued_from_execution_run_id" encoded)
   then failwith "continuation run identity was omitted";
+  if not (contains_substring ~needle:"backoff_coefficient_bits" encoded) then
+    failwith "workflow retry policy was omitted";
   let decoded = unwrap (Protocol.decode_activation encoded) in
   if decoded <> value then failwith "continuation metadata did not round-trip"
 

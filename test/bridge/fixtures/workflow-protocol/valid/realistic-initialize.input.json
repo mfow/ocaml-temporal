@@ -22,6 +22,7 @@
       "parent_workflow": null,
       "priority": {"fairness_weight_bits": 1069547520, "fairness_key": "tenant-a", "priority_key": 2},
       "root_workflow": null,
+      "retry_policy": null,
       "headers": {
         "z-trace": {"metadata": {"z-key": {"encoding": "base64", "data": "eg=="}, "a-key": {"encoding": "base64", "data": "YQ=="}}, "data": {"encoding": "base64", "data": ""}},
         "a-trace": {"metadata": {}, "data": {"encoding": "base64", "data": ""}}

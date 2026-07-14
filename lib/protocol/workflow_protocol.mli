@@ -129,6 +129,17 @@ type continue_as_new_initiator =
   | Continue_as_new_retry
   | Continue_as_new_cron_schedule
 
+(** A validated retry policy carried by a workflow execution. The backoff
+    coefficient is kept as canonical unsigned IEEE-754 bits so JSON transport
+    cannot round or otherwise reinterpret a floating-point value. *)
+type retry_policy = {
+  initial_interval : duration;
+  backoff_coefficient_bits : string;
+  maximum_interval : duration;
+  maximum_attempts : int;
+  non_retryable_error_types : string list;
+}
+
 (** Provenance and terminal data attached to a continuation initialization.
     [None] means Core supplied the ordinary zero/absent defaults. The nested
     fields remain optional because Core can carry a continuation failure or
@@ -153,6 +164,7 @@ type initialize_context = {
   start_time : timestamp option;
   root_workflow : workflow_execution option;
   priority : workflow_priority option;
+  retry_policy : retry_policy option;
   continuation : continuation option;
 }
 
@@ -287,18 +299,6 @@ type child_workflow_cancellation_type =
   | Child_wait_cancellation_completed
   | Child_abandon
   | Child_wait_cancellation_requested
-
-(** A validated retry policy carried by a scheduled activity or child-workflow
-    command. The backoff coefficient is kept as canonical unsigned IEEE-754
-    bits so JSON transport cannot round or otherwise reinterpret a
-    floating-point value. *)
-type retry_policy = {
-  initial_interval : duration;
-  backoff_coefficient_bits : string;
-  maximum_interval : duration;
-  maximum_attempts : int;
-  non_retryable_error_types : string list;
-}
 
 (** The successful or failed answer for one synchronous query. Query failures
     are returned to the caller and do not fail the workflow run. *)

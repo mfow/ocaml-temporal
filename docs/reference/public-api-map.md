@@ -38,7 +38,13 @@ for those rules.
   inspect its future separately; `Retry_policy` and the cancellation policy
   control the durable command options. Activity callbacks are the boundary for
   external I/O, and their context/heartbeat rules are described in the
-  [activity reference](native-activity-execution.md).
+  [activity reference](native-activity-execution.md). An asynchronous callback
+  returns `Completed`, `Failed`, or `Will_complete_async`; after the handoff,
+  `Async_handle` provides terminal `complete`, `fail`, and `cancel` operations
+  plus non-terminal `heartbeat`, while `Async_context` is only used to obtain
+  that retained capability. The attempt-scoped `Context` instead supplies
+  copied heartbeat details and timeout metadata for callbacks that complete
+  during dispatch.
 - `Temporal.Child_workflow` schedules a child workflow and exposes its typed
   future. Use its operation handle when the parent must cancel one exact child;
   child retry and cancellation policies are passed to the durable command.

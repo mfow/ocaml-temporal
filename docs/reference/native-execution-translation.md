@@ -203,7 +203,7 @@ their own adapter coverage in `test/runtime/test_native_activity_execution.ml`.
 The public native worker invokes this adapter through the owner-Domain
 supervisor. The live Compose gate exercises timer and activity success paths
 and includes parent/child result paths against Temporal Server. The complete
-[PR #279 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364)
+[PR #279 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
 also live-verifies propagated child failure, child-handle cancellation, and a
 child that retries to a second server-owned attempt. The [PR #253 Compose
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) separately

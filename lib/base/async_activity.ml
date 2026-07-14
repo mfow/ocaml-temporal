@@ -8,21 +8,36 @@
     Domain cannot submit a conflicting terminal operation, while a transport
     failure leaves the exact operation available for a later retry. *)
 
+(** An operation that may cross the native supervisor boundary. Payloads are
+    copied before they enter this type so retrying a transport failure can
+    resubmit the exact request without retaining caller-owned mutable bytes. *)
 type operation =
   | Complete of Payload.t
   | Fail of Error.t
   | Cancel of Payload.t list
   | Heartbeat of Payload.t list
 
+(** A supervisor submission either proves acceptance or returns an error whose
+    retryability determines whether the pending operation remains available. *)
 type submit_result = (unit, Error.t) result
 
+(** The handle lifecycle is protected by [handle.mutex]. [Handoff_pending]
+    closes the gap between a callback returning [Will_complete_async] and the
+    worker accepting that handoff; [Terminal] prevents duplicate completion,
+    while [Closed] permanently rejects operations after teardown. *)
 type lifecycle = Dormant | Handoff_pending | Active | Terminal | Closed
 
+(** The one operation currently reserved by this handle. [in_flight] is set
+    while the supervisor callback runs, allowing a transport error to retain
+    the request for an explicit retry without allowing concurrent duplicates. *)
 type pending = {
   key : string;
   mutable in_flight : bool;
 }
 
+(** Mutable state shared by every Domain that retains one completion handle.
+    The submit callback is the only route to native code; this module owns the
+    lock and lifecycle but not the native task token captured by that callback. *)
 type 'output handle = {
   mutex : Mutex.t;
   mutable lifecycle : lifecycle;
@@ -31,23 +46,39 @@ type 'output handle = {
   encode_output : 'output -> (Payload.t, Error.t) result;
 }
 
+(** The short-lived callback context from which an activity obtains its
+    attempt-scoped completion capability. *)
 type 'output context = { handle : 'output handle }
 
+(** The callback's immediate outcome. [Will_complete_async] transfers the
+    handle to external code, so the callback must not later use that same
+    attempt through a different completion path. *)
 type 'output async_result =
   | Completed of 'output
   | Failed of Error.t
   | Will_complete_async of 'output handle
 
+(** The implementation type is repeated here so the private adapter can store
+    typed callbacks without exposing the handle representation. *)
 type ('input, 'output) implementation =
   'output context -> 'input -> 'output async_result
 
+(** Builds the non-retryable error used when a lifecycle transition rejects a
+    request. Operational transport errors are created by [submit] instead and
+    may keep the pending request retryable. *)
 let lifecycle_error message =
   Error (Error.make ~non_retryable:true ~category:`Activity ~message ())
 
+(** Executes one state transition while preserving the mutex invariant even if
+    the transition raises. No supervisor callback may run while this lock is
+    held, because callback code can block or re-enter this state machine. *)
 let with_mutex mutex operation =
   Mutex.lock mutex;
   Fun.protect ~finally:(fun () -> Mutex.unlock mutex) operation
 
+(** Creates a handle before the worker has accepted its asynchronous handoff.
+    Keeping it dormant prevents a callback from completing an activity through
+    a task token that the native worker has not yet made durable. *)
 let create ~submit ~encode_output =
   {
     mutex = Mutex.create ();
@@ -57,9 +88,15 @@ let create ~submit ~encode_output =
     encode_output;
   }
 
+(** Builds the callback context for a newly created attempt-scoped handle. *)
 let context handle = { handle }
+
+(** Wraps a handle for the activity callback without copying the capability. *)
 let handle context = context.handle
 
+(** Marks a handed-off capability usable by external completion code. The
+    transition is safe against duplicate activation because every already
+    active or terminal lifecycle is rejected. *)
 let activate handle =
   with_mutex handle.mutex (fun () ->
       match handle.lifecycle with
@@ -69,6 +106,9 @@ let activate handle =
       | Active | Terminal | Closed ->
           lifecycle_error "asynchronous activity handle is already activated")
 
+(** Moves the expected callback handle into the handoff-reserved state. The
+    identity check prevents a completion callback from one activity attempt
+    being accidentally attached to another attempt's native task token. *)
 let prepare_handoff ~expected handle =
   if not (expected == handle) then
     lifecycle_error
@@ -86,6 +126,9 @@ let prepare_handoff ~expected handle =
             lifecycle_error
               "asynchronous activity handle cannot be reserved for a handoff")
 
+(** Reserves one operation key under the lock. The key is installed before the
+    supervisor call so another Domain cannot submit a conflicting operation or
+    duplicate the same request while the first submission is in flight. *)
 let begin_operation handle ~key operation =
   with_mutex handle.mutex (fun () ->
       match handle.lifecycle with
@@ -119,16 +162,15 @@ let begin_operation handle ~key operation =
               handle.pending <- Some pending;
               Ok (pending, operation)))
 
-(* The request key is an internal idempotency token.  Length-prefixing every
-   field avoids ambiguities such as ["ab", "c"] versus ["a", "bc"] and keeps
-   retries tied to the exact operation without exposing a protocol detail in
-   the public API.  This is not a cryptographic identifier; it only compares
-   requests retained by one handle. *)
+(** Appends one length-prefixed field to the internal operation key. Length
+    prefixes avoid ambiguities such as ["ab", "c"] versus ["a", "bc"]. *)
 let add_field buffer value =
   Buffer.add_string buffer (string_of_int (String.length value));
   Buffer.add_char buffer ':';
   Buffer.add_string buffer value
 
+(** Adds a payload's metadata and bytes to the operation key in wire order.
+    This is an equality key, not a digest or authentication mechanism. *)
 let add_payload buffer ({ Payload.metadata; data } : Payload.t) =
   add_field buffer "payload";
   add_field buffer (string_of_int (List.length metadata));
@@ -142,11 +184,16 @@ let add_payload buffer ({ Payload.metadata; data } : Payload.t) =
   add_field buffer (string_of_int (Bytes.length data));
   add_field buffer (Bytes.to_string data)
 
+(** Adds an ordered payload list to the operation key, including its length so
+    an empty list and a list with empty payloads remain distinct. *)
 let add_payloads buffer payloads =
   add_field buffer "payloads";
   add_field buffer (string_of_int (List.length payloads));
   List.iter (add_payload buffer) payloads
 
+(** Derives the stable equality key used to permit only byte-identical retries
+    after an uncertain supervisor submission. Error category, retryability, and
+    detail payloads are included because they affect the completion request. *)
 let operation_key operation =
   let buffer = Buffer.create 64 in
   (match operation with
@@ -170,19 +217,18 @@ let operation_key operation =
       add_payloads buffer payloads);
   Buffer.contents buffer
 
-(* A non-retryable bridge result means the native side has proved that this
-   retained capability cannot be used again (for example, Temporal returned
-   NotFound for an expired or already-completed task token). Closing the local
-   state machine as well as the adapter lease prevents a caller from retaining
-   an otherwise live callback closure and accidentally issuing a duplicate
-   request after the remote operation is terminal. Application and codec
-   errors are either raised before [submit_operation] or are deliberately
-   fail-closed at this boundary; retryable transport failures keep the exact
-   pending request for an explicit retry. *)
+(** Identifies bridge errors that prove the retained native capability is
+    terminal, such as an expired or already-completed task token. Such errors
+    close local state too; retryable transport failures retain the pending key
+    for an explicit retry. *)
 let should_close_after_error (error : Error.t) =
   let view = Error.view error in
   view.category = `Bridge && view.non_retryable
 
+(** Executes one supervisor submission outside the mutex, then commits its
+    result under the mutex. A successful terminal operation clears the pending
+    key and closes the handle; a retryable failure clears only [in_flight], so a
+    later call can repeat the exact operation without rerunning user code. *)
 let submit_operation handle ~terminal operation =
   let key = operation_key operation in
   match begin_operation handle ~key operation with
@@ -220,18 +266,28 @@ let submit_operation handle ~terminal operation =
               if terminal then handle.lifecycle <- Terminal;
               Ok ())
 
+(** Encodes a typed output before reserving the terminal operation. Encoding
+    failures therefore leave the handle active and do not create a retry slot. *)
 let complete handle output =
   match handle.encode_output output with
   | Error error -> Error error
   | Ok payload -> submit_operation handle ~terminal:true (Complete payload)
 
+(** Records a terminal activity failure through the retained capability. *)
 let fail handle error = submit_operation handle ~terminal:true (Fail error)
+
+(** Records terminal cancellation details through the retained capability. *)
 let cancel handle details =
   submit_operation handle ~terminal:true (Cancel details)
 
+(** Sends non-terminal progress details. A successful heartbeat clears its
+    pending key but leaves the handle active for a later terminal operation. *)
 let heartbeat handle details =
   submit_operation handle ~terminal:false (Heartbeat details)
 
+(** Invalidates the capability during worker teardown. An in-flight supervisor
+    call is allowed to finish first; otherwise closing would hide whether its
+    remote operation was accepted and make safe retry impossible. *)
 let close handle =
   with_mutex handle.mutex (fun () ->
       match handle.pending with

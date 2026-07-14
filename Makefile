@@ -384,6 +384,10 @@ test-temporal-worker-restart-live: test-temporal-config
 		done; \
 		[ "$$generation_one_state" = exited ] || { echo "crashed generation one did not exit" >&2; exit 1; }; \
 		generation_one_exit_code=$$(docker inspect --format '{{.State.ExitCode}}' "$$generation_one_container"); \
+		if [ -e "$$SMOKE_WORKER_STOPPED_FILE" ]; then \
+			echo "crashed generation one left a graceful shutdown marker" >&2; \
+			exit 1; \
+		fi; \
 		generation_one_shutdown_marker=false; \
 	else \
 		$(MAKE) temporal-stop-worker; \

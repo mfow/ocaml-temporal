@@ -44,6 +44,7 @@ require_source 'test-temporal-worker-crash-recovery:'
 require_source 'TEMPORAL_WORKER_RESTART_MODE=crash $(MAKE) test-temporal-worker-restart-live'
 require_source 'docker kill --signal KILL'
 require_source 'generation_one_exit_code'
+require_source 'if [ -e "$$SMOKE_WORKER_STOPPED_FILE" ]'
 require_source 'replacement_mode'
 require_source 'generation_one_replaced'
 

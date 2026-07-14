@@ -693,6 +693,88 @@ let activity_non_retryable_failure =
                         "non-retryable activity unexpectedly retried with %S"
                         value))))
 
+(** Uses a one-attempt activity policy so the first activity failure becomes a
+    retryable failure of the child workflow itself. The parent supplies the
+    separate child retry policy below; keeping these policies distinct proves
+    that Temporal retries the child execution rather than merely retrying its
+    activity. *)
+let child_activity_no_retry_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 100L)
+    ~backoff_coefficient:1.0
+    ~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:1 ()
+
+(** Counts calls to the transient child activity in the worker process. This
+    is deliberately activity-only state: workflow code never reads it, and a
+    fresh Compose worker gives each live acceptance run an isolated counter.
+    The second callback marker is the server-visible proof that a child retry
+    created another execution attempt. *)
+let child_retry_attempts = Atomic.make 0
+
+(** Fails once so the enclosing child workflow can return a retryable workflow
+    failure, then succeeds on the next child execution attempt. The activity
+    itself has a one-attempt policy, preventing its own retry state machine from
+    masking the child retry under test. *)
+let child_retry_activity =
+  Temporal.Activity.define ~name:"smoke.child_retry_once"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
+      let attempt = Atomic.fetch_and_add child_retry_attempts 1 + 1 in
+      match attempt with
+      | 1 ->
+          Error
+            (Temporal.Error.make ~category:`Activity
+               ~message:"intentional transient child failure" ())
+      | 2 ->
+          Ok
+            (Printf.sprintf "SMOKE:CHILD_RETRY:ATTEMPT:%d" attempt)
+      | attempt ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "child retry activity received unexpected attempt %d for %S"
+                    attempt input)))
+
+(** Converts the first activity failure into a retryable workflow failure. The
+    conversion makes the child retry policy's boundary explicit while the
+    second activity marker remains the observable evidence that the child was
+    retried by Temporal Core and Server. *)
+let child_retryable_failure =
+  Temporal.Workflow.define ~name:"smoke.child_retryable_failure"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match child_activity_no_retry_policy with
+      | Error error -> Error error
+      | Ok policy -> (
+          match Temporal.Activity.execute ~retry_policy:policy child_retry_activity seed with
+          | Ok marker -> Ok marker
+          | Error _ ->
+              Error
+                (Temporal.Error.make ~category:`Workflow
+                   ~message:"intentional retryable child workflow failure" ())))
+
+(** Bounds the child retry to exactly two executions. Keeping this policy
+    separate from the activity's one-attempt policy makes the ownership of the
+    retry state machine visible in the fixture. *)
+let child_retry_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 100L)
+    ~backoff_coefficient:1.0
+    ~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:2 ()
+
+(** Starts the transient child with an explicit two-attempt child retry policy.
+    The policy is handed to Core through [Child_workflow.execute], so this live
+    acceptance path tests durable child retry rather than a replay-sensitive
+    OCaml loop. *)
+let parent_retries_child =
+  Temporal.Workflow.define ~name:"smoke.parent_retries_child"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match child_retry_policy with
+      | Error error -> Error error
+      | Ok policy ->
+          Temporal.Child_workflow.execute ~retry_policy:policy
+            ~id:("two-binary-parent-retries-child-" ^ seed)
+            child_retryable_failure seed)
+
 (** A child workflow that waits on a short durable timer before deriving its
     result entirely from its input. The timer is deliberately inside the child
     rather than the parent so the live scenario exercises child start and

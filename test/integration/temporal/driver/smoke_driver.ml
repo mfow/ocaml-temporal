@@ -4,8 +4,8 @@
     fan-out, timer, ordinary-retry, heartbeat-detail/retry, delayed
     asynchronous activity completion, timeout-triggered-retry,
     heartbeat-timeout-triggered-retry, activity-level non-retryable failure,
-    parent/child
-    success, parent/child failure, typed signal/condition,
+    retryable parent/child retry, parent/child success, parent/child failure,
+    typed signal/condition,
     parent/child cancellation, typed-failure, long-running cancellation, and
     continue-as-new scenarios before waiting for most of them. It then stages
     the timeout-triggered retries after the shorter heartbeat/detail path and
@@ -496,6 +496,11 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-activity-non-retryable-failure" ~input:"smoke"
         in
+        let* child_retry_handle =
+          start_workflow client ~workflow:Definitions.parent_retries_child
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-parent-retries-child" ~input:"smoke"
+        in
         let* cancellation_handle =
           start_workflow client ~workflow:Definitions.long_running_cancellation
             ~task_queue:Definitions.task_queue
@@ -506,7 +511,7 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-signal-condition" ~input:signal_condition_token
         in
-        (* Thirteen starts intentionally happen before the first wait. The
+        (* Fourteen starts intentionally happen before the first wait. The
            cancellation workflow's marker activity proves that its timer and
            marker commands were accepted in one activation before this exact
            run is cancelled; the timer keeps the execution outstanding. The
@@ -525,9 +530,12 @@ let run () =
            it through the namespace-bound client path. The two child-focused
            parents are likewise started before any wait: one propagates a
            terminal child failure and the other
-           waits for Core's child cancellation acknowledgement. The continuation
-           is also already started, so its successor wait is an explicit client
-           operation rather than a latest-run lookup. The signal workflow's
+           waits for Core's child cancellation acknowledgement. The retryable
+           child workflow is also already started, so its eventual second
+           activity marker is evidence of a server-owned child retry rather
+           than a local parent loop. The continuation is also already started,
+           so its successor wait is an explicit client operation rather than a
+           latest-run lookup. The signal workflow's
            first activity publishes a per-run worker marker; the driver waits
            for that marker before sending the signal, so the request cannot be
            accepted before the worker has taken the execution's first task. *)
@@ -615,6 +623,11 @@ let run () =
           require_completed "smoke.activity_non_retryable_failure"
             "SMOKE:ACTIVITY_NON_RETRYABLE:OBSERVED"
             (Ok activity_non_retryable_result)
+        in
+        let* child_retry_result = wait_workflow child_retry_handle in
+        let* () =
+          require_completed "smoke.parent_retries_child"
+            "SMOKE:CHILD_RETRY:ATTEMPT:2" (Ok child_retry_result)
         in
         let* parent_result = wait_workflow parent_handle in
         let* () =

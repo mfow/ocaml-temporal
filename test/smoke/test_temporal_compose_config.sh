@@ -188,6 +188,29 @@ require_source_text "$worker" \
 require_source_text "$worker" \
   'Worker.activity Definitions.non_retryable_activity'
 
+# Child retry is a distinct live boundary from activity retry. The shared
+# Compose contract keeps the child workflow's one-attempt activity policy, the
+# separate two-attempt child policy, and the exact second-attempt marker tied
+# to both executable registrations.
+require_source_text "$definitions" 'let child_activity_no_retry_policy ='
+require_source_text "$definitions" \
+  '~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:1 ()'
+require_source_text "$definitions" \
+  'Temporal.Activity.define ~name:"smoke.child_retry_once"'
+require_source_text "$definitions" 'let child_retryable_failure ='
+require_source_text "$definitions" \
+  'match child_activity_no_retry_policy with'
+require_source_text "$definitions" 'let child_retry_policy ='
+require_source_text "$definitions" 'let parent_retries_child ='
+require_source_text "$definitions" \
+  'Temporal.Child_workflow.execute ~retry_policy:policy'
+require_source_text "$driver" 'two-binary-parent-retries-child'
+require_source_text "$driver" 'SMOKE:CHILD_RETRY:ATTEMPT:2'
+require_source_text "$worker" \
+  'Worker.workflow Definitions.parent_retries_child'
+require_source_text "$worker" \
+  'Worker.activity Definitions.child_retry_activity'
+
 # Child failure and cancellation are intentionally separate parent workflows.
 # The source contract keeps both cases in the two-binary fixture without
 # pretending that a Docker-backed Temporal run has been observed locally.

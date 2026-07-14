@@ -49,25 +49,26 @@ opaque bytes and applications may choose another deterministic codec.
 | --- | --- |
 | Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
-| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, records activity heartbeats, and supports retained asynchronous activity completion. The complete [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result Compose baseline and the separate two-generation restart/replay acceptance; the older [PR #210 run](https://github.com/ocaml-temporal/actions/runs/29221151859) remains historical evidence for the earlier nine-scenario slice. |
+| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, records activity heartbeats, and supports retained asynchronous activity completion. The complete [PR #277 CI run](https://github.com/ocaml-temporal/actions/runs/29318684069) live-verified the expanded Compose acceptance, including Temporal-driven heartbeat-timeout retry and activity-level non-retryable error-type matching; the earlier [PR #253 run](https://github.com/ocaml-temporal/actions/runs/29286560471) remains evidence for the twelve-result baseline and separate two-generation restart/replay acceptance. |
 | Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, exact-run cancellation, and typed exact-run signals. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result; signal acknowledgement likewise does not claim that a worker handler has already run. The [PR #266 CI run](https://github.com/ocaml-temporal/actions/runs/29311239247) live-verified the thirteen current workflow assertions, including typed signal delivery and condition wake-up; the earlier [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471) remains evidence for the prior twelve-result slice, and [PR #210](https://github.com/ocaml-temporal/actions/runs/29221151859) remains the linked evidence for the original nine-workflow slice. |
 | Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
 | Safety boundary | Rust/Core protobuf handling stays in Rust. OCaml/Rust JSON validation, copied payloads, one-owner lifecycle serialization, and idempotent cleanup are covered by focused tests. |
 
 ## What is deliberately still pending
 
-- The two-public-OCaml-binary gate has a local OCaml 5.5 run covering all thirteen
-  current workflow assertions against one fresh Temporal/PostgreSQL deployment.
-  The driver starts twelve workflows before waiting, waits for the signal
-  workflow's worker-visible readiness marker before signaling it, observes delayed
-  asynchronous completion, follows a continue-as-new successor, and starts the
-  timeout-retry workflow after heartbeat completion. The [PR #266 CI
-  run](https://github.com/ocaml-temporal/actions/runs/29311239247) verifies the
-  thirteen-result signal path; the complete [PR #253 CI
-  run](https://github.com/ocaml-temporal/actions/runs/29286560471) remains
-  evidence for the prior twelve-result baseline and restart/replay controller.
-  Sticky-cache eviction, heartbeat-timeout-triggered retry, crash recovery, and
-  broader child lifecycle scenarios remain separate acceptance work.
+- The two-public-OCaml-binary gate now has fifteen exact terminal assertions:
+  thirteen workflows start before the first wait, then the driver stages the
+  start-to-close and heartbeat-timeout retry scenarios after the shorter
+  heartbeat path. It waits for the signal workflow's worker-visible readiness
+  marker before signaling it, observes delayed asynchronous completion, follows
+  a continue-as-new successor, and checks the activity-level non-retryable
+  policy result. The complete [PR #277 CI
+  run](https://github.com/ocaml-temporal/actions/runs/29318684069) verifies this
+  expanded acceptance against Temporal Server and PostgreSQL; the [PR #266
+  run](https://github.com/ocaml-temporal/actions/runs/29311239247) remains the
+  focused evidence for the earlier thirteen-result signal path. Sticky-cache
+  eviction, crash recovery, and broader child lifecycle scenarios remain
+  separate acceptance work.
 - Child-workflow commands can be authored and are translated by the semantic
   layer. The native worker now accepts a parent completion containing a child
   start, retains the parent future through the start acknowledgment, and
@@ -85,9 +86,11 @@ opaque bytes and applications may choose another deterministic codec.
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
   Context-aware activity heartbeats are live-verified for a server-delivered
   heartbeat detail and retry; timeout-triggered retry and delayed asynchronous
-  completion are also covered locally. Heartbeat-timeout retry, native
-  interaction delivery beyond the current signal/query slice, replay, and
-  recovery remain separate work.
+  completion are also covered. The complete [PR #277 CI
+  run](https://github.com/ocaml-temporal/actions/runs/29318684069) additionally
+  verifies heartbeat-timeout retry and activity-level non-retryable error-type
+  matching. Native interaction delivery beyond the current signal/query slice,
+  replay, and recovery remain separate work.
 - The public API, native protocol, and Temporal Core pin remain experimental
   and may change before a stable release.
 
@@ -154,18 +157,21 @@ runs the OCaml supervisor lifecycle acceptance executable, starts a public
 OCaml worker, and runs a separate public OCaml driver. The worker is the
 long-lived process that registers and executes the workflows and mock activity.
 The driver is a one-shot OCaml test runner: it does not register a worker. Its
-current implementation starts twelve smoke workflows before waiting, including
-delayed asynchronous activity completion and continue-as-new, then starts the
-timeout-retry workflow after heartbeat completion. It waits for the signal
-workflow's exact readiness marker before signaling it, then sends an exact-run
-cancellation request for the long-running workflow, waits for all thirteen exact
-terminal results, and exits nonzero if any expected result is not returned. A
-local `OCAML_VERSION=5.5 DUNE_JOBS=1 make test-temporal-integration` run passed
-all thirteen assertions against Temporal Server 1.31 and PostgreSQL. The [PR #266
-CI run](https://github.com/ocaml-temporal/actions/runs/29311239247) is the current
-evidence for this signal path; the earlier [PR #253 CI run](https://github.com/
-ocaml-temporal/actions/runs/29286560471) remains evidence for the prior
-twelve-result path. The earlier [PR #210 CI
+current implementation starts thirteen smoke workflows before waiting,
+including delayed asynchronous activity completion, activity-level
+non-retryable policy matching, signal/condition handling, and continue-as-new.
+It then starts the start-to-close timeout-retry workflow after heartbeat
+completion and the heartbeat-timeout-retry workflow after that result. It waits
+for the signal workflow's exact readiness marker before signaling it, sends an
+exact-run cancellation request for the long-running workflow, waits for all
+fifteen exact terminal results, and exits nonzero if any expected result is not
+returned. The complete [PR #277 CI
+run](https://github.com/ocaml-temporal/actions/runs/29318684069) passed this
+expanded acceptance against Temporal Server 1.31 and PostgreSQL. The [PR #266
+CI run](https://github.com/ocaml-temporal/actions/runs/29311239247) remains
+focused evidence for the signal path; the earlier [PR #253 CI
+run](https://github.com/ocaml-temporal/actions/runs/29286560471) remains evidence
+for the prior twelve-result path. The earlier [PR #210 CI
 run](https://github.com/ocaml-temporal/actions/runs/29221151859)
 live-verified the original nine assertions: four exact successes, ordinary
 activity retry, heartbeat-detail retry, parent/child success, propagated child
@@ -176,8 +182,8 @@ target runs.
 The target removes the PostgreSQL data volume before and after the run, so no
 database state is preserved between acceptance runs. A separate
 `make test-temporal-worker-restart` target covers live worker replacement and
-replay. Child start-failure/retry, sticky-cache eviction, heartbeat-timeout
-retry, crash recovery, and broader recovery coverage remain follow-up work.
+replay. Child start-failure/retry, sticky-cache eviction, crash recovery, and
+broader recovery coverage remain follow-up work.
 
 For manual inspection, use `make temporal-start`, `make temporal-health`,
 `make temporal-status`, `make temporal-logs`, and `make temporal-clean`.

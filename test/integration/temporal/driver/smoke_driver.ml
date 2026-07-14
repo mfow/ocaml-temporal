@@ -77,10 +77,18 @@ let cancellation_token () =
   Printf.sprintf "cancellation-%d-%Ld" (Unix.getpid ())
     (Int64.of_float (Unix.gettimeofday () *. 1_000_000.))
 
-(** Reads the atomically published marker and checks its complete per-run
-    token. A stale marker from an interrupted run therefore cannot satisfy the
-    current handshake, even before the Makefile's best-effort cleanup runs. *)
-let cancellation_marker_matches path token =
+(** Creates the distinct token passed through the signal workflow's readiness
+    activity. The driver accepts only this exact marker, so a stale file from a
+    previous live run cannot establish that the current run reached its first
+    worker task. *)
+let signal_condition_token () =
+  Printf.sprintf "signal-condition-%d-%Ld" (Unix.getpid ())
+    (Int64.of_float (Unix.gettimeofday () *. 1_000_000.))
+
+(** Reads an atomically published marker and checks its complete per-run token.
+    A stale marker from an interrupted run therefore cannot satisfy either
+    handshake, even before the Makefile's best-effort cleanup runs. *)
+let marker_matches path token =
   try
     let expected = token ^ "\n" in
     let channel = open_in_bin path in
@@ -99,16 +107,17 @@ let cancellation_marker_matches path token =
           String.equal contents expected)
   with _ -> false
 
-(** Waits for the marker activity to complete before sending cancellation. The
-    bounded polling loop is intentionally outside workflow code: it is an
-    ordinary driver-side synchronization with the shared bind mount, and its
-    wall-clock timeout cannot affect workflow replay or command determinism. *)
-let wait_for_cancellation_ready path token =
+(** Waits for a named marker activity to complete before sending the next
+    control request. The bounded polling loop is intentionally outside
+    workflow code: it is ordinary driver-side synchronization with the shared
+    bind mount, and its wall-clock timeout cannot affect replay or command
+    determinism. *)
+let wait_for_marker ~operation path token =
   let timeout_seconds = 30.0 in
   let poll_seconds = 0.05 in
   let deadline = Unix.gettimeofday () +. timeout_seconds in
   let rec loop () =
-    if cancellation_marker_matches path token then Ok ()
+    if marker_matches path token then Ok ()
     else
       let remaining = deadline -. Unix.gettimeofday () in
       if remaining <= 0.0 then
@@ -116,22 +125,31 @@ let wait_for_cancellation_ready path token =
           (Error.defect
              ~message:
                (Printf.sprintf
-                  "cancellation readiness marker did not appear within %.0fs"
+                  "%s marker did not appear within %.0fs" operation
                   timeout_seconds))
       else begin
         Unix.sleepf (Float.min poll_seconds remaining);
         loop ()
       end
   in
-  phase ~operation:"cancellation_ready_wait" ~status:"begin" ();
+  phase ~operation ~status:"begin" ();
   match loop () with
   | Ok () ->
-      phase ~operation:"cancellation_ready_wait" ~status:"observed" ();
+      phase ~operation ~status:"observed" ();
       Ok ()
   | Error error ->
-      phase ~operation:"cancellation_ready_wait"
-        ~status:("error:" ^ Error.kind error) ();
+      phase ~operation ~status:("error:" ^ Error.kind error) ();
       Error error
+
+(** Waits for the long-running workflow's activity marker before sending its
+    exact cancellation request. *)
+let wait_for_cancellation_ready path token =
+  wait_for_marker ~operation:"cancellation_ready_wait" path token
+
+(** Waits for the signal workflow's first worker-side marker before sending the
+    typed signal. *)
+let wait_for_signal_condition_ready path token =
+  wait_for_marker ~operation:"signal_condition_ready_wait" path token
 
 (** Prevents a normal local invocation from connecting to an unintended
     endpoint. The dedicated Compose service sets this gate only for the live
@@ -382,13 +400,20 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* cancellation_ready_file = Definitions.cancellation_ready_file () in
+      let* signal_condition_ready_file =
+        Definitions.signal_condition_ready_file ()
+      in
       (* This cleanup runs after the worker has advertised readiness and before
          any new workflow starts, so a marker from a previous interrupted run
          cannot satisfy the handshake for this run. *)
       let () =
         Definitions.clear_cancellation_ready_file cancellation_ready_file
       in
+      let () =
+        Definitions.clear_signal_condition_ready_file signal_condition_ready_file
+      in
       let cancellation_token = cancellation_token () in
+      let signal_condition_token = signal_condition_token () in
       let* client =
         measured "client_create" (fun () ->
             Client.create ~target_url ~namespace
@@ -402,12 +427,14 @@ let run () =
             phase ~operation:"client_shutdown" ~status:"ok"
               ~duration_ms:(elapsed_ms started) ();
             Definitions.clear_cancellation_ready_file cancellation_ready_file;
+            Definitions.clear_signal_condition_ready_file signal_condition_ready_file;
             result
         | Error shutdown_error ->
             phase ~operation:"client_shutdown"
               ~status:("error:" ^ Error.kind shutdown_error)
               ~duration_ms:(elapsed_ms started) ();
             Definitions.clear_cancellation_ready_file cancellation_ready_file;
+            Definitions.clear_signal_condition_ready_file signal_condition_ready_file;
             Error shutdown_error
       in
       let result =
@@ -468,7 +495,7 @@ let run () =
         let* signal_handle =
           start_workflow client ~workflow:Definitions.signal_condition_workflow
             ~task_queue:Definitions.task_queue
-            ~id:"two-binary-signal-condition" ~input:"smoke"
+            ~id:"two-binary-signal-condition" ~input:signal_condition_token
         in
         (* Twelve starts intentionally happen before the first wait. The
            cancellation workflow's marker activity proves that its timer and
@@ -491,7 +518,14 @@ let run () =
            terminal child failure and the other
            waits for Core's child cancellation acknowledgement. The continuation
            is also already started, so its successor wait is an explicit client
-           operation rather than a latest-run lookup. *)
+           operation rather than a latest-run lookup. The signal workflow's
+           first activity publishes a per-run worker marker; the driver waits
+           for that marker before sending the signal, so the request cannot be
+           accepted before the worker has taken the execution's first task. *)
+        let* () =
+          wait_for_signal_condition_ready signal_condition_ready_file
+            signal_condition_token
+        in
         let* () = signal_workflow signal_handle in
         let* () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token

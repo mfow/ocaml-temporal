@@ -234,15 +234,17 @@ let run () =
       in
       let* () = clear_replay_diagnostics_before_start replay_diagnostics_file generation in
       let* cancellation_ready_file = Definitions.cancellation_ready_file () in
-      (* This fixture's signal handler closes over one deliberately bounded
-         test-state cell. Reset it before registration so a worker replacement
-         cannot inherit a value from an earlier process lifetime. *)
-      let () = Definitions.reset_signal_value_state () in
+      let* signal_condition_ready_file =
+        Definitions.signal_condition_ready_file ()
+      in
       (* Clear any marker left by a manually interrupted local run before the
          worker can advertise readiness. The driver performs the same cleanup
          immediately before starting workflows, closing the stale-marker race
          without allowing this test-only activity to touch workflow state. *)
       let () = Definitions.clear_cancellation_ready_file cancellation_ready_file in
+      let () =
+        Definitions.clear_signal_condition_ready_file signal_condition_ready_file
+      in
       let worker_result =
         Worker.create ~target_url ~namespace
           ~identity:"ocaml-temporal-two-binary-worker"
@@ -276,6 +278,7 @@ let run () =
               Worker.activity Definitions.async_delayed_completion_activity;
               Worker.activity Definitions.timeout_retry_activity;
               Worker.activity Definitions.cancellation_ready_activity;
+              Worker.activity Definitions.signal_condition_ready_activity;
             ]
           ()
       in

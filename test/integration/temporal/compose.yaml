@@ -117,6 +117,7 @@ services:
       SMOKE_WORKER_READY_FILE: /tmp/ocaml-temporal-two-binary-worker.ready
       SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped
       SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready
+      SMOKE_SIGNAL_CONDITION_READY_FILE: /workspace/test/integration/temporal/.signal-condition-ready
       SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE: /workspace/test/integration/temporal/.restart-replay-diagnostics.json
       SMOKE_WORKER_GENERATION: "${SMOKE_WORKER_GENERATION:-1}"
       SMOKE_REPLAY_WORKFLOW_ID: two-binary-worker-restart-replay
@@ -166,6 +167,7 @@ services:
       TEMPORAL_NAMESPACE: temporal-sdk-test
       SMOKE_DRIVER_TIMEOUT_SECONDS: "${SMOKE_DRIVER_TIMEOUT_SECONDS:-300}"
       SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready
+      SMOKE_SIGNAL_CONDITION_READY_FILE: /workspace/test/integration/temporal/.signal-condition-ready
     command:
       - timeout
       - --signal=TERM

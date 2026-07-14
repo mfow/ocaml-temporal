@@ -6,7 +6,7 @@
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
 Temporal Server, two-generation OCaml worker, and OCaml driver sequence, while
 `make test-temporal-worker-restart` runs both. The standalone CI integration job
-invokes this target after the existing twelve-result smoke. The successful
+invokes this target after the existing thirteen-result smoke. The successful
 result is recorded in the linked PR #253 run; an earlier cold ARM64 attempt did
 not reach the acceptance assertions because the Docker daemon ran out of
 storage during the native build, which was an infrastructure failure rather

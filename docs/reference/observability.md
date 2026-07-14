@@ -65,6 +65,27 @@ Reporters receive typed structural tags independently from message prose:
 | `temporal.bridge_status` | string | Stable lowercase bridge status |
 | `temporal.error_kind` | string | Stable lowercase Temporal error category |
 
+## Operation identifiers
+
+The `temporal.operation` tag is the stable filtering key for an individual
+SDK action. These are the identifiers emitted by the current callsites; the
+same identifier may appear in more than one source when a bridge operation
+also has a higher-level lifecycle record:
+
+| Source | Current operation identifiers |
+|---|---|
+| `temporal.sdk.bridge` | `check_abi_version`, `echo`, `conformance_wait_ms`, `runtime_create`, `runtime_close`, `client_connect`, `client_disconnect`, `client_start_workflow_json`, `client_begin_start_workflow_json`, `client_poll_start_workflow_json`, `client_wait_start_workflow_json`, `client_wait_workflow_json`, `client_cancel_workflow_json`, `client_signal_workflow_json`, `client_complete_async_activity_json`, `client_record_async_activity_heartbeat_json`, `worker_start`, `worker_try_poll_workflow`, `worker_wait_workflow`, `worker_complete_workflow_json`, `worker_reject_workflow_json`, `worker_try_poll_activity`, `worker_wait_activity`, `worker_wait_activity_completion_retry_backoff`, `worker_complete_activity_json`, `worker_reject_activity_json`, `worker_record_activity_heartbeat_json`, `worker_shutdown`, `replay_worker_start`, `replay_worker_feed_history`, `replay_worker_try_poll_workflow`, `replay_worker_wait_workflow`, `replay_worker_complete_workflow`, `replay_worker_reject_workflow`, `replay_worker_finish_input`, `replay_worker_finalize`, `replay_worker_dispose` |
+| `temporal.sdk.lifecycle` | `runtime_create`, `runtime_close`, `workflow_task_rejected`, `activity_task_rejected`, `activity_completion_retry`, `worker_run_started`, `worker_run_finished`, `worker_terminal_cleanup`, `worker_terminal_cleanup_failed`, `worker_shutdown`, `worker_shutdown_failed`, `workflow_activation_completed`, `workflow_activation_rejected`, `workflow_poll_not_ready`, `activity_task_completed`, `activity_async_handoff_accepted`, `activity_poll_not_ready` |
+| `temporal.sdk.workflow` | `execution_created`, `workflow_started`, `workflow_completed`, `workflow_failed`, `workflow_query_unhandled`, `workflow_query_completed`, `workflow_query_failed`, `workflow_update_unhandled`, `workflow_signal_unhandled`, `workflow_signal_received`, `workflow_signal_handled`, `workflow_cancelled`, `execution_evicted`, `activation_ignored`, `activate` |
+
+The bridge source emits a completion record for every bridge call and a
+second status record when the typed result is unsuccessful. That second record
+uses the status-specific level policy above: normal `Not_ready` progress is
+`Debug`, `Outstanding_tasks` during shutdown is `Warning`, and failures that
+need intervention are `Error`. Applications that need a broad worker view
+should filter `temporal.sdk.lifecycle`; applications diagnosing deterministic
+workflow execution should filter `temporal.sdk.workflow`.
+
 Latency is measured around the local OCaml operation with the portable Unix
 wall clock, expressed as fractional milliseconds, and clamped to zero if the
 clock moves backwards. The SDK currently attaches this tag to bridge-operation

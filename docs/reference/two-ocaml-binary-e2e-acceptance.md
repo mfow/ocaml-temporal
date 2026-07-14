@@ -30,11 +30,13 @@ The worker and driver remain guarded by
 The accepted CI run adds delayed asynchronous activity completion,
 continue-as-new successor following, typed signal/condition acceptance, and a
 live child-start rejection to the timeout path, for seventeen top-level
-assertions in total.
+assertions in the accepted baseline. The current fixture adds a long-backoff
+retry assertion, bringing the pending gate to eighteen.
 
-The current implementation starts fifteen top-level workflows before waiting
+The current implementation starts sixteen top-level workflows before waiting
 for any terminal result, including the delayed asynchronous completion,
-continue-as-new successor, signal/condition, and child-start-failure workflows.
+continue-as-new successor, signal/condition, long-backoff retry, and
+child-start-failure workflows.
 The child-start-failure parent is started after
 `two-binary-long-running-cancellation` has been accepted, then deliberately
 uses that top-level workflow ID for its child; Temporal must reject the child
@@ -42,7 +44,7 @@ start with a typed non-retryable `Child_workflow` error. The driver waits for
 the signal workflow's worker-visible readiness marker before signaling its exact
 run. After the heartbeat-retry workflow reaches
 its terminal result, it starts the start-to-close timeout workflow, then starts
-the heartbeat-timeout workflow after that result. The seventeen-result assertion
+the heartbeat-timeout workflow after that result. The eighteen-result assertion
 also includes the activity-level non-retryable policy and a parent whose child
 returns `SMOKE:CHILD_RETRY:ATTEMPT:2` on its second server-owned attempt.
 This ordering keeps the six-second callback from occupying the serialized
@@ -81,14 +83,14 @@ atomic readiness marker. Compose waits for that health check before
 `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts fifteen top-level workflows before its
-first terminal wait, including the delayed asynchronous-completion and
-continue-as-new scenarios. It starts the child-start-failure parent immediately
+later acceptance run. The driver starts sixteen top-level workflows before its
+first terminal wait, including the delayed asynchronous-completion,
+long-backoff retry, and continue-as-new scenarios. It starts the child-start-failure parent immediately
 after the long-running cancellation workflow so the duplicate workflow ID is
 already accepted when the child command is issued. Once the heartbeat-retry
 workflow has completed, it starts the timeout-retry workflow, then the
 heartbeat-timeout retry workflow, and waits for those separate results, for
-seventeen top-level starts and waits. The cancellation scenario waits for the
+eighteen top-level starts and waits. The cancellation scenario waits for the
 `smoke.cancellation_ready` activity marker after the long-running workflow has
 issued its durable-timer and marker commands in one activation, then
 acknowledges cancellation for `two-binary-long-running-cancellation` before
@@ -652,11 +654,12 @@ for PR head `47c9a93`, later squash-merged as `f877fbf`:
    `non_retryable=false` and the stable message `workflow execution was
     cancelled`.
 
-The current fixture starts fifteen top-level workflows before its first wait,
-then starts `smoke.activity_timeout_retry` and
-`smoke.activity_heartbeat_timeout_retry` in serialized order, for seventeen
-top-level starts and waits. The child-start-failure parent is included among
-the first fifteen and returns `SMOKE:CHILD:START_FAILED` after Temporal rejects
+The current fixture starts sixteen top-level workflows before its first wait,
+including `smoke.activity_long_backoff_retry`, then starts
+`smoke.activity_timeout_retry` and `smoke.activity_heartbeat_timeout_retry` in
+serialized order, for eighteen top-level starts and waits. The
+child-start-failure parent is included among
+the first sixteen and returns `SMOKE:CHILD:START_FAILED` after Temporal rejects
 its duplicate child ID. The complete PR #289 run accepted the exact
 asynchronous result, successor result, timeout-retry markers, activity
 non-retryable classification, child-retry marker, child-start-failure marker, typed signal/condition
@@ -704,10 +707,11 @@ coverage of sticky-cache eviction or crash recovery.
 
 ## Completion criteria for this design
 
-The current seventeen-result baseline
+The accepted seventeen-result baseline
 was verified by the complete [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719). The separate two-generation restart/replay acceptance was verified by the complete [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471).
-The baseline driver assertions and the restart controller are separate gates:
-the former waits for all seventeen exact workflow outcomes, while the latter
+The baseline driver assertions and the restart controller are separate gates;
+the pending long-backoff extension adds an eighteenth exact outcome. The
+former waits for all seventeen exact workflow outcomes, while the latter
 replaces generation 1, validates replay on generation 2, and removes the
 PostgreSQL volume. The older entries below retain the history of the earlier
 nine- and ten-workflow milestones.

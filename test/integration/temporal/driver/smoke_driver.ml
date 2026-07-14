@@ -460,6 +460,12 @@ let run () =
             ~task_queue:Definitions.task_queue ~id:"two-binary-activity-retry"
             ~input:"smoke"
         in
+        let* long_backoff_retry_handle =
+          start_workflow client
+            ~workflow:Definitions.activity_long_backoff_retry
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-activity-long-backoff-retry" ~input:"smoke"
+        in
         let* heartbeat_retry_handle =
           start_workflow client ~workflow:Definitions.activity_heartbeat_retry
             ~task_queue:Definitions.task_queue
@@ -517,7 +523,7 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-signal-condition" ~input:signal_condition_token
         in
-        (* Fifteen starts intentionally happen before the first wait. The
+        (* Sixteen starts intentionally happen before the first wait. The
            cancellation workflow's marker activity proves that its timer and
            marker commands were accepted in one activation before this exact
            run is cancelled; the timer keeps the execution outstanding. The
@@ -579,6 +585,13 @@ let run () =
         let* () =
           require_completed "smoke.activity_retry" "SMOKE:ATTEMPT:2"
             (Ok retry_result)
+        in
+        let* long_backoff_retry_result =
+          wait_workflow long_backoff_retry_handle
+        in
+        let* () =
+          require_completed "smoke.activity_long_backoff_retry"
+            "SMOKE:BACKOFF:RETRIED:SMOKE" (Ok long_backoff_retry_result)
         in
         let* heartbeat_retry_result = wait_workflow heartbeat_retry_handle in
         let* () =

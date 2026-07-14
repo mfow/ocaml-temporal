@@ -56,11 +56,12 @@ opaque bytes and applications may choose another deterministic codec.
 
 ## What is deliberately still pending
 
-- The two-public-OCaml-binary gate now has seventeen exact terminal assertions:
-  fifteen workflows start before the first wait, including the parent that
+- The two-public-OCaml-binary gate now has eighteen exact terminal assertions:
+  sixteen workflows start before the first wait, including the parent that
   proves duplicate-ID child-start failure; the driver then stages the
   start-to-close and heartbeat-timeout retry scenarios after the shorter
-  heartbeat path. It waits for the signal workflow's worker-visible readiness
+  heartbeat path and includes a two-second-backoff retry whose second callback
+  rejects an immediate retry. It waits for the signal workflow's worker-visible readiness
   marker before signaling it, observes delayed asynchronous completion, follows
   a continue-as-new successor, checks the activity-level non-retryable policy
   result, and requires a child workflow to reach its second server-owned retry
@@ -73,8 +74,9 @@ opaque bytes and applications may choose another deterministic codec.
   The separate restart/replay controller now also requires the replacement
   worker to complete the retrying activity at attempt two; the exact result
   marker proves the retry because Temporal compacts intermediate activity
-  retry events out of workflow history. Live verification of that extension is
-  pending.
+  retry events out of workflow history. The [PR #298 run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291)
+  verifies the restart/replay extension; the larger-backoff extension is the
+  next live gate.
   Sticky-cache eviction, crash recovery, and broader child lifecycle scenarios
   remain separate acceptance work.
 - Child-workflow commands can be authored and are translated by the semantic
@@ -166,14 +168,15 @@ runs the OCaml supervisor lifecycle acceptance executable, starts a public
 OCaml worker, and runs a separate public OCaml driver. The worker is the
 long-lived process that registers and executes the workflows and mock activity.
 The driver is a one-shot OCaml test runner: it does not register a worker. Its
-current implementation starts fifteen smoke workflows before waiting,
+current implementation starts sixteen smoke workflows before waiting,
 including delayed asynchronous activity completion, activity-level
 non-retryable policy matching, signal/condition handling, continue-as-new, and
-the duplicate-ID child-start-failure parent. It then starts the start-to-close
+the duplicate-ID child-start-failure parent. It also starts a long-backoff
+retry workflow whose second callback rejects an immediate retry. It then starts the start-to-close
 timeout-retry workflow after heartbeat completion and the heartbeat-timeout-
 retry workflow after that result. It waits for the signal workflow's exact
 readiness marker before signaling it, sends an exact-run cancellation request
-for the long-running workflow, waits for all seventeen exact terminal results,
+for the long-running workflow, waits for all eighteen exact terminal results,
 and exits nonzero if any expected result is not returned. The complete [PR #289
 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) passed
 this expanded acceptance against Temporal Server 1.31 and PostgreSQL,

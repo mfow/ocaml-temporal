@@ -165,7 +165,7 @@ temporal-run-driver:
 	exit "$$status"
 
 # Performs a failure-only metadata check for the known workflow IDs: the
-# driver's seventeen top-level executions and the deterministic children created
+# driver's eighteen top-level executions and the deterministic children created
 # by its parent workflows. The heartbeat-retry, timeout-retry,
 # heartbeat-timeout-retry, activity-non-retryable, child-retry, and child-start-
 # failure IDs are also listed so those failure boundaries are visible in
@@ -179,7 +179,7 @@ temporal-run-driver:
 # stalled before its first start, so every query is best effort and cannot mask
 # the original exit status.
 temporal-inspect-smoke:
-	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity two-binary-continue-as-new two-binary-activity-retry two-binary-activity-heartbeat-retry two-binary-async-activity-completion two-binary-activity-timeout-retry two-binary-activity-heartbeat-timeout-retry two-binary-activity-non-retryable-failure two-binary-parent-retries-child two-binary-parent-awaits-child two-binary-parent-awaits-failed-child two-binary-parent-cancels-child two-binary-non-retryable-failure two-binary-long-running-cancellation two-binary-parent-observes-child-start-failure two-binary-signal-condition; do \
+	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity two-binary-continue-as-new two-binary-activity-retry two-binary-activity-long-backoff-retry two-binary-activity-heartbeat-retry two-binary-async-activity-completion two-binary-activity-timeout-retry two-binary-activity-heartbeat-timeout-retry two-binary-activity-non-retryable-failure two-binary-parent-retries-child two-binary-parent-awaits-child two-binary-parent-awaits-failed-child two-binary-parent-cancels-child two-binary-non-retryable-failure two-binary-long-running-cancellation two-binary-parent-observes-child-start-failure two-binary-signal-condition; do \
 		echo "--- Temporal metadata for $$workflow_id ---"; \
 		$(TEMPORAL_COMPOSE) run --rm --no-deps temporal-admin-tools \
 			temporal workflow describe --workflow-id "$$workflow_id" \

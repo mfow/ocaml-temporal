@@ -94,19 +94,23 @@ opaque bytes and applications may choose another deterministic codec.
   server-owned attempt and a duplicate-ID child-start failure. Child replay and
   recovery remain follow-up scenarios.
 - Typed signal, query, and update definitions plus deterministic local handler
-  dispatch are available as an experimental OCaml-only slice. Native Temporal
-  interaction delivery, conditions, handler policies, versioning, local
-  activities, Nexus, and the remaining cross-SDK parity surface are roadmap
-  work. Continue-as-new is implemented and locally tested at the
-  workflow/native bridge boundary and is verified by the [PR #253 Compose
-  run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
+  dispatch are available as an experimental slice. Native signal delivery,
+  output-only query delivery, immediate one-input non-suspending updates, and
+  deterministic condition waits are implemented and focused-tested. Signal
+  delivery and condition wake-up are also covered by the [PR #289 Compose
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368);
+  live query/update acceptance, typed query inputs, suspended update
+  continuations, richer handler policies, versioning, local activities, Nexus,
+  and the remaining cross-SDK parity surface remain roadmap work. Continue-as-
+  new is implemented and locally tested at the workflow/native bridge boundary
+  and is verified by the [PR #253 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
   Context-aware activity heartbeats are live-verified for a server-delivered
   heartbeat detail and retry; timeout-triggered retry and delayed asynchronous
   completion are also covered. The complete [PR #277 CI
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069) additionally
   verifies heartbeat-timeout retry and activity-level non-retryable error-type
-  matching. Native interaction delivery beyond the current signal/query slice,
-  replay, and recovery remain separate work.
+  matching. Native query/update acceptance, replay, recovery, and the remaining
+  interaction lifecycle work remain separate work.
 - The public API, native protocol, and Temporal Core pin remain experimental
   and may change before a stable release.
 

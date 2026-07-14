@@ -1,6 +1,6 @@
 # Worker restart/replay diagnostic contract
 
-**Status: implemented and live-verified in the [PR #298 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291).** This document defines the small, payload-free records used by the real-Temporal restart test to coordinate a worker replacement. The private worker activation callback and the machine-readable Temporal CLI adapter are implemented. The contract target and the Compose controller both passed: the run observed the exact run, replacement, replay marker, retrying activity's attempt-two result, terminal result, normalized history, and volume cleanup. The earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) remains historical evidence for the original two-generation path. A deliberately failing run for bounded diagnostic preservation remains separate follow-up work.
+**Status: implemented and live-verified for graceful replacement and retry in the [PR #298 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291), and for forced crash recovery in the [PR #306 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29356904816).** This document defines the small, payload-free records used by the real-Temporal restart test to coordinate a worker replacement. The private worker activation callback and the machine-readable Temporal CLI adapter are implemented. The contract target and the Compose controller both passed: the run observed the exact run, replacement, replay marker, retrying activity's attempt-two result, terminal result, normalized history, and volume cleanup. Crash mode additionally requires generation one to exit with status 137 and leave no graceful-shutdown marker. The earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) remains historical evidence for the original two-generation path. A deliberately failing run for bounded diagnostic preservation remains separate follow-up work.
 
 ## Why there is a normalized document
 
@@ -155,7 +155,7 @@ fixture for the validator and rejection tests.
 Run the Docker-free contract check with:
 
 ```sh
-make test-temporal-worker-restart
+make test-temporal-worker-restart-contract
 ```
 
 This contract target does not start Docker, PostgreSQL, Temporal Server, an
@@ -181,7 +181,10 @@ starts generation 2, validates replay, the retrying activity's exact attempt-two
 result, and the exact terminal result, then removes the PostgreSQL volume on
 both success and failure. The [PR #298 Actions
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291) passed
-this current sequence; the earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-passed the original sequence. An earlier local attempt was stopped by Docker
+the graceful replacement sequence, and the [PR #306 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29356904816) passed the
+forced-crash companion gate. The earlier [PR #253
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) passed the
+original sequence. An earlier local attempt was stopped by Docker
 storage/daemon failure before readiness; that infrastructure failure is not
 part of the live evidence.

@@ -11,8 +11,25 @@ pr_workflow=$source_root/.github/workflows/build-pr.yml
 # GitHub's Windows checkout can materialize tracked text with CRLF endings.
 # The contract intentionally makes exact-line assertions, so normalize only
 # the input representation before checking the workflow's semantic content.
-master_workflow_text=$(tr -d '\r' < "$master_workflow")
-pr_workflow_text=$(tr -d '\r' < "$pr_workflow")
+master_workflow_text=$(tr -d '\015' < "$master_workflow")
+pr_workflow_text=$(tr -d '\015' < "$pr_workflow")
+
+# The changed-path detector is a safety boundary: every non-document path
+# must opt into the code and live-smoke jobs. Keep all three workflow outputs
+# and the fail-closed defaults explicit so a refactor cannot silently skip
+# ordinary source changes before they reach the representative matrix.
+printf '%s\n' "$pr_workflow_text" |
+  grep -Fqx "      code: \${{ steps.changed-paths.outputs.code }}"
+printf '%s\n' "$pr_workflow_text" |
+  grep -Fqx "      smoke: \${{ steps.changed-paths.outputs.smoke }}"
+printf '%s\n' "$pr_workflow_text" |
+  grep -Fqx "      native_windows: \${{ steps.changed-paths.outputs.native_windows }}"
+printf '%s\n' "$pr_workflow_text" | grep -Fqx '          code=false'
+printf '%s\n' "$pr_workflow_text" | grep -Fqx '          smoke=false'
+printf '%s\n' "$pr_workflow_text" | grep -Fqx '          native_windows=false'
+printf '%s\n' "$pr_workflow_text" | grep -Fqx '              *)'
+printf '%s\n' "$pr_workflow_text" | grep -Fqx '                code=true'
+printf '%s\n' "$pr_workflow_text" | grep -Fqx '                smoke=true'
 
 # Anchor the job declaration at the workflow's two-space indentation so a
 # future matrix step named "quality" cannot satisfy this contract by accident.
@@ -131,6 +148,15 @@ printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-worker-resta
 
 # The JSON schemas are protocol fixtures rather than prose. Preserve their
 # code classification while keeping ordinary Markdown-only changes inexpensive.
+# The cases are ordered, so assert the schema exception appears before the
+# broad docs/ catch-all rather than merely checking that both snippets exist.
 printf '%s\n' "$pr_workflow_text" | grep -Fq '              docs/schemas/*)'
 printf '%s\n' "$pr_workflow_text" |
   grep -Fq '              *.md|*.markdown|LICENSE*|NOTICE*|docs/*)'
+schema_case_line=$(printf '%s\n' "$pr_workflow_text" |
+  awk '$0 == "              docs/schemas/*)" { print NR; exit }')
+docs_case_line=$(printf '%s\n' "$pr_workflow_text" |
+  awk '$0 == "              *.md|*.markdown|LICENSE*|NOTICE*|docs/*)" { print NR; exit }')
+test -n "$schema_case_line"
+test -n "$docs_case_line"
+test "$schema_case_line" -lt "$docs_case_line"

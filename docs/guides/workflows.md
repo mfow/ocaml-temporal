@@ -714,11 +714,12 @@ The native path keeps Rust/Core and its protobufs private. The OCaml worker
 receives checked descriptions of work, runs the typed function, and sends a
 checked result back through the private supervisor.
 
-## 9. Start and wait from a client
+## 9. Start, control, and wait from a client
 
 `Temporal.Client` is useful when an application needs to submit an execution
-but does not itself run workflow code. It retains the exact workflow ID and
-server-issued run ID:
+cancel or signal one exact execution, and wait for its result without running
+workflow code itself. It retains the exact workflow ID and server-issued run
+ID:
 
 ```ocaml
 let result =
@@ -772,6 +773,22 @@ been shut down or the identity is malformed. The caller therefore chooses
 explicitly whether to observe one successor, build a loop over a chain, or
 stop after the original run.
 
+`Temporal.Client.cancel` sends a cancellation request for the exact run held by
+the handle and returns after Temporal acknowledges that request. It does not
+wait for workflow code to stop; call `Temporal.Client.wait` afterward to
+observe the typed `Cancelled` terminal result. Supply a stable `~request_id`
+when retrying an uncertain control operation, just as for a workflow start.
+
+`Temporal.Client.signal` similarly targets the exact run and encodes its input
+with the typed `Temporal.Signal` definition before sending the request. A
+successful call acknowledges Temporal's signal RPC, not the later execution of
+the worker-side handler. The handler must be registered on the worker through
+the workflow definition; the [interactive workflow reference](../reference/interactive-workflows.md)
+describes the typed definition and deterministic handler boundary. The client
+signal bridge and mock lifecycle are focused-tested at this baseline, while a
+real-server signal acceptance scenario remains separate from the twelve-result
+baseline.
+
 ## 10. Validate locally
 
 From the repository root, the focused Make targets are:
@@ -788,17 +805,20 @@ server. The integration target starts a fresh PostgreSQL and Temporal Server
 Compose project, checks the schemas and frontend, runs the OCaml-owned Core
 lifecycle executable, then runs a public worker and a separate public driver.
 The worker executes registered workflows and activities. The driver is a
-one-shot test runner, not a worker. Its current implementation starts nine
-workflows and asserts five exact success payloads (including the heartbeat-
-detail retry), one typed non-retryable failure, one typed child failure, one
-typed child cancellation, and one exact-run cancellation after observing a
-per-run marker activity. The historical live evidence covers the five baseline
-assertions (four successful workflows and one typed failure); the expanded
-nine-run heartbeat/cancellation/child-lifecycle assertion is implemented and
-locally covered, but is not live-verified because its attempted Actions run was
-cancelled and later checks may remain queued under the repository quota. The
-implementation scope and evidence boundary are described in the
-[acceptance design](../reference/two-ocaml-binary-e2e-acceptance.md).
+one-shot test runner, not a worker. Its current implementation starts eleven
+workflows before the first wait, then starts the timeout-retry workflow after
+the heartbeat result, for twelve exact assertions: fan-out, timer/activity,
+continue-as-new successor following, ordinary activity retry,
+heartbeat-detail retry, delayed asynchronous activity completion,
+start-to-close timeout retry, parent/child success, propagated child failure,
+child cancellation, typed non-retryable workflow failure, and marker-guarded
+exact-run cancellation. The complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+passed those assertions against Temporal Server 1.31 and PostgreSQL, then
+passed the separate two-generation worker restart/replay acceptance. The
+historical [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+remains evidence for the earlier nine-scenario slice. The implementation scope
+and evidence boundary are described in the [acceptance design](../reference/two-ocaml-binary-e2e-acceptance.md)
+and [live acceptance coverage](../reference/live-acceptance-coverage.md).
 
 For the complete ownership and protocol rules, read the [runtime
 invariants](../reference/runtime-invariants.md), [Core bridge reference](../reference/core-bridge.md),

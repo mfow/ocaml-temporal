@@ -43,11 +43,11 @@ require_source "$root/lib/public/worker.mli" '?max_cached_workflows:int'
 require_source "$root/lib/public/native_worker.ml" '| Some "" -> Ok None'
 require_source "$root/lib/runtime/native_worker_execution.ml" 'cache_removal_reason'
 require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
-  'Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 600_000L)'
+  'Temporal.Condition.wait_until_result'
 require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
   'Temporal.Activity.start ~do_not_eagerly_execute:true'
 require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
-  'Temporal.Future.both timer marker'
+  'fun () -> Ok false'
 
 expected='{"workflow_id":"two-binary-cache-eviction-a","run_id":"22222222-2222-4222-8222-222222222222","reason":"cache_full"}'
 normalized=$(tr -d '[:space:]' <"$fixture")

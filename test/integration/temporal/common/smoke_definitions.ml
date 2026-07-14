@@ -192,8 +192,9 @@ let publish_cancellation_ready = publish_marker_token
 
 (** A test-only activity that publishes the cancellation handshake token. Its
     filesystem side effect is intentionally isolated to the activity process;
-    the workflow itself remains deterministic and only schedules this activity
-    alongside its durable timer. *)
+    the workflow itself remains deterministic and only schedules this activity.
+    The cache-eviction workflow uses a replay-safe condition instead of a
+    second process-local coordination mechanism. *)
 let cancellation_ready_activity =
   Temporal.Activity.define ~name:"smoke.cancellation_ready"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.unit (fun token ->
@@ -1031,23 +1032,22 @@ let worker_restart_replay =
           Ok ("SMOKE:" ^ transformed))
 
 (** Keeps a workflow run in Core's sticky cache while a second run is
-    admitted. The first workflow task schedules both a ten-minute timer and a
-    readiness activity; the activity marker therefore proves that the timer is
-    already durable before the independent driver starts the second execution.
-    The live eviction fixture configures the worker with one cache slot, so the
-    second workflow task must then deliver a [RemoveFromCache(CacheFull)]
-    activation for the older run. The timer keeps both runs open until the
+    admitted. The first workflow task schedules a non-eager readiness activity
+    and parks on a false condition; the activity marker therefore proves that
+    the initial task was accepted before the independent driver starts the
+    second execution. The condition is replay-safe and does not add a command
+    or history event, so this fixture keeps both runs open without introducing
+    an unrelated timer replay boundary. The live eviction fixture configures
+    the worker with one cache slot, so the second workflow task must then
+    deliver a [RemoveFromCache(CacheFull)] activation for the older run. The
     driver observes that marker and cancels both exact executions. *)
 let cache_eviction =
   Temporal.Workflow.define ~name:"smoke.cache_eviction"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
-      let timer =
-        Temporal.Workflow.start_sleep (Temporal.Duration.of_ms 600_000L)
-      in
-      let marker =
+      let _readiness =
         Temporal.Activity.start ~do_not_eagerly_execute:true
           cancellation_ready_activity seed
       in
-      match Temporal.Future.await (Temporal.Future.both timer marker) with
-      | Error error -> Error error
-      | Ok ((), ()) -> Ok ("SMOKE:CACHE:" ^ String.uppercase_ascii seed))
+      let open Temporal.Result_syntax in
+      let* () = Temporal.Condition.wait_until_result (fun () -> Ok false) in
+      Ok ("SMOKE:CACHE:" ^ String.uppercase_ascii seed))

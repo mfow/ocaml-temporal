@@ -140,9 +140,10 @@ separate runs.
 
 The sticky-cache eviction row's live implementation is now present in
 `make test-temporal-worker-cache-eviction`: it configures one Core cache slot,
-starts two parked runs, waits for the worker's payload-free `cache_full`
-marker, and checks empty eviction acknowledgement plus typed cancellation of
-both exact runs. The first real-server result remains pending CI.
+starts two runs parked on a replay-safe condition, waits for the worker's
+payload-free `cache_full` marker, and checks empty eviction acknowledgement
+plus typed cancellation of both exact runs. The first real-server result
+remains pending CI.
 
 ## Stable evidence commands
 

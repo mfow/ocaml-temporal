@@ -215,6 +215,109 @@ let test_activation_rechecks_after_signal_mutation () =
           failwith (Temporal_base.Error.message error))
   | _ -> failwith "signal mutation did not complete the condition workflow"
 
+(** Runs a terminal signal in the same activation that could otherwise satisfy
+    a parked condition.  [terminate] represents either continue-as-new or a
+    failure command.  The condition continuation must not be resumed after
+    that command is buffered: the context is already sealed, and running user
+    code after a terminal transition would make the activation order depend on
+    an implementation detail of the scheduler drain. *)
+let run_terminal_condition_regression ~label ~terminate ~expect_command =
+  let ready = ref false in
+  let resumed = ref false in
+  let implementation () =
+    match Workflow_context_store.current () with
+    | None ->
+        Error
+          (Temporal_base.Error.defect
+             ~message:(label ^ " lost its workflow context"))
+    | Some context ->
+        Result.map
+          (fun () ->
+            resumed := true;
+            "condition continuation ran")
+          (Workflow_context_store.wait_until context ~predicate:(fun () ->
+               Ok !ready))
+  in
+  let definition =
+    Temporal_base.Definition.make ~name:(label ^ "-condition-terminal")
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.string
+      ~implementation:(Some implementation)
+  in
+  let handler =
+    Execution.make_signal_handler ~name:"terminate" ~dispatch:(fun _signal ->
+        ready := true;
+        match Workflow_context_store.current () with
+        | None ->
+            Error
+              (Temporal_base.Error.defect
+                 ~message:(label ^ " terminal handler lost its context"))
+        | Some context ->
+            terminate context;
+            Ok ())
+  in
+  let execution =
+    Execution.start ~signal_handlers:[ handler ] definition ()
+  in
+  expect (label ^ " starts blocked") []
+    (Execution.activate execution [ Activation.Start_workflow ]);
+  let commands =
+    Execution.activate execution
+      [ Activation.Signal_workflow
+          {
+            signal_name = "terminate";
+            input = [];
+            identity = "test";
+            headers = [];
+          } ]
+  in
+  expect_command commands;
+  if !resumed then
+    failwith (label ^ " resumed a condition after its terminal command");
+  expect (label ^ " remains terminal") []
+    (Execution.activate execution [ Activation.Start_workflow ])
+
+(** A continue-as-new command must suppress condition rechecking in the same
+    activation, even though its [terminate] path sets only the context's
+    buffered-terminal state until [Execution.activate] finalizes the command. *)
+let test_condition_skips_continue_as_new_terminal () =
+  let successor_input : Temporal_base.Codec.payload =
+    { metadata = []; data = Bytes.empty }
+  in
+  run_terminal_condition_regression ~label:"continue-as-new"
+    ~terminate:(fun context ->
+      let continue : unit -> unit =
+        Workflow_context_store.continue_as_new context
+          ~workflow_type:"condition-successor" ~input:successor_input
+      in
+      continue ())
+    ~expect_command:(function
+      | [ Activation.Continue_as_new { workflow_type; _ } ] ->
+          expect "continue-as-new successor" "condition-successor" workflow_type
+      | commands ->
+          failwith
+            ("continue-as-new expected one terminal command, got "
+            ^ string_of_int (List.length commands)))
+
+(** A workflow failure has the same buffered-terminal lifetime as
+    continue-as-new and must likewise prevent a previously parked condition
+    from being resumed by the terminal signal's state mutation. *)
+let test_condition_skips_failure_terminal () =
+  let failure = Temporal_base.Error.defect ~message:"terminal signal failure" in
+  run_terminal_condition_regression ~label:"failure"
+    ~terminate:(fun context ->
+      let fail : unit -> unit =
+        Workflow_context_store.terminate context (Activation.Fail_workflow failure)
+      in
+      fail ())
+    ~expect_command:(function
+      | [ Activation.Fail_workflow error ] ->
+          expect "failure message" "terminal signal failure"
+            (Temporal_base.Error.message error)
+      | commands ->
+          failwith
+            ("failure expected one terminal command, got "
+            ^ string_of_int (List.length commands)))
+
 (** Executes every deterministic condition-store and activation scenario. *)
 let () =
   test_immediate_success ();
@@ -223,4 +326,6 @@ let () =
   test_predicate_error ();
   test_predicate_exception ();
   test_teardown_removes_waiter ();
-  test_activation_rechecks_after_signal_mutation ()
+  test_activation_rechecks_after_signal_mutation ();
+  test_condition_skips_continue_as_new_terminal ();
+  test_condition_skips_failure_terminal ()

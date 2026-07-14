@@ -507,7 +507,11 @@ let run_scheduler execution =
        If a state mutation satisfies one, resolving its private signal queues a
        continuation; drain again so that continuation participates in this
        activation instead of waiting for a synthetic timer or later task. *)
-    if execution.terminal || execution.evicted then ()
+    if
+      execution.terminal
+      || execution.evicted
+      || Workflow_context_store.has_buffered_terminal execution.context
+    then ()
     else
       let woke =
         Workflow_context_store.with_context execution.context (fun () ->

@@ -123,6 +123,16 @@ already been accepted.
    A terminal resolution before its start acknowledgment, or a
    duplicate/unknown child sequence, is a typed bridge failure.
 
+For the live cache-capacity acceptance fixture, the adapter also has a private
+post-acknowledgement observer for an explicit `RemoveFromCache(CacheFull)`
+activation. It is deliberately not an activation observer: receiving a removal
+activation does not prove that Core accepted the required empty completion.
+The pending record retains its CacheFull classification across a retryable
+completion failure, and the observer runs only after that exact native lease
+has been retired and the in-memory execution has been dropped. The observer
+receives only the run ID. If its diagnostic sink fails, `poll` returns a typed
+diagnostic error after retirement and never submits a second completion.
+
 Activations without initialization must identify a run already in the map.
 Unknown run IDs are completed with a non-retryable bridge failure, which
 retires the native lease instead of silently ignoring it.
@@ -247,6 +257,9 @@ verify:
 - first-activation initialization and terminal completion;
 - durable timer suspension and resumption through a matching sequence;
 - cancellation and cache-eviction removal of suspended runs;
+- post-acknowledgement CacheFull evidence, including a rejected completion
+  retry, exclusion of other removal reasons, and typed diagnostic-sink failure
+  after the native lease has been retired;
 - complete activity-command scheduling and lease retirement;
 - child-start translation plus start acknowledgment and terminal child
   resolution, including start failure, final-before-start, duplicate, and

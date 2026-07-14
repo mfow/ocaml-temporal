@@ -45,6 +45,12 @@ type activation_info = {
   history_length : int64;
 }
 
+(** Payload-free evidence that one [Cache_full] eviction acknowledgement has
+    crossed the supervisor boundary successfully. This private record contains
+    only the run identity because the acceptance fixture must never persist an
+    activation payload, task token, Core message, or native handle. *)
+type cache_full_eviction_acknowledgement = { run_id : string }
+
 (** Runtime signal and query handler aliases kept private to this adapter. *)
 type signal = Execution.signal
 type signal_handler = Execution.signal_handler
@@ -126,6 +132,11 @@ type pending_result =
       command_count : int;
       terminal : bool;
       evicted : bool;
+      (* [true] only for a validated [Remove_from_cache Cache_full] activation.
+         Retaining this fact with the completion is essential: a rejected
+         native acknowledgement is retried on a later poll, so the observer
+         must not be notified until that retry has actually succeeded. *)
+      cache_full_eviction : bool;
     }
   | Pending_rejected of {
       error : error_view;
@@ -360,6 +371,16 @@ let is_terminal completion =
       | Protocol.Update_response _ -> false)
     completion.Protocol.commands
 
+(** Recognizes the one explicit cache-removal reason exercised by the live
+    acceptance fixture. The semantic protocol has already required an eviction
+    activation to contain exactly one removal job before this adapter reaches
+    the helper; matching the closed reason here avoids treating another Core
+    eviction category as evidence of cache-capacity pressure. *)
+let is_cache_full_eviction (activation : Protocol.activation) =
+  match activation.jobs with
+  | [ Protocol.Remove_from_cache { reason = Protocol.Cache_full; _ } ] -> true
+  | _ -> false
+
 (** Reports one bounded lifecycle message without allowing a reporter defect to
     affect worker progress. *)
 let report level ~operation ?error_kind () =
@@ -492,6 +513,12 @@ module Make (Supervisor : SUPERVISOR) = struct
        see partially validated protocol data or run on an arbitrary Rust
        thread. *)
     on_activation : (activation_info -> unit) option;
+    (* Optional post-acknowledgement hook for the one eviction reason the live
+       acceptance fixture needs to prove. It is intentionally distinct from
+       [on_activation]: an activation callback alone cannot establish that
+       Core accepted the required empty completion. *)
+    on_cache_full_eviction_acknowledged :
+      (cache_full_eviction_acknowledgement -> unit) option;
   }
 
   (** The public worker handle is the mutex-confined state above. *)
@@ -502,7 +529,8 @@ module Make (Supervisor : SUPERVISOR) = struct
       empty, NUL-containing, oversized, or non-UTF-8 defaults fail as a typed
       configuration result rather than breaking the first workflow activation.
       No supervisor operation or workflow implementation runs on this path. *)
-  let create ?on_activation ?(task_queue = "default") ~supervisor ~workflows () =
+  let create ?on_activation ?on_cache_full_eviction_acknowledged
+      ?(task_queue = "default") ~supervisor ~workflows () =
     let* () = validate_task_queue task_queue in
     let* definitions = build_definitions workflows in
     Ok
@@ -514,6 +542,7 @@ module Make (Supervisor : SUPERVISOR) = struct
         pending = Run_map.empty;
         mutex = Mutex.create ();
         on_activation;
+        on_cache_full_eviction_acknowledged;
       }
 
   (** Copies a payload without retaining a mutable buffer owned by an earlier
@@ -662,14 +691,37 @@ module Make (Supervisor : SUPERVISOR) = struct
         (try Execution.shutdown execution with _ -> ());
         adapter.runs <- Run_map.remove run_id adapter.runs
 
+  (** Reports post-acknowledgement CacheFull evidence without exposing a Core
+      enum to callers. This function is intentionally invoked only after
+      [accepted_pending] has removed the retained completion and retired the
+      native lease. A callback failure is therefore a diagnostic failure, not
+      a reason to submit another completion. *)
+  let notify_cache_full_eviction_acknowledged adapter run_id =
+    match adapter.on_cache_full_eviction_acknowledged with
+    | None -> Ok ()
+    | Some callback ->
+        (try
+           callback { run_id };
+           Ok ()
+         with exception_ ->
+           Error
+             (exception_error ~path:"$.cache_full_eviction_acknowledgement"
+                exception_))
+
   (** Applies bookkeeping only after the supervisor acknowledges a retained
       completion. This is the single release point for both normal and
       adapter-generated failure completions. *)
   let accepted_pending adapter pending =
     adapter.pending <- Run_map.remove pending.run_id adapter.pending;
     match pending.result with
-    | Pending_completed { command_count; terminal; evicted } ->
+    | Pending_completed
+        { command_count; terminal; evicted; cache_full_eviction } ->
         if terminal || evicted then drop_run adapter pending.run_id;
+        let* () =
+          if cache_full_eviction then
+            notify_cache_full_eviction_acknowledged adapter pending.run_id
+          else Ok ()
+        in
         report Logs.Debug ~operation:"workflow_activation_completed" ();
         Ok
           (Completed
@@ -762,6 +814,7 @@ module Make (Supervisor : SUPERVISOR) = struct
   (** Produces a typed completion for a successfully executed activation and
       updates the registry only after the supervisor confirms retirement. *)
   let submit_completion adapter activation completion ~run_id =
+    let cache_full_eviction = is_cache_full_eviction activation in
     let pending =
       {
         run_id;
@@ -775,6 +828,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                 List.exists
                   (function Protocol.Remove_from_cache _ -> true | _ -> false)
                   activation.Protocol.jobs;
+              cache_full_eviction;
             };
       }
     in
@@ -809,6 +863,7 @@ module Make (Supervisor : SUPERVISOR) = struct
       exact empty acknowledgement remains pending for a later retry and is
       never replaced by an invalid failure command. *)
   let submit_eviction_acknowledgement adapter (activation : Protocol.activation) =
+    let cache_full_eviction = is_cache_full_eviction activation in
     let completion =
       Protocol.{ run_id = activation.run_id; commands = [] }
     in
@@ -817,7 +872,13 @@ module Make (Supervisor : SUPERVISOR) = struct
         run_id = activation.run_id;
         completion = copy_completion completion;
         result =
-          Pending_completed { command_count = 0; terminal = false; evicted = true };
+          Pending_completed
+            {
+              command_count = 0;
+              terminal = false;
+              evicted = true;
+              cache_full_eviction;
+            };
       }
     in
     enqueue_pending adapter pending

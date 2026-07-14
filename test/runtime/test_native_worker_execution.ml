@@ -1075,6 +1075,177 @@ let test_eviction () =
   | _ -> failwith "evicted run remained in the execution registry"
   end
 
+(** A CacheFull removal is meaningful acceptance evidence only after the exact
+    empty acknowledgement has been accepted. This test proves the private hook
+    receives that run ID after the fake supervisor retires its lease, while a
+    different Core removal reason produces no CacheFull observation. *)
+let test_cache_full_eviction_acknowledgement_hook () =
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_cache_full_hook"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_cache_full = "run-cache-full-hook" in
+  let run_other_reason = "run-other-eviction-hook" in
+  let supervisor = fake_supervisor () in
+  let observed = ref [] in
+  let worker =
+    match
+      Worker.create
+        ~on_cache_full_eviction_acknowledged:(fun acknowledgement ->
+          observed := acknowledgement.run_id :: !observed)
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          ("cache-full acknowledgement hook worker creation failed: "
+         ^ error.message)
+  in
+  enqueue supervisor
+    (activation ~run_id:run_cache_full
+       [ initialize ~run_id:run_cache_full
+           ~workflow_type:"native_worker_cache_full_hook" ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (eviction_activation ~run_id:run_cache_full
+       [ Protocol.Remove_from_cache
+           { message = "cache capacity pressure"; reason = Protocol.Cache_full } ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin match !observed with
+  | [ run_id ] when String.equal run_id run_cache_full -> ()
+  | _ -> failwith "CacheFull acknowledgement hook did not receive the exact run ID"
+  end;
+  begin match (latest_completion supervisor).commands with
+  | [] -> ()
+  | _ -> failwith "CacheFull acknowledgement hook followed a non-empty completion"
+  end;
+  enqueue supervisor
+    (activation ~run_id:run_other_reason
+       [ initialize ~run_id:run_other_reason
+           ~workflow_type:"native_worker_cache_full_hook" ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (eviction_activation ~run_id:run_other_reason
+       [ Protocol.Remove_from_cache
+           { message = "operator requested cache removal"; reason = Protocol.Lang_requested } ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin match !observed with
+  | [ run_id ] when String.equal run_id run_cache_full -> ()
+  | _ -> failwith "non-CacheFull eviction incorrectly notified the hook"
+  end
+
+(** A temporary completion failure must retain both the empty acknowledgement
+    and its CacheFull classification. The hook must remain silent for the first
+    failed native submission and run exactly once when the later retry retires
+    that same lease. *)
+let test_cache_full_eviction_acknowledgement_hook_retries () =
+  let run_id = "run-cache-full-hook-retry" in
+  let supervisor = fake_supervisor () in
+  let observed = ref [] in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_cache_full_hook_retry"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_cache_full_hook_retry" ]);
+  let worker =
+    match
+      Worker.create
+        ~on_cache_full_eviction_acknowledged:(fun acknowledgement ->
+          observed := acknowledgement.run_id :: !observed)
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          ("cache-full retry hook worker creation failed: " ^ error.message)
+  in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  supervisor.reject_next_completion := true;
+  enqueue supervisor
+    (eviction_activation ~run_id
+       [ Protocol.Remove_from_cache
+           { message = "retry cache capacity pressure"; reason = Protocol.Cache_full } ]);
+  begin match Worker.poll worker with
+  | Error { code = "completion_failed"; _ } -> ()
+  | Ok _ -> failwith "rejected CacheFull acknowledgement unexpectedly succeeded"
+  | Error error ->
+      failwith
+        ("CacheFull acknowledgement retry returned the wrong error: "
+       ^ error.code)
+  end;
+  if !observed <> [] then
+    failwith "CacheFull acknowledgement hook ran before native acceptance";
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin match !observed with
+  | [ observed_run_id ] when String.equal observed_run_id run_id -> ()
+  | _ -> failwith "CacheFull acknowledgement retry did not notify exactly once"
+  end;
+  begin match (latest_completion supervisor).commands with
+  | [] -> ()
+  | _ -> failwith "retried CacheFull acknowledgement acquired workflow commands"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "retried CacheFull acknowledgement left a native lease outstanding"
+
+(** A post-acknowledgement diagnostic failure cannot be allowed to create a
+    second failure completion: Core has already retired the eviction lease.
+    The worker therefore reports a typed observer error while preserving the
+    accepted empty completion and leaving no retry work behind. *)
+let test_cache_full_eviction_acknowledgement_hook_failure_is_typed () =
+  let run_id = "run-cache-full-hook-failure" in
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_cache_full_hook_failure"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id
+           ~workflow_type:"native_worker_cache_full_hook_failure" ]);
+  let worker =
+    match
+      Worker.create
+        ~on_cache_full_eviction_acknowledged:(fun _ ->
+          failwith "cache-full diagnostic sink failed")
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          ("cache-full failure hook worker creation failed: " ^ error.message)
+  in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  enqueue supervisor
+    (eviction_activation ~run_id
+       [ Protocol.Remove_from_cache
+           { message = "diagnostic failure path"; reason = Protocol.Cache_full } ]);
+  begin match Worker.poll worker with
+  | Error { path = "$.cache_full_eviction_acknowledgement"; _ } -> ()
+  | Ok _ -> failwith "failing CacheFull diagnostic hook unexpectedly succeeded"
+  | Error error ->
+      failwith
+        ("CacheFull diagnostic hook returned the wrong path: " ^ error.path)
+  end;
+  begin match (latest_completion supervisor).commands with
+  | [] -> ()
+  | _ -> failwith "failing CacheFull diagnostic hook emitted a second command"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "failing CacheFull diagnostic hook left a native lease outstanding";
+  begin match Worker.poll worker with
+  | Ok Adapter.Not_ready -> ()
+  | Ok _ -> failwith "failing CacheFull diagnostic hook retained retry work"
+  | Error error ->
+      failwith
+        ("failing CacheFull diagnostic hook left the worker unusable: "
+       ^ error.message)
+  end
+
 (** An eviction removes only the cached in-memory execution. If Temporal later
     replays a start activation for the same run ID, the adapter must create a
     new scheduler and invoke the registered workflow again instead of reviving
@@ -2117,6 +2288,9 @@ let () =
   test_query_adapter_failure_uses_query_results ();
   test_unhandled_signal_fails_closed ();
   test_eviction ();
+  test_cache_full_eviction_acknowledgement_hook ();
+  test_cache_full_eviction_acknowledgement_hook_retries ();
+  test_cache_full_eviction_acknowledgement_hook_failure_is_typed ();
   test_eviction_allows_fresh_replay_execution ();
   test_eviction_after_terminal_completion ();
   test_unexpected_completion_exception_is_retried ();

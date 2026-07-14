@@ -58,6 +58,13 @@ type activation_info = {
     workflow code is entered, so a diagnostic sink can prove replay without
     introducing an asynchronous cross-language callback. *)
 
+(** Payload-free evidence that Temporal Core accepted this worker's empty
+    acknowledgement for a [CacheFull] removal. The callback that receives this
+    record runs only after the supervisor has retired the native lease and the
+    in-memory execution has been dropped; it cannot be used as a pre-acknowledgement
+    signal or to access a Core handle. *)
+type cache_full_eviction_acknowledgement = { run_id : string }
+
 (** One workflow definition registered with the worker. The existential
     wrapper preserves the input/output codec relationship while allowing one
     registry to contain heterogeneous workflow functions. *)
@@ -154,9 +161,18 @@ module Make (Supervisor : SUPERVISOR) : sig
       the first workflow activation. A valid queue is copied into every
       execution context so an activity without an explicit queue is sent back
       to the same queue as its workflow worker. No native operation is
-      performed and no workflow function is called during creation. *)
+      performed and no workflow function is called during creation.
+
+      [on_activation] observes safe activation metadata before workflow code
+      runs. [on_cache_full_eviction_acknowledged] is a separate private test
+      observer that runs only after an empty [CacheFull] eviction completion has
+      been accepted. If that post-acknowledgement observer raises, [poll]
+      returns a typed diagnostic error but never attempts an invalid second
+      completion for the retired lease. *)
   val create :
     ?on_activation:(activation_info -> unit) ->
+    ?on_cache_full_eviction_acknowledged:
+      (cache_full_eviction_acknowledgement -> unit) ->
     ?task_queue:string ->
     supervisor:Supervisor.t ->
     workflows:registered_workflow list ->

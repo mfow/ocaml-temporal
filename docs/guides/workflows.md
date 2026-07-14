@@ -140,8 +140,9 @@ ID, and a later terminal resolution resumes the parent future. Focused tests
 cover success, start failure, final-before-start, duplicate sequences, and
 lease retirement. The live Compose fixture now also covers one parent calling
 `Child_workflow.execute` and receiving a successful child result after the
-child's durable timer. That single happy path does not claim live coverage for
-child start failure, cancellation, retries, replay, or recovery.
+child's durable timer. The live Compose fixture also covers propagated child
+failure, child cancellation, child retry, and duplicate-ID child-start failure;
+replay and recovery remain separate acceptance scenarios.
 
 ## 1. Write a deterministic OCaml function
 
@@ -590,12 +591,12 @@ resolution required to resume the parent. The adapter rejects final-before-
 start, duplicate, and unknown sequences as typed bridge failures, preserving
 the parent lease rather than acknowledging an unsafe completion. Focused tests
 cover the complete lifecycle. The live Compose fixture covers the parent/child
-success path: the parent calls `Child_workflow.execute`, the registered child
-waits on a durable timer, and the driver asserts the parent's exact result.
-That happy path does not claim live coverage for child start failure,
-retries, replay, or recovery; the complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-also live-verified propagated child failure and child cancellation. Child
-start failure, retry, replay, and recovery remain separate acceptance work.
+success path, propagated failure, child cancellation, and child retry: the
+parent calls `Child_workflow.execute`, the registered child waits on a durable
+timer, and the driver asserts the parent's exact result. The complete [PR #289
+CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) also
+live-verifies duplicate-ID child-start failure; replay and recovery remain
+separate acceptance work.
 
 ### Continue a run with fresh history
 
@@ -791,9 +792,9 @@ describes the typed definition and deterministic handler boundary. The client
 signal bridge and mock lifecycle are focused-tested at this baseline. The
 complete [PR #266 CI
 run](https://github.com/ocaml-temporal/actions/runs/29311239247) live-verifies
-typed signal delivery and condition wake-up, and the expanded [PR #277 CI
-run](https://github.com/ocaml-temporal/actions/runs/29318684069) retains those
-assertions in the current fifteen-result acceptance. A successful signal call
+typed signal delivery and condition wake-up, and the expanded [PR #289 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) retains those
+assertions in the current seventeen-result acceptance. A successful signal call
 still acknowledges Temporal's RPC rather than the later execution of the
 worker-side handler.
 
@@ -813,16 +814,17 @@ server. The integration target starts a fresh PostgreSQL and Temporal Server
 Compose project, checks the schemas and frontend, runs the OCaml-owned Core
 lifecycle executable, then runs a public worker and a separate public driver.
 The worker executes registered workflows and activities. The driver is a
-one-shot test runner, not a worker. Its current implementation starts thirteen
+one-shot test runner, not a worker. Its current implementation starts fifteen
 workflows before the first wait: fan-out, timer/activity, continue-as-new
 successor following, ordinary activity retry, heartbeat-detail retry, delayed
 asynchronous activity completion, parent/child success and failure/cancellation,
-typed workflow failure, activity-level non-retryable policy matching,
-marker-guarded exact-run cancellation, and typed signal/condition handling. It
-then starts the start-to-close timeout-retry and heartbeat-timeout-retry
-workflows after the shorter retry paths have completed, and waits for all
-fifteen exact terminal results. The complete [PR #277 CI
-run](https://github.com/ocaml-temporal/actions/runs/29318684069) passed this
+child retry, duplicate-ID child-start failure, typed workflow failure,
+activity-level non-retryable policy matching, marker-guarded exact-run
+cancellation, and typed signal/condition handling. It then starts the
+start-to-close timeout-retry and heartbeat-timeout-retry workflows after the
+shorter retry paths have completed, and waits for all seventeen exact terminal
+results. The complete [PR #289 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) passed this
 expanded acceptance against Temporal Server 1.31 and PostgreSQL, then passed
 the separate two-generation worker restart/replay acceptance. The [PR #266 CI
 run](https://github.com/ocaml-temporal/actions/runs/29311239247) remains focused

@@ -1,9 +1,10 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364)
-verified the current sixteen-result baseline, including typed signal delivery,
-activity retry classification, heartbeat-timeout retry, and child-workflow
-retry against real Temporal Server and PostgreSQL. The complete
+**Status:** The [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719)
+verified the current seventeen-result baseline, including typed signal delivery,
+activity retry classification, heartbeat-timeout retry, child-workflow retry,
+and duplicate-ID child-start failure against real Temporal Server and PostgreSQL.
+The complete
 [PR #253 Actions run](https://github.com/ocaml-temporal/actions/runs/29286560471) verified the separate two-generation worker restart/replay acceptance against real Temporal Server and PostgreSQL.
 The PR #253 run passed the supported Linux and native platform matrix. The
 earlier [PR #229 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016)
@@ -26,17 +27,22 @@ Temporal returns the first attempt's detail and timeout to the second attempt.
 The worker and driver remain guarded by
 `TEMPORAL_TWO_BINARY_LIVE=1`; only the dedicated Compose services set it.
 
-For the current checkout, `OCAML_VERSION=5.5 DUNE_JOBS=1 make
-test-temporal-integration` also passes locally against Temporal Server 1.31
-and PostgreSQL. The accepted CI run adds delayed asynchronous activity
-completion, continue-as-new successor following, and typed signal/condition acceptance to the timeout path, for
-sixteen top-level assertions in total.
+The accepted CI run adds delayed asynchronous activity completion,
+continue-as-new successor following, typed signal/condition acceptance, and a
+live child-start rejection to the timeout path, for seventeen top-level
+assertions in total.
 
-The current implementation starts fourteen top-level workflows before waiting
+The current implementation starts fifteen top-level workflows before waiting
 for any terminal result, including the delayed asynchronous completion,
-continue-as-new successor and signal/condition workflows. It waits for the signal workflow's worker-visible readiness marker before signaling its exact run. After the heartbeat-retry workflow reaches
+continue-as-new successor, signal/condition, and child-start-failure workflows.
+The child-start-failure parent is started after
+`two-binary-long-running-cancellation` has been accepted, then deliberately
+uses that top-level workflow ID for its child; Temporal must reject the child
+start with a typed non-retryable `Child_workflow` error. The driver waits for
+the signal workflow's worker-visible readiness marker before signaling its exact
+run. After the heartbeat-retry workflow reaches
 its terminal result, it starts the start-to-close timeout workflow, then starts
-the heartbeat-timeout workflow after that result. The sixteen-result assertion
+the heartbeat-timeout workflow after that result. The seventeen-result assertion
 also includes the activity-level non-retryable policy and a parent whose child
 returns `SMOKE:CHILD_RETRY:ATTEMPT:2` on its second server-owned attempt.
 This ordering keeps the six-second callback from occupying the serialized
@@ -46,7 +52,8 @@ failure, one child-cancellation marker, one typed non-retryable failure, one
 delayed asynchronous result, one continue-as-new successor result, one timeout
 retry result, and one exact-run cancellation. The separate restart/replay
 acceptance now passes in [PR #253](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471);
-cache eviction and broader recovery remain separate work.
+the child-start-failure parent returns `SMOKE:CHILD:START_FAILED`; cache
+eviction and broader recovery remain separate work.
 
 The heartbeat assertion has a Docker-free contract in addition to the live
 driver and worker. `test/smoke/test_temporal_heartbeat_contract.sh` checks the
@@ -74,11 +81,14 @@ atomic readiness marker. Compose waits for that health check before
 `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts fourteen top-level workflows before its
+later acceptance run. The driver starts fifteen top-level workflows before its
 first terminal wait, including the delayed asynchronous-completion and
-continue-as-new scenarios. Once the heartbeat-retry workflow has completed, it
-starts the timeout-retry workflow, then the heartbeat-timeout retry workflow,
-and waits for those separate results. The cancellation scenario waits for the
+continue-as-new scenarios. It starts the child-start-failure parent immediately
+after the long-running cancellation workflow so the duplicate workflow ID is
+already accepted when the child command is issued. Once the heartbeat-retry
+workflow has completed, it starts the timeout-retry workflow, then the
+heartbeat-timeout retry workflow, and waits for those separate results, for
+seventeen top-level starts and waits. The cancellation scenario waits for the
 `smoke.cancellation_ready` activity marker after the long-running workflow has
 issued its durable-timer and marker commands in one activation, then
 acknowledges cancellation for `two-binary-long-running-cancellation` before
@@ -147,14 +157,16 @@ handle to return a typed `Cancelled` error. Those historical ten-run paths,
 including the updated timeout ordering, passed in the [PR #229 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016)
 and the [PR #226 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182);
 the historical nine-run path passed in [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859).
-The current sixteen-result run additionally verifies asynchronous completion,
+The current seventeen-result run additionally verifies asynchronous completion,
 typed signal delivery, continue-as-new successor following, activity-level
 non-retryable classification, heartbeat-timeout retry, and child-workflow
-retry. The [PR #279 run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364)
-also carries the initial child retry policy through the private Rust/OCaml
+retry and duplicate-ID child-start failure. The [PR #289 run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719)
+also carries the child retry policy and typed child-start failure through the
+private Rust/OCaml
 activation bridge. The [PR #253 run](https://github.com/ocaml-temporal/actions/runs/29286560471)
 also verifies the separate worker restart/replay controller. Child start
-failures, sticky-cache eviction, and crash recovery remain separate scenarios. The
+replay and recovery, sticky-cache eviction, and crash recovery remain separate
+scenarios. The
 intentionally broader follow-up requirements are listed in [Required
 assertions and failure evidence](#required-assertions-and-failure-evidence).
 
@@ -483,7 +495,7 @@ continued-as-new execution (including the successor run ID), or a bridge
 transport failure. An exact-run wait does not silently follow
 continued-as-new: it returns that typed successor outcome so callers can
 explicitly decide whether to await the new run. The public OCaml API keeps the
-sixteen current workflow results as typed workflow-result outcomes and reserves
+seventeen current workflow results as typed workflow-result outcomes and reserves
 bridge transport failure for `Error`.
 
 The worker operations use `request`/terminal `response` or `error` envelopes
@@ -640,12 +652,14 @@ for PR head `47c9a93`, later squash-merged as `f877fbf`:
    `non_retryable=false` and the stable message `workflow execution was
     cancelled`.
 
-The current fixture starts fourteen top-level workflows before its first wait,
+The current fixture starts fifteen top-level workflows before its first wait,
 then starts `smoke.activity_timeout_retry` and
-`smoke.activity_heartbeat_timeout_retry` in serialized order, for sixteen
-top-level starts and waits. The complete PR #279 run accepted the exact
+`smoke.activity_heartbeat_timeout_retry` in serialized order, for seventeen
+top-level starts and waits. The child-start-failure parent is included among
+the first fifteen and returns `SMOKE:CHILD:START_FAILED` after Temporal rejects
+its duplicate child ID. The complete PR #289 run accepted the exact
 asynchronous result, successor result, timeout-retry markers, activity
-non-retryable classification, child-retry marker, typed signal/condition
+non-retryable classification, child-retry marker, child-start-failure marker, typed signal/condition
 result, and the earlier assertions. The exact six-second late callbacks,
 dedicated retry policies, and ordering guards remain protected by the
 Docker-free contracts and historical PR #229/PR #226 CI runs.
@@ -662,11 +676,11 @@ not log text, are the workflow success oracle. Per-activation/task identifiers
 and completion latency are a future observability enhancement and must remain
 payload-free if added.
 
-The first live test is intentionally small. With the current sixteen-result
+The first live test is intentionally small. With the current seventeen-result
 success path verified in CI, extend the same two-binary topology rather than
 adding a separate pseudo-worker test:
 
-* child workflow start failure, replay, and recovery;
+* child workflow replay and recovery;
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
 * sticky-cache eviction and broader recovery beyond the live worker
   restart/replay path; and
@@ -676,22 +690,24 @@ adding a separate pseudo-worker test:
 Child-start commands and both child-resolution jobs have a closed bilateral
 schema, Core conversion, pure-OCaml lifecycle tests, and the PR #210
 real-server assertions for parent/child success, propagated child failure, and
-child cancellation and retry. The activity retry policy has the same separation:
+child cancellation. The [PR #289 run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719)
+adds live child retry and duplicate-ID child-start failure. The activity retry
+policy has the same separation:
 bilateral policy validation is synthetic, while the PR #210 run makes both the
 ordinary attempt-2 result and heartbeat-detail retry live evidence; the PR #226
 run adds start-to-close timeout-triggered retry for the earlier delay. The PR
 #229 run verifies the delayed retry policy and ordering guard against the live
-server. PR #279 adds heartbeat-timeout, non-retryable activity, and child retry
-evidence; the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+server. PR #289 adds heartbeat-timeout, non-retryable activity, and child retry
+plus duplicate-ID child-start-failure evidence; the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 adds live worker restart/replay evidence. None of these assertions claims
 coverage of sticky-cache eviction or crash recovery.
 
 ## Completion criteria for this design
 
-The current sixteen-result baseline
-was verified by the complete [PR #279 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364). The separate two-generation restart/replay acceptance was verified by the complete [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471).
+The current seventeen-result baseline
+was verified by the complete [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719). The separate two-generation restart/replay acceptance was verified by the complete [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471).
 The baseline driver assertions and the restart controller are separate gates:
-the former waits for all sixteen exact workflow outcomes, while the latter
+the former waits for all seventeen exact workflow outcomes, while the latter
 replaces generation 1, validates replay on generation 2, and removes the
 PostgreSQL volume. The older entries below retain the history of the earlier
 nine- and ten-workflow milestones.

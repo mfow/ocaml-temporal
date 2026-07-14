@@ -1032,22 +1032,15 @@ let worker_restart_replay =
           Ok ("SMOKE:" ^ transformed))
 
 (** Keeps a workflow run in Core's sticky cache while a second run is
-    admitted. The first workflow task schedules a non-eager readiness activity
-    and parks on a false condition; the activity marker therefore proves that
-    the initial task was accepted before the independent driver starts the
-    second execution. The condition is replay-safe and does not add a command
-    or history event, so this fixture keeps both runs open without introducing
-    an unrelated timer replay boundary. The live eviction fixture configures
-    the worker with one cache slot, so the second workflow task must then
-    deliver a [RemoveFromCache(CacheFull)] activation for the older run. The
-    driver observes that marker and cancels both exact executions. *)
+    admitted. The replay-safe false condition emits no command or history
+    event, so both runs remain open without introducing an unrelated durable
+    replay boundary. The live eviction fixture configures the worker with one
+    cache slot, so admitting the second workflow task must deliver a
+    [RemoveFromCache(CacheFull)] activation for the older run. The driver
+    observes that marker and cancels both exact executions. *)
 let cache_eviction =
   Temporal.Workflow.define ~name:"smoke.cache_eviction"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
-      let _readiness =
-        Temporal.Activity.start ~do_not_eagerly_execute:true
-          cancellation_ready_activity seed
-      in
       let open Temporal.Result_syntax in
       let* () = Temporal.Condition.wait_until_result (fun () -> Ok false) in
       Ok ("SMOKE:CACHE:" ^ String.uppercase_ascii seed))

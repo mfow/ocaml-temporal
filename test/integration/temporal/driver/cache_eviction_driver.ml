@@ -118,12 +118,12 @@ let require_cancelled label = function
 let cancel handle ~request_id =
   Client.cancel ~request_id ~reason:"cache eviction acceptance requested" handle
 
-(** Starts the first execution and waits for its readiness activity before
-    admitting the second execution. That activity marker proves the first
-    workflow task has already been completed and prevents two initial tasks
-    from racing through the one-slot Core cache. The driver then observes the
-    worker's explicit eviction marker and proves cancellation still reaches
-    each exact run. *)
+(** Starts two exact executions against the one-slot worker cache. The
+    cache-only workflow has no durable command before it parks, so each initial
+    workflow task can complete as an empty non-terminal activation while Core
+    retains the execution in its sticky cache. Admitting the second execution
+    then forces a real cache-full eviction; the driver observes that marker and
+    proves cancellation still reaches each exact run. *)
 let run () =
   match Sys.getenv_opt "TEMPORAL_TWO_BINARY_LIVE" with
   | Some "1" ->
@@ -131,7 +131,6 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* marker = required_env "SMOKE_CACHE_EVICTION_FILE" in
-      let* ready_marker = required_env "SMOKE_CANCELLATION_READY_FILE" in
       let* timeout = timeout_seconds () in
       let* client =
         Client.create ~target_url ~namespace
@@ -143,14 +142,12 @@ let run () =
         | Error error -> Error error
       in
       let result =
-        let* () = clear_marker ready_marker in
         let* () = clear_marker marker in
         let* first =
           Client.start client ~workflow:Definitions.cache_eviction
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-cache-eviction-a" ~input:"first" ()
         in
-        let* () = wait_for_marker ~expected:"first\n" ready_marker ~timeout in
         let* second =
           Client.start client ~workflow:Definitions.cache_eviction
             ~task_queue:Definitions.task_queue

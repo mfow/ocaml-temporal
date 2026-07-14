@@ -182,6 +182,44 @@ leaves the worker graph and handle usable; the caller must finish the handle
 and retry shutdown. Only terminal cleanup after a non-retryable failure closes
 an admitted handle.
 
+### Heartbeat-timeout retry ownership
+
+Heartbeat-timeout retry is a Temporal state-machine decision, not a second
+activity callback that the OCaml adapter should create. The pinned Temporal
+Core revision (recorded in [`rust/Cargo.toml`](../../rust/Cargo.toml)) owns
+heartbeat aggregation, its local activity watchdog, and the server's retry
+policy. When Core learns that an attempt is no longer live, it can deliver one
+`ActivityTask::Cancel` with `reason = TimedOut` and independent
+`is_not_found`/`is_timed_out` details. When the cancellation says that the
+token is not found, Core marks the task as already unknown and suppresses a
+duplicate terminal RPC; if the retry policy permits another attempt, Temporal
+later supplies a new `Start` task with a new token and attempt number.
+
+The native bridge therefore keeps the boundary deliberately one-way for a
+heartbeat: [`record_activity_heartbeat`](activity-protocol.md#heartbeat-document) checks
+the leased token and forwards the owned value to Core, whose API is
+fire-and-forget. It does not invent synchronous cancellation flags. The flags
+and reason arrive asynchronously in the later `Cancel` envelope, and the
+adapter preserves them as private outcome metadata while submitting the one
+`Cancelled` completion required for that token. Remapping a timed-out cancel
+to an OCaml `Failed` result, or submitting a locally generated retry, would
+race Core's ownership of the expired token and could send a duplicate or
+incorrect completion. The same rule protects worker-shutdown, pause, reset,
+and ordinary cancellation paths.
+
+The bilateral tests
+[`test_native_activity_execution.ml`](../../test/runtime/test_native_activity_execution.ml)
+and
+[`activity_protocol.rs`](../../rust/core-bridge/tests/activity_protocol.rs)
+cover the copied heartbeat context and cancellation details. The live
+acceptance contract
+[`test_temporal_activity_timeout_contract.sh`](../../test/smoke/test_temporal_activity_timeout_contract.sh)
+currently proves the analogous **start-to-close** timeout retry; it is not a
+heartbeat-timeout substitute. Only a Docker Compose run against Temporal
+Server can prove a no-heartbeat attempt reaches the server timeout and that a
+new attempt is subsequently delivered. A local OCaml timer would compete with
+Core and would not provide that evidence.
+
 An implementation exception is caught at this boundary and becomes a typed
 non-retryable failure.  Exceptions are therefore a last-resort defect guard,
 not the normal way an activity reports an expected failure.

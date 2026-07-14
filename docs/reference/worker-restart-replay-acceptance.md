@@ -1,6 +1,6 @@
 # Worker restart and replay acceptance design
 
-**Status: live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The live run passed the baseline smoke first, then verified the exact run identity, generation replacement, replay marker, ordered history, thirteen controller steps, follow-up activity, and PostgreSQL-volume cleanup. Sticky-cache eviction remains a separate unimplemented live scenario. The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
+**Status: live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The live run passed the baseline smoke first, then verified the exact run identity, generation replacement, replay marker, ordered history, thirteen controller steps, follow-up activity, and PostgreSQL-volume cleanup. Sticky-cache eviction now has a separate [implemented but not yet live-verified acceptance scenario](sticky-cache-eviction-acceptance.md). The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
 
 `make test-temporal-worker-restart-contract` is the fast Docker-free contract
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
@@ -168,10 +168,11 @@ result also passes; a terminal result without it is not replay evidence.
 A worker restart is not the same thing as a Temporal `RemoveFromCache`
 activation. Losing an in-memory sticky execution while replacing a worker is
 expected; it does not prove that the server sent an explicit cache-eviction
-job or that the OCaml eviction acknowledgement path is correct. Sticky-cache
-eviction therefore remains a separate scenario requiring an observed
-`remove_from_cache` activation and an empty completion. This design must not
-fold that claim into the restart result.
+job or that the OCaml eviction acknowledgement path is correct. The separate
+[sticky-cache acceptance controller](sticky-cache-eviction-acceptance.md)
+requires an observed `CacheFull` removal, an accepted empty completion, and a
+fresh replay of the exact run. This restart result must never be used as
+evidence for that separate path.
 
 ## Exact pass criteria
 

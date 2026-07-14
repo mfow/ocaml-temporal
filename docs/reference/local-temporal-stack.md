@@ -120,6 +120,16 @@ the worker and requires the current run's exact `.worker-stopped` marker; the
 driver's successful `client_shutdown` phase provides the corresponding client
 teardown evidence.
 
+`make test-temporal-worker-cache-eviction` is a separate acceptance command,
+not an extra case hidden in the twelve-result driver. It starts its own public
+OCaml worker with a one-entry sticky cache and a separate public OCaml client
+that creates deliberate cache pressure. The controller checks the exact run's
+pending timer history, a private post-acceptance `CacheFull` acknowledgement
+record, fresh replay metadata, terminal history, and volume cleanup. Its
+Docker-free contract passes locally; until its own Actions job succeeds it is
+implemented test infrastructure rather than recorded live evidence. See
+[sticky-cache eviction acceptance](sticky-cache-eviction-acceptance.md).
+
 This is a real workflow-result acceptance fixture, not only a lifecycle test.
 The complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 has live evidence for fan-out, timer/activity, parent/child success and
@@ -129,8 +139,9 @@ successor following, typed workflow failure, exact-run cancellation, and
 graceful shutdown. A separate `make test-temporal-worker-restart` target in
 the same run also verifies worker replacement, replay, exact-run continuation,
 history ordering, and volume cleanup. The fixture does not yet establish child
-start-failure, heartbeat-timeout-triggered retry, sticky-cache eviction, or
-crash recovery.
+start-failure, heartbeat-timeout-triggered retry, or crash recovery. The
+separate sticky-cache controller is implemented and contract-tested but is not
+live evidence until its own CI run succeeds.
 The workflow configuration runs this target on pull requests and pushes to
 `master` in a standalone Ubuntu job labelled for OCaml 5.5; a queued or
 cancelled Actions run is not live acceptance evidence. It is intentionally

@@ -523,9 +523,39 @@ let load_replay_diagnostics path generation target_workflow_id =
           }
     | _ -> Error (Base_error.defect ~message:"replay diagnostics root is not an object")
 
-(** Writes a diagnostic document through a same-directory temporary file and
-    rename. The worker callback is serialized, so a generation cannot interleave
-    two writes; the rename additionally ensures readers never see partial JSON. *)
+(** Replaces one small diagnostic document through a same-directory temporary
+    file and rename. Every caller is serialized by the workflow adapter, while
+    the same-directory rename makes the bind-mounted file appear either in its
+    old complete form or in its new complete form to the independent test
+    controller. The helper deliberately raises on an I/O defect so the
+    adapter can convert it into a typed worker diagnostic rather than claiming
+    acceptance evidence that was not durably published. *)
+let write_json_diagnostic_atomically path json =
+  let temporary = ref None in
+  try
+    let generated =
+      Filename.temp_file ~temp_dir:(Filename.dirname path)
+        (Filename.basename path ^ ".tmp.") ""
+    in
+    temporary := Some generated;
+    let channel = open_out_bin generated in
+    Fun.protect
+      ~finally:(fun () -> close_out_noerr channel)
+      (fun () ->
+        Yojson.Safe.to_channel channel json;
+        output_char channel '\n';
+        flush channel);
+    Sys.rename generated path;
+    temporary := None
+  with exception_ ->
+    Option.iter
+      (fun generated -> try Sys.remove generated with _ -> ())
+      !temporary;
+    raise exception_
+
+(** Builds and atomically publishes the current restart/replay evidence. The
+    private observer writes only bounded metadata and never serializes a
+    payload, task token, timestamp, or native handle. *)
 let write_replay_diagnostics state =
   let record_json record =
     `Assoc
@@ -546,27 +576,7 @@ let write_replay_diagnostics state =
             ("records", `List (List.map record_json state.records));
           ]
       in
-      let temporary = ref None in
-      (try
-         let generated =
-           Filename.temp_file ~temp_dir:(Filename.dirname state.path)
-             (Filename.basename state.path ^ ".tmp.") ""
-         in
-         temporary := Some generated;
-         let channel = open_out_bin generated in
-         Fun.protect
-           ~finally:(fun () -> close_out_noerr channel)
-           (fun () ->
-             Yojson.Safe.to_channel channel json;
-             output_char channel '\n';
-             flush channel);
-         Sys.rename generated state.path;
-         temporary := None
-       with exception_ ->
-         Option.iter
-           (fun generated -> try Sys.remove generated with _ -> ())
-           !temporary;
-         raise exception_)
+      write_json_diagnostic_atomically state.path json
   | _ -> failwith "replay diagnostics state has no workflow/run identity"
 
 (** Creates the optional replay observer from test-only environment settings.
@@ -651,6 +661,221 @@ let replay_diagnostic_hook () =
         (Base_error.defect
            ~message:
              "SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE must be a non-empty absolute path without NUL")
+
+(** One bounded event in the private sticky-cache acceptance document. The
+    initial and replay records retain only activation metadata; the middle
+    record proves that the adapter observed Core's acceptance of the required
+    empty completion for a [CacheFull] removal. *)
+type cache_eviction_record =
+  | Cache_eviction_initial of { history_length : int64 }
+  | Cache_full_acknowledged
+  | Cache_eviction_replay of { history_length : int64 }
+
+(** Mutable state shared by the two private observers used only by the live
+    sticky-cache fixture. Both callbacks run under the workflow adapter mutex
+    on its owner Domain, so their record order is serialized without exposing
+    a mutable value to Rust, workflow code, or an arbitrary OCaml Domain. *)
+type cache_eviction_diagnostics = {
+  path : string;
+  target_workflow_id : string;
+  mutable run_id : string option;
+  mutable records : cache_eviction_record list;
+}
+
+(** Encodes one cache-eviction evidence record with an exact field set. History
+    lengths remain decimal strings for the same reason as replay diagnostics:
+    a JSON number parser must never round a 64-bit Temporal history count. *)
+let cache_eviction_record_json = function
+  | Cache_eviction_initial { history_length } ->
+      `Assoc
+        [
+          ("phase", `String "initial");
+          ("is_replaying", `Bool false);
+          ("history_length", `String (Int64.to_string history_length));
+        ]
+  | Cache_full_acknowledged ->
+      `Assoc
+        [
+          ("phase", `String "cache_full_acknowledged");
+          ("empty_completion", `Bool true);
+        ]
+  | Cache_eviction_replay { history_length } ->
+      `Assoc
+        [
+          ("phase", `String "replay");
+          ("is_replaying", `Bool true);
+          ("history_length", `String (Int64.to_string history_length));
+        ]
+
+(** Builds the only valid ordered evidence prefixes for the cache fixture.
+    Checking the state immediately before every write catches a future hook
+    change that would make the on-disk JSON look plausible while no longer
+    proving an initial activation, a successful eviction acknowledgement, and
+    a later fresh replay of one exact run in that order. *)
+let cache_eviction_document state =
+  let valid_prefix =
+    match state.records with
+    | [ Cache_eviction_initial _ ]
+    | [ Cache_eviction_initial _; Cache_full_acknowledged ]
+    | [
+     Cache_eviction_initial _;
+     Cache_full_acknowledged;
+     Cache_eviction_replay _;
+    ] -> true
+    | _ -> false
+  in
+  match state.run_id with
+  | Some run_id when valid_prefix ->
+      `Assoc
+        [
+          ("workflow_id", `String state.target_workflow_id);
+          ("run_id", `String run_id);
+          ("records", `List (List.map cache_eviction_record_json state.records));
+        ]
+  | Some _ ->
+      failwith "cache eviction diagnostics reached an invalid record order"
+  | None -> failwith "cache eviction diagnostics have no workflow run identity"
+
+(** Persists the current bounded cache-eviction proof atomically. The shared
+    writer removes its temporary file on failure, so a later controller never
+    treats a partial document as evidence of an accepted Core completion. *)
+let write_cache_eviction_diagnostics state =
+  write_json_diagnostic_atomically state.path (cache_eviction_document state)
+
+(** Rejects impossible negative history metadata before it becomes a JSON
+    record. The native activation translator normally enforces this already;
+    this defensive check keeps the test protocol independently fail-closed. *)
+let cache_eviction_history_length (info : Workflow_adapter.activation_info) =
+  if info.history_length < 0L then
+    failwith "cache eviction diagnostics history length was negative"
+  else info.history_length
+
+(** Creates the paired, private observers used by the real sticky-cache test.
+    The activation callback establishes the target workflow/run identity and
+    later records its fresh replay. The acknowledgement callback cannot run
+    until [Native_worker_execution] has retired the exact empty CacheFull
+    completion. No environment setting means no callback allocation or file
+    I/O for ordinary production workers. *)
+let cache_eviction_diagnostic_hooks () =
+  match Sys.getenv_opt "SMOKE_WORKER_CACHE_EVICTION_DIAGNOSTICS_FILE" with
+  | None -> Ok (None, None)
+  | Some path
+    when path <> "" && not (String.contains path '\000')
+         && not (Filename.is_relative path) ->
+      let* target_workflow_id =
+        match Sys.getenv_opt "SMOKE_CACHE_EVICTION_WORKFLOW_ID" with
+        | Some value
+          when value <> "" && not (String.contains value '\000')
+               && String.length value <= 65_536 ->
+            Ok value
+        | _ ->
+            Error
+              (Base_error.defect
+                 ~message:
+                   "SMOKE_CACHE_EVICTION_WORKFLOW_ID must be a non-empty bounded string without NUL")
+      in
+      let state = { path; target_workflow_id; run_id = None; records = [] } in
+      let on_activation (info : Workflow_adapter.activation_info) =
+        match info.workflow_id with
+        | Some workflow_id when String.equal workflow_id state.target_workflow_id ->
+            begin
+              match state.run_id with
+              | None ->
+                  if info.is_replaying then
+                    failwith
+                      "cache eviction diagnostics received replay before initial activation";
+                  let history_length = cache_eviction_history_length info in
+                  state.run_id <- Some info.run_id;
+                  state.records <- [ Cache_eviction_initial { history_length } ];
+                  write_cache_eviction_diagnostics state
+              | Some expected when not (String.equal expected info.run_id) ->
+                  failwith
+                    "cache eviction diagnostics target workflow changed run identity"
+              | Some _ when not info.is_replaying ->
+                  (* A timer workflow can receive a non-replay task before the
+                     controller creates cache pressure. It is not evidence for
+                     this fixture, so retain the first initial record. *)
+                  ()
+              | Some _ ->
+                  begin
+                    match state.records with
+                    | [ Cache_eviction_initial _; Cache_full_acknowledged ] ->
+                        let history_length = cache_eviction_history_length info in
+                        state.records <-
+                          state.records
+                          @ [ Cache_eviction_replay { history_length } ];
+                        write_cache_eviction_diagnostics state
+                    | [
+                     Cache_eviction_initial _;
+                     Cache_full_acknowledged;
+                     Cache_eviction_replay _;
+                    ] ->
+                        (* Core can deliver later replay work for the same run;
+                           the fixture needs the first ordered proof only. *)
+                        ()
+                    | [ Cache_eviction_initial _ ] ->
+                        failwith
+                          "cache eviction diagnostics replayed before CacheFull acknowledgement"
+                    | _ ->
+                        failwith
+                          "cache eviction diagnostics reached an invalid replay state"
+                  end
+            end
+        | Some _ | None -> ()
+      in
+      let on_cache_full_eviction_acknowledged
+          (acknowledgement : Workflow_adapter.cache_full_eviction_acknowledgement) =
+        match state.run_id with
+        | Some expected when String.equal expected acknowledgement.run_id ->
+            begin
+              match state.records with
+              | [ Cache_eviction_initial _ ] ->
+                  state.records <- state.records @ [ Cache_full_acknowledged ];
+                  write_cache_eviction_diagnostics state
+              | [ Cache_eviction_initial _; Cache_full_acknowledged ] ->
+                  (* The adapter guarantees one callback per accepted pending
+                     completion; retaining this idempotent branch makes a
+                     future observer retry harmless rather than duplicating
+                     the evidence document. *)
+                  ()
+              | [
+               Cache_eviction_initial _;
+               Cache_full_acknowledged;
+               Cache_eviction_replay _;
+              ] ->
+                  failwith
+                    "cache eviction acknowledgement arrived after fresh replay"
+              | _ ->
+                  failwith
+                    "cache eviction acknowledgement arrived before initial activation"
+            end
+        | Some _ | None ->
+            (* A dedicated test worker may still receive a removal for an old
+               or unrelated run. Without a matching initial target record it
+               cannot be useful evidence, so ignore it rather than allowing a
+               background eviction to corrupt the target run's proof. *)
+            ()
+      in
+      Ok (Some on_activation, Some on_cache_full_eviction_acknowledged)
+  | Some _ ->
+      Error
+        (Base_error.defect
+           ~message:
+             "SMOKE_WORKER_CACHE_EVICTION_DIAGNOSTICS_FILE must be a non-empty absolute path without NUL")
+
+(** Combines independent private activation observers without changing the
+    public workflow callback surface. The deterministic order is replay
+    diagnostics first, then cache diagnostics; an observer exception remains
+    an adapter-owned typed failure and never crosses into Rust. *)
+let combine_activation_hooks first second =
+  match (first, second) with
+  | None, None -> None
+  | Some callback, None | None, Some callback -> Some callback
+  | Some first, Some second ->
+      Some
+        (fun info ->
+          first info;
+          second info)
 
 (** Returns [true] only for the bounded readiness timeout. Other native errors
     must propagate because they may indicate a lost worker or connection. *)
@@ -1003,7 +1228,13 @@ let cleanup_abandoned worker =
 let create ~target_url ~namespace ~identity ~task_queue ~max_cached_workflows
     ~max_outstanding_workflow_tasks ~max_concurrent_workflow_task_polls
     ~graceful_shutdown_timeout_ms ~workflows ~activities () =
-  let* on_activation = replay_diagnostic_hook () in
+  let* replay_on_activation = replay_diagnostic_hook () in
+  let* cache_eviction_on_activation, on_cache_full_eviction_acknowledged =
+    cache_eviction_diagnostic_hooks ()
+  in
+  let on_activation =
+    combine_activation_hooks replay_on_activation cache_eviction_on_activation
+  in
   let* client_config =
     Native.client_config ~target_url ~identity
     |> Result.map_error (public_bridge_error "client configuration")
@@ -1032,7 +1263,8 @@ let create ~target_url ~namespace ~identity ~task_queue ~max_cached_workflows
       |> Result.map_error (public_native_error "worker startup")
     in
     let* workflows =
-      Workflow.create ?on_activation ~task_queue ~supervisor ~workflows ()
+      Workflow.create ?on_activation ?on_cache_full_eviction_acknowledged
+        ~task_queue ~supervisor ~workflows ()
       |> Result.map_error (public_adapter_error "workflow registration")
     in
     let* activities =

@@ -20,8 +20,18 @@ SMOKE_RESTART_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-driver.
 SMOKE_RESTART_INITIAL_HISTORY := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-history.initial.json
 SMOKE_RESTART_TERMINAL_HISTORY := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-history.terminal.json
 SMOKE_RESTART_CONTROLLER_FILE := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-controller.json
+SMOKE_CACHE_EVICTION_DIAGNOSTICS_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-diagnostics.json
+SMOKE_CACHE_EVICTION_ACCEPTED_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-accepted
+SMOKE_CACHE_EVICTION_RELEASE_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-release
+SMOKE_CACHE_EVICTION_PRESSURE_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-pressure
+SMOKE_CACHE_EVICTION_RESULT_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-result
+SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-driver.log
+SMOKE_CACHE_EVICTION_INITIAL_HISTORY := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-history.initial.json
+SMOKE_CACHE_EVICTION_TERMINAL_HISTORY := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-history.terminal.json
+SMOKE_CACHE_EVICTION_WORKER_STOPPED_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-worker-stopped
 SMOKE_DRIVER_CONTAINER := $(TEMPORAL_COMPOSE_PROJECT)-smoke-driver
 SMOKE_RESTART_DRIVER_CONTAINER := $(TEMPORAL_COMPOSE_PROJECT)-smoke-restart-driver
+SMOKE_CACHE_EVICTION_DRIVER_CONTAINER := $(TEMPORAL_COMPOSE_PROJECT)-smoke-cache-eviction-driver
 SMOKE_WORKER_GENERATION ?= 1
 SERVICE ?= dev
 OCAML_VERSION ?= 5.2
@@ -57,7 +67,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-start-cache-eviction-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-stop-cache-eviction-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-contract test-temporal-worker-cache-eviction-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -140,6 +150,14 @@ temporal-start-worker:
 	@rm -f "$(SMOKE_WORKER_STOPPED_FILE)"
 	$(TEMPORAL_COMPOSE) up --force-recreate --detach --build --wait smoke-worker
 
+# Starts the dedicated one-entry-cache worker for the CacheFull acceptance
+# scenario. It shares the real Temporal/PostgreSQL stack with the ordinary
+# smoke test but has its own task worker, readiness marker, and shutdown
+# marker so a broad smoke execution cannot change the cache-pressure proof.
+temporal-start-cache-eviction-worker:
+	@rm -f "$(SMOKE_CACHE_EVICTION_WORKER_STOPPED_FILE)"
+	$(TEMPORAL_COMPOSE) up --force-recreate --detach --build --wait smoke-cache-eviction-worker
+
 # Runs the independent OCaml driver against the already-running worker. Using
 # `run --no-deps` avoids accidentally creating a second worker process and makes
 # the driver's exit status the acceptance test's authoritative result. The
@@ -199,6 +217,19 @@ temporal-stop-worker:
 		exit 1; \
 	fi
 
+# Applies the same shutdown evidence rule to the dedicated cache worker. The
+# common marker checker only accepts a marker written after public
+# [Worker.shutdown] succeeds, not a container stop status or stale log line.
+temporal-stop-cache-eviction-worker:
+	@set -eu; \
+	rm -f "$(SMOKE_CACHE_EVICTION_WORKER_STOPPED_FILE)"; \
+	$(TEMPORAL_COMPOSE) stop --timeout 30 smoke-cache-eviction-worker; \
+	if ! sh test/integration/temporal/scripts/check-worker-stop-marker.sh "$(SMOKE_CACHE_EVICTION_WORKER_STOPPED_FILE)"; then \
+		echo "smoke-cache-eviction-worker did not report graceful shutdown" >&2; \
+		$(MAKE) temporal-logs || true; \
+		exit 1; \
+	fi
+
 temporal-health:
 	$(TEMPORAL_COMPOSE) exec -T postgresql pg_isready -U temporal -d postgres
 	$(TEMPORAL_COMPOSE) exec -T postgresql psql -v ON_ERROR_STOP=1 -U temporal -d temporal -tAc 'SELECT 1 FROM schema_version LIMIT 1'
@@ -210,9 +241,14 @@ temporal-status:
 
 temporal-logs:
 	$(TEMPORAL_COMPOSE) logs --no-color --tail 200 postgresql temporal-schema temporal smoke-worker
+	@$(TEMPORAL_COMPOSE) logs --no-color --tail 200 smoke-cache-eviction-worker 2>/dev/null || true
 	@if [ -f "$(SMOKE_DRIVER_LOG_FILE)" ]; then \
 		echo '--- smoke-driver one-off output ---'; \
 		tail -n 200 "$(SMOKE_DRIVER_LOG_FILE)"; \
+	fi
+	@if [ -f "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" ]; then \
+		echo '--- cache-eviction driver one-off output ---'; \
+		tail -n 200 "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"; \
 	fi
 
 temporal-stop:
@@ -223,7 +259,15 @@ temporal-stop:
 		"$(SMOKE_RESTART_INITIAL_HISTORY)" "$(SMOKE_RESTART_TERMINAL_HISTORY)" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).raw" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).describe.json" \
-		"$(SMOKE_RESTART_CONTROLLER_FILE)"
+		"$(SMOKE_RESTART_CONTROLLER_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_DIAGNOSTICS_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_ACCEPTED_FILE)" "$(SMOKE_CACHE_EVICTION_RELEASE_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_PRESSURE_FILE)" "$(SMOKE_CACHE_EVICTION_RESULT_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_INITIAL_HISTORY)" "$(SMOKE_CACHE_EVICTION_TERMINAL_HISTORY)" \
+		"$(SMOKE_CACHE_EVICTION_TERMINAL_HISTORY).raw" \
+		"$(SMOKE_CACHE_EVICTION_TERMINAL_HISTORY).describe.json" \
+		"$(SMOKE_CACHE_EVICTION_WORKER_STOPPED_FILE)"
 
 temporal-clean:
 	$(TEMPORAL_COMPOSE) down --volumes --remove-orphans
@@ -234,7 +278,15 @@ temporal-clean:
 		"$(SMOKE_RESTART_TERMINAL_HISTORY)" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).raw" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).describe.json" \
-		"$(SMOKE_RESTART_CONTROLLER_FILE)"
+		"$(SMOKE_RESTART_CONTROLLER_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_DIAGNOSTICS_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_ACCEPTED_FILE)" "$(SMOKE_CACHE_EVICTION_RELEASE_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_PRESSURE_FILE)" "$(SMOKE_CACHE_EVICTION_RESULT_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_INITIAL_HISTORY)" "$(SMOKE_CACHE_EVICTION_TERMINAL_HISTORY)" \
+		"$(SMOKE_CACHE_EVICTION_TERMINAL_HISTORY).raw" \
+		"$(SMOKE_CACHE_EVICTION_TERMINAL_HISTORY).describe.json" \
+		"$(SMOKE_CACHE_EVICTION_WORKER_STOPPED_FILE)"
 
 test-temporal-integration: test-temporal-config
 	@set -eu; \
@@ -412,6 +464,24 @@ test-temporal-worker-restart-live: test-temporal-config
 	sh "$$controller_validator" --controller "$$controller_file" --workflow-id "$$workflow_id" --run-id "$$run_id"; \
 	trap - EXIT HUP INT TERM; \
 	$(MAKE) temporal-clean
+
+# The cache-pressure proof is intentionally independent of worker restart.
+# Its controller starts one dedicated OCaml worker with a one-entry sticky
+# cache, then lets a separate OCaml client start the target and pressure runs.
+# The script owns the observable server-history boundary and validates the
+# private post-acceptance diagnostic before it accepts the target's result.
+test-temporal-worker-cache-eviction:
+	$(MAKE) test-temporal-worker-cache-eviction-contract
+	$(MAKE) test-temporal-worker-cache-eviction-live
+
+test-temporal-worker-cache-eviction-contract:
+	sh test/integration/temporal/scripts/test-cache-eviction-contract.sh
+
+test-temporal-worker-cache-eviction-live: test-temporal-config
+	TEMPORAL_COMPOSE_PROJECT="$(TEMPORAL_COMPOSE_PROJECT)" \
+	OCAML_IMAGE="$(OCAML_IMAGE)" HOST_UID="$(HOST_UID)" HOST_GID="$(HOST_GID)" \
+	TEMPORAL_DRIVER_TIMEOUT_SECONDS="$(TEMPORAL_DRIVER_TIMEOUT_SECONDS)" \
+	sh test/integration/temporal/scripts/run-cache-eviction-live.sh
 
 test-unit:
 	$(RUN) dune runtest test/unit test/smoke

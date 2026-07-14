@@ -79,6 +79,7 @@ jobs:
         run: |
           make test-temporal-integration
           make test-temporal-worker-restart
+          make test-temporal-worker-cache-eviction
 
   verify:
     name: OCaml ${{ matrix.ocaml }} / ${{ matrix.runner }}

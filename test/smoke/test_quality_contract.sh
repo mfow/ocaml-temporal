@@ -145,6 +145,7 @@ printf '%s\n' "$pr_smoke" |
 printf '%s\n' "$pr_smoke" | grep -Fqx '      OCAML_VERSION: "5.5"'
 printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-integration'
 printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-worker-restart'
+printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-worker-cache-eviction'
 
 # The JSON schemas are protocol fixtures rather than prose. Preserve their
 # code classification while keeping ordinary Markdown-only changes inexpensive.

@@ -5,3 +5,9 @@
 (executable
  (name restart_driver)
  (libraries temporal-sdk temporal_two_binary_smoke_common unix))
+
+;; This assertion client is intentionally independent from the cache worker:
+;; it starts the target and pressure runs through the public client API only.
+(executable
+ (name cache_eviction_driver)
+ (libraries temporal-sdk temporal_two_binary_smoke_common unix))

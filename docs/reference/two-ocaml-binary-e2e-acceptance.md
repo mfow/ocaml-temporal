@@ -41,7 +41,9 @@ failure, one child-cancellation marker, one typed non-retryable failure, one
 delayed asynchronous result, one continue-as-new successor result, one timeout
 retry result, and one exact-run cancellation. The separate restart/replay
 acceptance now passes in [PR #253](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471);
-cache eviction and heartbeat-timeout-triggered retry remain separate work.
+the separate sticky-cache controller is implemented and contract-tested but
+awaits its first live Actions result; heartbeat-timeout-triggered retry remains
+separate work.
 
 The heartbeat assertion has a Docker-free contract in addition to the live
 driver and worker. `test/smoke/test_temporal_heartbeat_contract.sh` checks the
@@ -144,8 +146,9 @@ the historical nine-run path passed in [PR #210](https://github.com/mfow/ocaml-t
 The current twelve-result run additionally verifies asynchronous completion and
 continue-as-new successor following. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 also verifies the separate worker restart/replay controller. Heartbeat-timeout-
-triggered retries, child start failures, sticky-cache eviction, and crash
-recovery remain separate scenarios. The
+triggered retries, child start failures, and crash recovery remain separate
+scenarios. Sticky-cache eviction has a separate implemented/contract-tested
+controller, but it is not live evidence until its own CI run succeeds. The
 intentionally broader follow-up requirements are listed in [Required
 assertions and failure evidence](#required-assertions-and-failure-evidence).
 
@@ -661,8 +664,8 @@ adding a separate pseudo-worker test:
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
 * child workflow start failure, cancellation, retry policy, and non-success
   terminal handling through the worker;
-* sticky-cache eviction and broader recovery beyond the live worker
-  restart/replay path; and
+* the separately wired sticky-cache eviction controller's first real-worker
+  run, plus broader recovery beyond the live worker restart/replay path; and
 * cancellation of child/activity work and graceful shutdown while multiple
   executions are outstanding.
 
@@ -675,8 +678,10 @@ ordinary attempt-2 result and heartbeat-detail retry live evidence; the PR #226
 run adds start-to-close timeout-triggered retry for the earlier delay. The PR
 #229 run verifies the delayed retry policy and ordering guard against the live
 server. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-adds live worker restart/replay evidence; none of these assertions claims
-coverage of heartbeat timeouts, sticky-cache eviction, or crash recovery.
+adds live worker restart/replay evidence. None of those historical Actions
+runs claims sticky-cache eviction coverage: the dedicated controller is now
+implemented and contract-tested, but its first real-worker Actions result is
+still pending. Crash recovery remains untested.
 
 ## Completion criteria for this design
 

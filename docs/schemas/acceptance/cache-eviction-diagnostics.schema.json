@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/acceptance/cache-eviction-diagnostics.schema.json",
+  "title": "Sticky-cache CacheFull eviction diagnostics",
+  "description": "Payload-free evidence emitted by the dedicated live worker after one initial activation, one accepted empty CacheFull removal acknowledgement, and one fresh replay of the same Temporal run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["workflow_id", "run_id", "records"],
+  "properties": {
+    "workflow_id": {"$ref": "#/$defs/identifier"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "records": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        {"$ref": "#/$defs/initial"},
+        {"$ref": "#/$defs/cache_full_acknowledged"},
+        {"$ref": "#/$defs/replay"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "history_length": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[01][0-9]{17}|92[01][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[01][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$",
+      "description": "Canonical non-negative signed-64-bit history length in decimal text."
+    },
+    "initial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "is_replaying", "history_length"],
+      "properties": {
+        "phase": {"const": "initial"},
+        "is_replaying": {"const": false},
+        "history_length": {"$ref": "#/$defs/history_length"}
+      }
+    },
+    "cache_full_acknowledged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "empty_completion"],
+      "properties": {
+        "phase": {"const": "cache_full_acknowledged"},
+        "empty_completion": {"const": true}
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "is_replaying", "history_length"],
+      "properties": {
+        "phase": {"const": "replay"},
+        "is_replaying": {"const": true},
+        "history_length": {"$ref": "#/$defs/history_length"}
+      }
+    }
+  }
+}

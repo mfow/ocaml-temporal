@@ -1,3 +1,9 @@
 (executable
  (name smoke_worker)
  (libraries temporal-sdk temporal_two_binary_smoke_common unix))
+
+;; This dedicated process keeps the one-entry sticky-cache configuration and
+;; its private diagnostics isolated from the broad multi-scenario smoke worker.
+(executable
+ (name cache_eviction_worker)
+ (libraries temporal-sdk temporal_two_binary_smoke_common unix))

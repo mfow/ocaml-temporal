@@ -14,6 +14,30 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-14: Sticky-cache `CacheFull` acceptance implementation
+
+Status: implemented and Docker-free contract-tested locally; no successful
+real-server or GitHub Actions result is claimed yet.
+
+The acceptance fixture now has a dedicated public OCaml worker configured with
+a one-entry sticky cache and a separate public OCaml client binary. The client
+starts a target durable-timer workflow, waits for the host controller to
+confirm its initial `TimerStarted` history, then starts a pressure workflow on
+the same worker. The controller requires an exact three-record, payload-free
+diagnostic: initial activation, an empty `CacheFull` acknowledgement accepted
+by Core, and a fresh replay activation for the same run. It also validates the
+exact client result, normalized history prefix, timer-to-completion ordering,
+graceful worker shutdown, and PostgreSQL-volume removal.
+
+The acknowledgement record is emitted only after the adapter has successfully
+submitted the empty eviction completion and retired its pending lease; focused
+runtime tests cover that ordering and retry behavior. The checked-in schema and
+fixtures support `make test-temporal-worker-cache-eviction-contract`; the
+full `make test-temporal-worker-cache-eviction` command is wired into the
+single OCaml 5.5 Temporal/PostgreSQL CI job. Until that job passes, this entry
+is implementation evidence only. The full design is in
+[sticky-cache eviction acceptance](reference/sticky-cache-eviction-acceptance.md).
+
 ## 2026-07-14: Live worker restart/replay acceptance (#253)
 
 Status: verified in the complete [PR #253 GitHub Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
@@ -32,8 +56,10 @@ PostgreSQL volume during cleanup.
 The same Actions run passed the independent dependency-license and quality
 jobs, Linux OCaml 5.2 through 5.5 amd64/arm64 jobs, and the OCaml 5.5 Windows
 x64 and macOS ARM jobs. This establishes live restart/replay evidence for the
-current acceptance controller; sticky-cache eviction, crash recovery, and
-broader child lifecycle scenarios remain separate work.
+current acceptance controller. At that milestone, sticky-cache eviction,
+crash recovery, and broader child lifecycle scenarios remained separate work;
+the subsequent 2026-07-14 entry records the implemented, contract-tested
+sticky-cache controller whose first live result is still pending.
 
 ## 2026-07-13: Native immediate workflow update activation slice
 

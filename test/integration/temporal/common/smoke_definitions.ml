@@ -555,3 +555,16 @@ let worker_restart_replay =
             Temporal.Activity.execute mock_transform "after-replay"
           in
           Ok ("SMOKE:" ^ transformed))
+
+(** The dedicated sticky-cache acceptance workflow waits long enough for its
+    controller to confirm that the initial task scheduled a server-side timer,
+    then start a second execution against a worker whose cache capacity is one.
+    The body is intentionally activity-free: a later fresh replay can be
+    identified from activation metadata and the terminal string depends only on
+    its deterministic workflow input. *)
+let sticky_cache_eviction =
+  Temporal.Workflow.define ~name:"smoke.sticky_cache_eviction"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match Temporal.Workflow.sleep (Temporal.Duration.of_ms 20_000L) with
+      | Error error -> Error error
+      | Ok () -> Ok ("SMOKE:CACHE:EVICTION:" ^ String.uppercase_ascii seed))

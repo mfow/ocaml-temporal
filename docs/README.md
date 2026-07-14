@@ -56,6 +56,11 @@ The remaining reference documents are useful when changing one subsystem:
   specifies the next controlled worker-replacement scenario, its exact
   assertions, diagnostic evidence, and fresh-volume cleanup rules. It is a
   design document, not live verification.
+- [Sticky-cache eviction acceptance design](reference/sticky-cache-eviction-acceptance.md)
+  explains the separate one-entry-cache `CacheFull` scenario, its two OCaml
+  binaries, payload-free post-acknowledgement evidence, and strict history
+  checks. Its implementation and Docker-free contract are present; a
+  successful live Actions run is still required before it becomes evidence.
 - [Internal replay worker bridge](reference/replay-bridge.md) documents the
   bounded Rust history feeder, strict JSON/base64 format, Core ownership, and
   the local evidence for the first replay-plumbing slice.
@@ -137,6 +142,7 @@ make verify
 make quality
 make license-check
 make test-temporal-worker-restart
+make test-temporal-worker-cache-eviction
 make test-temporal-integration
 ```
 

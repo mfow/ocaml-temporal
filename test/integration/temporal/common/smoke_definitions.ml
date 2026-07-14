@@ -618,9 +618,15 @@ let non_retryable_activity =
       let attempt = Atomic.fetch_and_add non_retryable_activity_attempts 1 + 1 in
       match attempt with
       | 1 ->
-          Error
-            (Temporal.Error.make ~category:`Activity
-               ~message:"SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1" ())
+          (match
+             Temporal.Codec.encode Temporal.Codec.string
+               "SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1"
+           with
+          | Error error -> Error error
+          | Ok detail ->
+              Error
+                (Temporal.Error.make ~category:`Activity ~details:[ detail ]
+                   ~message:"SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1" ()))
       | 2 -> Ok "SMOKE:ACTIVITY_NON_RETRYABLE:RETRIED"
       | attempt ->
           Error
@@ -633,7 +639,10 @@ let non_retryable_activity =
 (** Observes the activity future inside workflow code rather than relying on a
     top-level client failure, whose public category is intentionally always
     [Workflow]. The exact success marker is emitted only after the activity
-    error is seen as [Activity] and [non_retryable] by the replay-safe runtime. *)
+    error is seen as [Activity] and [non_retryable] by the replay-safe runtime.
+    The attempt marker travels in structured failure details because Temporal's
+    public activity-failure diagnostic is an outer wrapper whose leading text
+    is not the application message. *)
 let activity_non_retryable_failure =
   Temporal.Workflow.define ~name:"smoke.activity_non_retryable_failure"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
@@ -646,20 +655,36 @@ let activity_non_retryable_failure =
           with
           | Error error ->
               let view = Temporal.Error.view error in
-              if
-                view.category = `Activity
-                && view.non_retryable
-                && String.starts_with
-                     ~prefix:"SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1"
-                     view.message
-              then Ok "SMOKE:ACTIVITY_NON_RETRYABLE:OBSERVED"
-              else
+              if view.category <> `Activity || not view.non_retryable then
                 Error
                   (Temporal.Error.defect
                      ~message:
                        (Printf.sprintf
                           "activity non-retryable metadata was not preserved (kind=%s, non_retryable=%b)"
                           (Temporal.Error.kind error) view.non_retryable))
+              else (
+                match view.details with
+                | [ detail ] -> (
+                    match
+                      Temporal.Codec.decode Temporal.Codec.string detail
+                    with
+                    | Ok "SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1" ->
+                        Ok "SMOKE:ACTIVITY_NON_RETRYABLE:OBSERVED"
+                    | Ok marker ->
+                        Error
+                          (Temporal.Error.defect
+                             ~message:
+                               (Printf.sprintf
+                                  "activity non-retryable marker was unexpected: %S"
+                                  marker))
+                    | Error decode_error -> Error decode_error)
+                | details ->
+                    Error
+                      (Temporal.Error.defect
+                         ~message:
+                           (Printf.sprintf
+                              "activity non-retryable details were not preserved (count=%d)"
+                              (List.length details))))
           | Ok value ->
               Error
                 (Temporal.Error.defect

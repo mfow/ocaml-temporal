@@ -174,6 +174,10 @@ require_source_text "$definitions" \
 require_source_text "$definitions" \
   'Temporal.Activity.define ~name:"smoke.non_retryable_activity"'
 require_source_text "$definitions" \
+  'Temporal.Codec.encode Temporal.Codec.string'
+require_source_text "$definitions" \
+  'Temporal.Codec.decode Temporal.Codec.string detail'
+require_source_text "$definitions" \
   'let activity_non_retryable_failure ='
 require_source_text "$driver" \
   'two-binary-activity-non-retryable-failure'

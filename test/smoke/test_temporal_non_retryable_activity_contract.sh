@@ -41,13 +41,19 @@ require_text "$definitions" \
 require_text "$definitions" \
   'Temporal.Activity.define ~name:"smoke.non_retryable_activity"'
 require_text "$definitions" \
+  'Temporal.Codec.encode Temporal.Codec.string'
+require_text "$definitions" \
+  '~details:[ detail ]'
+require_text "$definitions" \
   'SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1'
 require_text "$definitions" \
   'let activity_non_retryable_failure ='
 require_text "$definitions" \
-  'view.category = `Activity'
+  'view.category <> `Activity'
 require_text "$definitions" \
   'view.non_retryable'
+require_text "$definitions" \
+  'Temporal.Codec.decode Temporal.Codec.string detail'
 require_text "$definitions" \
   'SMOKE:ACTIVITY_NON_RETRYABLE:OBSERVED'
 require_text "$definitions" \

@@ -2,11 +2,13 @@
 
     This executable is a deliberately small, typed harness. It starts the
     fan-out, timer, ordinary-retry, heartbeat-detail/retry, delayed
-    asynchronous activity completion, timeout-triggered-retry, parent/child
+    asynchronous activity completion, timeout-triggered-retry,
+    heartbeat-timeout-triggered-retry, parent/child
     success, parent/child failure, typed signal/condition,
     parent/child cancellation, typed-failure, long-running cancellation, and
-    continue-as-new scenarios before waiting for any of them, then checks the
-    exact terminal outcomes returned by the public client API. Without
+    continue-as-new scenarios before waiting for most of them. It then stages
+    the timeout-triggered retries after the shorter heartbeat/detail path and
+    checks the exact terminal outcomes returned by the public client API. Without
     [TEMPORAL_TWO_BINARY_LIVE=1] the process exits with a distinct status
     instead of accidentally exercising the in-memory [mock://] backend and
     giving a false live-smoke signal. *)
@@ -578,6 +580,26 @@ let run () =
         let* () =
           require_completed "smoke.activity_timeout_retry"
             "SMOKE:TIMEOUT:RETRIED:SMOKE" (Ok timeout_retry_result)
+        in
+        (* Start the heartbeat-timeout scenario only after the start-to-close
+           timeout scenario has finished. Both first callbacks deliberately
+           remain active for six seconds, and the activity adapter serializes
+           callback/completion ownership behind one lane. This sequencing
+           keeps the observed retry attributable to Temporal's heartbeat
+           timeout rather than to local queueing. *)
+        let* heartbeat_timeout_retry_handle =
+          start_workflow client
+            ~workflow:Definitions.activity_heartbeat_timeout_retry
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-activity-heartbeat-timeout-retry" ~input:"smoke"
+        in
+        let* heartbeat_timeout_retry_result =
+          wait_workflow heartbeat_timeout_retry_handle
+        in
+        let* () =
+          require_completed "smoke.activity_heartbeat_timeout_retry"
+            "SMOKE:HEARTBEAT_TIMEOUT:RETRIED:SMOKE"
+            (Ok heartbeat_timeout_retry_result)
         in
         let* parent_result = wait_workflow parent_handle in
         let* () =

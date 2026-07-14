@@ -3,9 +3,9 @@
     Keeping the workflow and activity values in one private test library makes
     the driver and worker compile against exactly the same names and codecs. The
     workflow bodies deliberately contain no process, filesystem, network, or
-    clock access: those operations would make them non-replayable. The one
-    process-local counter below belongs only to the non-deterministic activity
-    implementation and is never read by workflow code. *)
+    clock access: those operations would make them non-replayable. The
+    process-local counters below belong only to non-deterministic activity
+    implementations and are never read by workflow code. *)
 
 (** The task queue used only by this fixture. It is intentionally distinct from
     every production queue so an accidentally reused local namespace cannot
@@ -512,6 +512,84 @@ let activity_timeout_retry =
             ~start_to_close_timeout:timeout_retry_start_to_close_timeout
             ~retry_policy:policy ~do_not_eagerly_execute:true
             timeout_retry_activity seed)
+
+(** The start-to-close lease for the heartbeat-timeout scenario is deliberately
+    much longer than the heartbeat lease. If the server does not enforce the
+    heartbeat timeout, the first callback can return successfully and the
+    driver will observe the wrong attempt marker instead of a false retry. *)
+let heartbeat_timeout_retry_start_to_close_timeout =
+  Temporal.Duration.of_ms 10_000L
+
+(** The first callback remains active long enough for Temporal to observe the
+    missing heartbeat, but finishes before its start-to-close lease. Returning
+    late is important: it proves the retry was caused by the server-managed
+    heartbeat timeout rather than by an application error. *)
+let heartbeat_timeout_retry_first_attempt_sleep_seconds = 6.0
+
+(** Delays the heartbeat-timeout retry until the intentionally late first
+    callback has released the serialized activity adapter. The retry policy is
+    local to this scenario so the next task cannot be mistaken for a queue
+    timeout caused by the still-running first callback. *)
+let heartbeat_timeout_retry_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 7_000L)
+    ~backoff_coefficient:1.0
+    ~maximum_interval:(Temporal.Duration.of_ms 7_000L) ~maximum_attempts:2 ()
+
+(** Counts only activity callbacks in the worker process. The counter is never
+    read by workflow code; a fresh Compose worker starts each acceptance run,
+    and the second marker therefore proves that Temporal dispatched a retry
+    task after the first callback stopped heartbeating. *)
+let heartbeat_timeout_retry_attempts = Atomic.make 0
+
+(** Stops heartbeating on the first attempt and returns only after the 500 ms
+    heartbeat lease has expired. The second attempt validates its activity
+    context and returns a distinct marker. If Temporal accepted the late first
+    success, the driver would receive [ATTEMPT:1] and fail instead of passing. *)
+let heartbeat_timeout_retry_activity =
+  Temporal.Activity.define_with_context ~name:"smoke.heartbeat_timeout_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+    (fun context input ->
+      let open Temporal.Result_syntax in
+      let* () = require_heartbeat_timeout context in
+      let attempt = Atomic.fetch_and_add heartbeat_timeout_retry_attempts 1 + 1 in
+      match attempt with
+      | 1 ->
+          Unix.sleepf heartbeat_timeout_retry_first_attempt_sleep_seconds;
+          Ok "SMOKE:HEARTBEAT_TIMEOUT:ATTEMPT:1"
+      | 2 ->
+          (match Temporal.Activity.Context.details context with
+          | [] -> Ok ("SMOKE:HEARTBEAT_TIMEOUT:RETRIED:" ^ String.uppercase_ascii input)
+          | details ->
+              Error
+                (Temporal.Error.defect
+                   ~message:
+                     (Printf.sprintf
+                        "heartbeat-timeout retry unexpectedly received %d details"
+                        (List.length details))))
+      | attempt ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "heartbeat-timeout retry activity received unexpected attempt %d"
+                    attempt)))
+
+(** Schedules [heartbeat_timeout_retry_activity] with a heartbeat lease that
+    expires before its start-to-close lease. The first callback sends no
+    heartbeat, so the second result can only be produced by Temporal's
+    heartbeat-timeout retry state machine. *)
+let activity_heartbeat_timeout_retry =
+  Temporal.Workflow.define ~name:"smoke.activity_heartbeat_timeout_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match heartbeat_timeout_retry_policy with
+      | Error error -> Error error
+      | Ok policy ->
+          Temporal.Activity.execute
+            ~heartbeat_timeout
+            ~start_to_close_timeout:heartbeat_timeout_retry_start_to_close_timeout
+            ~retry_policy:policy ~do_not_eagerly_execute:true
+            heartbeat_timeout_retry_activity seed)
 
 (** A child workflow that waits on a short durable timer before deriving its
     result entirely from its input. The timer is deliberately inside the child

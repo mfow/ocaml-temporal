@@ -50,3 +50,13 @@
   ../integration/temporal/worker/smoke_worker.ml)
  (action
   (run sh %{dep:test_temporal_activity_timeout_contract.sh} %{workspace_root})))
+
+(rule
+ (alias runtest)
+ (deps
+  test_temporal_heartbeat_timeout_contract.sh
+  ../integration/temporal/common/smoke_definitions.ml
+  ../integration/temporal/driver/smoke_driver.ml
+  ../integration/temporal/worker/smoke_worker.ml)
+ (action
+  (run sh %{dep:test_temporal_heartbeat_timeout_contract.sh} %{workspace_root})))

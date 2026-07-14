@@ -205,8 +205,10 @@ supervisor. The live Compose gate exercises timer and activity success paths
 and includes parent/child result paths against Temporal Server. The complete
 [PR #289 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368)
 also live-verifies propagated child failure, child-handle cancellation, child
-retry, and duplicate-ID child-start failure. The [PR #253 Compose
-run](https://github.com/ocaml-temporal/actions/runs/29286560471) separately
-live-verifies two-generation worker restart/replay. Sticky-cache eviction and
+retry, and duplicate-ID child-start failure. The [PR #298 Compose
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291) live-verifies
+the current two-generation worker restart/replay path, including the
+replacement-worker retry to attempt two; the earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+remains historical evidence for the original path. Sticky-cache eviction and
 other untested child recovery cases remain deferred live acceptance scenarios
 even though several of their local worker paths are already tested.

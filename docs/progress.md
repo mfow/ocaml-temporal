@@ -16,8 +16,8 @@ for the two-binary Temporal acceptance path.
 
 ## 2026-07-14: Retry-after-restart acceptance extension
 
-Status: implementation and Docker-free contract verified locally; live
-Temporal Server and GitHub Actions verification are pending.
+Status: verified in the Temporal/PostgreSQL integration job of the complete
+[PR #298 GitHub Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291).
 
 The two-generation restart/replay fixture now uses the existing bounded
 two-attempt activity policy after generation 2 replays the pending timer. The
@@ -30,8 +30,9 @@ proves that the retry reached attempt two. The checked-in fixture and
 Docker-free negative tests keep the validation deterministic.
 
 This extends the original live restart/replay evidence without claiming
-sticky-cache eviction or crash recovery. The live result will be recorded here
-after the dedicated CI acceptance job passes.
+sticky-cache eviction or crash recovery. The PR #298 job passed the dedicated
+live acceptance target, including the replacement worker's replay marker,
+attempt-two result, terminal result, normalized history, and cleanup record.
 
 ## 2026-07-14: Live child-workflow retry acceptance (#279)
 

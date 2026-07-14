@@ -788,9 +788,14 @@ successful call acknowledges Temporal's signal RPC, not the later execution of
 the worker-side handler. The handler must be registered on the worker through
 the workflow definition; the [interactive workflow reference](../reference/interactive-workflows.md)
 describes the typed definition and deterministic handler boundary. The client
-signal bridge and mock lifecycle are focused-tested at this baseline, while a
-real-server signal acceptance scenario remains separate from the twelve-result
-baseline.
+signal bridge and mock lifecycle are focused-tested at this baseline. The
+complete [PR #266 CI
+run](https://github.com/ocaml-temporal/actions/runs/29311239247) live-verifies
+typed signal delivery and condition wake-up, and the expanded [PR #277 CI
+run](https://github.com/ocaml-temporal/actions/runs/29318684069) retains those
+assertions in the current fifteen-result acceptance. A successful signal call
+still acknowledges Temporal's RPC rather than the later execution of the
+worker-side handler.
 
 ## 10. Validate locally
 
@@ -808,17 +813,21 @@ server. The integration target starts a fresh PostgreSQL and Temporal Server
 Compose project, checks the schemas and frontend, runs the OCaml-owned Core
 lifecycle executable, then runs a public worker and a separate public driver.
 The worker executes registered workflows and activities. The driver is a
-one-shot test runner, not a worker. Its current implementation starts eleven
-workflows before the first wait, then starts the timeout-retry workflow after
-the heartbeat result, for twelve exact assertions: fan-out, timer/activity,
-continue-as-new successor following, ordinary activity retry,
-heartbeat-detail retry, delayed asynchronous activity completion,
-start-to-close timeout retry, parent/child success, propagated child failure,
-child cancellation, typed non-retryable workflow failure, and marker-guarded
-exact-run cancellation. The complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-passed those assertions against Temporal Server 1.31 and PostgreSQL, then
-passed the separate two-generation worker restart/replay acceptance. The
-historical [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+one-shot test runner, not a worker. Its current implementation starts thirteen
+workflows before the first wait: fan-out, timer/activity, continue-as-new
+successor following, ordinary activity retry, heartbeat-detail retry, delayed
+asynchronous activity completion, parent/child success and failure/cancellation,
+typed workflow failure, activity-level non-retryable policy matching,
+marker-guarded exact-run cancellation, and typed signal/condition handling. It
+then starts the start-to-close timeout-retry and heartbeat-timeout-retry
+workflows after the shorter retry paths have completed, and waits for all
+fifteen exact terminal results. The complete [PR #277 CI
+run](https://github.com/ocaml-temporal/actions/runs/29318684069) passed this
+expanded acceptance against Temporal Server 1.31 and PostgreSQL, then passed
+the separate two-generation worker restart/replay acceptance. The [PR #266 CI
+run](https://github.com/ocaml-temporal/actions/runs/29311239247) remains focused
+evidence for typed signal delivery and condition wake-up, while the historical
+[PR #210 CI run](https://github.com/ocaml-temporal/actions/runs/29221151859)
 remains evidence for the earlier nine-scenario slice. The implementation scope
 and evidence boundary are described in the [acceptance design](../reference/two-ocaml-binary-e2e-acceptance.md)
 and [live acceptance coverage](../reference/live-acceptance-coverage.md).

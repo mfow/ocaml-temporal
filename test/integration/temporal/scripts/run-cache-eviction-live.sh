@@ -70,6 +70,16 @@ terminal_history="$fixture/.cache-eviction-history.terminal.json"
 normalizer="$fixture/scripts/normalize-history.sh"
 identity_validator="$fixture/scripts/validate-restart-replay-identity.sh"
 validator="$fixture/scripts/validate-cache-eviction.sh"
+# Supported POSIX shells measure [ulimit -f] blocks differently (512 bytes on
+# Linux dash and 1024 bytes on macOS sh). These values therefore cap raw output
+# at no more than 8 MiB, 1 MiB, and 64 MiB respectively on either platform;
+# exact post-write byte checks below remain the portable contract.
+history_response_limit_blocks=8192
+describe_response_limit_blocks=1024
+# This log includes an initial Compose image build as well as runtime output.
+# Keep its finite cap comfortably above normal cold-build verbosity while still
+# preventing a runaway client/BuildKit stream from exhausting host storage.
+driver_log_limit_blocks=65536
 
 # Prints only the final 64 KiB of the one-shot driver log. Failure output must
 # remain useful on a hosted runner, but a line-count cap alone would still let
@@ -96,7 +106,7 @@ cleanup_driver() {
 # application payload in repository evidence.
 cleanup_scratch() {
   [ -z "$scratch_dir" ] && return 0
-  if [ -d "$scratch_dir" ] && ! rm -rf "$scratch_dir"; then
+  if ! rm -rf "$scratch_dir"; then
     echo "cache-eviction scratch cleanup failed" >&2
     return 1
   fi
@@ -164,9 +174,12 @@ is_bounded_file() {
 query_history() {
   destination=$1
   raw_history="$scratch_dir/history.json"
-  if ! compose run --rm --no-deps temporal-admin-tools \
-    temporal workflow show --workflow-id "$workflow_id" --run-id "$run_id" \
-    --namespace temporal-sdk-test --output json >"$raw_history" 2>/dev/null; then
+  if ! (
+    ulimit -f "$history_response_limit_blocks" || exit 125
+    compose run --rm --no-deps temporal-admin-tools \
+      temporal workflow show --workflow-id "$workflow_id" --run-id "$run_id" \
+      --namespace temporal-sdk-test --output json
+  ) >"$raw_history" 2>/dev/null; then
     rm -f "$raw_history" || true
     return 1
   fi
@@ -243,8 +256,11 @@ make_target temporal-clean
 make_target temporal-start
 make_target temporal-start-cache-eviction-worker
 docker rm -f "$driver_container" >/dev/null 2>&1 || true
-compose run --build --rm --name "$driver_container" --no-deps \
-  smoke-cache-eviction-driver >"$driver_log" 2>&1 &
+(
+  ulimit -f "$driver_log_limit_blocks" || exit 125
+  compose run --build --rm --name "$driver_container" --no-deps \
+    smoke-cache-eviction-driver
+) >"$driver_log" 2>&1 &
 driver_pid=$!
 
 wait_for_marker "$accepted_file" "the target workflow identity"
@@ -260,9 +276,12 @@ run_id=$(sed -n 's/^run_id=//p' "$accepted_file" | sed -n '1p')
 }
 
 describe_file="$scratch_dir/describe.json"
-if ! compose run --rm --no-deps temporal-admin-tools \
-  temporal workflow describe --workflow-id "$workflow_id" --run-id "$run_id" \
-  --namespace temporal-sdk-test --output json >"$describe_file" 2>/dev/null; then
+if ! (
+  ulimit -f "$describe_response_limit_blocks" || exit 125
+  compose run --rm --no-deps temporal-admin-tools \
+    temporal workflow describe --workflow-id "$workflow_id" --run-id "$run_id" \
+    --namespace temporal-sdk-test --output json
+) >"$describe_file" 2>/dev/null; then
   rm -f "$describe_file" || true
   echo "cache-eviction workflow identity lookup failed" >&2
   exit 1

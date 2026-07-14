@@ -87,12 +87,40 @@ fi
 jq_bin=${JQ_BIN:-jq}
 command -v "$jq_bin" >/dev/null 2>&1 || fail "jq is required (set JQ_BIN to its path)"
 
+# This mirrors the finite semantic names emitted by [normalize-history.sh].
+# Keeping the allow-list here makes validation of an already-normalized file
+# safe on its own: a caller cannot bypass the normalizer and inject a future or
+# misspelled Temporal event into evidence that the controller treats as closed.
+event_types='[
+  "WorkflowExecutionStarted",
+  "WorkflowTaskScheduled",
+  "WorkflowTaskStarted",
+  "WorkflowTaskCompleted",
+  "WorkflowTaskFailed",
+  "WorkflowTaskTimedOut",
+  "TimerStarted",
+  "TimerFired",
+  "TimerCanceled",
+  "ActivityTaskScheduled",
+  "ActivityTaskStarted",
+  "ActivityTaskCompleted",
+  "ActivityTaskFailed",
+  "ActivityTaskCanceled",
+  "WorkflowExecutionCompleted",
+  "WorkflowExecutionFailed",
+  "WorkflowExecutionCanceled",
+  "WorkflowExecutionTerminated",
+  "WorkflowExecutionTimedOut",
+  "WorkflowExecutionContinuedAsNew"
+]'
+
 # The normalizer already rejects unknown Temporal event variants. Repeat the
 # closed projection shape here so the cache evidence is safe even when this
 # validator is used without the normalizer's own prior invocation.
 validate_history_shape() {
   history_path=$1
-  if ! "$jq_bin" -e --arg workflow_id "$workflow_id" --arg run_id "$run_id" '
+  if ! "$jq_bin" -e --arg workflow_id "$workflow_id" --arg run_id "$run_id" \
+    --argjson event_types "$event_types" '
     type == "object"
     and (keys | sort) == ["events", "run_id", "workflow_id"]
     and .workflow_id == $workflow_id
@@ -103,7 +131,11 @@ validate_history_shape() {
       and (keys | sort) == ["event_id", "type"]
       and (.event_id | type == "string" and test("^[1-9][0-9]{0,18}$"))
       and (.event_id | length < 19 or (length == 19 and . <= "9223372036854775807"))
+      # Keep the event type bound while consulting the allow-list. Piping into
+      # [$event_types] first would rebind the jq dot to the list and make any
+      # string appear present.
       and (.type | type == "string" and length > 0 and length <= 128)
+      and (.type as $event_type | ($event_types | index($event_type)) != null)
     ))
     and (([.events[].event_id] as $ids |
       [range(1; ($ids | length)) as $i |

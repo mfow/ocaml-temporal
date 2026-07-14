@@ -166,7 +166,12 @@ validate_history_shape() {
         and (.event_id | type == "string" and test("^[1-9][0-9]{0,18}$"))
         and (.event_id |
           length < 19 or (length == 19 and . <= "9223372036854775807"))
-        and (.type | type == "string" and ($event_types | index(.)) != null)
+        # Bind the event type before changing the jq input to the allow-list.
+        # Using [index(.)] directly after piping into [$event_types] would make
+        # the dot refer to the allow-list itself and silently accept every
+        # string, defeating this closed projection.
+        and (.type | type == "string")
+        and (.type as $event_type | ($event_types | index($event_type)) != null)
       ))
       and (([.events[].event_id] as $ids |
         [range(1; ($ids | length)) as $i |

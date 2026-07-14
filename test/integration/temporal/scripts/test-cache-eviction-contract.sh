@@ -49,6 +49,14 @@ expect_failure() {
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
+# The live controller consumes normalized files, so its validator must enforce
+# the normalizer's closed event-name projection even when called directly.
+jq '.events[1].type = "NotARealEvent"' "$fixture/history.initial.json" \
+  >"$tmp/history-unknown-event-type.json"
+expect_failure sh "$validator" --stage initial \
+  --initial-history "$tmp/history-unknown-event-type.json" \
+  --workflow-id "$workflow_id" --run-id "$run_id"
+
 jq '.records[1].empty_completion = false' "$fixture/diagnostics.json" \
   >"$tmp/ack-not-empty.json"
 expect_failure sh "$validator" \

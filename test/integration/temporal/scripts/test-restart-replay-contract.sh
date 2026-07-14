@@ -70,6 +70,16 @@ expect_failure sh "$validator" \
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
+# The normalizer rejects unknown protobuf enum values, but the validator also
+# accepts persisted normalized documents. Exercise its independent allow-list
+# so a jq input-scope regression cannot convert an arbitrary event name into
+# valid replay evidence.
+jq '.events[1].type = "NotARealEvent"' "$fixture/history.initial.json" \
+  >"$tmp/history-unknown-event-type.json"
+expect_failure sh "$validator" \
+  --history "$tmp/history-unknown-event-type.json" \
+  --workflow-id "$workflow_id" --run-id "$run_id" --stage initial
+
 # Keep the live controller's exact-run identity check on a Docker-free test
 # path. The CLI envelope is intentionally larger than this assertion; only
 # the documented execution identifiers are relevant to the acceptance result.

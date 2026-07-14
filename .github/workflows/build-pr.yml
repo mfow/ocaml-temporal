@@ -21,6 +21,7 @@ jobs:
     outputs:
       code: ${{ steps.changed-paths.outputs.code }}
       smoke: ${{ steps.changed-paths.outputs.smoke }}
+      native_windows: ${{ steps.changed-paths.outputs.native_windows }}
     steps:
       - name: Check out pull-request head
         uses: actions/checkout@v7
@@ -37,27 +38,51 @@ jobs:
           set -euo pipefail
           code=false
           smoke=false
+          native_windows=false
 
           while IFS= read -r path; do
-            # The live Temporal/PostgreSQL acceptance fixture is the only
-            # smoke-specific path. Its changes must not enable the ordinary
-            # build matrix, but they must enable the smoke job.
-            if [[ "$path" == test/integration/temporal/* ]]; then
-              smoke=true
-              continue
-            fi
-
-            # OCaml, native bridge, Rust, build, and CI source changes enable
-            # all PR builds. The Makefile is explicit because a shell-only
-            # acceptance or build fix must still run the full verification
-            # matrix rather than quietly receiving only the license audit.
+            # JSON schemas are executable protocol contracts even though they
+            # live beneath docs/. Validate them like code so an envelope shape
+            # change cannot silently receive license-only verification.
             case "$path" in
-              Makefile|Dockerfile*|.github/workflows/*|*.ml|*.mli|*.mll|*.mly|*.re|*.rei|*.c|*.h|*.rs|lib/*|rust/*)
+              docs/schemas/*)
                 code=true
                 smoke=true
                 ;;
-              test/smoke/*)
+              # Markdown and legal documentation retain the independent
+              # license audit but do not spend a compatibility matrix.
+              # Everything else fails closed into the normal code and
+              # live-smoke gates so a new build input is not silently
+              # license-only.
+              *.md|*.markdown|LICENSE*|NOTICE*|docs/*)
+                continue
+                ;;
+              # The live acceptance fixture is intentionally smoke-specific:
+              # it exercises the complete Temporal/PostgreSQL topology but
+              # does not alter the ordinary library source or build graph.
+              test/integration/temporal/*)
                 smoke=true
+                continue
+                ;;
+              *)
+                code=true
+                smoke=true
+                ;;
+            esac
+
+            # The macOS native link is the representative desktop gate for
+            # every code PR. Windows is much slower, so run it before merge
+            # when a change can affect the Rust/C bridge, native build graph,
+            # or workflow configuration itself. The exhaustive
+            # master/scheduled matrix always runs Windows regardless of this
+            # classification.
+            case "$path" in
+              rust/*|lib/core_bridge/*|lib/sdk_supervisor/*|\
+              lib/public/native_worker.*|lib/runtime/native_*|test/bridge/*|\
+              *.c|*.h|Makefile|Dockerfile*|.dockerignore|dune|dune-project|\
+              dune-workspace|*.opam|*.opam.locked|*/dune|scripts/*|\
+              .github/workflows/*|.github/actions/*)
+                native_windows=true
                 ;;
             esac
           done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
@@ -65,6 +90,7 @@ jobs:
           {
             echo "code=$code"
             echo "smoke=$smoke"
+            echo "native_windows=$native_windows"
           } >> "$GITHUB_OUTPUT"
 
   quality:
@@ -139,14 +165,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ocaml:
-          - "5.2"
-          - "5.3"
-          - "5.4"
-          - "5.5"
-        runner:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
+        # PRs exercise the compatibility floor and current release on the
+        # primary Linux architecture, plus the current release on ARM64.
+        # build.yml retains the exhaustive 5.2–5.5 × amd64/arm64 matrix for
+        # every master push and scheduled run.
+        include:
+          - ocaml: "5.2"
+            runner: ubuntu-24.04
+          - ocaml: "5.5"
+            runner: ubuntu-24.04
+          - ocaml: "5.5"
+            runner: ubuntu-24.04-arm
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -167,33 +196,59 @@ jobs:
       - name: Build, lint, and test
         run: make verify OCAML_VERSION=${{ matrix.ocaml }}
 
-  native:
+  native-macos:
     if: needs.changes.outputs.code == 'true'
     needs: changes
-    name: OCaml 5.5 / ${{ matrix.label }}
-    runs-on: ${{ matrix.runner }}
+    # macOS ARM64 provides a representative non-Linux native-link check for
+    # every code PR. It is intentionally separate from the conditional
+    # Windows job below so a normal PR does not wait for both desktop hosts.
+    name: OCaml 5.5 / macOS ARM64
+    runs-on: macos-15
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: Windows x64
-            runner: windows-latest
-            architecture: amd64
-            rust-host: x86_64-pc-windows-gnu
-            rust-toolchain: 1.94.1-x86_64-pc-windows-gnu
-          - label: macOS ARM64
-            runner: macos-15
-            architecture: arm64
-            rust-host: aarch64-apple-darwin
-            rust-toolchain: 1.94.1-aarch64-apple-darwin
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/_build/rust
-      RUSTUP_TOOLCHAIN: ${{ matrix.rust-toolchain }}
+      RUSTUP_TOOLCHAIN: 1.94.1-aarch64-apple-darwin
       NATIVE_OCAML_VERSION: "5.5"
       NATIVE_RUST_VERSION: 1.94.1
-      NATIVE_ARCH: ${{ matrix.architecture }}
-      NATIVE_RUST_HOST: ${{ matrix.rust-host }}
+      NATIVE_ARCH: arm64
+      NATIVE_RUST_HOST: aarch64-apple-darwin
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up OCaml 5.5
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.5"
+      - name: Set up pinned Rust toolchain
+        shell: bash
+        run: >-
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          --component clippy --component rustfmt
+      - name: Install Protocol Buffers compiler on macOS
+        run: brew install protobuf
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test --yes
+      - name: Build, lint, and test natively
+        shell: bash
+        run: make native-verify
+
+  native-windows:
+    # A Windows native build is required before merge when the cross-language
+    # ABI, its build toolchain, or the workflow that invokes it changes. Pure
+    # OCaml changes still receive Linux amd64/arm64 and macOS ARM validation;
+    # master and scheduled runs retain unconditional Windows coverage.
+    if: needs.changes.outputs.native_windows == 'true'
+    needs: changes
+    name: OCaml 5.5 / Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/_build/rust
+      RUSTUP_TOOLCHAIN: 1.94.1-x86_64-pc-windows-gnu
+      NATIVE_OCAML_VERSION: "5.5"
+      NATIVE_RUST_VERSION: 1.94.1
+      NATIVE_ARCH: amd64
+      NATIVE_RUST_HOST: x86_64-pc-windows-gnu
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -208,14 +263,9 @@ jobs:
         run: >-
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           --component clippy --component rustfmt
-      - name: Install Protocol Buffers compiler on macOS
-        if: runner.os == 'macOS'
-        run: brew install protobuf
       - name: Install Protocol Buffers compiler on Windows
-        if: runner.os == 'Windows'
         run: choco install protoc --no-progress --yes
       - name: Expose Protocol Buffers compiler to Cygwin
-        if: runner.os == 'Windows'
         shell: bash
         run: |
           set -euo pipefail

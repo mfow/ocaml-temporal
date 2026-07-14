@@ -33,9 +33,34 @@ GitHub Actions uses
 [`taiki-e/install-action`](https://github.com/taiki-e/install-action) at an
 immutable commit with checksum validation enabled and fallback installation
 disabled. The action installs the same exact versions and then invokes `make
-quality`. This runs once on Ubuntu for each pull request and push to `master`;
-the OCaml version matrix and Windows/macOS native compatibility jobs are
-unchanged.
+quality`. The job runs once for each code pull request and once for each push
+to `master` or scheduled run; it is not repeated for every OCaml matrix cell.
+Path filtering skips it for documentation-only pull requests, while the
+standalone license-audit job remains independent.
+
+## CI matrix policy
+
+Pull requests use a representative compatibility sample: Linux amd64 on OCaml
+5.2 and 5.5, Linux arm64 and macOS ARM64 on OCaml 5.5, and one live
+Temporal/PostgreSQL smoke on Linux amd64 with OCaml 5.5. The Windows x64 OCaml
+5.5 job is added before merge when changes affect the native bridge,
+build/toolchain, workflow, or composite-action configuration. This keeps the
+oldest supported compiler, current compiler, both Linux architectures, and a
+non-Linux native link in the normal PR gate while avoiding the redundant
+intermediate Linux combinations.
+
+Pushes to `master` and scheduled runs remain the exhaustive compatibility
+gate: OCaml 5.2–5.5 on both Linux architectures plus both OCaml 5.5 native
+desktop jobs. A 5.3 or 5.4 regression that does not affect the representative
+lanes is therefore caught immediately after merge by the subsequent master run;
+the reduced PR matrix is not presented as a replacement for that evidence.
+
+Markdown and legal-documentation-only pull requests run the independent
+license audit only. JSON schemas under `docs/schemas/` are protocol contracts
+and therefore take the code path despite their documentation location. A pull
+request that changes only the live acceptance fixture under
+`test/integration/temporal/` runs the license audit and live smoke without the
+representative matrix; the smoke is the direct verification for that fixture.
 
 ## CI jobs and local equivalents
 
@@ -45,11 +70,11 @@ queued Actions run does not make the local verification boundary ambiguous:
 
 | CI job | Workflow command | Local command | What the local result proves |
 | --- | --- | --- | --- |
-| `verify` | `make verify OCAML_VERSION=<matrix version>` | `make verify OCAML_VERSION=5.2` (or another locally available image) | Docker-backed OCaml build/lint, Rust tests, bridge/install tests, and repository quality contracts for one selected compiler image. |
+| `verify` | `make verify OCAML_VERSION=<matrix version>` | `make verify OCAML_VERSION=5.2` (or another locally available image) | Docker-backed OCaml build/lint, Rust tests, bridge/install tests, and repository quality contracts. PRs use the representative cells; master and scheduled runs use the exhaustive matrix. |
 | `quality` | `make quality` | `make quality` | The pinned native `cargo-deny`, `cargo-machete`, and `typos` scans. The exact binaries must be installed on the host. |
 | `license-audit` | `make license-check OCAML_VERSION=5.2`, plus the two isolated Python Cargo-license checks | `make license-check OCAML_VERSION=5.2` | The package/OCaml dependency license policy. The locked Cargo license scanner remains a single CI-only step and is not repeated in the OCaml matrix. |
-| `native` | `make native-verify` | `make native-verify` on a matching native host | The OCaml 5.5 and Rust native link, format, lint, install, and test path used by the Windows x64 and macOS ARM64 jobs. |
-| `temporal-integration` | `make test-temporal-integration` | `make test-temporal-integration` when Docker and network access are available | The two-OCaml-binary workflow result against real Temporal Server and PostgreSQL. This is intentionally an opt-in, expensive live test. |
+| `native` (master) / `native-macos`, `native-windows` (PR) | `make native-verify` | `make native-verify` on a matching native host | The OCaml 5.5 and Rust native link, format, lint, install, and test path. macOS ARM64 runs for every code PR; Windows x64 runs for native-boundary PRs and unconditionally on master/scheduled runs. |
+| `temporal-integration` | `make test-temporal-integration` | `make test-temporal-integration` when Docker and network access are available | The two-OCaml-binary workflow result against real Temporal Server and PostgreSQL. It is an intentionally opt-in, expensive local test and an automatic CI gate for code and acceptance-fixture changes. |
 
 `make check OCAML_VERSION=5.2` is a convenient Docker-backed local baseline:
 it combines `make verify` and `make license-check`. It does not run

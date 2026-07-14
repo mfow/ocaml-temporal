@@ -108,11 +108,18 @@ make test-temporal-integration # real PostgreSQL + Temporal + two OCaml binaries
 ```
 
 The default development image uses OCaml 5.2. To try another supported image,
-pass `OCAML_VERSION`, for example `make verify OCAML_VERSION=5.5`. CI runs the
-verification matrix for OCaml 5.2, 5.3, 5.4, and 5.5 on Linux amd64 and arm64,
-and builds the OCaml-to-Rust link natively on Windows x64 and macOS ARM64 with
-OCaml 5.5. The standalone license audit is run once per CI change, not once
-per matrix cell. These entries describe configured jobs, not evidence that a
+pass `OCAML_VERSION`, for example `make verify OCAML_VERSION=5.5`. CI has a
+fast representative pull-request gate and an exhaustive compatibility gate. A
+code PR verifies Linux amd64 with OCaml 5.2 and 5.5, Linux arm64 with OCaml
+5.5, macOS ARM64 with OCaml 5.5, the pinned quality and dependency-license
+checks, and the OCaml 5.5 Temporal/PostgreSQL smoke. The Windows x64 OCaml 5.5
+native job is added to a PR when changes affect the native bridge,
+build/toolchain, workflow, or composite-action configuration. JSON protocol
+schemas under `docs/schemas/` are treated as code for this policy. Pushes to `master` and
+scheduled runs retain the exhaustive Linux matrix (OCaml 5.2–5.5 on amd64 and
+arm64) plus both OCaml 5.5 native desktop jobs. The standalone license audit is
+run once per workflow, not once per
+matrix cell. These entries describe configured jobs, not evidence that a
 particular Actions run has completed; runs may remain queued while the
 repository quota is exhausted. The workflow cancels superseded runs for the
 same pull request (or the master push ref), while each job timeout starts only

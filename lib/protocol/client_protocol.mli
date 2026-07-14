@@ -48,6 +48,21 @@ type cancel_request = {
 type cancel_response = { acknowledged : bool }
 (** Positive acknowledgement returned after Temporal accepts the cancellation RPC. *)
 
+type signal_request = {
+  execution : execution;
+  signal_name : string;
+  request_id : string;
+  input : payload list;
+}
+(** Exact workflow/run identity and typed payloads for one signal delivery.
+
+    [request_id] is the Temporal idempotency key for this logical control
+    operation. The signal name and payload list are encoded in the same closed
+    JSON document on both sides of the native bridge. *)
+
+type signal_response = { acknowledged : bool }
+(** Positive acknowledgement returned after Temporal accepts a signal RPC. *)
+
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -120,6 +135,12 @@ val encode_cancel_request : cancel_request -> (string, error) result
 val decode_cancel_response : string -> (cancel_response, error) result
 (** Strictly decodes the positive native cancellation acknowledgement. *)
 
+val encode_signal_request : signal_request -> (string, error) result
+(** Validates and serializes one exact-run signal request. *)
+
+val decode_signal_response : string -> (signal_response, error) result
+(** Strictly decodes the positive native signal acknowledgement. *)
+
 val decode_wait_response : request:wait_request -> string -> (wait_response, error) result
 (** Strictly decodes one terminal exact-run response and verifies that the
     returned execution is exactly the requested run. *)
@@ -140,3 +161,7 @@ val decode_wait_error :
 val decode_cancel_error : string -> (client_error, error) result
 (** Decodes a cancellation error and rejects the start-only
     [already_started] category. *)
+
+val decode_signal_error : string -> (client_error, error) result
+(** Decodes a signal error and rejects the start-only [already_started]
+    category. *)

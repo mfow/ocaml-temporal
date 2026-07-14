@@ -104,6 +104,9 @@ external client_start_workflow_json_raw : runtime -> bytes -> response
 external client_cancel_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_cancel_workflow_json"
 
+external client_signal_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_signal_workflow_json"
+
 external client_begin_start_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_begin_start_workflow_json"
 
@@ -470,6 +473,11 @@ let client_start_workflow_json runtime input =
 let client_cancel_workflow_json runtime input =
   bridge_call "client_cancel_workflow_json" (fun () ->
       decode (client_cancel_workflow_json_raw runtime input))
+
+(** Sends one signal to one exact workflow run through the Rust-owned client. *)
+let client_signal_workflow_json runtime input =
+  bridge_call "client_signal_workflow_json" (fun () ->
+      decode (client_signal_workflow_json_raw runtime input))
 
 (** Admits one asynchronous workflow start and returns an opaque ticket JSON
     document. The native owner retains the Tokio task and all request metadata;

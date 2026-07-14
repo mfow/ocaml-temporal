@@ -1,0 +1,100 @@
+# Public API map
+
+The supported OCaml API is the wrapped `Temporal` library. The source of truth
+for its module list is [`lib/public/temporal.ml`](../../lib/public/temporal.ml):
+that file is an explicit allow-list, not an automatic export of every
+implementation file in `lib/public/`. The map below groups the same modules by
+where application code normally uses them.
+
+## Choose a module by execution context
+
+| Context | Modules | Use them for |
+| --- | --- | --- |
+| Workflow code | `Temporal.Workflow`, `Temporal.Activity`, `Temporal.Child_workflow`, `Temporal.Future`, `Temporal.Condition`, `Temporal.Scope`, `Temporal.Workflow_context`, `Temporal.Time`, `Temporal.Duration` | Defining deterministic work, scheduling Temporal operations, waiting for results, and keeping execution-local state |
+| Application startup and shutdown | `Temporal.Client`, `Temporal.Worker`, `Temporal.Runtime_info` | Connecting to Temporal, registering executable definitions, running the worker, and checking the linked bridge |
+| Values crossing a Temporal boundary | `Temporal.Codec`, `Temporal.Payload`, `Temporal.Error`, `Temporal.Result_syntax` | Encoding typed values, inspecting opaque payloads, representing expected failures, and composing `result` values |
+| Signals, queries, and updates | `Temporal.Signal`, `Temporal.Query`, `Temporal.Update`, `Temporal.Interaction` | Defining typed interactions, registering handlers, and testing deterministic local dispatch |
+
+The same module can be used by a workflow helper and by registration code when
+its contract allows it, but the execution context still matters. In
+particular, workflow code must remain deterministic: it must not read the host
+clock, perform I/O, use randomness, or mutate process-global state. See the
+[workflow guide](../guides/workflows.md) and the [runtime invariants](runtime-invariants.md)
+for those rules.
+
+## Public module responsibilities
+
+### Authoring and scheduling
+
+- `Temporal.Workflow` defines local or remote workflows. `start_sleep` creates
+  a durable timer and returns a future; `sleep` is its wait-and-return
+  convenience form. `Workflow.now ()` reads the activation timestamp supplied
+  by Temporal and never falls back to host wall-clock time. `continue_as_new`
+  ends the current run and starts a successor.
+- `Temporal.Activity` defines local, remote, context-aware, and asynchronous
+  activities. `start` schedules an activity without waiting; `execute` is the
+  convenience composition of `start` and `Future.await`. Activity callbacks
+  are the boundary for external I/O, and their context/heartbeat rules are
+  described in the [activity reference](native-activity-execution.md).
+- `Temporal.Child_workflow` schedules a child workflow and exposes its typed
+  future. Child scheduling and completion are durable workflow operations, not
+  ordinary function calls; the [workflow guide](../guides/workflows.md) marks
+  the authoring/native-support boundary.
+- `Temporal.Future` combines and observes workflow-owned results. A future is
+  tied to the execution that created it; `await` suspends the current workflow
+  fiber rather than blocking an OS thread. `Temporal.Condition` waits on
+  replay-safe OCaml state, while `Temporal.Scope` adds cooperative cancellation
+  to observation of futures.
+- `Temporal.Workflow_context` provides execution-local values for workflow
+  state. Use it instead of module-level mutable state when the value belongs
+  to one workflow execution.
+
+### Boundaries and failure values
+
+- `Temporal.Codec` pairs an OCaml type with a payload encoding. The standard
+  codecs are convenient defaults, not a requirement that all payloads be
+  JSON; `Temporal.Payload` remains opaque bytes plus encoding metadata.
+- `Temporal.Error.t` is the typed failure channel for expected operational
+  failures. Use `Error.view`, `Error.kind`, and `Error.message` for stable
+  inspection. Exceptions are for programmer defects or violated internal
+  invariants, not normal Temporal outcomes.
+- `Temporal.Result_syntax` supplies ordinary `result` composition. It does
+  not introduce workflow effects or change error ownership.
+- `Temporal.Time` and `Temporal.Duration` make timestamp and timer units
+  explicit. Workflow time is integer seconds plus normalized nanoseconds;
+  workflow timer durations are non-negative whole milliseconds. See the
+  [workflow-time reference](workflow-time.md).
+
+### Application lifecycle and interactions
+
+- `Temporal.Client` starts typed workflow executions, retains the exact
+  workflow/run identity, requests exact-run cancellation or signals, and waits
+  for typed terminal outcomes. A successful cancel or signal acknowledges the
+  server request; it does not claim that workflow code has already processed
+  it.
+- `Temporal.Worker` registers workflows and activities, owns one supervisor
+  graph, runs the poll loops, and performs idempotent shutdown. The final
+  executable remains an OCaml application; Rust is a private linked
+  implementation detail.
+- `Temporal.Runtime_info` is for installation and diagnostics. Its ABI check
+  confirms that the Rust bridge linked into the executable matches the OCaml
+  package expectation; it is not a worker health probe.
+- `Temporal.Signal`, `Temporal.Query`, and `Temporal.Update` define typed
+  interaction names and codecs. `Temporal.Interaction` is the deterministic,
+  synchronous local dispatcher for tests. Native interaction delivery has a
+  narrower experimental boundary; see the [interactive-workflow reference](interactive-workflows.md).
+
+## What is not public
+
+Source files such as `Backend`, `Native_worker`, the runtime libraries, the
+mailbox, the supervisor, and the Rust/C bridge may be needed to build the
+package, but they are not supported application modules. Do not depend on
+their records, constructors, JSON documents, Rust handles, protobuf values, or
+generated interfaces. The installed-package rules and regression test are
+described in the [package-boundary reference](package-boundary.md).
+
+When a feature is missing from this map, first check whether it belongs in an
+existing public module. Publishing a private implementation module is a
+package-surface change that requires an explicit design decision, updated
+boundary tests, and documentation of its ownership and compatibility
+contract.

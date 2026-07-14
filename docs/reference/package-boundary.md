@@ -7,6 +7,11 @@ links `temporal-sdk` and writes ordinary `Temporal.Client`, `Temporal.Worker`,
 workflow, activity, and codec code; it does not depend on the implementation
 libraries directly.
 
+The [public API map](public-api-map.md) groups every supported `Temporal`
+module by execution context and explains which source modules are deliberately
+private. Use it alongside this boundary reference when deciding where a new
+public helper belongs.
+
 ## Dune invariant
 
 Every implementation library linked by `lib/public/dune` is declared with:

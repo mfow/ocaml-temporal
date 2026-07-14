@@ -284,7 +284,7 @@ if ! grep -F '$(MAKE) temporal-clean;' "$makefile" >/dev/null \
   echo "integration setup and its failure trap must both invoke temporal-clean" >&2
   exit 1
 fi
-for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-live; do
+for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery-contract test-temporal-worker-crash-recovery; do
   if ! grep -E "^${target}:" "$makefile" >/dev/null; then
     echo "Makefile does not define required target: $target" >&2
     exit 1
@@ -319,6 +319,7 @@ require_workflow_text 'name: Temporal/PostgreSQL integration smoke (OCaml 5.5)'
 require_workflow_text 'OCAML_VERSION: "5.5"'
 require_workflow_text 'make test-temporal-integration'
 require_workflow_text 'make test-temporal-worker-restart'
+require_workflow_text 'make test-temporal-worker-crash-recovery'
 require_workflow_text 'make --silent cargo-metadata'
 
 require_absent() {

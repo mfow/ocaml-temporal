@@ -26,11 +26,12 @@
       "status": "ok"
     },
     {
-      "step": "generation_one_stopped",
+      "step": "generation_one_replaced",
       "status": "ok",
       "generation": 1,
       "container_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "exit_code": 0,
+      "replacement_mode": "graceful",
       "shutdown_marker": true
     },
     {

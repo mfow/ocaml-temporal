@@ -1,7 +1,8 @@
 (** Typed query definitions and their read-only handler boundary. *)
 
 type 'output definition = {
-  (* The validated query name used by the registry and future native bridge. *)
+  (* The validated query name used by the local registry and native worker
+     adapter. *)
   name : string;
   (* The result codec retained by the query definition. *)
   output : 'output Codec.t;

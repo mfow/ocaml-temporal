@@ -82,9 +82,12 @@ for those rules.
   already processed it. Call `Client.shutdown` when the client is no longer
   needed to release its native graph; shutdown is idempotent and retains a
   teardown failure so cleanup problems are not silently discarded.
-- `Temporal.Worker` registers workflows and activities, owns one supervisor
-  graph, runs the poll loops, and performs idempotent shutdown. The final
-  executable remains an OCaml application; Rust is a private linked
+- `Temporal.Worker` registers workflows, activities, and the signal, query, and
+  update handlers attached to each workflow registration. It owns one
+  supervisor graph, runs the poll loops, and performs idempotent shutdown. The
+  interaction handler registration modes and their current native limitations
+  are described in the [interactive-workflow reference](interactive-workflows.md).
+  The final executable remains an OCaml application; Rust is a private linked
   implementation detail.
 - `Temporal.Runtime_info` is for installation and diagnostics. Its ABI check
   confirms that the Rust bridge linked into the executable matches the OCaml

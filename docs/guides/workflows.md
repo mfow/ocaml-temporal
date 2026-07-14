@@ -593,7 +593,9 @@ cover the complete lifecycle. The live Compose fixture covers the parent/child
 success path: the parent calls `Child_workflow.execute`, the registered child
 waits on a durable timer, and the driver asserts the parent's exact result.
 That happy path does not claim live coverage for child start failure,
-cancellation, retries, replay, or recovery.
+retries, replay, or recovery; the complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+also live-verified propagated child failure and child cancellation. Child
+start failure, retry, replay, and recovery remain separate acceptance work.
 
 ### Continue a run with fresh history
 
@@ -622,8 +624,9 @@ and rejects unsupported non-default options instead of silently dropping them.
 
 `Temporal.Client.wait` treats the current run as terminal and returns its
 typed continued-as-new outcome with the successor execution reference; it does
-not follow the successor automatically. Live Compose coverage for this command
-is still pending.
+not follow the successor automatically. The complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+live-verified the successor-following path in Compose; longer continuation
+chains and other advanced history-management features remain separate work.
 
 ## 7. Compose ordinary helpers
 

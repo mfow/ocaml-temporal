@@ -53,16 +53,17 @@ The remaining reference documents are useful when changing one subsystem:
   synthetic evidence from the verified real-server two-binary success path
   and planned scenario expansion.
 - [Worker restart and replay acceptance design](reference/worker-restart-replay-acceptance.md)
-  specifies the next controlled worker-replacement scenario, its exact
-  assertions, diagnostic evidence, and fresh-volume cleanup rules. It is a
-  design document, not live verification.
+  specifies the controlled worker-replacement scenario, its exact assertions,
+  diagnostic evidence, and fresh-volume cleanup rules, and records the live
+  verification evidence. It covers restart/replay only; sticky-cache eviction
+  and crash recovery remain separate scenarios.
 - [Internal replay worker bridge](reference/replay-bridge.md) documents the
   bounded Rust history feeder, strict JSON/base64 format, Core ownership, and
   the local evidence for the first replay-plumbing slice.
 - [Worker restart/replay diagnostic contract](reference/worker-restart-replay-diagnostics.md)
   defines the payload-free normalized history, generation/replay records, and
-  ordered controller lifecycle evidence used by the offline contract gate
-  before the live controller exists.
+  ordered controller lifecycle evidence used by both the offline contract gate
+  and the live controller.
 - [Feature coverage and implementation status](reference/feature-coverage.md)
   gives the short status reference and distinguishes live evidence, mock-only
   tests, partly live-tested native bridge support, and deferred features.
@@ -105,15 +106,16 @@ opaque bytes with encoding metadata.
 | Layer | Evidence today | Important limit |
 | --- | --- | --- |
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
-| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose path with historical evidence for four successes and one typed workflow failure. The nine-run heartbeat/cancellation/child-lifecycle assertion is implemented and locally covered, but is not live-verified because its attempted Actions run was cancelled and later checks may remain queued under the repository quota. | Child failure/cancellation, replay, and recovery scenarios remain untested live |
-| Public native client | Typed start/wait/cancel protocol. The historical live evidence is the five-run baseline; the nine-run exact-run cancellation, heartbeat, and child-lifecycle assertions are implemented and locally covered, but are not live-verified. The continue-as-new semantic command is implemented and tested locally. | Continue-as-new still needs live Temporal Server validation, and other client commands remain untested live |
-| Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests and one live parent/child success path | Child start failure, cancellation, retry, replay, and recovery remain untested live |
-| Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts exact results | The first gate is deliberately narrow and does not yet cover every terminal or recovery path |
+| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose path. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result baseline and the separate two-generation restart/replay path. | Sticky-cache eviction, crash recovery, and broader child lifecycle scenarios remain untested live |
+| Public native client | Typed start/wait/cancel protocol. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result baseline, including continue-as-new successor following and exact-run cancellation. | Typed signal delivery and other client commands remain untested live |
+| Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests; the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified parent/child success, propagated failure, and cancellation | Child start failure, retry, replay, and recovery remain untested live |
+| Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts the twelve-result baseline; `make test-temporal-worker-restart` adds the two-generation restart/replay path | The acceptance suite remains deliberately narrow and does not yet cover every terminal, eviction, or recovery path |
 
 This distinction prevents a green local synthetic test from being read as a
 claim that an unimplemented native feature is ready. Continue-as-new and
 context-aware activity heartbeats are implemented and focused-tested at the
-OCaml/native bridge, but neither has live Temporal Server acceptance yet.
+OCaml/native bridge, and both are included in the live baseline recorded by
+the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
 Native signal delivery is implemented at the scheduler-owned activation
 boundary but still needs live Temporal Server acceptance. Native output-only
 query delivery and immediate one-input update dispatch are implemented at the
@@ -179,11 +181,13 @@ result is required. These local results are useful interim evidence, but they
 do not turn an unexecuted matrix, platform, or live-server job green; queued
 required checks still need to finish when Actions becomes available.
 
-`make test-temporal-worker-restart` is deliberately different from the live
-integration command: it uses no Docker and validates the normalized
-history/replay diagnostic contract, the ordered restart-controller lifecycle
-contract, and their rejection paths. It must not be used as evidence that a
-worker was restarted or that Temporal replay occurred.
+`make test-temporal-worker-restart-contract` is the Docker-free contract gate:
+it validates the normalized history/replay diagnostic contract, the ordered
+restart-controller lifecycle contract, and their rejection paths. The umbrella
+`make test-temporal-worker-restart` runs that contract gate and the live
+two-generation replacement scenario. A green contract-only run must not be
+used as evidence that a worker was restarted or that Temporal replay occurred;
+the live target is required for that claim.
 
 ## Terms used in this project
 

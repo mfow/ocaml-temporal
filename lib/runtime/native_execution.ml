@@ -174,8 +174,9 @@ let copy_continuation (value : Protocol.continuation) : Protocol.continuation =
     }
 
 (** Copies every payload-bearing part of initialization context. The remaining
-    context fields are immutable strings, options, integers, and small records,
-    so a record copy is sufficient for them. *)
+    context fields, including the immutable retry policy, are immutable
+    strings, options, integers, and small records, so a record copy is
+    sufficient for them. *)
 let copy_initialize_context (value : Protocol.initialize_context) =
   Protocol.
     {

@@ -165,11 +165,11 @@ temporal-run-driver:
 	exit "$$status"
 
 # Performs a failure-only metadata check for the known workflow IDs: the
-# driver's twelve top-level executions and the deterministic child created by
-# its parent workflow. The heartbeat-retry and timeout-retry IDs are also
-# listed so activity heartbeat/detail or timeout failure is visible in
-# best-effort diagnostics. The cancellation ID is intentionally listed
-# explicitly so a
+# driver's sixteen top-level executions and the deterministic children created
+# by its parent workflows. The heartbeat-retry, timeout-retry,
+# heartbeat-timeout-retry, activity-non-retryable, and child-retry IDs are also
+# listed so those failure boundaries are visible in best-effort diagnostics.
+# The cancellation ID is intentionally listed explicitly so a
 # missing cancellation terminal event can be distinguished from a driver that
 # never started that execution. The admin-tools output contains execution
 # status/run identity but no history or payloads, which distinguishes a start,
@@ -178,7 +178,7 @@ temporal-run-driver:
 # stalled before its first start, so every query is best effort and cannot mask
 # the original exit status.
 temporal-inspect-smoke:
-	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity two-binary-continue-as-new two-binary-activity-retry two-binary-activity-heartbeat-retry two-binary-async-activity-completion two-binary-activity-timeout-retry two-binary-parent-awaits-child two-binary-parent-awaits-failed-child two-binary-parent-cancels-child two-binary-non-retryable-failure two-binary-long-running-cancellation; do \
+	@for workflow_id in two-binary-fan-out two-binary-timer-then-activity two-binary-continue-as-new two-binary-activity-retry two-binary-activity-heartbeat-retry two-binary-async-activity-completion two-binary-activity-timeout-retry two-binary-activity-heartbeat-timeout-retry two-binary-activity-non-retryable-failure two-binary-parent-retries-child two-binary-parent-awaits-child two-binary-parent-awaits-failed-child two-binary-parent-cancels-child two-binary-non-retryable-failure two-binary-long-running-cancellation two-binary-signal-condition; do \
 		echo "--- Temporal metadata for $$workflow_id ---"; \
 		$(TEMPORAL_COMPOSE) run --rm --no-deps temporal-admin-tools \
 			temporal workflow describe --workflow-id "$$workflow_id" \

@@ -94,6 +94,17 @@ type continue_as_new_initiator =
   | Continue_as_new_retry
   | Continue_as_new_cron_schedule
 
+(** A bridge-ready retry policy shared by workflow initialization and
+    workflow commands. Durations and the coefficient bit string are validated
+    before the value is serialized or handed to the Rust bridge. *)
+type retry_policy = {
+  initial_interval : duration;
+  backoff_coefficient_bits : string;
+  maximum_interval : duration;
+  maximum_attempts : int;
+  non_retryable_error_types : string list;
+}
+
 type continuation = {
   continued_from_execution_run_id : string;
   initiator : continue_as_new_initiator;
@@ -112,6 +123,7 @@ type initialize_context = {
   start_time : timestamp option;
   root_workflow : workflow_execution option;
   priority : workflow_priority option;
+  retry_policy : retry_policy option;
   continuation : continuation option;
 }
 
@@ -252,17 +264,6 @@ type child_workflow_cancellation_type =
   | Child_wait_cancellation_completed
   | Child_abandon
   | Child_wait_cancellation_requested
-
-(** A bridge-ready retry policy shared by activity and child-workflow
-    commands. Durations and the coefficient bit string are validated before
-    the value is serialized or handed to the Rust bridge. *)
-type retry_policy = {
-  initial_interval : duration;
-  backoff_coefficient_bits : string;
-  maximum_interval : duration;
-  maximum_attempts : int;
-  non_retryable_error_types : string list;
-}
 
 (** The result sent for one synchronous query. A failed query answers the
     request without failing or changing the workflow execution itself. *)
@@ -1257,6 +1258,123 @@ let workflow_priority path json =
     let* fairness_weight_bits = uint32 (path ^ ".fairness_weight_bits") bits_json in
     Ok { priority_key; fairness_key; fairness_weight_bits }
 
+(** Decodes the canonical unsigned decimal used for an IEEE-754 bit pattern.
+    The two limbs keep every intermediate value below [2^64] while avoiding
+    machine-sized integers and preserving patterns whose sign bit is set. *)
+let uint64_bits path json =
+  let* text = uint64_decimal path json in
+  let base = 4_294_967_296L in
+  let rec loop index high low =
+    if index = String.length text then
+      if Int64.compare high 0xffff_ffffL > 0 then
+        Error (invalid path "value is outside unsigned 64-bit range")
+      else
+        Ok
+          (Int64.logor (Int64.shift_left high 32)
+             (Int64.logand low 0xffff_ffffL))
+    else
+      let digit = Char.code text.[index] - Char.code '0' in
+      let product =
+        Int64.add (Int64.mul low 10L) (Int64.of_int digit)
+      in
+      let next_low = Int64.rem product base in
+      let carry = Int64.div product base in
+      let next_high = Int64.add (Int64.mul high 10L) carry in
+      loop (index + 1) next_high next_low
+  in
+  loop 0 0L 0L
+
+(** Validates a coefficient's exact bit representation and returns the
+    canonical decimal text retained by the semantic record. *)
+let retry_coefficient_bits path json =
+  let* text = uint64_decimal path json in
+  let* bits = uint64_bits path json in
+  let value = Int64.float_of_bits bits in
+  match classify_float value with
+  | FP_nan | FP_infinite ->
+      Error (invalid path "backoff coefficient must be finite")
+  | FP_zero | FP_subnormal | FP_normal when value < 1.0 ->
+      Error (invalid path "backoff coefficient must be at least 1.0")
+  | FP_zero | FP_subnormal | FP_normal ->
+      Ok text
+
+(** Compares normalized durations without converting to floating point. *)
+let compare_duration left right =
+  match Int64.compare left.seconds right.seconds with
+  | 0 -> Int.compare left.nanoseconds right.nanoseconds
+  | value -> value
+
+(** Decodes and validates the retry policy attached to an activity command.
+    The same semantic policy is also carried by workflow initialization, so
+    this decoder must be defined before either protocol path uses it. *)
+let retry_policy path json =
+  let* entries =
+    exact_object path
+      [
+        "initial_interval";
+        "backoff_coefficient_bits";
+        "maximum_interval";
+        "maximum_attempts";
+        "non_retryable_error_types";
+      ] json
+  in
+  let* initial_json = field path "initial_interval" entries in
+  let* initial_interval = duration (path ^ ".initial_interval") initial_json in
+  let* maximum_json = field path "maximum_interval" entries in
+  let* maximum_interval = duration (path ^ ".maximum_interval") maximum_json in
+  if
+    Int64.equal initial_interval.seconds 0L
+    && initial_interval.nanoseconds = 0
+  then Error (invalid (path ^ ".initial_interval") "duration must be positive")
+  else if compare_duration maximum_interval initial_interval < 0 then
+    Error
+      (invalid (path ^ ".maximum_interval")
+         "maximum interval must be at least initial interval")
+  else
+    let* coefficient_json = field path "backoff_coefficient_bits" entries in
+    let* backoff_coefficient_bits =
+      retry_coefficient_bits (path ^ ".backoff_coefficient_bits") coefficient_json
+    in
+    let* attempts_json = field path "maximum_attempts" entries in
+    let* maximum_attempts = int64 (path ^ ".maximum_attempts") attempts_json in
+    if
+      Int64.compare maximum_attempts 0L < 0
+      || Int64.compare maximum_attempts 2_147_483_647L > 0
+    then
+      Error
+        (invalid (path ^ ".maximum_attempts")
+           "maximum attempts is outside signed 32-bit range")
+    else
+      let* error_types_json =
+        field path "non_retryable_error_types" entries
+      in
+      let* non_retryable_error_types =
+        list (path ^ ".non_retryable_error_types") string error_types_json
+      in
+      let rec validate_error_types index = function
+        | [] -> Ok ()
+        | value :: rest ->
+            let item_path =
+              Printf.sprintf "%s.non_retryable_error_types[%d]" path index
+            in
+            if String.equal value "" then
+              Error (invalid item_path "error type must not be empty")
+            else if String.contains value '\000' then
+              Error (invalid item_path "error type must not contain NUL")
+            else if not (valid_utf_8 value) then
+              Error (invalid item_path "error type must be valid UTF-8")
+            else validate_error_types (index + 1) rest
+      in
+      let* () = validate_error_types 0 non_retryable_error_types in
+      Ok
+        {
+          initial_interval;
+          backoff_coefficient_bits;
+          maximum_interval;
+          maximum_attempts = Int64.to_int maximum_attempts;
+          non_retryable_error_types;
+        }
+
 (** Decodes the normal fields attached to a first workflow initialization. *)
 let initialize_context path json =
   let fields =
@@ -1271,6 +1389,7 @@ let initialize_context path json =
       "start_time";
       "root_workflow";
       "priority";
+      "retry_policy";
       "continuation";
     ]
   in
@@ -1296,6 +1415,8 @@ let initialize_context path json =
   let* root_workflow = nullable (path ^ ".root_workflow") workflow_execution root_json in
   let* priority_json = field path "priority" entries in
   let* priority = nullable (path ^ ".priority") workflow_priority priority_json in
+  let* retry_policy_json = field path "retry_policy" entries in
+  let* retry_policy = nullable (path ^ ".retry_policy") retry_policy retry_policy_json in
   let* continuation_json = field path "continuation" entries in
   let* continuation = nullable (path ^ ".continuation") continuation continuation_json in
   Ok
@@ -1310,8 +1431,30 @@ let initialize_context path json =
       start_time;
       root_workflow;
       priority;
+      retry_policy;
       continuation;
     }
+
+(** Encodes a retry policy and immediately validates its representation by
+    passing the generated object through the same decoder used for input. *)
+let retry_policy_json value =
+  let json =
+    `Assoc
+      [
+        ( "initial_interval",
+          time_json value.initial_interval.seconds value.initial_interval.nanoseconds );
+        ( "backoff_coefficient_bits",
+          `String value.backoff_coefficient_bits );
+        ( "maximum_interval",
+          time_json value.maximum_interval.seconds value.maximum_interval.nanoseconds );
+        ( "maximum_attempts",
+          `Intlit (Int64.to_string (Int64.of_int value.maximum_attempts)) );
+        ( "non_retryable_error_types",
+          `List (List.map (fun value -> `String value) value.non_retryable_error_types) );
+      ]
+  in
+  let* _ = retry_policy "$.retry_policy" json in
+  Ok json
 
 (** Encodes a first-workflow initialization context. *)
 let initialize_context_json value =
@@ -1331,6 +1474,11 @@ let initialize_context_json value =
   let priority = match value.priority with
     | None -> `Null
     | Some value -> `Assoc [ ("priority_key", `Int value.priority_key); ("fairness_key", `String value.fairness_key); ("fairness_weight_bits", `Intlit (Int64.to_string value.fairness_weight_bits)) ]
+  in
+  let* retry_policy =
+    match value.retry_policy with
+    | None -> Ok `Null
+    | Some value -> retry_policy_json value
   in
   let* continuation =
     match value.continuation with
@@ -1373,6 +1521,7 @@ let initialize_context_json value =
           | Some value -> time_json value.seconds value.nanoseconds );
         ("root_workflow", root_workflow);
         ("priority", priority);
+        ("retry_policy", retry_policy);
         ("continuation", continuation);
       ])
 
@@ -1865,142 +2014,6 @@ let optional_duration path value = nullable path duration value
 let optional_duration_json = function
   | None -> `Null
   | Some value -> time_json value.seconds value.nanoseconds
-
-(** Decodes the canonical unsigned decimal used for an IEEE-754 bit pattern.
-    The two limbs keep every intermediate value below [2^64] while avoiding
-    machine-sized integers and preserving patterns whose sign bit is set. *)
-let uint64_bits path json =
-  let* text = uint64_decimal path json in
-  let base = 4_294_967_296L in
-  let rec loop index high low =
-    if index = String.length text then
-      if Int64.compare high 0xffff_ffffL > 0 then
-        Error (invalid path "value is outside unsigned 64-bit range")
-      else
-        Ok
-          (Int64.logor (Int64.shift_left high 32)
-             (Int64.logand low 0xffff_ffffL))
-    else
-      let digit = Char.code text.[index] - Char.code '0' in
-      let product =
-        Int64.add (Int64.mul low 10L) (Int64.of_int digit)
-      in
-      let next_low = Int64.rem product base in
-      let carry = Int64.div product base in
-      let next_high = Int64.add (Int64.mul high 10L) carry in
-      loop (index + 1) next_high next_low
-  in
-  loop 0 0L 0L
-
-(** Validates a coefficient's exact bit representation and returns the
-    canonical decimal text retained by the semantic record. *)
-let retry_coefficient_bits path json =
-  let* text = uint64_decimal path json in
-  let* bits = uint64_bits path json in
-  let value = Int64.float_of_bits bits in
-  match classify_float value with
-  | FP_nan | FP_infinite ->
-      Error (invalid path "backoff coefficient must be finite")
-  | FP_zero | FP_subnormal | FP_normal when value < 1.0 ->
-      Error (invalid path "backoff coefficient must be at least 1.0")
-  | FP_zero | FP_subnormal | FP_normal ->
-      Ok text
-
-(** Compares normalized durations without converting to floating point. *)
-let compare_duration left right =
-  match Int64.compare left.seconds right.seconds with
-  | 0 -> Int.compare left.nanoseconds right.nanoseconds
-  | value -> value
-
-(** Decodes and validates the retry policy attached to an activity command. *)
-let retry_policy path json =
-  let* entries =
-    exact_object path
-      [
-        "initial_interval";
-        "backoff_coefficient_bits";
-        "maximum_interval";
-        "maximum_attempts";
-        "non_retryable_error_types";
-      ] json
-  in
-  let* initial_json = field path "initial_interval" entries in
-  let* initial_interval = duration (path ^ ".initial_interval") initial_json in
-  let* maximum_json = field path "maximum_interval" entries in
-  let* maximum_interval = duration (path ^ ".maximum_interval") maximum_json in
-  if
-    Int64.equal initial_interval.seconds 0L
-    && initial_interval.nanoseconds = 0
-  then Error (invalid (path ^ ".initial_interval") "duration must be positive")
-  else if compare_duration maximum_interval initial_interval < 0 then
-    Error
-      (invalid (path ^ ".maximum_interval")
-         "maximum interval must be at least initial interval")
-  else
-    let* coefficient_json = field path "backoff_coefficient_bits" entries in
-    let* backoff_coefficient_bits =
-      retry_coefficient_bits (path ^ ".backoff_coefficient_bits") coefficient_json
-    in
-    let* attempts_json = field path "maximum_attempts" entries in
-    let* maximum_attempts = int64 (path ^ ".maximum_attempts") attempts_json in
-    if
-      Int64.compare maximum_attempts 0L < 0
-      || Int64.compare maximum_attempts 2_147_483_647L > 0
-    then
-      Error
-        (invalid (path ^ ".maximum_attempts")
-           "maximum attempts is outside signed 32-bit range")
-    else
-      let* error_types_json =
-        field path "non_retryable_error_types" entries
-      in
-      let* non_retryable_error_types =
-        list (path ^ ".non_retryable_error_types") string error_types_json
-      in
-      let rec validate_error_types index = function
-        | [] -> Ok ()
-        | value :: rest ->
-            let item_path =
-              Printf.sprintf "%s.non_retryable_error_types[%d]" path index
-            in
-            if String.equal value "" then
-              Error (invalid item_path "error type must not be empty")
-            else if String.contains value '\000' then
-              Error (invalid item_path "error type must not contain NUL")
-            else if not (valid_utf_8 value) then
-              Error (invalid item_path "error type must be valid UTF-8")
-            else validate_error_types (index + 1) rest
-      in
-      let* () = validate_error_types 0 non_retryable_error_types in
-      Ok
-        {
-          initial_interval;
-          backoff_coefficient_bits;
-          maximum_interval;
-          maximum_attempts = Int64.to_int maximum_attempts;
-          non_retryable_error_types;
-        }
-
-(** Encodes a retry policy and immediately validates its representation by
-    passing the generated object through the same decoder used for input. *)
-let retry_policy_json value =
-  let json =
-    `Assoc
-      [
-        ( "initial_interval",
-          time_json value.initial_interval.seconds value.initial_interval.nanoseconds );
-        ( "backoff_coefficient_bits",
-          `String value.backoff_coefficient_bits );
-        ( "maximum_interval",
-          time_json value.maximum_interval.seconds value.maximum_interval.nanoseconds );
-        ( "maximum_attempts",
-          `Intlit (Int64.to_string (Int64.of_int value.maximum_attempts)) );
-        ( "non_retryable_error_types",
-          `List (List.map (fun value -> `String value) value.non_retryable_error_types) );
-      ]
-  in
-  let* _ = retry_policy "$.retry_policy" json in
-  Ok json
 
 (** Validates a retry policy assembled by an OCaml translator without making
     callers construct a synthetic completion just to reach the canonical

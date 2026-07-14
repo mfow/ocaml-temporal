@@ -257,6 +257,12 @@ pub struct InitializeContext {
     /// Workflow scheduling priority, when supplied by Core.
     #[serde(deserialize_with = "required_nullable")]
     pub priority: Option<WorkflowPriority>,
+    /// Effective workflow retry policy, when Core initialized a retrying
+    /// execution. The workflow runtime does not act on this metadata, but it
+    /// must cross the private bridge losslessly so a child workflow started
+    /// with a retry policy can receive its first activation.
+    #[serde(deserialize_with = "required_nullable")]
+    pub retry_policy: Option<RetryPolicy>,
     /// Continuation metadata, absent only when all Core continuation fields
     /// carry their ordinary zero/absent defaults.
     #[serde(deserialize_with = "required_nullable")]
@@ -1206,6 +1212,9 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                             "fairness key exceeds Core's 64-byte limit",
                         ));
                     }
+                    if let Some(retry_policy) = &context.retry_policy {
+                        validate_retry_policy(retry_policy, "$.jobs.context.retry_policy")?;
+                    }
                     if let Some(continuation) = &context.continuation {
                         identifier(
                             &continuation.continued_from_execution_run_id,
@@ -2144,14 +2153,15 @@ fn eviction_reason_from_core(value: i32) -> Result<EvictionReason, CoreConversio
 /// another start-time delay cannot be silently discarded.
 ///
 /// A successor activation is different from an ordinary root activation.
-/// Core deliberately carries the previous run's retry policy, memo, search
-/// attributes, and execution-expiration metadata into that activation, even
-/// when the command used the defaults. Those fields have no representation in
-/// this first OCaml workflow-context slice, but rejecting them would make the
+/// Core deliberately carries memo, search attributes, and
+/// execution-expiration metadata into that activation, even when the command
+/// used the defaults. The retry policy is retained in `InitializeContext`,
+/// while the remaining fields have no representation in this first OCaml
+/// workflow-context slice. Rejecting those remaining fields would make the
 /// public continue-as-new command unusable against a real Temporal Server.
-/// Once continuation provenance is present, these inherited options are
-/// therefore accepted as compatibility metadata while the represented
-/// continuation identity and terminal payloads remain validated below.
+/// Once continuation provenance is present, they are therefore accepted as
+/// compatibility metadata while the represented continuation identity,
+/// retry policy, and terminal payloads remain validated below.
 fn validate_initialize_subset(
     value: &core_activation::InitializeWorkflow,
 ) -> Result<(), CoreConversionError> {
@@ -2159,8 +2169,7 @@ fn validate_initialize_subset(
         || value.continued_initiator != 0
         || value.continued_failure.is_some()
         || value.last_completion_result.is_some();
-    let has_unsupported_root_metadata = value.retry_policy.is_some()
-        || !value.cron_schedule.is_empty()
+    let has_unsupported_root_metadata = !value.cron_schedule.is_empty()
         || value.workflow_execution_expiration_time.is_some()
         || value
             .cron_schedule_to_schedule_interval
@@ -2264,6 +2273,11 @@ pub fn activation_from_core(
                                 fairness_key: priority.fairness_key.clone(),
                                 fairness_weight_bits: priority.fairness_weight.to_bits(),
                             }),
+                            retry_policy: value
+                                .retry_policy
+                                .as_ref()
+                                .map(retry_policy_from_core)
+                                .transpose()?,
                             continuation: continuation_from_core(value)?,
                         })),
                     })

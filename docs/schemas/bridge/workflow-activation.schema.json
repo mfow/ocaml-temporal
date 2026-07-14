@@ -41,7 +41,7 @@
     "initialize_context": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["headers", "identity", "parent_workflow", "workflow_execution_timeout", "workflow_run_timeout", "workflow_task_timeout", "first_execution_run_id", "start_time", "root_workflow", "priority", "continuation"],
+      "required": ["headers", "identity", "parent_workflow", "workflow_execution_timeout", "workflow_run_timeout", "workflow_task_timeout", "first_execution_run_id", "start_time", "root_workflow", "priority", "retry_policy", "continuation"],
       "properties": {
         "headers": {"type": "object", "maxProperties": 201326592, "additionalProperties": {"$ref": "#/$defs/payload"}},
         "identity": {"type": "string", "maxLength": 65536},
@@ -53,6 +53,7 @@
         "start_time": {"oneOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
         "root_workflow": {"oneOf": [{"$ref": "#/$defs/workflow_execution"}, {"type": "null"}]},
         "priority": {"oneOf": [{"$ref": "#/$defs/workflow_priority"}, {"type": "null"}]},
+        "retry_policy": {"oneOf": [{"$ref": "#/$defs/retry_policy"}, {"type": "null"}]},
         "continuation": {"oneOf": [{"$ref": "#/$defs/continuation"}, {"type": "null"}]}
       }
     },
@@ -74,6 +75,27 @@
         "fairness_key": {"type": "string", "maxLength": 64},
         "fairness_weight_bits": {"$ref": "#/$defs/u32"}
       }
+    },
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initial_interval", "backoff_coefficient_bits", "maximum_interval", "maximum_attempts", "non_retryable_error_types"],
+      "properties": {
+        "initial_interval": {"$ref": "#/$defs/duration"},
+        "backoff_coefficient_bits": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical unsigned 64-bit decimal containing the IEEE-754 bits of a finite backoff coefficient at least 1.0. Runtime validation also enforces the exact unsigned range and floating-point value."
+        },
+        "maximum_interval": {"$ref": "#/$defs/duration"},
+        "maximum_attempts": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "non_retryable_error_types": {
+          "type": "array",
+          "maxItems": 201326592,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      },
+      "description": "The effective retry policy Core applied to this workflow execution."
     },
     "continuation": {
       "type": "object",

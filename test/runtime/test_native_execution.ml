@@ -215,6 +215,7 @@ let test_retained_payloads_are_copied () =
       start_time = None;
       root_workflow = None;
       priority = None;
+      retry_policy = None;
       continuation =
         Some
           {

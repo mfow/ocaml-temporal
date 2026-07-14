@@ -14,6 +14,30 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-14: Live child-workflow retry acceptance (#279)
+
+Status: verified in the complete [PR #279 GitHub Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29329420364).
+
+The two-binary Compose smoke now starts a parent whose child has an explicit
+two-attempt retry policy. The child deliberately returns a retryable workflow
+failure on its first attempt and the second attempt returns the exact
+`SMOKE:CHILD_RETRY:ATTEMPT:2` marker. This is a useful live assertion because
+the parent, child, retry policy, and second activation all cross the public
+OCaml worker boundary and real Temporal Server rather than being simulated by
+the driver.
+
+The live run exposed a real bridge gap: Core includes the inherited workflow
+retry policy in the initial child activation, but the private Rust/OCaml
+protocol previously rejected that field as unrepresentable. The fix carries
+the validated policy through `InitializeContext`, with bilateral JSON/schema
+fixtures and focused Rust, OCaml bridge, and native execution tests. The same
+PR also live-verifies the activity-level non-retryable policy and heartbeat
+timeout retry scenarios. The acceptance now starts fourteen workflows before
+its first wait and asserts sixteen top-level outcomes in total.
+
+The full run passed the dependency-license, quality/security, OCaml 5.2 through
+5.5 Linux, Windows x64, macOS ARM, and Temporal/PostgreSQL integration gates.
+
 ## 2026-07-14: Activity non-retryable policy acceptance fixture
 
 Status: focused fixture and Docker-free contracts verified locally; live

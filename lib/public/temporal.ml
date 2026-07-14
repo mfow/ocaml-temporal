@@ -1,9 +1,10 @@
-(* The explicit root module is the package's allow-list.  Dune normally
-   generates aliases for every implementation file in a wrapped library,
-   which would make private adapters reachable as [Temporal.Backend] or
-   [Temporal.Native_worker].  Keeping the root module in source lets us expose
-   only the supported public modules while the implementation files remain
-   available to one another inside this library. *)
+(** The public [Temporal] root is an explicit allow-list of supported modules.
+
+    Dune normally generates aliases for every implementation file in a wrapped
+    library, which would make private adapters reachable as
+    [Temporal.Backend] or [Temporal.Native_worker].  Keeping this root module
+    in source exposes only the supported public surface while implementation
+    files remain available to one another inside the library. *)
 module Activity = Activity
 module Child_workflow = Child_workflow
 module Client = Client

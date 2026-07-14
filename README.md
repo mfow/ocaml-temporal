@@ -188,8 +188,10 @@ readiness marker before signaling it, sends an exact-run cancellation request
 for the long-running workflow, waits for all eighteen exact terminal results,
 and exits nonzero if any expected result is not returned. The complete [PR #289
 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) passed
-this expanded acceptance against Temporal Server 1.31 and PostgreSQL,
-including the child-retry and child-start-failure markers. The [PR #277 CI
+the preceding seventeen-result acceptance against Temporal Server 1.31 and
+PostgreSQL, including the child-retry and child-start-failure markers. The new
+eighteen-result path, including the larger backoff, is still awaiting its first
+live run. The [PR #277 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069) remains
 evidence for the prior fifteen-result slice, the [PR #266 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247) remains

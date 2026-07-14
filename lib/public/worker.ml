@@ -179,8 +179,8 @@ let collect_activities definitions =
 
 (** Creates the private backend only after all local registration invariants are
     proven. This ordering prevents leaked graphs on invalid definitions. *)
-let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
-    ~workflows ~activities () =
+let create ?(identity = default_identity) ?max_cached_workflows ~target_url
+    ~namespace ~task_queue ~workflows ~activities () =
   match validate_name "namespace" namespace with
   | Error error -> Error error
   | Ok () -> (
@@ -244,7 +244,8 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                                        (Activity_private.to_base definition))
                         in
                         let native_result =
-                          Native_worker.create ~target_url ~namespace ~identity
+                          Native_worker.create ?max_cached_workflows ~target_url
+                            ~namespace ~identity
                             ~task_queue ~workflows:native_workflows
                             ~activities:native_activities ()
                           |> Result.map_error Error_private.of_base

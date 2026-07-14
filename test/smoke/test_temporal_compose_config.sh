@@ -35,13 +35,16 @@ require_text 'nc -z localhost 7233'
 require_text 'smoke-worker:'
 require_text 'smoke-driver:'
 require_text 'smoke-restart-driver:'
+require_text 'smoke-cache-eviction-driver:'
 require_text 'TEMPORAL_TWO_BINARY_LIVE: "1"'
 require_text 'smoke_worker.exe'
 require_text 'smoke_driver.exe'
 require_text 'restart_driver.exe'
+require_text 'cache_eviction_driver.exe'
 require_text '--build-dir=/workspace/_build/smoke-worker'
 require_text '--build-dir=/workspace/_build/smoke-driver'
 require_text '--build-dir=/workspace/_build/smoke-restart-driver'
+require_text '--build-dir=/workspace/_build/smoke-cache-eviction-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "300"'
 require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready'
 require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
@@ -284,7 +287,7 @@ if ! grep -F '$(MAKE) temporal-clean;' "$makefile" >/dev/null \
   echo "integration setup and its failure trap must both invoke temporal-clean" >&2
   exit 1
 fi
-for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery-contract test-temporal-worker-crash-recovery; do
+for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery-contract test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction-contract test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live; do
   if ! grep -E "^${target}:" "$makefile" >/dev/null; then
     echo "Makefile does not define required target: $target" >&2
     exit 1
@@ -320,6 +323,7 @@ require_workflow_text 'OCAML_VERSION: "5.5"'
 require_workflow_text 'make test-temporal-integration'
 require_workflow_text 'make test-temporal-worker-restart'
 require_workflow_text 'make test-temporal-worker-crash-recovery'
+require_workflow_text 'make test-temporal-worker-cache-eviction'
 require_workflow_text 'make --silent cargo-metadata'
 
 require_absent() {

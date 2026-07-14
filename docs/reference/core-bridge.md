@@ -377,6 +377,13 @@ Temporal Core requires at least two workflow-task pollers when
 and the JSON Schema all enforce that relationship before worker construction;
 the public native worker default is two pollers.
 
+The public `Temporal.Worker.create` accepts an optional
+`max_cached_workflows` bound for applications that need to tune sticky
+workflow memory. Omitting it retains the bounded default of 1,000 cached
+workflows. A zero value disables the Core cache, while a positive value can
+produce explicit `RemoveFromCache` activations when the bound is reached; the
+worker acknowledges those activations with an empty completion.
+
 Both sides reject missing, unknown, wrongly typed, empty required, and
 out-of-range values. The whole document and each individual string have a
 65,536-byte private transport-safety ceiling. That ceiling is not a Temporal

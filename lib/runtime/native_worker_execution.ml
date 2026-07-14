@@ -43,6 +43,7 @@ type activation_info = {
   workflow_id : string option;
   is_replaying : bool;
   history_length : int64;
+  cache_removal_reason : string option;
 }
 
 (** Runtime signal and query handler aliases kept private to this adapter. *)
@@ -822,11 +823,27 @@ module Make (Supervisor : SUPERVISOR) = struct
     in
     enqueue_pending adapter pending
 
-  (** Delivers replay metadata to the optional private observer. The observer
-      runs while the adapter mutex is held, on the same Domain that owns the
-      deterministic execution registry. A raised observer is converted into a
-      typed activation error so the leased activation still follows the normal
-      failure-completion path instead of escaping with an unacknowledged lease. *)
+  (** Converts Core's closed eviction-reason variant to the stable diagnostic
+      spelling exposed to the private activation observer. *)
+  let eviction_reason_name = function
+    | Protocol.Eviction_unspecified -> "unspecified"
+    | Protocol.Cache_full -> "cache_full"
+    | Protocol.Cache_miss -> "cache_miss"
+    | Protocol.Nondeterminism -> "nondeterminism"
+    | Protocol.Lang_fail -> "lang_fail"
+    | Protocol.Lang_requested -> "lang_requested"
+    | Protocol.Task_not_found -> "task_not_found"
+    | Protocol.Unhandled_command -> "unhandled_command"
+    | Protocol.Fatal -> "fatal"
+    | Protocol.Pagination_or_history_fetch -> "pagination_or_history_fetch"
+    | Protocol.Workflow_execution_ending -> "workflow_execution_ending"
+
+  (** Delivers replay and eviction metadata to the optional private observer.
+      The observer runs while the adapter mutex is held, on the same Domain
+      that owns the deterministic execution registry. A raised observer is
+      converted into a typed activation error so the leased activation still
+      follows the normal failure-completion path instead of escaping with an
+      unacknowledged lease. *)
   let notify_activation adapter (translated : Native_execution.translated_activation) =
     match adapter.on_activation with
     | None -> Ok ()
@@ -841,6 +858,11 @@ module Make (Supervisor : SUPERVISOR) = struct
                 translated.initialization;
             is_replaying = translated.is_replaying;
             history_length = translated.history_length;
+            cache_removal_reason =
+              Option.map
+                (fun (removal : Native_execution.cache_removal) ->
+                  eviction_reason_name removal.reason)
+                translated.cache_removal;
           }
         in
         (try

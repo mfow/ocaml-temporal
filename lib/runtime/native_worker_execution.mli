@@ -51,12 +51,14 @@ type activation_info = {
   workflow_id : string option;
   is_replaying : bool;
   history_length : int64;
+  cache_removal_reason : string option;
 }
 (** Metadata observed after one activation has passed strict protocol
     translation. The callback receives no payloads, continuations, or native
     handles. It runs on the worker's serialized OCaml owner Domain, before
-    workflow code is entered, so a diagnostic sink can prove replay without
-    introducing an asynchronous cross-language callback. *)
+    workflow code is entered, so a diagnostic sink can prove replay or an
+    explicit Core cache eviction without introducing an asynchronous
+    cross-language callback. *)
 
 (** One workflow definition registered with the worker. The existential
     wrapper preserves the input/output codec relationship while allowing one

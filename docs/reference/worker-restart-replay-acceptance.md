@@ -12,6 +12,11 @@ not reach the acceptance assertions because the Docker daemon ran out of
 storage during the native build, which was an infrastructure failure rather
 than replay evidence.
 
+The separate `make test-temporal-worker-cache-eviction` target now implements
+the one-slot `RemoveFromCache` acceptance described by the live coverage
+matrix. Its first real-server result remains pending; worker restart alone is
+not used as eviction evidence.
+
 ## What this scenario proves
 
 The existing two-process acceptance fixture has historical live evidence for

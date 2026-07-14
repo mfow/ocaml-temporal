@@ -373,6 +373,7 @@ let test_activation_metadata_hook () =
         workflow_id = Some "workflow-run-hook";
         is_replaying = true;
         history_length = 1L;
+        cache_removal_reason = None;
       } -> ()
   | None -> failwith "activation metadata hook was not called"
   | Some _ -> failwith "activation metadata hook received incorrect metadata"
@@ -1044,7 +1045,9 @@ let test_unhandled_signal_fails_closed () =
 
 (** A cache eviction retires the run without a command. A later activation for
     that run is rejected, proving that eviction removed the OCaml execution
-    state only after the empty completion was acknowledged. *)
+    state only after the empty completion was acknowledged. The callback
+    assertion also proves that the adapter preserves Core's typed eviction
+    reason as metadata rather than confusing it with replay. *)
 let test_eviction () =
   let supervisor = fake_supervisor () in
   let workflow =
@@ -1056,13 +1059,33 @@ let test_eviction () =
     (activation ~run_id:"run-eviction"
        [ initialize ~run_id:"run-eviction"
            ~workflow_type:"native_worker_eviction" ]);
-  let worker = worker supervisor [ Adapter.register workflow ] in
+  let seen = ref [] in
+  let worker =
+    match
+      Worker.create
+        ~on_activation:(fun info -> seen := info :: !seen)
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          (Printf.sprintf "eviction metadata worker creation failed: %s"
+             error.message)
+  in
   expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
   enqueue supervisor
     (eviction_activation ~run_id:"run-eviction"
        [ Protocol.Remove_from_cache
-           { message = "test eviction"; reason = Protocol.Lang_requested } ]);
+           { message = "test eviction"; reason = Protocol.Cache_full } ]);
   expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin
+    match !seen with
+    | eviction :: _
+      when String.equal eviction.run_id "run-eviction"
+           && eviction.cache_removal_reason = Some "cache_full" ->
+        ()
+    | _ -> failwith "cache eviction metadata did not preserve Core's reason"
+  end;
   begin match (latest_completion supervisor).commands with
   | [] -> ()
   | _ -> failwith "cache eviction unexpectedly emitted a workflow command"

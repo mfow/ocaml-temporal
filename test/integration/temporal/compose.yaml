@@ -120,7 +120,9 @@ services:
       SMOKE_SIGNAL_CONDITION_READY_FILE: /workspace/test/integration/temporal/.signal-condition-ready
       SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE: /workspace/test/integration/temporal/.restart-replay-diagnostics.json
       SMOKE_WORKER_GENERATION: "${SMOKE_WORKER_GENERATION:-1}"
-      SMOKE_REPLAY_WORKFLOW_ID: two-binary-worker-restart-replay
+      SMOKE_WORKER_MAX_CACHED_WORKFLOWS: "${SMOKE_WORKER_MAX_CACHED_WORKFLOWS:-}"
+      SMOKE_WORKER_CACHE_EVICTION_FILE: "${SMOKE_WORKER_CACHE_EVICTION_FILE:-}"
+      SMOKE_REPLAY_WORKFLOW_ID: "${SMOKE_REPLAY_WORKFLOW_ID:-two-binary-worker-restart-replay}"
     command:
       - opam
       - exec
@@ -213,6 +215,37 @@ services:
       - exec
       - --build-dir=/workspace/_build/smoke-restart-driver
       - test/integration/temporal/driver/restart_driver.exe
+    init: true
+
+  # The cache-eviction driver deliberately remains a client-only process. The
+  # worker's one-slot Core configuration and its payload-free marker are what
+  # make the RemoveFromCache acknowledgement observable at the public boundary.
+  smoke-cache-eviction-driver:
+    profiles: [temporal]
+    extends:
+      service: dev
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      smoke-worker:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      SMOKE_DRIVER_TIMEOUT_SECONDS: "${SMOKE_DRIVER_TIMEOUT_SECONDS:-300}"
+      SMOKE_CACHE_EVICTION_FILE: /workspace/test/integration/temporal/.cache-eviction.json
+    command:
+      - timeout
+      - --signal=TERM
+      - --kill-after=10s
+      - "${SMOKE_DRIVER_TIMEOUT_SECONDS:-300}"
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/smoke-cache-eviction-driver
+      - test/integration/temporal/driver/cache_eviction_driver.exe
     init: true
 
 networks:

@@ -341,6 +341,7 @@ type replay_record = {
     itself is replaced atomically after every new record. *)
 type replay_diagnostics = {
   path : string;
+  cache_eviction_path : string option;
   generation : int;
   target_workflow_id : string option;
   mutable workflow_id : string option;
@@ -461,6 +462,7 @@ let load_replay_diagnostics path generation target_workflow_id =
     Ok
       {
         path;
+        cache_eviction_path = None;
         generation;
         target_workflow_id;
         workflow_id = None;
@@ -520,6 +522,7 @@ let load_replay_diagnostics path generation target_workflow_id =
         Ok
           {
             path;
+            cache_eviction_path = None;
             generation;
             target_workflow_id;
             workflow_id = Some workflow_id;
@@ -574,6 +577,58 @@ let write_replay_diagnostics state =
          raise exception_)
   | _ -> failwith "replay diagnostics state has no workflow/run identity"
 
+(** Writes one payload-free eviction marker after Core has delivered an
+    explicit cache-removal activation. The marker is separate from replay
+    history because an eviction can occur between two replay records and must
+    not change the restart document's two-record contract. *)
+let write_cache_eviction_marker state ~reason =
+  match (state.cache_eviction_path, state.workflow_id, state.run_id) with
+  | Some path, Some workflow_id, Some run_id ->
+      let json =
+        `Assoc
+          [
+            ("workflow_id", `String workflow_id);
+            ("run_id", `String run_id);
+            ("reason", `String reason);
+          ]
+      in
+      let temporary = ref None in
+      (try
+         let generated =
+           Filename.temp_file ~temp_dir:(Filename.dirname path)
+             (Filename.basename path ^ ".tmp.") ""
+         in
+         temporary := Some generated;
+         let channel = open_out_bin generated in
+         Fun.protect
+           ~finally:(fun () -> close_out_noerr channel)
+           (fun () ->
+             Yojson.Safe.to_channel channel json;
+             output_char channel '\n';
+             flush channel);
+         Sys.rename generated path;
+         temporary := None
+       with exception_ ->
+         Option.iter
+           (fun generated -> try Sys.remove generated with _ -> ())
+           !temporary;
+         raise exception_)
+  | None, _, _ -> ()
+  | _ -> failwith "cache eviction state has no workflow/run identity"
+
+(** Validates an optional payload-free cache-eviction marker path. *)
+let optional_marker_path name = function
+  | None -> Ok None
+  | Some path
+    when path <> "" && not (String.contains path '\000')
+         && not (Filename.is_relative path) ->
+      Ok (Some path)
+  | Some _ ->
+      Error
+        (Base_error.defect
+           ~message:
+             (name ^ " must be a non-empty absolute path without NUL"))
+
 (** Creates the optional replay observer from test-only environment settings.
     Production workers do not set these variables and therefore pay no file
     I/O or callback cost. The observer records only the first initial and first
@@ -598,7 +653,12 @@ let replay_diagnostic_hook () =
         | Some value when value <> "" -> Some value
         | _ -> None
       in
+      let* cache_eviction_path =
+        optional_marker_path "SMOKE_WORKER_CACHE_EVICTION_FILE"
+          (Sys.getenv_opt "SMOKE_WORKER_CACHE_EVICTION_FILE")
+      in
       let* state = load_replay_diagnostics path generation target_workflow_id in
+      let state = { state with cache_eviction_path } in
       let callback (info : Workflow_adapter.activation_info) =
         let matches_target =
           match (state.target_workflow_id, info.workflow_id, state.workflow_id) with
@@ -615,39 +675,48 @@ let replay_diagnostic_hook () =
           (match (state.run_id, info.run_id) with
           | Some expected, actual when not (String.equal expected actual) -> ()
           | _ ->
-              let phase = if info.is_replaying then "replay" else "initial" in
-              let already_recorded =
-                List.exists (fun record -> String.equal record.phase phase) state.records
-              in
-              if not already_recorded then begin
-                if info.history_length < 0L then
-                  failwith "replay diagnostics history length was negative";
-                if state.generation = 1 && info.is_replaying then
-                  failwith "generation one unexpectedly reported replay";
-                if state.generation > 1 && not info.is_replaying then
-                  failwith "replacement worker did not report replay";
-                (match (state.workflow_id, info.workflow_id) with
-                | None, Some workflow_id -> state.workflow_id <- Some workflow_id
-                | Some expected, Some actual when not (String.equal expected actual) ->
-                    failwith "replay activation workflow ID changed"
-                | _ -> ());
-                (match state.run_id with
-                | None -> state.run_id <- Some info.run_id
-                | Some expected when not (String.equal expected info.run_id) ->
-                    failwith "replay activation run ID changed"
-                | Some _ -> ());
-                state.records <-
-                  state.records
-                  @ [
-                      {
-                        phase;
-                        generation = state.generation;
-                        is_replaying = info.is_replaying;
-                        history_length = info.history_length;
-                      };
-                    ];
-                write_replay_diagnostics state
-              end)
+              (match info.cache_removal_reason with
+              | Some reason ->
+                  write_cache_eviction_marker state ~reason
+              | None ->
+                  let phase = if info.is_replaying then "replay" else "initial" in
+                  let already_recorded =
+                    List.exists
+                      (fun record -> String.equal record.phase phase)
+                      state.records
+                  in
+                  if not already_recorded then begin
+                    if info.history_length < 0L then
+                      failwith "replay diagnostics history length was negative";
+                    if state.generation = 1 && info.is_replaying then
+                      failwith "generation one unexpectedly reported replay";
+                    if state.generation > 1 && not info.is_replaying then
+                      failwith "replacement worker did not report replay";
+                    (match (state.workflow_id, info.workflow_id) with
+                    | None, Some workflow_id ->
+                        state.workflow_id <- Some workflow_id
+                    | Some expected, Some actual
+                      when not (String.equal expected actual) ->
+                        failwith "replay activation workflow ID changed"
+                    | _ -> ());
+                    (match state.run_id with
+                    | None -> state.run_id <- Some info.run_id
+                    | Some expected when not (String.equal expected info.run_id) ->
+                        failwith "replay activation run ID changed"
+                    | Some _ -> ());
+                    state.records <-
+                      state.records
+                      @ [
+                          {
+                            phase;
+                            generation = state.generation;
+                            is_replaying = info.is_replaying;
+                            history_length = info.history_length;
+                          };
+                        ];
+                    write_replay_diagnostics state
+                  end)
+              )
         end
       in
       Ok (Some callback)
@@ -1002,7 +1071,8 @@ let cleanup_abandoned worker =
     [Native.create] enters [cleanup], which joins the supervisor owner Domain
     and closes all native resources before returning. Successful construction
     attaches a GC finalizer so abandoned workers still drain leases. *)
-let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities () =
+let create ?(max_cached_workflows = default_max_cached_workflows) ~target_url
+    ~namespace ~identity ~task_queue ~workflows ~activities () =
   let* on_activation = replay_diagnostic_hook () in
   let* client_config =
     Native.client_config ~target_url ~identity
@@ -1010,7 +1080,7 @@ let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities (
   in
   let* worker_config =
     Native.worker_config ~namespace ~task_queue ~build_id:default_build_id
-      ~max_cached_workflows:default_max_cached_workflows
+      ~max_cached_workflows
       ~max_outstanding_workflow_tasks:default_max_outstanding_workflow_tasks
       ~max_concurrent_workflow_task_polls:
         default_max_concurrent_workflow_task_polls

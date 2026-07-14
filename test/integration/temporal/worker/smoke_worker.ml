@@ -26,6 +26,27 @@ let required_env name =
   | Some value when not (String.equal value "") -> Ok value
   | _ -> Error (Error.defect ~message:(name ^ " must not be empty"))
 
+(** Reads the optional cache bound used by the focused live eviction fixture.
+    Leaving it unset preserves the production worker default; an explicit zero
+    is retained because it is a meaningful Core configuration. *)
+let optional_cache_bound () =
+  match Sys.getenv_opt "SMOKE_WORKER_MAX_CACHED_WORKFLOWS" with
+  | None | Some "" -> Ok None
+  | Some value -> (
+      try
+        let parsed = int_of_string value in
+        if parsed >= 0 then Ok (Some parsed)
+        else
+          Error
+            (Error.defect
+               ~message:
+                 "SMOKE_WORKER_MAX_CACHED_WORKFLOWS must be non-negative")
+      with _ ->
+        Error
+          (Error.defect
+             ~message:
+               "SMOKE_WORKER_MAX_CACHED_WORKFLOWS must be an integer"))
+
 (** Writes a marker through a temporary file and atomic rename. The Compose
     health and teardown checks therefore observe either the complete marker or
     no marker, never a partially written file. [Filename.temp_file] creates the
@@ -233,6 +254,7 @@ let run () =
               Error (Error.defect ~message:"SMOKE_WORKER_GENERATION must be an integer"))
         | None -> Error (Error.defect ~message:"SMOKE_WORKER_GENERATION must be set")
       in
+      let* max_cached_workflows = optional_cache_bound () in
       let* () = clear_replay_diagnostics_before_start replay_diagnostics_file generation in
       let* cancellation_ready_file = Definitions.cancellation_ready_file () in
       let* signal_condition_ready_file =
@@ -247,7 +269,7 @@ let run () =
         Definitions.clear_signal_condition_ready_file signal_condition_ready_file
       in
       let worker_result =
-        Worker.create ~target_url ~namespace
+        Worker.create ?max_cached_workflows ~target_url ~namespace
           ~identity:"ocaml-temporal-two-binary-worker"
           ~task_queue:Definitions.task_queue
           ~workflows:
@@ -276,6 +298,7 @@ let run () =
               Worker.workflow Definitions.non_retryable_failure;
               Worker.workflow Definitions.long_running_cancellation;
               Worker.workflow Definitions.worker_restart_replay;
+              Worker.workflow Definitions.cache_eviction;
             ]
           ~activities:
             [

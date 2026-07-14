@@ -5,7 +5,7 @@ COMPOSE := docker compose --project-directory "$(TEMPORAL_FIXTURE_DIR)" --file "
 # Compose services bind-mount the repository. Propagate the invoking user's
 # numeric identity, selected OCaml image, and bounded driver timeout so every
 # service shares Dune's lock/build ownership and overrides behave predictably.
-TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) SMOKE_DRIVER_TIMEOUT_SECONDS=$(TEMPORAL_DRIVER_TIMEOUT_SECONDS) SMOKE_WORKER_GENERATION=$(SMOKE_WORKER_GENERATION) $(COMPOSE) --profile temporal
+TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) SMOKE_DRIVER_TIMEOUT_SECONDS=$(TEMPORAL_DRIVER_TIMEOUT_SECONDS) SMOKE_WORKER_GENERATION=$(SMOKE_WORKER_GENERATION) SMOKE_WORKER_MAX_CACHED_WORKFLOWS=$(SMOKE_WORKER_MAX_CACHED_WORKFLOWS) SMOKE_WORKER_CACHE_EVICTION_FILE=$(SMOKE_WORKER_CACHE_EVICTION_FILE) SMOKE_REPLAY_WORKFLOW_ID=$(SMOKE_REPLAY_WORKFLOW_ID) $(COMPOSE) --profile temporal
 # Keep the one-shot acceptance driver bounded while allowing a temporarily
 # stalled CI PostgreSQL checkpoint to finish. This is a process-level guard,
 # not a workflow timeout; callers can still override it for slower machines.
@@ -20,9 +20,15 @@ SMOKE_RESTART_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-driver.
 SMOKE_RESTART_INITIAL_HISTORY := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-history.initial.json
 SMOKE_RESTART_TERMINAL_HISTORY := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-history.terminal.json
 SMOKE_RESTART_CONTROLLER_FILE := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-controller.json
+SMOKE_CACHE_EVICTION_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction.json
+SMOKE_CACHE_EVICTION_CONTAINER_FILE := /workspace/test/integration/temporal/.cache-eviction.json
+SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-driver.log
 SMOKE_DRIVER_CONTAINER := $(TEMPORAL_COMPOSE_PROJECT)-smoke-driver
 SMOKE_RESTART_DRIVER_CONTAINER := $(TEMPORAL_COMPOSE_PROJECT)-smoke-restart-driver
 SMOKE_WORKER_GENERATION ?= 1
+SMOKE_WORKER_MAX_CACHED_WORKFLOWS ?=
+SMOKE_WORKER_CACHE_EVICTION_FILE ?=
+SMOKE_REPLAY_WORKFLOW_ID ?= two-binary-worker-restart-replay
 SERVICE ?= dev
 OCAML_VERSION ?= 5.2
 OCAML_IMAGE ?= ocaml/opam:debian-12-ocaml-$(OCAML_VERSION)
@@ -57,7 +63,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-temporal-worker-cache-eviction-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -224,7 +230,8 @@ temporal-stop:
 		"$(SMOKE_RESTART_INITIAL_HISTORY)" "$(SMOKE_RESTART_TERMINAL_HISTORY)" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).raw" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).describe.json" \
-		"$(SMOKE_RESTART_CONTROLLER_FILE)"
+		"$(SMOKE_RESTART_CONTROLLER_FILE)" "$(SMOKE_CACHE_EVICTION_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"
 
 temporal-clean:
 	$(TEMPORAL_COMPOSE) down --volumes --remove-orphans
@@ -235,7 +242,8 @@ temporal-clean:
 		"$(SMOKE_RESTART_TERMINAL_HISTORY)" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).raw" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).describe.json" \
-		"$(SMOKE_RESTART_CONTROLLER_FILE)"
+		"$(SMOKE_RESTART_CONTROLLER_FILE)" "$(SMOKE_CACHE_EVICTION_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"
 
 test-temporal-integration: test-temporal-config
 	@set -eu; \
@@ -289,6 +297,55 @@ test-temporal-worker-crash-recovery:
 
 test-temporal-worker-crash-recovery-contract:
 	sh test/smoke/test_temporal_worker_crash_recovery_contract.sh
+
+# Runs a one-slot Core cache against two independent parked executions. The
+# driver does not infer eviction from replay: it waits for the worker's exact
+# RemoveFromCache marker, then cancels both exact runs and checks their typed
+# terminal outcomes before the worker is shut down.
+test-temporal-worker-cache-eviction:
+	$(MAKE) test-temporal-worker-cache-eviction-contract
+	SMOKE_WORKER_MAX_CACHED_WORKFLOWS=1 \
+	SMOKE_WORKER_CACHE_EVICTION_FILE=$(SMOKE_CACHE_EVICTION_CONTAINER_FILE) \
+	SMOKE_REPLAY_WORKFLOW_ID=two-binary-cache-eviction-a \
+	$(MAKE) test-temporal-worker-cache-eviction-live
+
+test-temporal-worker-cache-eviction-contract:
+	sh test/smoke/test_temporal_worker_cache_eviction_contract.sh
+
+test-temporal-worker-cache-eviction-live: test-temporal-config
+	@set -eu; \
+	driver_container="$(TEMPORAL_COMPOSE_PROJECT)-smoke-cache-eviction-driver"; \
+	cleanup_driver() { \
+		docker rm -f "$$driver_container" >/dev/null 2>&1 || true; \
+		$(TEMPORAL_COMPOSE) rm --stop --force smoke-cache-eviction-driver >/dev/null 2>&1 || true; \
+	}; \
+	cleanup() { \
+		status=$$?; \
+		trap - EXIT HUP INT TERM; \
+		cleanup_driver; \
+		if [ "$$status" -ne 0 ]; then cat "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" 2>/dev/null || true; $(MAKE) temporal-logs || true; fi; \
+		$(MAKE) temporal-clean || true; \
+		exit "$$status"; \
+	}; \
+	trap cleanup EXIT; \
+	trap 'exit 129' HUP; \
+	trap 'exit 130' INT; \
+	trap 'exit 143' TERM; \
+	$(MAKE) temporal-clean; \
+	rm -f "$(SMOKE_CACHE_EVICTION_FILE)" "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"; \
+	$(MAKE) temporal-start; \
+	$(MAKE) temporal-start-worker; \
+	docker rm -f "$$driver_container" >/dev/null 2>&1 || true; \
+	status=0; \
+	$(TEMPORAL_COMPOSE) run --build --rm --name "$$driver_container" --no-deps smoke-cache-eviction-driver >"$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" 2>&1 || status=$$?; \
+	cat "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"; \
+	if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
+	command -v jq >/dev/null 2>&1; \
+	jq -e --arg workflow_id two-binary-cache-eviction-a \
+		--arg reason cache_full \
+		'type == "object" and (keys | sort) == ["reason", "run_id", "workflow_id"] and .workflow_id == $$workflow_id and .run_id != "" and .reason == $$reason' \
+		"$(SMOKE_CACHE_EVICTION_FILE)" >/dev/null; \
+	$(MAKE) temporal-stop-worker
 
 test-temporal-worker-restart-live: test-temporal-config
 	@set -eu; \

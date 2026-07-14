@@ -1,11 +1,13 @@
 # Internal replay worker bridge
 
 This reference describes the bounded replay slice behind the private Rust
-bridge. It is an implementation component, not a public OCaml API and not live
-Temporal acceptance evidence. The public worker still executes normal server
-activations; this worker is used to feed recorded histories to Temporal Core's
-replay implementation in deterministic tests and in the later restart
-acceptance fixture.
+bridge. It is an implementation component, not a public OCaml API and not a
+standalone live acceptance fixture. Deterministic tests drive the bridge
+directly by feeding recorded histories to Temporal Core's replay
+implementation. The separate two-generation restart/replay acceptance uses it
+indirectly through the private worker path and is live-verified as an
+integration; that evidence does not make this bridge a caller-facing replay
+API. The public worker still executes normal server activations.
 
 ## Why this layer exists
 
@@ -227,3 +229,5 @@ cleanup paths have focused tests. The separate live restart design is in
 [`worker-restart-replay-acceptance.md`](worker-restart-replay-acceptance.md),
 and its two-generation Compose test now observes the exact run, replay marker,
 terminal result, and volume cleanup in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
+That run is evidence for the integrated worker/replay scenario, not for
+exposing this private bridge directly.

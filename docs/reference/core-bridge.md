@@ -365,9 +365,11 @@ failure, and scheduler contracts.
 ### Lifecycle configuration JSON
 
 The OCaml wrapper constructs two private JSON documents; applications never
-assemble these strings themselves. The client document contains exactly
-`target_url` and `identity`. The worker document contains exactly `namespace`,
-`task_queue`, `build_id`, `max_cached_workflows`,
+assemble these strings themselves. Public worker resource controls are exposed
+only as the immutable, typed `Temporal.Worker.Options` value, then converted to
+this private document after their first validation. The client document
+contains exactly `target_url` and `identity`. The worker document contains
+exactly `namespace`, `task_queue`, `build_id`, `max_cached_workflows`,
 `max_outstanding_workflow_tasks`, `max_concurrent_workflow_task_polls`, and
 `graceful_shutdown_timeout_ms`. Closed Draft 2020-12 schemas live under
 `docs/schemas/bridge/`.

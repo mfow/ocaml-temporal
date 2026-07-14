@@ -276,16 +276,11 @@ let register_activity definition = Activity_adapter.register definition
 let register_async_activity definition =
   Activity_adapter.register_async definition
 
-(** Default native worker resource settings. They are deliberately explicit and
-    stable so every worker has bounded Core resource usage even before a richer
-    public options record is added. *)
+(** Private build identity. Resource settings are deliberately not defaults in
+    this module: they arrive from the validated public [Worker.Options] value
+    so a live worker's cache and poller configuration is explicit at its OCaml
+    construction boundary. *)
 let default_build_id = "ocaml-temporal"
-let default_max_cached_workflows = 1_000
-let default_max_outstanding_workflow_tasks = 1_000
-(* Temporal Core requires at least two workflow-task pollers when workflow
-   caching is enabled; the bridge validates the same invariant on both sides. *)
-let default_max_concurrent_workflow_task_polls = 2
-let default_graceful_shutdown_timeout_ms = 30_000L
 let supervisor_capacity = 32
 
 (** Native worker lifecycle state. The atomic flag is the only state observed
@@ -1000,9 +995,14 @@ let cleanup_abandoned worker =
 
 (** Builds the native graph and both OCaml registries. Every failure after
     [Native.create] enters [cleanup], which joins the supervisor owner Domain
-    and closes all native resources before returning. Successful construction
-    attaches a GC finalizer so abandoned workers still drain leases. *)
-let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities () =
+    and closes all native resources before returning. Resource arguments have
+    already passed [Worker.Options] validation, but [Native.worker_config]
+    repeats its protocol-boundary checks before creating any Core worker.
+    Successful construction attaches a GC finalizer so abandoned workers still
+    drain leases. *)
+let create ~target_url ~namespace ~identity ~task_queue ~max_cached_workflows
+    ~max_outstanding_workflow_tasks ~max_concurrent_workflow_task_polls
+    ~graceful_shutdown_timeout_ms ~workflows ~activities () =
   let* on_activation = replay_diagnostic_hook () in
   let* client_config =
     Native.client_config ~target_url ~identity
@@ -1010,11 +1010,8 @@ let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities (
   in
   let* worker_config =
     Native.worker_config ~namespace ~task_queue ~build_id:default_build_id
-      ~max_cached_workflows:default_max_cached_workflows
-      ~max_outstanding_workflow_tasks:default_max_outstanding_workflow_tasks
-      ~max_concurrent_workflow_task_polls:
-        default_max_concurrent_workflow_task_polls
-      ~graceful_shutdown_timeout_ms:default_graceful_shutdown_timeout_ms
+      ~max_cached_workflows ~max_outstanding_workflow_tasks
+      ~max_concurrent_workflow_task_polls ~graceful_shutdown_timeout_ms
     |> Result.map_error (public_bridge_error "worker configuration")
   in
   let* supervisor =

@@ -714,6 +714,43 @@ The native path keeps Rust/Core and its protobufs private. The OCaml worker
 receives checked descriptions of work, runs the typed function, and sends a
 checked result back through the private supervisor.
 
+### Worker resource settings
+
+`Temporal.Worker.Options` controls worker-side resource limits without becoming
+part of workflow logic or history. Most applications should use the default
+settings. When a deployment needs an explicit limit, construct a validated
+immutable value and pass it to `Worker.create`:
+
+```ocaml
+let constrained_worker_result =
+  let open Temporal.Result_syntax in
+  let* options =
+    Temporal.Worker.Options.make
+      ~max_cached_workflows:1
+      ~max_outstanding_workflow_tasks:32
+      ~max_concurrent_workflow_task_polls:2
+      ~graceful_shutdown_timeout:(Temporal.Duration.of_ms 30_000L)
+      ()
+  in
+  Temporal.Worker.create
+    ~options
+    ~target_url:"http://127.0.0.1:7233"
+    ~namespace:"default"
+    ~task_queue:"summaries"
+    ~workflows:[ Temporal.Worker.workflow summarize_workflow ]
+    ~activities:[ Temporal.Worker.activity summarize_activity ]
+    ()
+```
+
+`max_cached_workflows` is the sticky-cache capacity. Set it to `0` to disable
+sticky caching, or use a positive value to retain recently active workflow
+executions between tasks. Temporal Core requires at least two workflow-task
+pollers whenever that capacity is positive, so `make` rejects a smaller
+`max_concurrent_workflow_task_polls` value as a typed error. The timeout only
+bounds graceful worker teardown; these settings do not make workflow code less
+deterministic and may differ between worker deployments. The SDK validates them
+again at its private OCaml/Rust boundary before Core constructs the worker.
+
 ## 9. Start and wait from a client
 
 `Temporal.Client` is useful when an application needs to submit an execution

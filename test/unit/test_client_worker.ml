@@ -558,6 +558,57 @@ let test_worker_validation_errors () =
     (Temporal.Worker.create ~target_url:"mock://dispatch"
        ~namespace:"unit-test" ~task_queue:"" ~workflows:[] ~activities:[] ())
 
+(** Worker resource options fail before a native graph exists, preserve the
+    cache/poller relationship required by Core, and remain usable through the
+    ordinary public worker constructor. The mock backend does not consume
+    resource limits, but accepting the immutable value here protects the
+    public API plumbing while focused bridge tests cover its JSON validation. *)
+let test_worker_options_validation_and_public_plumbing () =
+  expect_error "defect"
+    (Temporal.Worker.Options.make ~max_cached_workflows:(-1) ());
+  expect_error "defect"
+    (Temporal.Worker.Options.make ~max_outstanding_workflow_tasks:0 ());
+  expect_error "defect"
+    (Temporal.Worker.Options.make ~max_concurrent_workflow_task_polls:0 ());
+  expect_error_message_contains "defect" "at least 2"
+    (Temporal.Worker.Options.make ~max_cached_workflows:1
+       ~max_concurrent_workflow_task_polls:1 ());
+  expect_error "defect"
+    (Temporal.Worker.Options.make ~max_cached_workflows:1_000_001 ());
+  expect_error "defect"
+    (Temporal.Worker.Options.make
+       ~graceful_shutdown_timeout:(Temporal.Duration.of_ms 86_400_001L) ());
+  let uncached =
+    unwrap
+      (Temporal.Worker.Options.make ~max_cached_workflows:0
+         ~max_concurrent_workflow_task_polls:1 ())
+  in
+  assert (Temporal.Worker.Options.max_cached_workflows uncached = 0);
+  assert (Temporal.Worker.Options.max_concurrent_workflow_task_polls uncached = 1);
+  let configured =
+    unwrap
+      (Temporal.Worker.Options.make ~max_cached_workflows:1
+         ~max_outstanding_workflow_tasks:3
+         ~max_concurrent_workflow_task_polls:2
+         ~graceful_shutdown_timeout:(Temporal.Duration.of_ms 1_000L) ())
+  in
+  assert (Temporal.Worker.Options.max_cached_workflows configured = 1);
+  assert
+    (Temporal.Worker.Options.max_outstanding_workflow_tasks configured = 3);
+  assert
+    (Temporal.Worker.Options.max_concurrent_workflow_task_polls configured = 2);
+  assert
+    (Temporal.Duration.to_ms
+       (Temporal.Worker.Options.graceful_shutdown_timeout configured)
+    = 1_000L);
+  let worker =
+    unwrap
+      (Temporal.Worker.create ~options:configured ~target_url:"mock://dispatch"
+         ~namespace:"unit-test" ~task_queue:"unit-test" ~workflows:[]
+         ~activities:[] ())
+  in
+  unwrap (Temporal.Worker.shutdown worker)
+
 (** A non-mock endpoint must enter the native configuration boundary rather
     than silently falling back to the deterministic fake. An invalid absolute
     URL fails before a runtime or network resource is allocated, which keeps
@@ -589,4 +640,5 @@ let () =
   test_client_identifier_size_validation ();
   test_native_client_configuration_boundary ();
   test_worker_validation_errors ();
+  test_worker_options_validation_and_public_plumbing ();
   test_native_worker_configuration_boundary ()

@@ -98,6 +98,139 @@ type t = {
 (** Stable default identity for worker diagnostics. *)
 let default_identity = "ocaml-temporal-worker"
 
+(** Public worker resource configuration. The native bridge repeats these
+    checks because this module protects the ergonomic OCaml API while the
+    bridge protects the separately evolving JSON/native boundary. *)
+module Options = struct
+  (** A validated set of worker resource limits. The values remain immutable
+      after construction so one worker cannot observe configuration changes
+      while another Domain is creating or shutting it down. *)
+  type t = {
+    max_cached_workflows : int;
+    max_outstanding_workflow_tasks : int;
+    max_concurrent_workflow_task_polls : int;
+    graceful_shutdown_timeout : Duration.t;
+  }
+
+  (** Maximum value accepted by the public API. Rust and the JSON schema apply
+      the same ceiling so an alternate bridge caller cannot bypass it. *)
+  let max_worker_count = 1_000_000
+
+  (** Temporal Core needs this many workflow-task pollers whenever the sticky
+      cache is enabled; a cache of zero deliberately has no such requirement. *)
+  let min_cached_workflow_polls = 2
+
+  (** A one-day cap prevents a malformed deployment setting from retaining a
+      shutdown path indefinitely. The bound is expressed in milliseconds to
+      match the private JSON field exactly. *)
+  let max_graceful_shutdown_timeout_ms = 86_400_000L
+
+  (** Established production defaults, kept here rather than in the private
+      native module so callers can inspect and intentionally override them. *)
+  let default_max_cached_workflows = 1_000
+  let default_max_outstanding_workflow_tasks = 1_000
+  let default_max_concurrent_workflow_task_polls = 2
+  let default_graceful_shutdown_timeout = Duration.of_ms 30_000L
+
+  (** The option value used by [Worker.create] when no explicit resource
+      configuration was supplied. *)
+  let default =
+    {
+      max_cached_workflows = default_max_cached_workflows;
+      max_outstanding_workflow_tasks =
+        default_max_outstanding_workflow_tasks;
+      max_concurrent_workflow_task_polls =
+        default_max_concurrent_workflow_task_polls;
+      graceful_shutdown_timeout = default_graceful_shutdown_timeout;
+    }
+
+  (** Validates one bounded integer setting. Only the sticky-cache size may be
+      zero because zero has a defined Core meaning: do not retain executions. *)
+  let validate_count ~allow_zero field value =
+    let minimum = if allow_zero then 0 else 1 in
+    if value < minimum || value > max_worker_count then
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "%s must be between %d and %d" field minimum
+                max_worker_count))
+    else Ok ()
+
+  (** Preserves Core's cached-worker polling invariant before native allocation
+      so a configuration typo remains an ordinary typed result. *)
+  let validate_cache_poller_relationship ~max_cached_workflows
+      ~max_concurrent_workflow_task_polls =
+    if
+      max_cached_workflows > 0
+      && max_concurrent_workflow_task_polls < min_cached_workflow_polls
+    then
+      Error
+        (Error.defect
+           ~message:
+             "max_concurrent_workflow_task_polls must be at least 2 when max_cached_workflows is greater than zero")
+    else Ok ()
+
+  (** Checks the public duration against the bridge's inclusive shutdown
+      bound. [Duration.t] has already ruled out a negative value. *)
+  let validate_graceful_shutdown_timeout duration =
+    let milliseconds = Duration.to_ms duration in
+    if Int64.compare milliseconds max_graceful_shutdown_timeout_ms <= 0 then
+      Ok ()
+    else
+      Error
+        (Error.defect
+           ~message:
+             "graceful_shutdown_timeout must be between 0 and 86400000 milliseconds")
+
+  (** Creates a value only after all cross-field and scalar invariants hold.
+      The local [let*] keeps the first useful configuration failure rather than
+      aggregating unrelated messages or allocating a partial native worker. *)
+  let make ?(max_cached_workflows = default_max_cached_workflows)
+      ?(max_outstanding_workflow_tasks = default_max_outstanding_workflow_tasks)
+      ?(max_concurrent_workflow_task_polls =
+        default_max_concurrent_workflow_task_polls)
+      ?(graceful_shutdown_timeout = default_graceful_shutdown_timeout) () =
+    let ( let* ) = Result.bind in
+    let* () =
+      validate_count ~allow_zero:true "max_cached_workflows"
+        max_cached_workflows
+    in
+    let* () =
+      validate_count ~allow_zero:false "max_outstanding_workflow_tasks"
+        max_outstanding_workflow_tasks
+    in
+    let* () =
+      validate_count ~allow_zero:false "max_concurrent_workflow_task_polls"
+        max_concurrent_workflow_task_polls
+    in
+    let* () =
+      validate_cache_poller_relationship ~max_cached_workflows
+        ~max_concurrent_workflow_task_polls
+    in
+    let* () = validate_graceful_shutdown_timeout graceful_shutdown_timeout in
+    Ok
+      {
+        max_cached_workflows;
+        max_outstanding_workflow_tasks;
+        max_concurrent_workflow_task_polls;
+        graceful_shutdown_timeout;
+      }
+
+  (** Exposes the cache limit without revealing the immutable record. *)
+  let max_cached_workflows options = options.max_cached_workflows
+
+  (** Exposes the workflow-task admission bound without revealing the record. *)
+  let max_outstanding_workflow_tasks options =
+    options.max_outstanding_workflow_tasks
+
+  (** Exposes Core's workflow-task poller count without revealing the record. *)
+  let max_concurrent_workflow_task_polls options =
+    options.max_concurrent_workflow_task_polls
+
+  (** Exposes the graceful drain period as the public duration abstraction. *)
+  let graceful_shutdown_timeout options = options.graceful_shutdown_timeout
+end
+
 (** Rejects empty or NUL-containing worker settings before backend allocation. *)
 let validate_name field value =
   if String.equal value "" then
@@ -178,9 +311,11 @@ let collect_activities definitions =
     (Ok Name_map.empty) definitions
 
 (** Creates the private backend only after all local registration invariants are
-    proven. This ordering prevents leaked graphs on invalid definitions. *)
-let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
-    ~workflows ~activities () =
+    proven. This ordering prevents leaked graphs on invalid definitions. The
+    immutable [options] value is threaded unchanged to the private adapter,
+    which independently validates its JSON representation before Core sees it. *)
+let create ?(identity = default_identity) ?(options = Options.default) ~target_url
+    ~namespace ~task_queue ~workflows ~activities () =
   match validate_name "namespace" namespace with
   | Error error -> Error error
   | Ok () -> (
@@ -245,7 +380,17 @@ let create ?(identity = default_identity) ~target_url ~namespace ~task_queue
                         in
                         let native_result =
                           Native_worker.create ~target_url ~namespace ~identity
-                            ~task_queue ~workflows:native_workflows
+                            ~task_queue
+                            ~max_cached_workflows:
+                              (Options.max_cached_workflows options)
+                            ~max_outstanding_workflow_tasks:
+                              (Options.max_outstanding_workflow_tasks options)
+                            ~max_concurrent_workflow_task_polls:
+                              (Options.max_concurrent_workflow_task_polls options)
+                            ~graceful_shutdown_timeout_ms:
+                              (Options.graceful_shutdown_timeout options
+                              |> Duration.to_ms)
+                            ~workflows:native_workflows
                             ~activities:native_activities ()
                           |> Result.map_error Error_private.of_base
                         in

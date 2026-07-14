@@ -54,12 +54,18 @@ type t
 
     Registration validation happens before the native graph is published. If
     connection or worker startup fails after a graph exists, the graph is
-    synchronously shut down before the typed error is returned. *)
+    synchronously shut down before the typed error is returned. Resource values
+    are supplied by the public [Worker.Options] value and are revalidated by
+    the private bridge before their JSON crosses into Rust. *)
 val create :
   target_url:string ->
   namespace:string ->
   identity:string ->
   task_queue:string ->
+  max_cached_workflows:int ->
+  max_outstanding_workflow_tasks:int ->
+  max_concurrent_workflow_task_polls:int ->
+  graceful_shutdown_timeout_ms:int64 ->
   workflows:workflow_registration list ->
   activities:activity_registration list ->
   unit ->

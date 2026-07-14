@@ -122,9 +122,11 @@ let add_workflow registry (Workflow (definition, signals, queries, updates)) =
       else
         Result.map
           (fun () ->
-              Name_map.add name
-              (Workflow_entry { definition; signals; queries; updates; implementation }) registry)
-          (Interaction.create ~signals ~queries () |> Result.map (fun _ -> ()))
+            Name_map.add name
+              (Workflow_entry { definition; signals; queries; updates; implementation })
+              registry)
+          (Interaction.create ~signals ~queries ~updates ()
+          |> Result.map (fun _ -> ()))
 
 (** Adds an activity to the registry with the same duplicate and implementation
     checks used for workflows. *)

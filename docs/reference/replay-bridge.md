@@ -228,6 +228,9 @@ OCaml supervisor operations, strict sender/receiver validation, and lifecycle
 cleanup paths have focused tests. The separate live restart design is in
 [`worker-restart-replay-acceptance.md`](worker-restart-replay-acceptance.md),
 and its two-generation Compose test now observes the exact run, replay marker,
-terminal result, and volume cleanup in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
-That run is evidence for the integrated worker/replay scenario, not for
-exposing this private bridge directly.
+retrying activity's attempt-two result, terminal result, and volume cleanup in
+the [PR #298 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291).
+The earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+is historical evidence for the original path. These runs are evidence for the
+integrated worker/replay scenario, not for exposing this private bridge
+directly.

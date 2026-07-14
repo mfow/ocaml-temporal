@@ -277,12 +277,14 @@ The request and response shapes are defined by
 and
 [`client-signal-response.schema.json`](../schemas/bridge/client-signal-response.schema.json).
 
-The complete [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
+The first focused [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
 live-verified the signal path against Temporal Server: the driver waited for
 the worker-visible readiness marker before sending the typed signal, then
-observed the handler's value after the condition resumed. The acknowledgement
-therefore remains distinct from handler execution, but this run proves that
-the current two-process worker and client deliver the signal end to end.
+observed the handler's value after the condition resumed. The complete current
+seventeen-result acceptance is covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368),
+which includes the same signal/condition path. The acknowledgement therefore
+remains distinct from handler execution, while the two runs together preserve
+the focused and complete live evidence for this client operation.
 
 ## Wait for one exact run
 
@@ -426,7 +428,8 @@ only as a private unit-test seam. The complete [PR #277 Actions run](https://git
 live-verified native client starts and exact-run waits alongside the current
 heartbeat-detail retry and exact-run cancellation assertions against a public
 worker and real Temporal Server. The signal-specific readiness and handler
-assertion is documented above with [PR #266](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247).
+assertion is documented above with the focused [PR #266](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
+run; the complete current seventeen-result signal evidence is in [PR #289](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
 The later complete [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
 re-verified the client start, exact-run wait, cancellation, and graceful
 shutdown paths in the prior sixteen-result gate. The complete [PR #289 Actions

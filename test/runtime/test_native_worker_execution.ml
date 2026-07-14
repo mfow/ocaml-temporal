@@ -1075,6 +1075,68 @@ let test_eviction () =
   | _ -> failwith "evicted run remained in the execution registry"
   end
 
+(** An eviction removes only the cached in-memory execution. If Temporal later
+    replays a start activation for the same run ID, the adapter must create a
+    new scheduler and invoke the registered workflow again instead of reviving
+    the shut-down continuation from the evicted generation. The second
+    generation also proves that its timer sequence starts from a fresh
+    execution-local counter and can complete normally. *)
+let test_eviction_allows_fresh_replay_execution () =
+  let supervisor = fake_supervisor () in
+  let invocations = ref 0 in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_eviction_replay"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        incr invocations;
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-eviction-replay" in
+  let workflow_type = "native_worker_eviction_replay" in
+  enqueue supervisor (activation ~run_id [ initialize ~run_id ~workflow_type ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  if !invocations <> 1 then
+    failwith "initial cached execution did not invoke the workflow exactly once";
+  let first_timer_seq =
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_timer { seq; _ } ] -> seq
+    | _ -> failwith "initial cached execution did not schedule its timer"
+  in
+  enqueue supervisor
+    (eviction_activation ~run_id
+       [ Protocol.Remove_from_cache
+           { message = "replay generation eviction"; reason = Protocol.Cache_full } ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin match (latest_completion supervisor).commands with
+  | [] -> ()
+  | _ -> failwith "eviction acknowledgement emitted a workflow command"
+  end;
+  if !invocations <> 1 then
+    failwith "cache eviction unexpectedly re-invoked the workflow";
+  (* A later start activation represents the replayed second generation. It
+     deliberately reuses the run ID but advances history metadata so the
+     fixture cannot accidentally be mistaken for the original activation. *)
+  let replay_start =
+    { (activation ~run_id [ initialize ~run_id ~workflow_type ]) with
+      history_length = 2L }
+  in
+  enqueue supervisor replay_start;
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  if !invocations <> 2 then
+    failwith "replayed start did not create a fresh workflow execution";
+  let replay_timer_seq =
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_timer { seq; _ } ] -> seq
+    | _ -> failwith "replayed execution did not schedule its timer"
+  in
+  if replay_timer_seq <> first_timer_seq then
+    failwith
+      "replayed execution reused the wrong scheduler sequence instead of a fresh one";
+  enqueue supervisor (activation ~run_id [ Protocol.Fire_timer { seq = replay_timer_seq } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "fresh replay execution left a native lease outstanding"
+
 (** A normal terminal completion removes its run before Core sends the later
     cache-eviction activation. The adapter must still acknowledge that leased
     eviction with Core's exact successful empty completion instead of trying
@@ -2055,6 +2117,7 @@ let () =
   test_query_adapter_failure_uses_query_results ();
   test_unhandled_signal_fails_closed ();
   test_eviction ();
+  test_eviction_allows_fresh_replay_execution ();
   test_eviction_after_terminal_completion ();
   test_unexpected_completion_exception_is_retried ();
   test_completion_rejection_is_drained_without_redo ();

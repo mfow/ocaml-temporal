@@ -18,6 +18,11 @@ and bridge, read the [documentation guide](../README.md) first.
   all pending callbacks and captured continuations.
 - Eviction emits no workflow command. A later replay creates a fresh execution
   rather than reusing native continuations.
+- The focused runtime regression
+  [`test_eviction_allows_fresh_replay_execution`](../../test/runtime/test_native_worker_execution.ml)
+  checks both halves of that rule: the evicted generation is not invoked again,
+  and a later start for the same run ID receives a new scheduler and can
+  complete.
 
 ## Deterministic scheduling
 

@@ -20,6 +20,55 @@ let mock_transform =
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
       Ok (String.uppercase_ascii input))
 
+(** The typed signal used by the live interaction scenario. The definition
+    carries the same string codec in the driver and worker processes, so the
+    client-side request and worker-side handler cannot silently disagree about
+    the payload representation. *)
+let signal_value =
+  Temporal.Signal.define ~name:"smoke.set_value" ~input:Temporal.Codec.string
+
+(** The first live signal fixture deliberately has one workflow execution. A
+    signal handler is registered once on a worker, while the runtime invokes
+    that callback on each matching execution's scheduler. This ref is the
+    small test-only state shared by the handler and workflow continuation; the
+    worker resets it before construction and the driver sends exactly one
+    signal, so it cannot make the acceptance result depend on a prior run. *)
+let signal_value_state : string option ref = ref None
+
+(** Clears the test-only signal state before a fresh worker process advertises
+    readiness. Keeping this operation explicit prevents a manually restarted
+    worker from treating an old in-process signal as the current execution's
+    input. *)
+let reset_signal_value_state () = signal_value_state := None
+
+(** Handles one typed signal by retaining its value for the suspended workflow
+    condition. The callback returns a typed success; it performs no I/O and
+    does not call the client, so the signal activation remains deterministic. *)
+let signal_value_handler =
+  Temporal.Signal.Handler.make signal_value (fun value ->
+      signal_value_state := Some value;
+      Ok ())
+
+(** Waits for [signal_value_handler] to set the workflow-local acceptance
+    marker, then returns a stable result for the independent driver to assert.
+    [Condition.wait_until_result] parks only this workflow fiber and is
+    rechecked after the signal activation; no host timer or polling loop is
+    involved. *)
+let signal_condition_workflow =
+  Temporal.Workflow.define ~name:"smoke.signal_condition"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun _seed ->
+      let open Temporal.Result_syntax in
+      let* () =
+        Temporal.Condition.wait_until_result (fun () ->
+            Ok (Option.is_some !signal_value_state))
+      in
+      match !signal_value_state with
+      | Some value -> Ok ("SMOKE:SIGNAL:" ^ String.uppercase_ascii value)
+      | None ->
+          Error
+            (Temporal.Error.defect
+               ~message:"signal condition resumed without a signal value"))
+
 (** Counts attempts for the intentionally transient activity used by the live
     retry scenario. This state belongs to the activity worker process rather
     than workflow state: activities are allowed to perform non-deterministic

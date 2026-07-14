@@ -21,21 +21,31 @@ claims.
   real-server run has yet been recorded for that scenario.
 
 The initial live gate passed in Linux CI for commit `d4456b7`, covering two
-workflows. The current driver starts eleven workflows before it waits for any
+workflows. The current driver starts twelve workflows before it waits for any
 result: `smoke.fan_out`, `smoke.timer_then_activity`,
 `smoke.continue_as_new`, `smoke.activity_retry`,
 `smoke.activity_heartbeat_retry`, `smoke.async_activity_completion`,
 `smoke.parent_awaits_child`, `smoke.parent_awaits_failed_child`,
-`smoke.parent_cancels_child`, `smoke.non_retryable_failure`, and
-`smoke.long_running_cancellation`. After the heartbeat result is terminal it
-starts `smoke.activity_timeout_retry` and waits for that twelfth result. The
+`smoke.parent_cancels_child`, `smoke.non_retryable_failure`,
+`smoke.long_running_cancellation`, and `smoke.signal_condition`. The signal
+scenario starts a workflow that waits on a deterministic condition, submits a
+typed signal to the exact run, and requires the worker-delivered handler value
+in the terminal result. After the heartbeat result is terminal it starts
+`smoke.activity_timeout_retry` and waits for that thirteenth result. The
 [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-passed all twelve assertions against Temporal Server 1.31 and PostgreSQL,
+passed the prior twelve assertions against Temporal Server 1.31 and PostgreSQL,
 including the exact delayed asynchronous result, timeout retry, and
 continue-as-new successor. The same run then passed the two-generation
 restart/replay controller. The historical [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 and [PR #226 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
 remain useful CI evidence for the earlier nine- and ten-scenario slices.
+
+The signal scenario is **Implemented — live verification pending** until a
+green integration job proves the client acknowledgement, worker handler
+delivery, condition wake-up, and exact terminal value against Temporal Server.
+The signal request is deliberately sent before the other waits, so a green
+result demonstrates server delivery to a suspended execution rather than a
+local callback or a driver-side shortcut.
 
 The earlier run live-verified four exact successes, a second activity task delivered
 by an ordinary retry policy, a heartbeat detail and timeout delivered to a

@@ -3,7 +3,8 @@
     This executable is a deliberately small, typed harness. It starts the
     fan-out, timer, ordinary-retry, heartbeat-detail/retry, delayed
     asynchronous activity completion, timeout-triggered-retry,
-    heartbeat-timeout-triggered-retry, parent/child
+    heartbeat-timeout-triggered-retry, activity-level non-retryable failure,
+    parent/child
     success, parent/child failure, typed signal/condition,
     parent/child cancellation, typed-failure, long-running cancellation, and
     continue-as-new scenarios before waiting for most of them. It then stages
@@ -489,6 +490,12 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-non-retryable-failure" ~input:"smoke"
         in
+        let* activity_non_retryable_handle =
+          start_workflow client
+            ~workflow:Definitions.activity_non_retryable_failure
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-activity-non-retryable-failure" ~input:"smoke"
+        in
         let* cancellation_handle =
           start_workflow client ~workflow:Definitions.long_running_cancellation
             ~task_queue:Definitions.task_queue
@@ -499,7 +506,7 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-signal-condition" ~input:signal_condition_token
         in
-        (* Twelve starts intentionally happen before the first wait. The
+        (* Thirteen starts intentionally happen before the first wait. The
            cancellation workflow's marker activity proves that its timer and
            marker commands were accepted in one activation before this exact
            run is cancelled; the timer keeps the execution outstanding. The
@@ -600,6 +607,14 @@ let run () =
           require_completed "smoke.activity_heartbeat_timeout_retry"
             "SMOKE:HEARTBEAT_TIMEOUT:RETRIED:SMOKE"
             (Ok heartbeat_timeout_retry_result)
+        in
+        let* activity_non_retryable_result =
+          wait_workflow activity_non_retryable_handle
+        in
+        let* () =
+          require_completed "smoke.activity_non_retryable_failure"
+            "SMOKE:ACTIVITY_NON_RETRYABLE:OBSERVED"
+            (Ok activity_non_retryable_result)
         in
         let* parent_result = wait_workflow parent_handle in
         let* () =

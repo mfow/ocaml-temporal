@@ -591,6 +591,83 @@ let activity_heartbeat_timeout_retry =
             ~retry_policy:policy ~do_not_eagerly_execute:true
             heartbeat_timeout_retry_activity seed)
 
+(** Uses Temporal's [non_retryable_error_types] policy matching against the
+    public activity error kind. The callback returns a retryable typed error on
+    its first attempt and would succeed on a second attempt; the workflow
+    catches the first activity future so the live result proves both that the
+    server stopped retrying and that the runtime preserved the activity
+    category and non-retryable decision. *)
+let non_retryable_activity_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 100L)
+    ~backoff_coefficient:1.0
+    ~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:2
+    ~non_retryable_error_types:[ "activity" ] ()
+
+(** Counts attempts only inside the worker process. A correct policy match
+    leaves the second-attempt success branch unreachable; retaining that branch
+    makes an accidental retry observable instead of silently passing. *)
+let non_retryable_activity_attempts = Atomic.make 0
+
+(** Returns a retryable activity failure whose error type matches the policy's
+    non-retryable list. If Temporal retries despite that list, the second call
+    returns a different success marker and the workflow reports a defect. *)
+let non_retryable_activity =
+  Temporal.Activity.define ~name:"smoke.non_retryable_activity"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun _input ->
+      let attempt = Atomic.fetch_and_add non_retryable_activity_attempts 1 + 1 in
+      match attempt with
+      | 1 ->
+          Error
+            (Temporal.Error.make ~category:`Activity
+               ~message:"SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1" ())
+      | 2 -> Ok "SMOKE:ACTIVITY_NON_RETRYABLE:RETRIED"
+      | attempt ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "non-retryable activity received unexpected attempt %d"
+                    attempt)))
+
+(** Observes the activity future inside workflow code rather than relying on a
+    top-level client failure, whose public category is intentionally always
+    [Workflow]. The exact success marker is emitted only after the activity
+    error is seen as [Activity] and [non_retryable] by the replay-safe runtime. *)
+let activity_non_retryable_failure =
+  Temporal.Workflow.define ~name:"smoke.activity_non_retryable_failure"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match non_retryable_activity_policy with
+      | Error error -> Error error
+      | Ok policy -> (
+          match
+            Temporal.Activity.execute ~retry_policy:policy
+              non_retryable_activity seed
+          with
+          | Error error ->
+              let view = Temporal.Error.view error in
+              if
+                view.category = `Activity
+                && view.non_retryable
+                && String.starts_with
+                     ~prefix:"SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1"
+                     view.message
+              then Ok "SMOKE:ACTIVITY_NON_RETRYABLE:OBSERVED"
+              else
+                Error
+                  (Temporal.Error.defect
+                     ~message:
+                       (Printf.sprintf
+                          "activity non-retryable metadata was not preserved (kind=%s, non_retryable=%b)"
+                          (Temporal.Error.kind error) view.non_retryable))
+          | Ok value ->
+              Error
+                (Temporal.Error.defect
+                   ~message:
+                     (Printf.sprintf
+                        "non-retryable activity unexpectedly retried with %S"
+                        value))))
+
 (** A child workflow that waits on a short durable timer before deriving its
     result entirely from its input. The timer is deliberately inside the child
     rather than the parent so the live scenario exercises child start and

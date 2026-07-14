@@ -5,7 +5,7 @@ COMPOSE := docker compose --project-directory "$(TEMPORAL_FIXTURE_DIR)" --file "
 # Compose services bind-mount the repository. Propagate the invoking user's
 # numeric identity, selected OCaml image, and bounded driver timeout so every
 # service shares Dune's lock/build ownership and overrides behave predictably.
-TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) SMOKE_DRIVER_TIMEOUT_SECONDS=$(TEMPORAL_DRIVER_TIMEOUT_SECONDS) SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS=$(SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS) SMOKE_WORKER_GENERATION=$(SMOKE_WORKER_GENERATION) SMOKE_WORKER_MAX_CACHED_WORKFLOWS=$(SMOKE_WORKER_MAX_CACHED_WORKFLOWS) SMOKE_WORKER_CACHE_EVICTION_FILE=$(SMOKE_WORKER_CACHE_EVICTION_FILE) SMOKE_REPLAY_WORKFLOW_ID=$(SMOKE_REPLAY_WORKFLOW_ID) $(COMPOSE) --profile temporal
+TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) SMOKE_DRIVER_TIMEOUT_SECONDS=$(TEMPORAL_DRIVER_TIMEOUT_SECONDS) SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS=$(SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS) SMOKE_WORKER_GENERATION=$(SMOKE_WORKER_GENERATION) SMOKE_WORKER_MAX_CACHED_WORKFLOWS=$(SMOKE_WORKER_MAX_CACHED_WORKFLOWS) SMOKE_WORKER_CACHE_EVICTION_FILE=$(SMOKE_WORKER_CACHE_EVICTION_FILE) SMOKE_WORKER_CACHE_EVICTION_READY_FILE=$(SMOKE_WORKER_CACHE_EVICTION_READY_FILE) SMOKE_REPLAY_WORKFLOW_ID=$(SMOKE_REPLAY_WORKFLOW_ID) $(COMPOSE) --profile temporal
 # Keep the one-shot acceptance driver bounded while allowing a temporarily
 # stalled CI PostgreSQL checkpoint to finish. This is a process-level guard,
 # not a workflow timeout; callers can still override it for slower machines.
@@ -25,13 +25,16 @@ SMOKE_RESTART_INITIAL_HISTORY := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-history
 SMOKE_RESTART_TERMINAL_HISTORY := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-history.terminal.json
 SMOKE_RESTART_CONTROLLER_FILE := $(TEMPORAL_FIXTURE_DIR)/.restart-replay-controller.json
 SMOKE_CACHE_EVICTION_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction.json
+SMOKE_CACHE_EVICTION_READY_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-ready
 SMOKE_CACHE_EVICTION_CONTAINER_FILE := /workspace/test/integration/temporal/.cache-eviction.json
+SMOKE_CACHE_EVICTION_READY_CONTAINER_FILE := /workspace/test/integration/temporal/.cache-eviction-ready
 SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.cache-eviction-driver.log
 SMOKE_DRIVER_CONTAINER := $(TEMPORAL_COMPOSE_PROJECT)-smoke-driver
 SMOKE_RESTART_DRIVER_CONTAINER := $(TEMPORAL_COMPOSE_PROJECT)-smoke-restart-driver
 SMOKE_WORKER_GENERATION ?= 1
 SMOKE_WORKER_MAX_CACHED_WORKFLOWS ?=
 SMOKE_WORKER_CACHE_EVICTION_FILE ?=
+SMOKE_WORKER_CACHE_EVICTION_READY_FILE ?=
 SMOKE_REPLAY_WORKFLOW_ID ?= two-binary-worker-restart-replay
 SERVICE ?= dev
 OCAML_VERSION ?= 5.2
@@ -235,6 +238,7 @@ temporal-stop:
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).raw" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).describe.json" \
 		"$(SMOKE_RESTART_CONTROLLER_FILE)" "$(SMOKE_CACHE_EVICTION_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_READY_FILE)" \
 		"$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"
 
 temporal-clean:
@@ -247,6 +251,7 @@ temporal-clean:
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).raw" \
 		"$(SMOKE_RESTART_TERMINAL_HISTORY).describe.json" \
 		"$(SMOKE_RESTART_CONTROLLER_FILE)" "$(SMOKE_CACHE_EVICTION_FILE)" \
+		"$(SMOKE_CACHE_EVICTION_READY_FILE)" \
 		"$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"
 
 test-temporal-integration: test-temporal-config
@@ -310,6 +315,7 @@ test-temporal-worker-cache-eviction:
 	$(MAKE) test-temporal-worker-cache-eviction-contract
 	SMOKE_WORKER_MAX_CACHED_WORKFLOWS=1 \
 	SMOKE_WORKER_CACHE_EVICTION_FILE=$(SMOKE_CACHE_EVICTION_CONTAINER_FILE) \
+	SMOKE_WORKER_CACHE_EVICTION_READY_FILE=$(SMOKE_CACHE_EVICTION_READY_CONTAINER_FILE) \
 	SMOKE_REPLAY_WORKFLOW_ID=two-binary-cache-eviction-a \
 	$(MAKE) test-temporal-worker-cache-eviction-live
 
@@ -336,7 +342,7 @@ test-temporal-worker-cache-eviction-live: test-temporal-config
 	trap 'exit 130' INT; \
 	trap 'exit 143' TERM; \
 	$(MAKE) temporal-clean; \
-	rm -f "$(SMOKE_CACHE_EVICTION_FILE)" "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"; \
+	rm -f "$(SMOKE_CACHE_EVICTION_FILE)" "$(SMOKE_CACHE_EVICTION_READY_FILE)" "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"; \
 	$(MAKE) temporal-start; \
 	$(MAKE) temporal-start-worker; \
 	docker rm -f "$$driver_container" >/dev/null 2>&1 || true; \

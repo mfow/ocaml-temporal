@@ -86,56 +86,6 @@ let wait_for_marker ?expected path ~timeout =
   in
   loop ()
 
-(** Waits for the worker's first initial-activation diagnostic before admitting
-    the second execution. The cache fixture intentionally has two workflow
-    poll lanes; without this barrier both initial tasks can be leased before
-    Core retains the first run, so a one-slot cache never has to evict it. *)
-let wait_for_initial_activation path ~timeout =
-  let expected_fragments =
-    [
-      "\"workflow_id\":\"two-binary-cache-eviction-a\"";
-      "\"records\":[{";
-      "\"phase\":\"initial\"";
-      "\"generation\":1";
-      "\"is_replaying\":false";
-    ]
-  in
-  let document_matches () =
-    if not (Sys.file_exists path) || (Unix.stat path).Unix.st_size = 0 then false
-    else
-      try
-        let channel = open_in_bin path in
-        Fun.protect
-          ~finally:(fun () -> close_in_noerr channel)
-          (fun () ->
-            let contents = really_input_string channel (in_channel_length channel) in
-            List.for_all
-              (fun fragment ->
-                match String.index_from_opt contents 0 fragment.[0] with
-                | None -> false
-                | Some _ ->
-                    let fragment_length = String.length fragment in
-                    let rec search offset =
-                      if offset + fragment_length > String.length contents then false
-                      else if String.sub contents offset fragment_length = fragment then true
-                      else search (offset + 1)
-                    in
-                    search 0)
-              expected_fragments)
-      with _ -> false
-  in
-  let deadline = Unix.gettimeofday () +. timeout in
-  let rec loop () =
-    if document_matches () then Ok ()
-    else if Unix.gettimeofday () >= deadline then
-      Error (Error.defect ~message:"cache eviction initial activation was not published")
-    else begin
-      Unix.sleepf 0.1;
-      loop ()
-    end
-  in
-  loop ()
-
 (** Requires an exact run to report Temporal's typed cancellation category. *)
 let require_cancelled label = function
   | Client.Cancelled error ->
@@ -181,7 +131,7 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* marker = required_env "SMOKE_CACHE_EVICTION_FILE" in
-      let* diagnostics = required_env "SMOKE_REPLAY_DIAGNOSTICS_FILE" in
+      let* ready = required_env "SMOKE_CACHE_EVICTION_READY_FILE" in
       let* timeout = timeout_seconds () in
       let* client =
         Client.create ~target_url ~namespace
@@ -194,13 +144,13 @@ let run () =
       in
       let result =
         let* () = clear_marker marker in
-        let* () = clear_marker diagnostics in
+        let* () = clear_marker ready in
         let* first =
           Client.start client ~workflow:Definitions.cache_eviction
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-cache-eviction-a" ~input:"first" ()
         in
-        let* () = wait_for_initial_activation diagnostics ~timeout in
+        let* () = wait_for_marker ~expected:"initial-completion\n" ready ~timeout in
         let* second =
           Client.start client ~workflow:Definitions.cache_eviction
             ~task_queue:Definitions.task_queue

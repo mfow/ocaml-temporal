@@ -342,6 +342,7 @@ type replay_record = {
 type replay_diagnostics = {
   path : string;
   cache_eviction_path : string option;
+  cache_eviction_ready_path : string option;
   generation : int;
   target_workflow_id : string option;
   mutable workflow_id : string option;
@@ -463,6 +464,7 @@ let load_replay_diagnostics path generation target_workflow_id =
       {
         path;
         cache_eviction_path = None;
+        cache_eviction_ready_path = None;
         generation;
         target_workflow_id;
         workflow_id = None;
@@ -523,6 +525,7 @@ let load_replay_diagnostics path generation target_workflow_id =
           {
             path;
             cache_eviction_path = None;
+            cache_eviction_ready_path = None;
             generation;
             target_workflow_id;
             workflow_id = Some workflow_id;
@@ -616,6 +619,31 @@ let write_cache_eviction_marker state ~reason =
   | None, _, _ -> ()
   | _ -> failwith "cache eviction state has no workflow/run identity"
 
+(** Publishes a private completion barrier after the first cache fixture run's
+    normal activation completion has been acknowledged by Core. Atomic replace
+    keeps the client-only driver from observing a partial marker. *)
+let write_cache_eviction_ready_marker path =
+  let temporary = ref None in
+  (try
+     let generated =
+       Filename.temp_file ~temp_dir:(Filename.dirname path)
+         (Filename.basename path ^ ".tmp.") ""
+     in
+     temporary := Some generated;
+     let channel = open_out_bin generated in
+     Fun.protect
+       ~finally:(fun () -> close_out_noerr channel)
+       (fun () ->
+         output_string channel "initial-completion\n";
+         flush channel);
+     Sys.rename generated path;
+     temporary := None
+   with exception_ ->
+     Option.iter
+       (fun generated -> try Sys.remove generated with _ -> ())
+       !temporary;
+     raise exception_)
+
 (** Validates an optional payload-free cache-eviction marker path. *)
 let optional_marker_path name = function
   | None -> Ok None
@@ -636,7 +664,7 @@ let optional_marker_path name = function
     replay activation for the configured workflow/run. *)
 let replay_diagnostic_hook () =
   match Sys.getenv_opt "SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE" with
-  | None -> Ok None
+  | None -> Ok (None, None)
   | Some path when path <> "" && not (String.contains path '\000') && not (Filename.is_relative path) ->
       let* generation =
         match Sys.getenv_opt "SMOKE_WORKER_GENERATION" with
@@ -658,21 +686,25 @@ let replay_diagnostic_hook () =
         optional_marker_path "SMOKE_WORKER_CACHE_EVICTION_FILE"
           (Sys.getenv_opt "SMOKE_WORKER_CACHE_EVICTION_FILE")
       in
+      let* cache_eviction_ready_path =
+        optional_marker_path "SMOKE_WORKER_CACHE_EVICTION_READY_FILE"
+          (Sys.getenv_opt "SMOKE_WORKER_CACHE_EVICTION_READY_FILE")
+      in
       let* state = load_replay_diagnostics path generation target_workflow_id in
-      let state = { state with cache_eviction_path } in
+      let state = { state with cache_eviction_path; cache_eviction_ready_path } in
+      let matches_target (info : Workflow_adapter.activation_info) =
+        match (state.target_workflow_id, info.workflow_id, state.workflow_id) with
+        | Some target, Some workflow_id, _ -> String.equal target workflow_id
+        | Some target, None, Some workflow_id -> String.equal target workflow_id
+        | Some _, None, None -> false
+        | None, Some workflow_id, _ ->
+            (match state.workflow_id with
+            | None -> true
+            | Some expected -> String.equal expected workflow_id)
+        | None, None, _ -> true
+      in
       let callback (info : Workflow_adapter.activation_info) =
-        let matches_target =
-          match (state.target_workflow_id, info.workflow_id, state.workflow_id) with
-          | Some target, Some workflow_id, _ -> String.equal target workflow_id
-          | Some target, None, Some workflow_id -> String.equal target workflow_id
-          | Some _, None, None -> false
-          | None, Some workflow_id, _ ->
-              (match state.workflow_id with
-              | None -> true
-              | Some expected -> String.equal expected workflow_id)
-          | None, None, _ -> true
-        in
-        if matches_target then begin
+        if matches_target info then begin
           (match (state.run_id, info.run_id) with
           | Some expected, actual when not (String.equal expected actual) -> ()
           | _ ->
@@ -717,10 +749,17 @@ let replay_diagnostic_hook () =
                         ];
                     write_replay_diagnostics state
                   end)
-              )
+          )
         end
       in
-      Ok (Some callback)
+      let completion_callback (info : Workflow_adapter.activation_info) =
+        if matches_target info && not info.is_replaying
+           && Option.is_none info.cache_removal_reason then
+          match state.cache_eviction_ready_path with
+          | Some path -> write_cache_eviction_ready_marker path
+          | None -> ()
+      in
+      Ok (Some callback, Some completion_callback)
   | Some _ ->
       Error
         (Base_error.defect
@@ -1074,7 +1113,7 @@ let cleanup_abandoned worker =
     attaches a GC finalizer so abandoned workers still drain leases. *)
 let create ?(max_cached_workflows = default_max_cached_workflows) ~target_url
     ~namespace ~identity ~task_queue ~workflows ~activities () =
-  let* on_activation = replay_diagnostic_hook () in
+  let* on_activation, on_completion = replay_diagnostic_hook () in
   let* client_config =
     Native.client_config ~target_url ~identity
     |> Result.map_error (public_bridge_error "client configuration")
@@ -1106,7 +1145,7 @@ let create ?(max_cached_workflows = default_max_cached_workflows) ~target_url
       |> Result.map_error (public_native_error "worker startup")
     in
     let* workflows =
-      Workflow.create ?on_activation ~task_queue ~supervisor ~workflows ()
+      Workflow.create ?on_activation ?on_completion ~task_queue ~supervisor ~workflows ()
       |> Result.map_error (public_adapter_error "workflow registration")
     in
     let* activities =

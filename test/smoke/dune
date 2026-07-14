@@ -106,6 +106,7 @@
  (deps
   test_temporal_worker_cache_eviction_contract.sh
   ../../Makefile
+  ../../lib/public/native_worker.ml
   ../../lib/public/worker.mli
   ../../lib/runtime/native_worker_execution.ml
   ../integration/temporal/common/smoke_definitions.ml

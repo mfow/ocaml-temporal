@@ -378,6 +378,50 @@ let test_activation_metadata_hook () =
   | None -> failwith "activation metadata hook was not called"
   | Some _ -> failwith "activation metadata hook received incorrect metadata"
 
+(** The completion observer runs only after the fake supervisor has accepted the
+    normal completion. This proves the live cache fixture's admission barrier
+    cannot be satisfied by an activation callback that merely precedes lease
+    retirement. *)
+let test_completion_metadata_hook_runs_after_acknowledgement () =
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_completion_hook"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () -> Ok ())
+  in
+  enqueue supervisor
+    (activation ~run_id:"run-completion-hook"
+       [ initialize ~run_id:"run-completion-hook"
+           ~workflow_type:"native_worker_completion_hook" ]);
+  let seen = ref None in
+  let lease_retired = ref false in
+  let worker =
+    match
+      Worker.create
+        ~on_completion:(fun info ->
+          seen := Some info;
+          lease_retired := not (Hashtbl.mem supervisor.leased info.run_id))
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          (Printf.sprintf "completion hook worker creation failed: %s" error.message)
+  in
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  if not !lease_retired then
+    failwith "completion metadata hook ran before the native lease was retired";
+  match !seen with
+  | Some
+      {
+        Raw_adapter.run_id = "run-completion-hook";
+        workflow_id = Some "workflow-run-completion-hook";
+        is_replaying = true;
+        history_length = 1L;
+        cache_removal_reason = None;
+      } -> ()
+  | None -> failwith "completion metadata hook was not called"
+  | Some _ -> failwith "completion metadata hook received incorrect metadata"
+
 (** A diagnostic callback is outside workflow code and must not be able to
     escape the worker poll with an unretired lease. The adapter converts its
     exception to a typed rejection and submits the normal failure completion. *)
@@ -2127,6 +2171,7 @@ let test_task_queue_validation () =
 let () =
   test_terminal_workflow ();
   test_activation_metadata_hook ();
+  test_completion_metadata_hook_runs_after_acknowledgement ();
   test_activation_metadata_hook_failure_is_typed ();
   test_timer_suspension_and_resume ();
   test_cancellation ();

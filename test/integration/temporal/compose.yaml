@@ -122,6 +122,7 @@ services:
       SMOKE_WORKER_GENERATION: "${SMOKE_WORKER_GENERATION:-1}"
       SMOKE_WORKER_MAX_CACHED_WORKFLOWS: "${SMOKE_WORKER_MAX_CACHED_WORKFLOWS:-}"
       SMOKE_WORKER_CACHE_EVICTION_FILE: "${SMOKE_WORKER_CACHE_EVICTION_FILE:-}"
+      SMOKE_WORKER_CACHE_EVICTION_READY_FILE: "${SMOKE_WORKER_CACHE_EVICTION_READY_FILE:-}"
       SMOKE_REPLAY_WORKFLOW_ID: "${SMOKE_REPLAY_WORKFLOW_ID:-two-binary-worker-restart-replay}"
     command:
       - opam
@@ -235,6 +236,7 @@ services:
       SMOKE_DRIVER_TIMEOUT_SECONDS: "${SMOKE_DRIVER_TIMEOUT_SECONDS:-300}"
       SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS: "${SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS:-900}"
       SMOKE_CACHE_EVICTION_FILE: /workspace/test/integration/temporal/.cache-eviction.json
+      SMOKE_CACHE_EVICTION_READY_FILE: /workspace/test/integration/temporal/.cache-eviction-ready
       SMOKE_REPLAY_DIAGNOSTICS_FILE: /workspace/test/integration/temporal/.restart-replay-diagnostics.json
     command:
       - timeout

@@ -493,6 +493,11 @@ module Make (Supervisor : SUPERVISOR) = struct
        see partially validated protocol data or run on an arbitrary Rust
        thread. *)
     on_activation : (activation_info -> unit) option;
+    (* Optional owner-Domain completion hook. It is called only after the
+       supervisor acknowledges a normal activation completion, so a test can
+       use it as an exact admission barrier without inferring completion from
+       an earlier activation callback. *)
+    on_completion : (activation_info -> unit) option;
   }
 
   (** The public worker handle is the mutex-confined state above. *)
@@ -503,7 +508,8 @@ module Make (Supervisor : SUPERVISOR) = struct
       empty, NUL-containing, oversized, or non-UTF-8 defaults fail as a typed
       configuration result rather than breaking the first workflow activation.
       No supervisor operation or workflow implementation runs on this path. *)
-  let create ?on_activation ?(task_queue = "default") ~supervisor ~workflows () =
+  let create ?on_activation ?on_completion ?(task_queue = "default") ~supervisor
+      ~workflows () =
     let* () = validate_task_queue task_queue in
     let* definitions = build_definitions workflows in
     Ok
@@ -515,6 +521,7 @@ module Make (Supervisor : SUPERVISOR) = struct
         pending = Run_map.empty;
         mutex = Mutex.create ();
         on_activation;
+        on_completion;
       }
 
   (** Copies a payload without retaining a mutable buffer owned by an earlier
@@ -760,9 +767,53 @@ module Make (Supervisor : SUPERVISOR) = struct
     in
     enqueue_pending adapter pending
 
+  (** Converts Core's closed eviction-reason variant to the stable diagnostic
+      spelling exposed to the private activation observer. *)
+  let eviction_reason_name = function
+    | Protocol.Eviction_unspecified -> "unspecified"
+    | Protocol.Cache_full -> "cache_full"
+    | Protocol.Cache_miss -> "cache_miss"
+    | Protocol.Nondeterminism -> "nondeterminism"
+    | Protocol.Lang_fail -> "lang_fail"
+    | Protocol.Lang_requested -> "lang_requested"
+    | Protocol.Task_not_found -> "task_not_found"
+    | Protocol.Unhandled_command -> "unhandled_command"
+    | Protocol.Fatal -> "fatal"
+    | Protocol.Pagination_or_history_fetch -> "pagination_or_history_fetch"
+    | Protocol.Workflow_execution_ending -> "workflow_execution_ending"
+
+  (** Reports a completed normal activation without allowing a diagnostic
+      observer defect to undo an already acknowledged native lease. *)
+  let notify_completion adapter (info : activation_info) =
+    match adapter.on_completion with
+    | None -> ()
+    | Some callback ->
+        (try callback info with _ ->
+          report Logs.Warning ~operation:"workflow_completion_diagnostic_failed" ())
+
+  (** Produces activation metadata once so activation and completion observers
+      receive the exact same translated identity and replay state. *)
+  let activation_info_of_translated
+      (translated : Native_execution.translated_activation) : activation_info =
+    {
+      run_id = translated.run_id;
+      workflow_id =
+        Option.map
+          (fun (initialization : Native_execution.initialization) ->
+            initialization.workflow_id)
+          translated.initialization;
+      is_replaying = translated.is_replaying;
+      history_length = translated.history_length;
+      cache_removal_reason =
+        Option.map
+          (fun (removal : Native_execution.cache_removal) ->
+            eviction_reason_name removal.reason)
+          translated.cache_removal;
+    }
+
   (** Produces a typed completion for a successfully executed activation and
       updates the registry only after the supervisor confirms retirement. *)
-  let submit_completion adapter activation completion ~run_id =
+  let submit_completion adapter activation completion ~run_id ~activation_info =
     let pending =
       {
         run_id;
@@ -786,7 +837,10 @@ module Make (Supervisor : SUPERVISOR) = struct
     else begin
       adapter.pending <- Run_map.add pending.run_id pending adapter.pending;
       match attempt_completion adapter.supervisor pending.completion with
-      | Accepted -> accepted_pending adapter pending
+      | Accepted ->
+          let result = accepted_pending adapter pending in
+          notify_completion adapter activation_info;
+          result
       | Rejected_by_supervisor error -> Error error
       | Raised_by_supervisor exception_ ->
           (* Eviction acknowledgements must stay empty completions. Removing
@@ -823,21 +877,6 @@ module Make (Supervisor : SUPERVISOR) = struct
     in
     enqueue_pending adapter pending
 
-  (** Converts Core's closed eviction-reason variant to the stable diagnostic
-      spelling exposed to the private activation observer. *)
-  let eviction_reason_name = function
-    | Protocol.Eviction_unspecified -> "unspecified"
-    | Protocol.Cache_full -> "cache_full"
-    | Protocol.Cache_miss -> "cache_miss"
-    | Protocol.Nondeterminism -> "nondeterminism"
-    | Protocol.Lang_fail -> "lang_fail"
-    | Protocol.Lang_requested -> "lang_requested"
-    | Protocol.Task_not_found -> "task_not_found"
-    | Protocol.Unhandled_command -> "unhandled_command"
-    | Protocol.Fatal -> "fatal"
-    | Protocol.Pagination_or_history_fetch -> "pagination_or_history_fetch"
-    | Protocol.Workflow_execution_ending -> "workflow_execution_ending"
-
   (** Delivers replay and eviction metadata to the optional private observer.
       The observer runs while the adapter mutex is held, on the same Domain
       that owns the deterministic execution registry. A raised observer is
@@ -848,23 +887,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     match adapter.on_activation with
     | None -> Ok ()
     | Some callback ->
-        let info : activation_info =
-          {
-            run_id = translated.run_id;
-            workflow_id =
-              Option.map
-                (fun (initialization : Native_execution.initialization) ->
-                  initialization.workflow_id)
-                translated.initialization;
-            is_replaying = translated.is_replaying;
-            history_length = translated.history_length;
-            cache_removal_reason =
-              Option.map
-                (fun (removal : Native_execution.cache_removal) ->
-                  eviction_reason_name removal.reason)
-                translated.cache_removal;
-          }
-        in
+        let info = activation_info_of_translated translated in
         (try
            callback info;
            Ok ()
@@ -880,6 +903,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     | Error error ->
         retire_with_failure adapter activation (native_error error)
     | Ok translated ->
+        let activation_info = activation_info_of_translated translated in
         (match notify_activation adapter translated with
         | Error error -> retire_with_failure adapter activation error
         | Ok () ->
@@ -929,7 +953,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                                           activation (native_error error)
                                     | Ok completion ->
                                         submit_completion adapter activation completion
-                                          ~run_id:activation.run_id
+                                          ~run_id:activation.run_id ~activation_info
                                   end
                             end
                       end
@@ -946,7 +970,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                               (native_error error)
                         | Ok completion ->
                             submit_completion adapter activation completion
-                              ~run_id:activation.run_id)))
+                              ~run_id:activation.run_id ~activation_info)))
 
   (** Applies one activation with a final cleanup guard. All expected
       rejections already use [retire_with_failure]; this catch handles a

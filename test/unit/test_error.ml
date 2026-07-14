@@ -1,3 +1,9 @@
+(** Smoke-tests the public structured-error view and the result syntax.
+
+    The assertions cover both an ordinary codec failure and a programmer
+    defect, including their retryability and stable kind/category projections.
+    The final computation also keeps the public [let*]/[let+] operators in the
+    same compilation unit as the error API they are commonly used with. *)
 let () =
   let error = Temporal.Error.codec ~message:"invalid payload" in
   let view = Temporal.Error.view error in

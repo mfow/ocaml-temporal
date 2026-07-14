@@ -3,8 +3,9 @@
     [Interaction] is the small, scheduler-independent part of the signals,
     queries, and updates API. It keeps typed handlers in immutable registries
     and routes encoded payloads by their Temporal names. The native activation
-    protocol does not call this module yet; keeping this boundary usable on its
-    own gives tests and future worker integration one precise ordering and
+    protocol does not call this local dispatcher; the worker adapter owns native
+    delivery and uses the same typed handler boundary. Keeping this module
+    usable on its own gives tests and local tooling one precise ordering and
     validation contract. *)
 
 (** An immutable set of registered interaction handlers. *)
@@ -24,8 +25,8 @@ val create :
 
 (** Encodes [input], routes it to the matching signal handler, and preserves
     the callback's typed result. The handler is invoked synchronously in the
-    current domain; a future native worker will call the same handler through
-    its scheduler-owned interaction path. *)
+    current domain; native worker delivery uses the corresponding handler
+    through the worker's scheduler-owned adapter instead. *)
 val signal : t -> 'input Signal.t -> 'input -> (unit, Error.t) result
 
 (** Routes a query by name and decodes the handler's encoded result using the

@@ -2,11 +2,14 @@
 
     A signal is a fire-and-forget message delivered to a running workflow. The
     definition owns the payload codec and the stable Temporal name; a handler
-    can therefore decode the same bytes that the future native activation
-    bridge will deliver. This module currently provides the typed definition
+    can therefore decode the same bytes delivered by the local dispatcher or
+    the native activation bridge. This module provides the typed definition
     and deterministic in-memory handler path. Native workflow signal delivery
-    is available when the handler is attached with [Temporal.Worker.workflow];
-    query and update delivery remain separate protocol milestones. *)
+    is available when the handler is attached with [Temporal.Worker.workflow].
+    Native output-only query delivery and immediate one-input, non-suspending
+    update delivery are provided by their respective modules; typed query
+    inputs, suspended updates, and live query/update acceptance remain future
+    milestones. *)
 
 (** A validated signal name paired with the type of its input value. *)
 type 'input definition

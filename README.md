@@ -80,8 +80,10 @@ opaque bytes and applications may choose another deterministic codec.
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291)
   live-verifies that extension against Temporal Server and PostgreSQL; the
   larger-backoff extension is the next live gate.
-  Sticky-cache eviction, crash recovery, and broader child lifecycle scenarios
-  remain separate acceptance work.
+  Forced worker crash recovery is live-verified by the separate
+  `make test-temporal-worker-crash-recovery` gate and the [PR #306 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29356904816);
+  sticky-cache eviction and broader child lifecycle scenarios remain separate
+  acceptance work.
 - Child-workflow commands can be authored and are translated by the semantic
   layer. The native worker now accepts a parent completion containing a child
   start, retains the parent future through the start acknowledgment, and

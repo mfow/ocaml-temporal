@@ -6,13 +6,16 @@ set -eu
 # as an ordered document rather than inferred from interleaved container logs:
 # a history check, worker replacement, replay marker, terminal result, and
 # volume cleanup must be observed in that order before an acceptance run can
-# be called successful.
+# be called successful. Replacement mode distinguishes a graceful stop from a
+# forced process crash, so a crash run cannot accidentally pass on a stale
+# shutdown marker.
 
 # Prints the command-line contract and exits with the conventional usage code.
 usage() {
   cat >&2 <<'EOF'
 usage: validate-restart-replay-controller.sh \
-       --controller FILE --workflow-id ID --run-id ID
+       --controller FILE --workflow-id ID --run-id ID \
+       [--replacement-mode graceful|crash]
 EOF
   exit 2
 }
@@ -27,6 +30,7 @@ fail() {
 controller=''
 workflow_id=''
 run_id=''
+replacement_mode=graceful
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -45,6 +49,11 @@ while [ "$#" -gt 0 ]; do
       run_id=$2
       shift 2
       ;;
+    --replacement-mode)
+      [ "$#" -ge 2 ] || usage
+      replacement_mode=$2
+      shift 2
+      ;;
     --help|-h)
       usage
       ;;
@@ -58,6 +67,10 @@ done
 [ -n "$workflow_id" ] || usage
 [ -n "$run_id" ] || usage
 [ -r "$controller" ] || fail "controller file is not readable: $controller"
+case "$replacement_mode" in
+  graceful|crash) ;;
+  *) fail "unsupported replacement mode: $replacement_mode" ;;
+esac
 
 jq_bin=${JQ_BIN:-jq}
 command -v "$jq_bin" >/dev/null 2>&1 || fail "jq is required (set JQ_BIN to its path)"
@@ -68,6 +81,7 @@ command -v "$jq_bin" >/dev/null 2>&1 || fail "jq is required (set JQ_BIN to its 
 if ! "$jq_bin" -e \
   --arg expected_workflow "$workflow_id" \
   --arg expected_run "$run_id" \
+  --arg expected_replacement_mode "$replacement_mode" \
   '
     def identifier:
       type == "string"
@@ -113,13 +127,18 @@ if ! "$jq_bin" -e \
       and (.event_count | positive_count))
     and (.events[3] == {"step": "driver_waiting", "status": "ok"})
     and (.events[4] | type == "object"
-      and (keys | sort) == ["container_id", "exit_code", "generation", "shutdown_marker", "status", "step"]
-      and .step == "generation_one_stopped"
+      and (keys | sort) == ["container_id", "exit_code", "generation", "replacement_mode", "shutdown_marker", "status", "step"]
+      and .step == "generation_one_replaced"
       and .status == "ok"
       and .generation == 1
       and (.container_id | container_id)
-      and .exit_code == 0
-      and .shutdown_marker == true)
+      and .replacement_mode == $expected_replacement_mode
+      and (.exit_code | type == "number" and . == floor and . >= 0 and . <= 255)
+      and (.shutdown_marker | type == "boolean")
+      and (if $expected_replacement_mode == "graceful"
+           then .exit_code == 0 and .shutdown_marker == true
+           else .exit_code == 137 and .shutdown_marker == false
+           end))
     and (.events[5] | type == "object"
       and (keys | sort) == ["container_id", "generation", "remaining_worker_containers", "status", "step"]
       and .step == "generation_one_removed"
@@ -169,7 +188,7 @@ if ! "$jq_bin" -e \
       "status": "ok",
       "remaining_project_volumes": 0
     })
-    # A stopped worker must be removed before the replacement is accepted.
+    # The replaced worker must be removed before the replacement is accepted.
     and (.events[4].container_id == .events[5].container_id)
     and (.events[4].container_id != .events[6].container_id)
     and (.events[5].remaining_worker_containers == 0)
@@ -181,5 +200,5 @@ if ! "$jq_bin" -e \
   fail "controller document does not match the strict ordered lifecycle contract"
 fi
 
-printf 'restart_replay_controller workflow_id=%s run_id=%s steps=13 container_replaced=true volume_removed=true\n' \
-  "$workflow_id" "$run_id"
+printf 'restart_replay_controller workflow_id=%s run_id=%s steps=13 replacement_mode=%s container_replaced=true volume_removed=true\n' \
+  "$workflow_id" "$run_id" "$replacement_mode"

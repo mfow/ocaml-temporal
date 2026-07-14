@@ -100,3 +100,13 @@
   ../integration/temporal/worker/smoke_worker.ml)
  (action
   (run sh %{dep:test_temporal_child_start_failure_contract.sh} %{workspace_root})))
+
+(rule
+ (alias runtest)
+ (deps
+  test_temporal_worker_crash_recovery_contract.sh
+  ../../Makefile
+  ../integration/temporal/scripts/validate-restart-replay-controller.sh
+  ../integration/temporal/fixtures/restart-replay/controller.json)
+ (action
+  (run sh %{dep:test_temporal_worker_crash_recovery_contract.sh} %{workspace_root})))

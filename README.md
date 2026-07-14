@@ -199,10 +199,13 @@ The Makefile stops the worker and checks its graceful-shutdown marker when the
 target runs.
 The target removes the PostgreSQL data volume before and after the run, so no
 database state is preserved between acceptance runs. A separate
-`make test-temporal-worker-restart` target covers live worker replacement and
-replay. Child replay and recovery, sticky-cache eviction, crash recovery, and
-broader recovery coverage remain follow-up work; child retry and duplicate-ID
-child-start failure are live-verified by PR #289 above.
+`make test-temporal-worker-restart` target covers graceful live worker
+replacement and replay. `make test-temporal-worker-crash-recovery` repeats the
+exact-run acceptance after a forced generation-one process kill, requiring the
+replacement worker to replay and complete before accepting the run. Child
+replay and recovery, sticky-cache eviction, and broader recovery coverage
+remain follow-up work; child retry and duplicate-ID child-start failure are
+live-verified by PR #289 above.
 
 For manual inspection, use `make temporal-start`, `make temporal-health`,
 `make temporal-status`, `make temporal-logs`, and `make temporal-clean`.

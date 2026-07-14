@@ -57,7 +57,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -267,10 +267,11 @@ test-temporal-two-binary: test-temporal-integration
 
 # Runs the Docker-free contract first, then proves a real two-generation
 # Temporal execution. Generation one starts the fixed workflow and reaches a
-# pending timer; the controller stops/removes that worker, starts generation
-# two on the same queue, requires an OCaml replay marker, and only then waits
-# for the exact terminal result. Every intermediate document is normalized and
-# validated before the final controller record is accepted.
+# pending timer; the controller gracefully stops or forcibly kills that worker,
+# removes it, starts generation two on the same queue, requires an OCaml replay
+# marker, and only then waits for the exact terminal result. Every intermediate
+# document is normalized and validated before the final controller record is
+# accepted.
 test-temporal-worker-restart:
 	$(MAKE) test-temporal-worker-restart-contract
 	$(MAKE) test-temporal-worker-restart-live
@@ -278,8 +279,21 @@ test-temporal-worker-restart:
 test-temporal-worker-restart-contract:
 	sh test/integration/temporal/scripts/test-restart-replay-contract.sh
 
+# Runs the same exact-run replay acceptance after forcibly killing generation
+# one. The crash path deliberately skips the worker's graceful shutdown marker;
+# the controller records the container exit code and requires generation two to
+# replay and complete before the replacement is accepted.
+test-temporal-worker-crash-recovery:
+	$(MAKE) test-temporal-worker-crash-recovery-contract
+	TEMPORAL_WORKER_RESTART_MODE=crash $(MAKE) test-temporal-worker-restart-live
+
+test-temporal-worker-crash-recovery-contract:
+	sh test/smoke/test_temporal_worker_crash_recovery_contract.sh
+
 test-temporal-worker-restart-live: test-temporal-config
 	@set -eu; \
+	replacement_mode=$${TEMPORAL_WORKER_RESTART_MODE:-graceful}; \
+	case "$$replacement_mode" in graceful|crash) ;; *) echo "unsupported TEMPORAL_WORKER_RESTART_MODE: $$replacement_mode" >&2; exit 2 ;; esac; \
 	workflow_id=two-binary-worker-restart-replay; \
 	accepted_file="$(SMOKE_RESTART_ACCEPTED_FILE)"; \
 	result_file="$(SMOKE_RESTART_RESULT_FILE)"; \
@@ -361,7 +375,21 @@ test-temporal-worker-restart-live: test-temporal-config
 	[ -n "$$initial_count" ] || { echo "restart workflow never reached its pending timer history" >&2; exit 1; }; \
 	generation_one_container=$$($(TEMPORAL_COMPOSE) ps -q smoke-worker); \
 	[ -n "$$generation_one_container" ] || { echo "generation one container ID is missing" >&2; exit 1; }; \
-	$(MAKE) temporal-stop-worker; \
+	if [ "$$replacement_mode" = crash ]; then \
+		docker kill --signal KILL "$$generation_one_container" >/dev/null; \
+		for attempt in $$(seq 1 30); do \
+			generation_one_state=$$(docker inspect --format '{{.State.Status}}' "$$generation_one_container" 2>/dev/null || true); \
+			[ "$$generation_one_state" = exited ] && break; \
+			sleep 1; \
+		done; \
+		[ "$$generation_one_state" = exited ] || { echo "crashed generation one did not exit" >&2; exit 1; }; \
+		generation_one_exit_code=$$(docker inspect --format '{{.State.ExitCode}}' "$$generation_one_container"); \
+		generation_one_shutdown_marker=false; \
+	else \
+		$(MAKE) temporal-stop-worker; \
+		generation_one_exit_code=0; \
+		generation_one_shutdown_marker=true; \
+	fi; \
 	$(TEMPORAL_COMPOSE) rm --force smoke-worker >/dev/null; \
 	remaining_workers=$$(docker ps -aq --filter label=com.docker.compose.project=$(TEMPORAL_COMPOSE_PROJECT) --filter label=com.docker.compose.service=smoke-worker | wc -l | tr -d ' '); \
 	[ "$$remaining_workers" -eq 0 ] || { echo "generation one worker container was not removed" >&2; exit 1; }; \
@@ -404,13 +432,15 @@ test-temporal-worker-restart-live: test-temporal-config
 		--arg generation_one_container "$$generation_one_container" \
 		--arg generation_two_container "$$generation_two_container" \
 		--arg history_length "$$replay_history" \
+		--arg replacement_mode "$$replacement_mode" --argjson generation_one_exit_code "$$generation_one_exit_code" \
+		--argjson generation_one_shutdown_marker "$$generation_one_shutdown_marker" \
 		--argjson initial_count "$$initial_count" --argjson terminal_count "$$(jq -r '.events | length' "$$terminal_history")" \
 		--argjson stale_project_volumes_before_cleanup "$$stale_project_volumes_before_cleanup" \
 		--argjson project_volumes_before "$$project_volumes_before" --argjson remaining_volumes "$$remaining_volumes" \
 		--argjson generation_two_remaining_workers "$$generation_two_remaining_workers" \
-		'{workflow_id:$$workflow_id,run_id:$$run_id,events:[{step:"stack_ready",status:"ok",stale_project_volumes_before_cleanup:$$stale_project_volumes_before_cleanup,remaining_project_volumes_before_start:$$project_volumes_before,temporal_healthy:true},{step:"driver_accepted",status:"ok",workflow_id:$$workflow_id,run_id:$$run_id},{step:"history_checked",status:"ok",stage:"initial",event_count:$$initial_count},{step:"driver_waiting",status:"ok"},{step:"generation_one_stopped",status:"ok",generation:1,container_id:$$generation_one_container,exit_code:0,shutdown_marker:true},{step:"generation_one_removed",status:"ok",generation:1,container_id:$$generation_one_container,remaining_worker_containers:0},{step:"generation_two_ready",status:"ok",generation:2,container_id:$$generation_two_container,readiness_generation:2,fresh_container:true},{step:"replay_observed",status:"ok",generation:2,is_replaying:true,history_length:$$history_length},{step:"history_checked",status:"ok",stage:"terminal",event_count:$$terminal_count},{step:"driver_completed",status:"ok",outcome:"completed"},{step:"generation_two_stopped",status:"ok",generation:2,container_id:$$generation_two_container,exit_code:0,shutdown_marker:true},{step:"generation_two_removed",status:"ok",generation:2,container_id:$$generation_two_container,remaining_worker_containers:$$generation_two_remaining_workers},{step:"postgres_volume_removed",status:"ok",remaining_project_volumes:$$remaining_volumes}]}' \
+		'{workflow_id:$$workflow_id,run_id:$$run_id,events:[{step:"stack_ready",status:"ok",stale_project_volumes_before_cleanup:$$stale_project_volumes_before_cleanup,remaining_project_volumes_before_start:$$project_volumes_before,temporal_healthy:true},{step:"driver_accepted",status:"ok",workflow_id:$$workflow_id,run_id:$$run_id},{step:"history_checked",status:"ok",stage:"initial",event_count:$$initial_count},{step:"driver_waiting",status:"ok"},{step:"generation_one_replaced",status:"ok",generation:1,container_id:$$generation_one_container,exit_code:$$generation_one_exit_code,replacement_mode:$$replacement_mode,shutdown_marker:$$generation_one_shutdown_marker},{step:"generation_one_removed",status:"ok",generation:1,container_id:$$generation_one_container,remaining_worker_containers:0},{step:"generation_two_ready",status:"ok",generation:2,container_id:$$generation_two_container,readiness_generation:2,fresh_container:true},{step:"replay_observed",status:"ok",generation:2,is_replaying:true,history_length:$$history_length},{step:"history_checked",status:"ok",stage:"terminal",event_count:$$terminal_count},{step:"driver_completed",status:"ok",outcome:"completed"},{step:"generation_two_stopped",status:"ok",generation:2,container_id:$$generation_two_container,exit_code:0,shutdown_marker:true},{step:"generation_two_removed",status:"ok",generation:2,container_id:$$generation_two_container,remaining_worker_containers:$$generation_two_remaining_workers},{step:"postgres_volume_removed",status:"ok",remaining_project_volumes:$$remaining_volumes}]}' \
 		>"$$controller_file"; \
-	sh "$$controller_validator" --controller "$$controller_file" --workflow-id "$$workflow_id" --run-id "$$run_id"; \
+	sh "$$controller_validator" --controller "$$controller_file" --workflow-id "$$workflow_id" --run-id "$$run_id" --replacement-mode "$$replacement_mode"; \
 	trap - EXIT HUP INT TERM; \
 	$(MAKE) temporal-clean
 

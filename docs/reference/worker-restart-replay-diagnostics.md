@@ -124,9 +124,11 @@ The checked-in fixture contains exactly thirteen records, in this order:
    timer boundary before replacement.
 4. `driver_waiting` proves that the one-shot assertion process had not exited
    before the worker was replaced.
-5. `generation_one_stopped` records a graceful generation-1 shutdown and its
-   container identity.
-6. `generation_one_removed` proves that the stopped container was removed,
+5. `generation_one_replaced` records the generation-1 container identity,
+   replacement mode, exit code, and whether the graceful shutdown marker was
+   observed. Graceful mode requires exit code 0 and the marker; crash mode
+   requires exit code 137 and no marker.
+6. `generation_one_removed` proves that the replaced container was removed,
    rather than silently reused by Compose.
 7. `generation_two_ready` records a different container and a fresh
    generation-aware readiness observation.
@@ -164,7 +166,17 @@ the same validators used by the live controller. To run the real stack, use:
 OCAML_VERSION=5.5 DUNE_JOBS=1 make test-temporal-worker-restart-live
 ```
 
-The live target starts the two OCaml binaries, stops/removes generation 1,
+The forced-termination companion gate uses the same history and replay
+validator while requiring a real generation-one crash:
+
+```sh
+OCAML_VERSION=5.5 DUNE_JOBS=1 make test-temporal-worker-crash-recovery
+```
+
+Its controller record requires exit status 137 and explicitly rejects a
+graceful worker-stop marker before accepting generation two's replay result.
+
+The live target starts the two OCaml binaries, replaces and removes generation 1,
 starts generation 2, validates replay, the retrying activity's exact attempt-two
 result, and the exact terminal result, then removes the PostgreSQL volume on
 both success and failure. The [PR #298 Actions

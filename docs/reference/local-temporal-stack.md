@@ -130,7 +130,8 @@ graceful shutdown. A separate `make test-temporal-worker-restart` target in
 the same run also verifies worker replacement, replay, exact-run continuation,
 history ordering, and volume cleanup. The fixture does not yet establish child
 start-failure, heartbeat-timeout-triggered retry, sticky-cache eviction, or
-crash recovery.
+crash recovery. The separate `make test-temporal-worker-crash-recovery` gate
+covers replay after a forced generation-one process kill.
 The workflow configuration runs this target on pull requests and pushes to
 `master` in a standalone Ubuntu job labelled for OCaml 5.5; a queued or
 cancelled Actions run is not live acceptance evidence. It is intentionally

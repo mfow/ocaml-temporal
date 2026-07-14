@@ -211,4 +211,10 @@ the current two-generation worker restart/replay path, including the
 replacement-worker retry to attempt two; the earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 remains historical evidence for the original path. Sticky-cache eviction and
 other untested child recovery cases remain deferred live acceptance scenarios
-even though several of their local worker paths are already tested.
+even though several of their local worker paths are already tested. The later
+[PR #306 Build run](https://github.com/mfow/ocaml-temporal/actions/runs/29356904816)
+adds a separate forced-crash proof: generation one must exit with code 137 and
+without a graceful-stop marker before generation two is allowed to replay and
+complete. That run verifies worker-process recovery; it does not turn the
+still-deferred sticky-cache or child-workflow recovery scenarios into live
+coverage.

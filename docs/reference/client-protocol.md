@@ -286,6 +286,100 @@ which includes the same signal/condition path. The acknowledgement therefore
 remains distinct from handler execution, while the two runs together preserve
 the focused and complete live evidence for this client operation.
 
+## Complete a handed-off asynchronous activity
+
+The private client bridge also owns the two operations used after a worker has
+accepted `will_complete_async`. They are not ordinary workflow control-plane
+requests: the Rust side creates a namespace-bound Temporal client from the
+worker configuration and addresses the admitted activity by its opaque task
+token. The namespace is therefore supplied by the connected runtime rather
+than repeated in these JSON documents.
+
+The terminal request reuses the activity completion semantic record:
+
+```json
+{
+  "task_token": "AAEC/v8=",
+  "result": {"kind": "completed", "result": null}
+}
+```
+
+`result` may instead be `failed` or `cancelled`, with the same structured
+failure shape used by the worker completion protocol. A second
+`will_complete_async` marker is rejected: it is a worker-to-client handoff,
+not a terminal operation. For a cancelled result, the failure must carry the
+standard Temporal `Canceled` info so the ordered cancellation details can be
+passed to Core. The endpoint returns an empty successful response after Core
+accepts the terminal request.
+
+The corresponding heartbeat request is non-terminal:
+
+```json
+{
+  "task_token": "AAEC/v8=",
+  "details": []
+}
+```
+
+Heartbeat details use the same ordered binary payload representation as task
+inputs and completions. A successful heartbeat only acknowledges submission;
+it does not retire the activity or report cancellation, pause, or reset flags.
+Those Core outcomes remain asynchronous and are not synthesized into this
+client response.
+
+Neither endpoint reads or retires the worker's activity-task ledger. The
+worker lease was already handed off, and the OCaml async-activity state machine
+keeps its copied token while a client operation is in flight. A successful
+terminal request retires that lease; a terminal non-retryable bridge failure
+closes the handle and removes the lease. A `NotFound` response is treated as a
+terminal inactive-handle condition because retrying cannot make that token
+valid again. Other async-client RPC failures are returned as generic
+`Connection` bridge errors. The current public worker policy is deliberately
+fail-closed: only the explicit bilateral `Retryable` status authorizes replay,
+and these async-client endpoints do not produce that status, so callers must
+not issue a different operation for the same handle after a generic RPC
+failure.
+
+The request shapes are defined by
+[`activity-async-completion.schema.json`](../schemas/bridge/activity-async-completion.schema.json)
+and
+[`activity-heartbeat.schema.json`](../schemas/bridge/activity-heartbeat.schema.json).
+The shared task-token, payload, and failure constraints are documented in the
+[activity protocol reference](activity-protocol.md); the worker-only
+completion schema intentionally remains broader because it includes the
+`will_complete_async` handoff marker.
+
+## Shut down the client graph
+
+`Temporal.Client.shutdown` is a lifecycle operation rather than another
+client JSON request. It closes the private supervisor graph that owns the
+transport, Core client, and runtime; it does not send a cancellation or other
+terminal command to any workflow execution on the server. A workflow that is
+still running remains a server-side execution and must be observed or
+cancelled through a client that is still open.
+
+Shutdown has one linearization point at the public client. The first caller
+serializes with other shutdown callers, closes admission before native
+teardown, and then caches the exact `(unit, Error.t) result`. Calls that race
+with that transition but have already entered the supervisor are allowed to
+finish in supervisor mailbox order. Calls that have not entered it fail with
+the typed bridge error `client is shut down`; this applies to `start`, `wait`,
+`cancel`, `signal`, and `follow`, including calls made through handles retained
+before shutdown.
+
+For an HTTP(S) client, the supervisor admits one terminal shutdown request,
+waits for earlier admitted operations, and joins its owner Domain. The native
+backend then attempts the reverse ownership sequence: replay worker disposal,
+worker shutdown, client disconnect, and runtime close. It preserves the first
+failure while still running the defensive cleanup steps. Consequently, a
+returned teardown error is terminal evidence that the native graph was
+consumed or invalidated, not an invitation to retry an operation on the old
+client. Repeating `Temporal.Client.shutdown` returns the same cached result,
+including that error, without entering native teardown again. The
+deterministic `mock://` transport follows the same public closed-state and
+idempotency contract, although its cleanup only releases the in-memory
+service.
+
 ## Wait for one exact run
 
 The wait request contains exactly the three identity fields:

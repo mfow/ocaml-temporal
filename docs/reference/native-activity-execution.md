@@ -84,12 +84,19 @@ The four handle methods are typed and return `(unit, Error.t) result`:
 
 All payloads and task tokens are copied before crossing a boundary. The
 handle's private state allows one operation at a time and rejects a different
-operation while a previous request has an uncertain result. Terminal state is
-retired only after native acceptance. A failed request retains an operation key
-for retry; the caller must submit the same byte-identical operation because the
-current state machine does not retain a second mutable copy of the operation
-value. The handle is not a retained activity context: ordinary
-`Activity.Context` values are still invalidated when their callback returns.
+operation while a retryable request remains in flight or unresolved. Terminal
+state is retired only after native acceptance. On the native worker path, an
+operation key is retained after a failed submission only when the supervisor
+explicitly classifies the failure as retryable; the current bilateral policy
+uses the dedicated `Retryable` bridge status for that classification. Generic
+`Connection` failures, `NotFound`, and other non-retryable bridge failures
+close the handle and remove the pending operation because they do not prove
+that replay is safe. Callers may retry only the same byte-identical operation
+after an explicitly retryable result; they must not retry a generic async RPC
+failure or issue a different operation for the same handle. The activity
+callback is never rerun for a completion-submission retry. The handle is not a
+retained activity context: ordinary `Activity.Context` values are still
+invalidated when their callback returns.
 
 ## Registration and dispatch
 
@@ -176,11 +183,11 @@ adapter exposes it but does not start a timer or synthesize timeout/retry
 behavior; Temporal Core owns timeout decisions and subsequent task delivery.
 If Core has already timed out an attempt, the synchronous adapter has no stale
 completion recovery. An asynchronous handle remains owned by the SDK until a
-terminal client operation is accepted. A shutdown attempt that finds an
-admitted asynchronous lease returns a retryable outstanding-lease error and
-leaves the worker graph and handle usable; the caller must finish the handle
-and retry shutdown. Only terminal cleanup after a non-retryable failure closes
-an admitted handle.
+terminal client operation is accepted or a non-retryable bridge failure closes
+it. A shutdown attempt that finds an admitted asynchronous lease returns a
+retryable outstanding-lease error and leaves the worker graph and handle
+usable; the caller must finish the handle and retry shutdown. Only terminal
+cleanup after a non-retryable failure closes an admitted handle.
 
 ### Heartbeat-timeout retry ownership
 

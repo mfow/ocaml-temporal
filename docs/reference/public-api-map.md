@@ -33,13 +33,18 @@ for those rules.
   ends the current run and starts a successor.
 - `Temporal.Activity` defines local, remote, context-aware, and asynchronous
   activities. `start` schedules an activity without waiting; `execute` is the
-  convenience composition of `start` and `Future.await`. Activity callbacks
-  are the boundary for external I/O, and their context/heartbeat rules are
-  described in the [activity reference](native-activity-execution.md).
+  convenience composition of `start` and `Future.await`. Keep the handle from
+  `start_handle` when the workflow may need to cancel one exact activity or
+  inspect its future separately; `Retry_policy` and the cancellation policy
+  control the durable command options. Activity callbacks are the boundary for
+  external I/O, and their context/heartbeat rules are described in the
+  [activity reference](native-activity-execution.md).
 - `Temporal.Child_workflow` schedules a child workflow and exposes its typed
-  future. Child scheduling and completion are durable workflow operations, not
-  ordinary function calls; the [workflow guide](../guides/workflows.md) marks
-  the authoring/native-support boundary.
+  future. Use its operation handle when the parent must cancel one exact child;
+  child retry and cancellation policies are passed to the durable command.
+  Child scheduling and completion are durable workflow operations, not ordinary
+  function calls; the [workflow guide](../guides/workflows.md) marks the
+  authoring/native-support boundary.
 - `Temporal.Future` combines and observes workflow-owned results. A future is
   tied to the execution that created it; `await` suspends the current workflow
   fiber rather than blocking an OS thread. `Temporal.Condition` waits on
@@ -68,13 +73,21 @@ for those rules.
 ### Application lifecycle and interactions
 
 - `Temporal.Client` starts typed workflow executions, retains the exact
-  workflow/run identity, requests exact-run cancellation or signals, and waits
-  for typed terminal outcomes. A successful cancel or signal acknowledges the
-  server request; it does not claim that workflow code has already processed
-  it.
-- `Temporal.Worker` registers workflows and activities, owns one supervisor
-  graph, runs the poll loops, and performs idempotent shutdown. The final
-  executable remains an OCaml application; Rust is a private linked
+  workflow/run identity, rebuilds a typed handle for a `Continued_as_new`
+  successor with `Client.follow`, requests exact-run cancellation or signals,
+  and waits for typed terminal outcomes. `Client.follow` only validates and
+  combines the existing client, workflow definition, and successor identity;
+  it does not start or implicitly follow a run. A successful cancel or signal
+  acknowledges the server request; it does not claim that workflow code has
+  already processed it. Call `Client.shutdown` when the client is no longer
+  needed to release its native graph; shutdown is idempotent and retains a
+  teardown failure so cleanup problems are not silently discarded.
+- `Temporal.Worker` registers workflows, activities, and the signal, query, and
+  update handlers attached to each workflow registration. It owns one
+  supervisor graph, runs the poll loops, and performs idempotent shutdown. The
+  interaction handler registration modes and their current native limitations
+  are described in the [interactive-workflow reference](interactive-workflows.md).
+  The final executable remains an OCaml application; Rust is a private linked
   implementation detail.
 - `Temporal.Runtime_info` is for installation and diagnostics. Its ABI check
   confirms that the Rust bridge linked into the executable matches the OCaml

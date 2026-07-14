@@ -102,6 +102,31 @@ proof. If the worker cannot provide the replay bit, a successful terminal
 result may be described as **worker restarted and continued** only; it must not
 be reported as replay evidence.
 
+## Failure interpretation
+
+The replacement lifecycle is not successful merely because generation two
+starts or because Temporal returns a workflow-task response. A workflow-task
+failure, including a nondeterminism failure, is a failed acceptance outcome:
+it means that the replacement worker did not produce a command sequence that
+Temporal could apply to the recorded history. The controller must not turn
+that failure into `replay_observed`, `history_checked` at `terminal`, or
+`driver_completed` evidence.
+
+When a replay attempt fails, preserve the exact workflow/run identity, worker
+generation, normalized history, and server failure message together. Inspect
+the first history event at which the replayed command sequence diverged, then
+fix the workflow or bridge contract before updating any positive fixture. A
+cache-eviction activation followed by a nondeterminism failure is therefore
+not evidence that eviction or replacement replay worked; it is a failed
+scenario that still requires investigation.
+
+The current controller schema intentionally describes only successful
+lifecycle records, so it does not encode a server failure as a successful
+phase. The live harness must still perform its normal cleanup and return a
+nonzero status. A future bounded-diagnostics extension may add a closed
+failure record, but until that exists the raw server and worker diagnostics
+are the authoritative evidence for a failed run.
+
 ## Controller lifecycle evidence
 
 The controller also needs to prove that it replaced a worker while the exact

@@ -23,7 +23,7 @@ The remaining reference documents are useful when changing one subsystem:
   bilateral envelope and its validation rules.
 - [Native client JSON protocol](reference/client-protocol.md) documents typed
   workflow starts, asynchronous start tickets, exact-run waits, and
-  exact-run cancellation messages.
+  exact-run cancellation and typed exact-run signal messages.
 - [OCaml activity protocol adapter](reference/activity-protocol.md) documents
   remote activity tasks, completions, heartbeats, and opaque task-token
   ownership. The heartbeat schema is
@@ -107,7 +107,7 @@ opaque bytes with encoding metadata.
 | --- | --- | --- |
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
 | Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose path. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result baseline and the separate two-generation restart/replay path. | Sticky-cache eviction, crash recovery, and broader child lifecycle scenarios remain untested live |
-| Public native client | Typed start/wait/cancel protocol. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result baseline, including continue-as-new successor following and exact-run cancellation. | Typed signal delivery and other client commands remain untested live |
+| Public native client | Typed start/wait/cancel/signal protocol. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result baseline, including continue-as-new successor following and exact-run cancellation. | Typed signal delivery and other client commands remain untested live |
 | Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests; the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified parent/child success, propagated failure, and cancellation | Child start failure, retry, replay, and recovery remain untested live |
 | Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts the twelve-result baseline; `make test-temporal-worker-restart` adds the two-generation restart/replay path | The acceptance suite remains deliberately narrow and does not yet cover every terminal, eviction, or recovery path |
 
@@ -117,8 +117,11 @@ context-aware activity heartbeats are implemented and focused-tested at the
 OCaml/native bridge, and both are included in the live baseline recorded by
 the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
 Native signal delivery is implemented at the scheduler-owned activation
-boundary but still needs live Temporal Server acceptance. Native output-only
-query delivery and immediate one-input update dispatch are implemented at the
+boundary but still needs live Temporal Server acceptance. The public client can
+submit a typed signal to one exact run through the private control-plane bridge,
+but that acknowledgement does not claim worker-side handler execution. Native
+output-only query delivery and immediate one-input update dispatch are implemented
+at the
 bridge boundary but still need live Temporal Server acceptance; suspended
 updates, versioning, local activities, Nexus, and the remaining SDK parity work
 are tracked as later milestones. The typed definitions and

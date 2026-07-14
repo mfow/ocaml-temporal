@@ -315,6 +315,8 @@ run synchronously on the owner Domain, and non-empty arguments produce a
 failed query result rather than being discarded. The remaining native
 interaction work is:
 
-- update activation and two-stage `UpdateResponse` records; and
+- update-owned continuations for handlers that suspend, including
+  later-activation completion and shutdown/eviction cleanup;
+- typed query inputs; and
 - Docker Compose acceptance scenarios for queries and updates, including
   workflow-side assertions through Temporal Server.

@@ -300,6 +300,7 @@ are excluded from log messages. See the [observability reference](docs/reference
 - [Feature coverage and implementation status](docs/reference/feature-coverage.md)
 - [Live acceptance coverage](docs/reference/live-acceptance-coverage.md)
 - [Worker restart and replay acceptance](docs/reference/worker-restart-replay-acceptance.md)
+- [Worker restart/replay diagnostic contract](docs/reference/worker-restart-replay-diagnostics.md)
 - [Replay bridge](docs/reference/replay-bridge.md)
 - [Installed package boundary](docs/reference/package-boundary.md)
 - [Local Temporal and PostgreSQL stack](docs/reference/local-temporal-stack.md)

@@ -43,7 +43,6 @@ fn valid_core_retry_policy() -> temporalio_protos::temporal::api::common::v1::Re
         }),
         maximum_attempts: 2,
         non_retryable_error_types: vec!["PermanentChildFailure".to_owned()],
-        ..Default::default()
     }
 }
 

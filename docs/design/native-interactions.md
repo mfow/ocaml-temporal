@@ -76,13 +76,15 @@ Consequently:
   terminal responses. It rejects duplicate acceptance or terminal responses.
 - `Temporal.Interaction` can exercise typed handler registration, codec
   validation, duplicate-name rejection, and validator ordering locally.
-- The signal transport tests prove the native activation boundary. Separately,
-  the typed signal/condition success path is live-verified against Temporal
-  Server in the [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247):
+- The signal transport tests prove the native activation boundary. The first
+  focused typed signal/condition acceptance is recorded in the [PR #266
+  Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247):
   the driver signals an exact run only after its worker-visible readiness
   marker, and the handler wakes a deterministic condition before returning its
-  terminal value. That run does not establish live query or update delivery;
-  the focused scheduler and bridge tests remain the evidence for those paths.
+  terminal value. The complete current seventeen-result path is also covered
+  by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
+  Neither run establishes live query or update delivery; the focused scheduler
+  and bridge tests remain the evidence for those paths.
 
 Unsupported Core fields and oneof variants still fail explicitly. This is
 intentional: a newer Core field or update metadata field must not silently
@@ -384,23 +386,23 @@ single side accepting a new variant early:
    semantic/runtime slice:** bilateral Core conversion, exact query-ID
    preservation (including Core's `legacy_query` path), output-only handler
    dispatch, and rejected extra arguments. Live Server coverage remains open.
-3. **Current milestone:** add `DoUpdate` and `UpdateResponse` semantic records,
-   strict JSON/schema validation, pinned-Core conversion, immediate
-   non-suspending public handler dispatch, replay validator skipping, and
-   response-phase tests. Suspended handler completion, shutdown, and eviction
-   cleanup remain open.
-4. Add update-owned continuations, later-activation completion, and lifecycle
-   tests before advertising full update support.
+3. **Implemented bounded milestone:** add `DoUpdate` and `UpdateResponse`
+   semantic records, strict JSON/schema validation, pinned-Core conversion,
+   immediate non-suspending public handler dispatch, replay validator skipping,
+   and response-phase tests. Suspended handler completion, shutdown, and
+   eviction cleanup remain open.
+4. **Next milestone:** add update-owned continuations, later-activation
+   completion, and lifecycle tests before advertising full update support.
 5. Add Core conversion fixtures in `rust/core-bridge/tests/`, OCaml runtime
    tests under `test/`, and bilateral JSON round-trip tests for every supported
    variant. Run the representative local Makefile gates; queued GitHub
    Actions checks remain unexecuted evidence until the repository quota clears.
 6. Expand the Docker Compose acceptance scenario with Temporal Server and
    PostgreSQL to issue a query and wait for an update through the two OCaml
-   binaries. The typed signal/condition path is already live-verified by the
-   [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247);
-   record the query and update results separately from synthetic and
-   bridge-only evidence.
+   binaries. The current typed signal/condition path is live-verified in the
+   [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368),
+   with PR #266 retained as focused historical evidence. Record the query and
+   update results separately from synthetic and bridge-only evidence.
 
 Until the later update continuation stages have passed, the overall feature
 status remains experimental: native `SignalWorkflow` transport and its typed

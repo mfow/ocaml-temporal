@@ -20,6 +20,66 @@ let mock_transform =
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
       Ok (String.uppercase_ascii input))
 
+(** The typed signal used by the live interaction scenario. The definition
+    carries the same string codec in the driver and worker processes, so the
+    client-side request and worker-side handler cannot silently disagree about
+    the payload representation. *)
+let signal_value =
+  Temporal.Signal.define ~name:"smoke.set_value" ~input:Temporal.Codec.string
+
+(** The signal handler and workflow body share this key, while every Temporal
+    execution receives an independent value slot. A new run therefore starts
+    with [None] even when the same worker process has already handled another
+    signal, which keeps this acceptance assertion tied to the current run. *)
+let signal_value_state = Temporal.Workflow_context.Local.create ()
+
+(** The marker path used to prove that the signal workflow's first worker-side
+    task has been accepted before the driver sends its signal. The file is only
+    test coordination state; it is never read by workflow code. *)
+let signal_condition_ready_file_env = "SMOKE_SIGNAL_CONDITION_READY_FILE"
+
+(** Validates the signal readiness marker path before an activity or driver
+    uses it. Absolute paths and NUL rejection keep the shared bind-mount write
+    bounded and prevent a malformed environment value from escaping the test
+    fixture's intended file. *)
+let validate_signal_condition_ready_file path =
+  if String.equal path "" then
+    Error
+      (Temporal.Error.defect
+         ~message:(signal_condition_ready_file_env ^ " must not be empty"))
+  else if String.contains path '\000' then
+    Error
+      (Temporal.Error.defect
+         ~message:(signal_condition_ready_file_env ^ " must not contain NUL"))
+  else if Filename.is_relative path then
+    Error
+      (Temporal.Error.defect
+         ~message:
+           (signal_condition_ready_file_env ^ " must be an absolute path"))
+  else Ok path
+
+(** Reads and validates the signal readiness marker path from the worker and
+    driver environment. *)
+let signal_condition_ready_file () =
+  match Sys.getenv_opt signal_condition_ready_file_env with
+  | None ->
+      Error
+        (Temporal.Error.defect
+           ~message:(signal_condition_ready_file_env ^ " must be set"))
+  | Some path -> validate_signal_condition_ready_file path
+
+(** Removes a stale signal readiness marker before a fresh live run. *)
+let clear_signal_condition_ready_file path =
+  try if Sys.file_exists path then Sys.remove path with _ -> ()
+
+(** Handles one typed signal by retaining its value in the current execution's
+    local state for the suspended workflow condition. The callback performs no
+    I/O and does not call the client, so the signal activation remains
+    deterministic. *)
+let signal_value_handler =
+  Temporal.Signal.Handler.make signal_value (fun value ->
+      Temporal.Workflow_context.Local.set signal_value_state value)
+
 (** Counts attempts for the intentionally transient activity used by the live
     retry scenario. This state belongs to the activity worker process rather
     than workflow state: activities are allowed to perform non-deterministic
@@ -95,7 +155,7 @@ let clear_cancellation_ready_file path =
     activity at a time; a PID-only name would let concurrent invocations
     overwrite one another's staging file. Any temporary file is removed on
     failure before a typed activity error is returned. *)
-let publish_cancellation_ready path token =
+let publish_marker_token path token =
   let temporary = ref None in
   try
     let generated =
@@ -120,9 +180,15 @@ let publish_cancellation_ready path token =
     Error
       (Temporal.Error.make ~category:`Activity
          ~message:
-           (Printf.sprintf "cannot publish cancellation readiness marker: %s"
+           (Printf.sprintf "cannot publish readiness marker: %s"
               (Printexc.to_string exception_))
          ())
+
+(** Publishes the cancellation-specific marker using the shared atomic marker
+    implementation. Keeping this alias preserves the activity's descriptive
+    name at its call site while both live handshakes get identical file
+    ownership and cleanup behavior. *)
+let publish_cancellation_ready = publish_marker_token
 
 (** A test-only activity that publishes the cancellation handshake token. Its
     filesystem side effect is intentionally isolated to the activity process;
@@ -134,6 +200,40 @@ let cancellation_ready_activity =
       match cancellation_ready_file () with
       | Error error -> Error error
       | Ok path -> publish_cancellation_ready path token)
+
+(** Publishes a token from the signal workflow's first activity task. The
+    driver waits for this worker-side marker before sending the typed signal,
+    so the live scenario cannot be reduced to a start request whose signal was
+    buffered before the worker accepted any workflow work. *)
+let signal_condition_ready_activity =
+  Temporal.Activity.define ~name:"smoke.signal_condition_ready"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.unit (fun token ->
+      match signal_condition_ready_file () with
+      | Error error -> Error error
+      | Ok path -> publish_marker_token path token)
+
+(** Starts with a worker-visible readiness activity, then parks the workflow on
+    a deterministic condition. The signal handler stores its value in the
+    current execution's local state; the condition is rechecked after that
+    scheduler-owned handler mutates the same run. *)
+let signal_condition_workflow =
+  Temporal.Workflow.define ~name:"smoke.signal_condition"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun token ->
+      let open Temporal.Result_syntax in
+      let* () = Temporal.Activity.execute signal_condition_ready_activity token in
+      let* () =
+        Temporal.Condition.wait_until_result (fun () ->
+            match Temporal.Workflow_context.Local.get signal_value_state with
+            | Error error -> Error error
+            | Ok value -> Ok (Option.is_some value))
+      in
+      match Temporal.Workflow_context.Local.get signal_value_state with
+      | Ok (Some value) -> Ok ("SMOKE:SIGNAL:" ^ String.uppercase_ascii value)
+      | Ok None ->
+          Error
+            (Temporal.Error.defect
+               ~message:"signal condition resumed without a signal value")
+      | Error error -> Error error)
 
 (** Builds the short, bounded policy used by [activity_retry]. Keeping this as
     a result lets the workflow return a typed configuration defect if the

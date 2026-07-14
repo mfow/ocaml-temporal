@@ -17,7 +17,9 @@ now available when a handler is attached to `Temporal.Worker.workflow`. Native
 output-only query delivery is also implemented at the bridge boundary. Native
 updates have an experimental immediate slice: a registered one-input,
 non-suspending handler can run through the Rust/Core bridge and return a typed
-result. Suspended updates and live-server acceptance remain future work.
+result. The typed signal/condition success path is live-verified by PR #266;
+suspended updates and broader live-server interaction coverage remain future
+work.
 
 ## Current status: local handlers and a partial native boundary
 
@@ -195,6 +197,23 @@ Domains. Keep a dispatcher and its callback-owned mutable state on one owning
 Domain until native worker scheduling supplies the corresponding ownership
 boundary.
 
+For state that belongs to each workflow execution, use
+`Temporal.Workflow_context.Local` instead of a module-level mutable value:
+
+```ocaml
+let approval_state = Temporal.Workflow_context.Local.create ()
+
+let approval_handler =
+  Temporal.Signal.Handler.make approval (fun value ->
+    Temporal.Workflow_context.Local.set approval_state value)
+```
+
+The key is created alongside the workflow definition, but its value is stored
+in the current execution context. `Local.get` and `Local.set` return typed
+errors when called outside workflow execution. Values must remain deterministic
+and replay-safe: do not use a local slot to hide wall-clock reads, randomness,
+I/O, or process-global state.
+
 The definition and callback are existentially paired inside each handler. A
 registry can therefore store handlers for different OCaml types without an
 unsafe cast, while each handler still decodes with the codec that belongs to
@@ -285,7 +304,7 @@ workflow commands are returned in that activation's completion.
 The supervisor remains the sole owner of the Rust handle graph, and native
 readiness is observed through its scheduler-safe boundary. Rust never calls an
 OCaml closure. The focused runtime tests prove scheduler delivery, metadata
-retention, and fail-closed handling, but they are not live Temporal Server
+retention, and fail-closed handling, while PR #266 adds live signal/condition
 acceptance. Native query delivery now uses the same private registration path:
 query IDs, repeated arguments, and headers are retained, output-only handlers
 run synchronously on the owner Domain, and non-empty arguments produce a
@@ -293,5 +312,5 @@ failed query result rather than being discarded. The remaining native
 interaction work is:
 
 - update activation and two-stage `UpdateResponse` records; and
-- a Docker Compose acceptance scenario that sends a signal, issues a query,
-  and observes the workflow-side effects through Temporal Server.
+- Docker Compose acceptance scenarios for queries and updates, including
+  workflow-side assertions through Temporal Server.

@@ -19,6 +19,17 @@ type child_workflow_state = {
   mutable start_run_id : string option;
 }
 
+(** A typed key for one workflow-local value. The integer is allocated once at
+    key creation; each execution context stores its own value under that key,
+    so two workflow runs cannot observe one another's mutable state. The
+    representation is private because the runtime is the only code allowed to
+    associate a key with an erased value in the execution store. *)
+type 'a local = { id : int }
+
+(** Allocates unique identities for workflow-local keys without sharing any
+    application value between executions. *)
+let next_local_id = Atomic.make 0
+
 (** State shared by SDK operations in one workflow execution. Activities and
     timers use increasing sequence numbers so later activation jobs can identify
     the command they complete. Commands are stored in reverse order because
@@ -33,6 +44,10 @@ type t = {
   activities : (int64, activity_resolution) Hashtbl.t;
   child_workflows : (int64, child_workflow_state) Hashtbl.t;
   timers : (int64, unit -> unit) Hashtbl.t;
+  (* Values keyed here belong only to this execution context. The [Obj]
+     boundary is private and safe because callers can only use the same
+     existentially typed key returned by [create_local]. *)
+  locals : (int, Obj.t) Hashtbl.t;
   mutable commands_rev : Activation.command list;
   (* Once true, [emit] ignores new commands. Set at the start of [shutdown]
      before waiters are discontinued so Fun.protect finally blocks cannot
@@ -79,6 +94,7 @@ let create ?(task_queue = "default") scheduler =
         activities = Hashtbl.create 16;
         child_workflows = Hashtbl.create 16;
         timers = Hashtbl.create 16;
+        locals = Hashtbl.create 8;
         commands_rev = [];
         sealed = false;
       }
@@ -87,6 +103,25 @@ let create ?(task_queue = "default") scheduler =
     workflow code running on different Domains cannot see the wrong context. *)
 let current_key = Domain.DLS.new_key (fun () -> None)
 let current () = Domain.DLS.get current_key
+
+(** Creates a key whose value, when set, is retained only in each execution's
+    private context. Key creation is allowed outside workflow code so one
+    definition can share the key between its workflow body and registered
+    interaction handlers. *)
+let create_local () =
+  { id = Atomic.fetch_and_add next_local_id 1 }
+
+(** Reads one execution-local value without consulting process-global mutable
+    state. The caller must have obtained [key] from [create_local]; the private
+    representation preserves the corresponding OCaml type. *)
+let get_local context key =
+  Option.map Obj.obj (Hashtbl.find_opt context.locals key.id)
+
+(** Stores one value in the current execution context. Replacing a value is
+    deterministic because the owner Domain serializes workflow and interaction
+    handler callbacks for that execution. *)
+let set_local context key value =
+  Hashtbl.replace context.locals key.id (Obj.repr value)
 
 (** Stores the deterministic clock value for the activation being dispatched.
     The field is mutable because one execution context is reused across many

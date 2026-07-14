@@ -1,9 +1,9 @@
 # Two-OCaml-binary Temporal acceptance design
 
-**Status:** The complete [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-verified the current twelve-result baseline and the separate two-generation
-worker restart/replay acceptance against real Temporal Server and PostgreSQL.
-The same run passed the supported Linux and native platform matrix. The
+**Status:** The [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
+verified the current thirteen-result baseline, including typed signal delivery and condition wake-up against real Temporal Server and PostgreSQL. The complete
+[PR #253 Actions run](https://github.com/ocaml-temporal/actions/runs/29286560471) verified the separate two-generation worker restart/replay acceptance against real Temporal Server and PostgreSQL.
+The PR #253 run passed the supported Linux and native platform matrix. The
 earlier [PR #229 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016)
 verified all ten scenarios against real Temporal Server and PostgreSQL for
 PR head `c244733`, including the timeout-ordering guard; PR #229 was then
@@ -27,12 +27,12 @@ The worker and driver remain guarded by
 For the current checkout, `OCAML_VERSION=5.5 DUNE_JOBS=1 make
 test-temporal-integration` also passes locally against Temporal Server 1.31
 and PostgreSQL. The accepted CI run adds delayed asynchronous activity
-completion and continue-as-new successor following to the timeout path, for
-twelve top-level assertions in total.
+completion, continue-as-new successor following, and typed signal/condition acceptance to the timeout path, for
+thirteen top-level assertions in total.
 
-The current implementation starts eleven top-level workflows before waiting
-for any terminal result, including the delayed asynchronous completion and
-continue-as-new successor workflows. After the heartbeat-retry workflow reaches
+The current implementation starts twelve top-level workflows before waiting
+for any terminal result, including the delayed asynchronous completion,
+continue-as-new successor and signal/condition workflows. It waits for the signal workflow's worker-visible readiness marker before signaling its exact run. After the heartbeat-retry workflow reaches
 its terminal result, it starts the timeout workflow and waits for that result.
 This ordering keeps the six-second callback from occupying the serialized
 activity adapter while the heartbeat lease is still being exercised. The
@@ -69,7 +69,7 @@ atomic readiness marker. Compose waits for that health check before
 `temporal-clean` has
 removed the Compose project and its PostgreSQL data volume, and cleanup removes
 that volume again on success or failure; no database state is preserved for a
-later acceptance run. The driver starts eleven top-level workflows before its
+later acceptance run. The driver starts twelve top-level workflows before its
 first terminal wait, including the delayed asynchronous-completion and
 continue-as-new scenarios. Once the heartbeat-retry workflow has completed, it
 starts the timeout-retry workflow and waits for that separate result. The cancellation scenario waits for the
@@ -141,9 +141,9 @@ handle to return a typed `Cancelled` error. Those historical ten-run paths,
 including the updated timeout ordering, passed in the [PR #229 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016)
 and the [PR #226 live CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182);
 the historical nine-run path passed in [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859).
-The current twelve-result run additionally verifies asynchronous completion and
-continue-as-new successor following. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-also verifies the separate worker restart/replay controller. Heartbeat-timeout-
+The current thirteen-result run additionally verifies asynchronous completion, typed signal delivery, and
+continue-as-new successor following. The [PR #266 run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
+The [PR #253 run](https://github.com/ocaml-temporal/actions/runs/29286560471) also verifies the separate worker restart/replay controller. Heartbeat-timeout-
 triggered retries, child start failures, sticky-cache eviction, and crash
 recovery remain separate scenarios. The
 intentionally broader follow-up requirements are listed in [Required
@@ -633,7 +633,7 @@ for PR head `47c9a93`, later squash-merged as `f877fbf`:
 
 The current fixture keeps all fourteen historical assertions and adds
 `smoke.async_activity_completion`, `smoke.continue_as_new`, and
-`smoke.activity_timeout_retry` to make twelve top-level starts and waits. The
+`smoke.activity_timeout_retry` to make thirteen top-level starts and waits, including the typed signal/condition scenario. The
 local OCaml 5.5 Compose run accepted the exact asynchronous result, successor
 result, timeout-retry marker, and the original fourteen assertions. The exact
 six-second late callback, dedicated 7-second retry policy, and ordering guard
@@ -651,7 +651,7 @@ not log text, are the workflow success oracle. Per-activation/task identifiers
 and completion latency are a future observability enhancement and must remain
 payload-free if added.
 
-The first live test is intentionally small. With the current twelve-result
+The first live test is intentionally small. With the current thirteen-result
 success path verified locally, extend the same two-binary topology rather than
 adding a separate pseudo-worker test:
 
@@ -680,10 +680,10 @@ coverage of heartbeat timeouts, sticky-cache eviction, or crash recovery.
 
 ## Completion criteria for this design
 
-The current twelve-result baseline and two-generation restart/replay
-acceptance were verified by the complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
+The current thirteen-result baseline
+was verified by the [PR #266 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247). The separate two-generation restart/replay acceptance was verified by the complete [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471).
 The baseline driver assertions and the restart controller are separate gates:
-the former waits for all twelve exact workflow outcomes, while the latter
+the former waits for all thirteen exact workflow outcomes, while the latter
 replaces generation 1, validates replay on generation 2, and removes the
 PostgreSQL volume. The older entries below retain the history of the earlier
 nine- and ten-workflow milestones.

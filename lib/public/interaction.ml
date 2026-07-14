@@ -46,8 +46,9 @@ let create ?(signals = []) ?(queries = []) ?(updates = []) () =
           | Ok updates -> Ok { signals; queries; updates }))
 
 (** Returns the error used when a name has no local handler. The category
-    matches the operation so callers can preserve normal Temporal failure
-    classification even before the native bridge adds server-side delivery. *)
+    matches the operation so callers preserve normal Temporal failure
+    classification whether the same definition is dispatched locally or
+    through the native worker bridge. *)
 let missing_handler ~kind ~name ~category =
   Error
     (Error.make ~non_retryable:true ~category

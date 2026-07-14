@@ -199,14 +199,14 @@ Both OCaml and Rust validate every field, reject unknown/duplicate members,
 and validate the positive acknowledgement before it crosses the FFI boundary.
 The exact-run cancellation path is covered by local mock, supervisor, OCaml
 bridge, and Rust protocol tests. The live driver contains the same scenario,
-and the complete [PR #277 run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069)
+and the complete [PR #289 run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368)
 verified exact-run cancellation, the eventual typed cancelled result, and
-graceful shutdown with outstanding work against a real Temporal Server. The
-earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-remains evidence for the prior twelve-result slice, while [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
-remains historical evidence for the original nine-workflow slice. See the
-[live acceptance coverage](live-acceptance-coverage.md) for the remaining
-evidence boundary.
+graceful shutdown with outstanding work against a real Temporal Server as part
+of the current seventeen-result gate. The earlier [PR #277 run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069)
+remains evidence for the prior fifteen-result slice, [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+for the prior twelve-result slice, and [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+for the original nine-workflow slice. See the [live acceptance coverage](live-acceptance-coverage.md)
+for the remaining evidence boundary.
 
 ## Send one signal to an exact run
 
@@ -428,7 +428,9 @@ heartbeat-detail retry and exact-run cancellation assertions against a public
 worker and real Temporal Server. The signal-specific readiness and handler
 assertion is documented above with [PR #266](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247).
 The later complete [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
-re-verifies the client start, exact-run wait, cancellation, and graceful
-shutdown paths in the current sixteen-result gate.
+re-verified the client start, exact-run wait, cancellation, and graceful
+shutdown paths in the prior sixteen-result gate. The complete [PR #289 Actions
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) is the
+current seventeen-result evidence for those paths.
 The boundary and remaining cases are tracked in the
 [`two-OCaml-binary acceptance design`](two-ocaml-binary-e2e-acceptance.md).

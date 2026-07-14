@@ -235,6 +235,7 @@ services:
       SMOKE_DRIVER_TIMEOUT_SECONDS: "${SMOKE_DRIVER_TIMEOUT_SECONDS:-300}"
       SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS: "${SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS:-900}"
       SMOKE_CACHE_EVICTION_FILE: /workspace/test/integration/temporal/.cache-eviction.json
+      SMOKE_REPLAY_DIAGNOSTICS_FILE: /workspace/test/integration/temporal/.restart-replay-diagnostics.json
     command:
       - timeout
       - --signal=TERM

@@ -26,8 +26,17 @@ TEMPORAL_FRONTEND_PORT=17233 make temporal-start
 export TEMPORAL_ADDRESS=http://127.0.0.1:17233
 ```
 
-In separate terminals, set the stack's namespace and run the programs in this
-order:
+The examples default to `default` for an externally managed Temporal Server.
+When using `make temporal-start`, export the namespace created by that target
+before launching any of the three processes:
+
+```sh
+export TEMPORAL_NAMESPACE=temporal-sdk-test
+export TEMPORAL_TASK_QUEUE=ocaml-temporal-example
+```
+
+In separate terminals, run the programs in this order. The same environment
+must be visible in all three terminals:
 
 ```sh
 dune exec examples/activity_worker/activity_worker.exe
@@ -35,16 +44,8 @@ dune exec examples/workflow_worker/workflow_worker.exe
 dune exec examples/client/client.exe -- "Ada Lovelace"
 ```
 
-The examples default to `default` for an externally managed Temporal Server.
-When using `make temporal-start`, set the namespace created by that target:
-
-```sh
-export TEMPORAL_NAMESPACE=temporal-sdk-test
-export TEMPORAL_TASK_QUEUE=ocaml-temporal-example
-```
-
-The same environment must be visible in all three terminals. `make
-build-examples` (or `make native-build` on a native host) is useful for
+The `make build-examples` (or `make native-build` on a native host) target is
+useful for
 compilation checks, but it does not replace the three `dune exec` processes.
 This example path is separate from `make test-temporal-integration`, whose
 dedicated smoke worker and driver provide the repository's automated live

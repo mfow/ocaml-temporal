@@ -49,7 +49,7 @@ let publish_marker path contents =
     failure or cancellation is returned as a typed defect with no payload
     details, because the expected success marker is the public contract. *)
 let require_completed = function
-  | Client.Completed value when value = "SMOKE:AFTER-REPLAY" -> Ok ()
+  | Client.Completed value when value = "SMOKE:AFTER-REPLAY:ATTEMPT:2" -> Ok ()
   | Client.Completed value ->
       Error
         (Error.defect

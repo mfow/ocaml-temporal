@@ -13,10 +13,13 @@
     {"event_id": "9", "type": "WorkflowTaskCompleted"},
     {"event_id": "10", "type": "ActivityTaskScheduled"},
     {"event_id": "11", "type": "ActivityTaskStarted"},
-    {"event_id": "12", "type": "ActivityTaskCompleted"},
-    {"event_id": "13", "type": "WorkflowTaskScheduled"},
-    {"event_id": "14", "type": "WorkflowTaskStarted"},
-    {"event_id": "15", "type": "WorkflowTaskCompleted"},
-    {"event_id": "16", "type": "WorkflowExecutionCompleted"}
+    {"event_id": "12", "type": "ActivityTaskFailed"},
+    {"event_id": "13", "type": "ActivityTaskScheduled"},
+    {"event_id": "14", "type": "ActivityTaskStarted"},
+    {"event_id": "15", "type": "ActivityTaskCompleted"},
+    {"event_id": "16", "type": "WorkflowTaskScheduled"},
+    {"event_id": "17", "type": "WorkflowTaskStarted"},
+    {"event_id": "18", "type": "WorkflowTaskCompleted"},
+    {"event_id": "19", "type": "WorkflowExecutionCompleted"}
   ]
 }

@@ -1,6 +1,6 @@
 # Worker restart and replay acceptance design
 
-**Status: live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The live run passed the baseline smoke first, then verified the exact run identity, generation replacement, replay marker, ordered history, thirteen controller steps, follow-up activity, and PostgreSQL-volume cleanup. Sticky-cache eviction remains a separate unimplemented live scenario. The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
+**Status: the original path is live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471); the retry-after-restart extension is pending its first green live run.** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The extension now requires generation 2 to deliver a retryable activity failure and receive a second activity task before the exact result is accepted. Sticky-cache eviction remains a separate unimplemented live scenario. The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
 
 `make test-temporal-worker-restart-contract` is the fast Docker-free contract
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
@@ -26,8 +26,9 @@ The live restart target proves a narrower recovery contract:
 3. a fresh instance of the same OCaml worker is started with the same
    namespace and task queue;
 4. Temporal/Core delivers the pending execution to the new worker, which
-   replays the recorded history, waits for the timer, runs the follow-up mock
-   activity, and completes the workflow; and
+   replays the recorded history, waits for the timer, runs the follow-up
+   activity, observes its first retryable failure, receives a second activity
+   task, and completes the workflow; and
 5. the one-shot driver asserts the exact terminal payload and exits nonzero if
    any result, terminal class, or timeout is unexpected.
 
@@ -64,8 +65,10 @@ Temporal.Workflow.define ~name:"smoke.worker_restart_replay"
     | Error error -> Error error
     | Ok () ->
         let open Temporal.Result_syntax in
+        let* policy = retry_policy in
         let* transformed =
-          Temporal.Activity.execute mock_transform "after-replay"
+          Temporal.Activity.execute ~retry_policy:policy retry_once_activity
+            "after-replay"
         in
         Ok ("SMOKE:" ^ transformed))
 ```
@@ -76,16 +79,18 @@ This is the current fixture implementation. Its behavioral contract is:
   stopped;
 - the timer is long enough that the controller can observe `TimerStarted` and
   stop generation 1 without racing the timer firing;
-- the follow-up activity is not scheduled until the timer fires, so its live
-  task must be handled by generation 2; and
-- the activity returns a deterministic value derived only from its input. The
+- the follow-up activity is not scheduled until the timer fires, so its first
+  live task must be handled by generation 2;
+- the first activity attempt returns a retryable typed error, and the second
+  attempt returns a marker ending in `ATTEMPT:2`; and
+- the activity result is deterministic for a given attempt and input. The
   worker generation may be written to a diagnostic log by the activity, but it
   must never be included in the workflow result or used to choose commands.
 
 For input `smoke`, the driver must require the exact completed payload
-`SMOKE:AFTER-REPLAY`. It must reject failed, cancelled, terminated, timed-out,
-continued-as-new, or differently encoded results through the existing typed
-`result` path. The fixed workflow ID should be
+`SMOKE:AFTER-REPLAY:ATTEMPT:2`. It must reject failed, cancelled, terminated,
+timed-out, continued-as-new, or differently encoded results through the
+existing typed `result` path. The fixed workflow ID should be
 `two-binary-worker-restart-replay`; the driver must retain and wait on the run
 ID returned by `Client.start` rather than looking up a later run by workflow ID.
 
@@ -131,9 +136,9 @@ uses this bounded sequence:
    worker process reached `Worker.create` readiness; a reused container without
    that proof is a test failure.
 7. The controller waits for generation-2 readiness before allowing the driver
-   to finish, then waits for a replay marker and the follow-up activity marker.
-   The marker is diagnostic evidence; the driver's exact result remains the
-   acceptance oracle.
+   to finish, then waits for a replay marker and the exact result. The marker
+   is diagnostic evidence; the driver's exact result and the retry history
+   remain the acceptance oracle.
 8. On success, the controller verifies the ordered history and the exact
    driver assertion, then runs `temporal-clean`. On failure, it first preserves
    the driver output, both worker generations' bounded logs, and the workflow
@@ -187,12 +192,13 @@ The acceptance command may exit zero only when all of the following are true:
   readiness marker and writable process state could not be reused;
 - generation 2 became healthy and emitted the same run ID with
   `is_replaying=true` before the timer-result activity completed;
-- the history contains the ordered timer firing, activity scheduling and
-  completion, and workflow completion events for that run; event IDs may vary,
-  but their order and run identity must not;
+- the history contains the ordered timer firing, first activity scheduling,
+  retryable `ActivityTaskFailed`, second activity scheduling and completion,
+  and workflow completion events for that run; event IDs may vary, but their
+  order and run identity must not;
 - `smoke-driver` returned zero only after `Client.wait` reported
   `Completed` for that exact run and its decoded payload equaled
-  `SMOKE:AFTER-REPLAY`; and
+  `SMOKE:AFTER-REPLAY:ATTEMPT:2`; and
 - teardown removed the Compose project and its PostgreSQL data volume.
 
 Any missing marker, wrong run ID, unexpected terminal variant, activity
@@ -221,8 +227,9 @@ guessing:
 | Timer exists, but generation 1 does not stop | Worker shutdown/drain or native wait lifecycle bug. |
 | Generation-1 container remains, its ID is reused, or its readiness marker is present before `Worker.create` | Replacement orchestration is invalid; generation 2 must not be accepted. |
 | Generation 2 is healthy, but no `is_replaying=true` marker | Replacement worker did not receive/replay the pending execution, or replay instrumentation is missing. |
-| Replay marker exists, but no activity completion | Timer resolution, activity scheduling, or generation-2 dispatch failed. |
-| Activity completes, but driver reports a non-completed/mismatched result | Workflow determinism, payload decoding, or exact-run waiting failed. |
+| Replay marker exists, but no retryable activity failure | Timer resolution or generation-2 activity dispatch did not reach the intended retry path. |
+| Retryable activity failure exists, but no second activity task | Temporal retry policy delivery, Core retry translation, or activity polling failed. |
+| Second activity completes, but driver reports a non-completed/mismatched result | Workflow determinism, payload decoding, or exact-run waiting failed. |
 | History belongs to another run or is missing | Driver/run identity or server persistence/query synchronization failed. |
 | Cleanup leaves a PostgreSQL volume | Fixture lifecycle is incorrect; the result must not be accepted. |
 
@@ -276,6 +283,9 @@ The implementation should land as a separate acceptance slice, in this order:
    [`feature-coverage.md`](feature-coverage.md), and `docs/progress.md` with
    the commit and run URL. **Done:** the current evidence is recorded in those
    references and this document.
+6. Extend the replacement-worker activity path with the bounded retry policy
+   and require the normalized history to contain the first failure and second
+   activity schedule. **Done locally; live verification is pending.**
 
 This sequencing keeps a passing terminal result from being mistaken for
 replay evidence and keeps the current one-shot driver/long-lived-worker

@@ -52,6 +52,14 @@ sh "$validator" \
   --stage terminal \
   --require-replay >/dev/null
 
+# The restart acceptance must also prove that the replacement worker can
+# deliver a retryable activity failure to Temporal and receive the next
+# attempt. The checked-in fixture is intentionally still the old contract at
+# this point; keeping this assertion explicit prevents a future implementation
+# from claiming restart coverage while only exercising a successful activity.
+jq -e '[.events[].type] | index("ActivityTaskFailed") != null' \
+  "$fixture/history.terminal.json" >/dev/null
+
 # Terminal validation cannot be used without retaining the initial snapshot;
 # otherwise the cross-document event-prefix check would be bypassed.
 expect_failure sh "$validator" \

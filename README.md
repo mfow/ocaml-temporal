@@ -70,6 +70,9 @@ opaque bytes and applications may choose another deterministic codec.
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069) remains
   evidence for the prior fifteen-result slice, and [PR #266](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
   remains the focused evidence for the earlier thirteen-result signal path.
+  The separate restart/replay controller now also requires the replacement
+  worker's retryable activity failure and second activity schedule; live
+  verification of that extension is pending.
   Sticky-cache eviction, crash recovery, and broader child lifecycle scenarios
   remain separate acceptance work.
 - Child-workflow commands can be authored and are translated by the semantic

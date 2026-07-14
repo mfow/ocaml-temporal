@@ -55,6 +55,17 @@ publish_release() {
 driver_pid=''
 driver_container="${project}-smoke-cache-eviction-driver"
 release_tmp=''
+driver_log_printed=false
+
+# Prints only the final 64 KiB of the one-shot driver log. Failure output must
+# remain useful on a hosted runner, but a line-count cap alone would still let
+# one application-controlled line make CI output arbitrarily large.
+print_driver_log() {
+  [ "$driver_log_printed" = false ] || return 0
+  driver_log_printed=true
+  tail -c 65536 "$driver_log" 2>/dev/null || true
+}
+
 cleanup_driver() {
   if [ -n "$driver_pid" ] && kill -0 "$driver_pid" 2>/dev/null; then
     kill -TERM "$driver_pid" 2>/dev/null || true
@@ -71,7 +82,7 @@ cleanup() {
   [ -z "$release_tmp" ] || rm -f "$release_tmp"
   cleanup_driver
   if [ "$status" -ne 0 ]; then
-    cat "$driver_log" 2>/dev/null || true
+    print_driver_log
     make_target temporal-logs || true
   fi
   make_target temporal-clean || true
@@ -145,7 +156,7 @@ wait_for_marker() {
   for attempt in $(seq 1 120); do
     if [ -s "$marker" ]; then return 0; fi
     if ! kill -0 "$driver_pid" 2>/dev/null; then
-      cat "$driver_log" 2>/dev/null || true
+      print_driver_log
       echo "cache-eviction driver exited before $description" >&2
       return 1
     fi
@@ -197,10 +208,15 @@ for attempt in $(seq 1 120); do
   fi
   sleep 1
 done
-[ "$initial_ready" = true ] || {
+if [ "$initial_ready" != true ]; then
+  # Polling suppresses expected intermediate states. Re-run once without
+  # suppression so a final failure names the bounded contract violation rather
+  # than leaving only a generic timeout in the CI log.
+  sh "$validator" --stage initial --initial-history "$initial_history" \
+    --workflow-id "$workflow_id" --run-id "$run_id" || true
   echo "cache-eviction target never reached its pending timer boundary" >&2
   exit 1
-}
+fi
 
 publish_release
 wait_for_marker "$pressure_file" "the cache-pressure workflow identity"
@@ -218,7 +234,7 @@ for attempt in $(seq 1 120); do
     break
   fi
   if ! kill -0 "$driver_pid" 2>/dev/null && [ ! -s "$result_file" ]; then
-    cat "$driver_log" 2>/dev/null || true
+    print_driver_log
     echo "cache-eviction driver exited before CacheFull evidence" >&2
     exit 1
   fi
@@ -245,10 +261,16 @@ for attempt in $(seq 1 120); do
   fi
   sleep 1
 done
-[ "$terminal_ready" = true ] || {
+if [ "$terminal_ready" != true ]; then
+  # As above, expose the validator's bounded reason only after the retry budget
+  # is exhausted. It reads normalized history and schema-shaped diagnostics,
+  # never raw Temporal history or workflow payloads.
+  sh "$validator" --diagnostics "$diagnostics_file" \
+    --initial-history "$initial_history" --terminal-history "$terminal_history" \
+    --workflow-id "$workflow_id" --run-id "$run_id" || true
   echo "cache-eviction terminal history did not satisfy the exact contract" >&2
   exit 1
-}
+fi
 
 make_target temporal-stop-cache-eviction-worker
 compose down --volumes --remove-orphans >/dev/null

@@ -119,11 +119,11 @@ let wait_for_release path =
     Temporal database immediately after the target result is proven. *)
 let require_target_completed = function
   | Client.Completed value when value = "SMOKE:CACHE:EVICTION:TARGET" -> Ok ()
-  | Client.Completed value ->
+  | Client.Completed _ ->
       Error
         (Error.defect
            ~message:
-             (Printf.sprintf "cache-eviction target returned %S" value))
+             "cache-eviction target returned an unexpected completed result")
   | Client.Failed error
   | Client.Cancelled error
   | Client.Terminated error
@@ -131,8 +131,8 @@ let require_target_completed = function
       Error
         (Error.defect
            ~message:
-             (Printf.sprintf "cache-eviction target ended with %s: %s"
-                (Error.kind error) (Error.message error)))
+             (Printf.sprintf "cache-eviction target ended with %s"
+                (Error.kind error)))
   | Client.Continued_as_new execution ->
       Error
         (Error.defect
@@ -207,12 +207,12 @@ let run () =
              "cache-eviction acceptance is not enabled; set TEMPORAL_TWO_BINARY_LIVE=1")
 
 (** Converts the typed test-client result into the one-shot container's exit
-    status. Error details stay in its log; shared markers contain only the
-    small protocol values checked by the controller. *)
+    status. Logs retain only the stable error category because a Temporal error
+    message can contain application-controlled detail; shared markers contain
+    only the small protocol values checked by the controller. *)
 let () =
   match run () with
   | Ok () -> Printf.printf "cache-eviction driver completed\n%!"
   | Error error ->
-      Printf.eprintf "cache-eviction driver failed (%s): %s\n%!" (Error.kind error)
-        (Error.message error);
+      Printf.eprintf "cache-eviction driver failed kind=%s\n%!" (Error.kind error);
       exit 1

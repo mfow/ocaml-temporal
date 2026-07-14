@@ -131,6 +131,7 @@ driver="$root/test/integration/temporal/driver/cache_eviction_driver.ml"
 definitions="$root/test/integration/temporal/common/smoke_definitions.ml"
 compose="$root/test/integration/temporal/compose.yaml"
 makefile="$root/Makefile"
+controller="$root/test/integration/temporal/scripts/run-cache-eviction-live.sh"
 
 require_text "$worker" 'Worker.Options.make ~max_cached_workflows:1'
 require_text "$worker" '~max_concurrent_workflow_task_polls:2'
@@ -141,7 +142,9 @@ require_absent "$worker" 'Client.start'
 require_text "$driver" 'module Client = Temporal.Client'
 require_text "$driver" 'Client.start client ~workflow:Definitions.sticky_cache_eviction'
 require_text "$driver" 'Client.wait target'
+require_text "$driver" 'cache-eviction driver failed kind=%s'
 require_absent "$driver" 'Worker.create'
+require_absent "$driver" 'Error.message error'
 require_text "$definitions" 'let sticky_cache_eviction ='
 require_text "$definitions" 'Temporal.Workflow.sleep (Temporal.Duration.of_ms 20_000L)'
 require_text "$compose" 'smoke-cache-eviction-worker:'
@@ -150,3 +153,7 @@ require_text "$compose" 'cache_eviction_worker.exe'
 require_text "$compose" 'cache_eviction_driver.exe'
 require_text "$makefile" 'test-temporal-worker-cache-eviction-live:'
 require_text "$makefile" 'down --volumes --remove-orphans'
+require_text "$controller" 'print_driver_log()'
+require_text "$controller" 'driver_log_printed=false'
+require_text "$controller" 'tail -c 65536 "$driver_log"'
+require_absent "$controller" 'cat "$driver_log"'

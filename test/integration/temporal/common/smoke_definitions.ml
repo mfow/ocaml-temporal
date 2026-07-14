@@ -3,9 +3,9 @@
     Keeping the workflow and activity values in one private test library makes
     the driver and worker compile against exactly the same names and codecs. The
     workflow bodies deliberately contain no process, filesystem, network, or
-    clock access: those operations would make them non-replayable. The one
-    process-local counter below belongs only to the non-deterministic activity
-    implementation and is never read by workflow code. *)
+    clock access: those operations would make them non-replayable. The
+    process-local counters below belong only to non-deterministic activity
+    implementations and are never read by workflow code. *)
 
 (** The task queue used only by this fixture. It is intentionally distinct from
     every production queue so an accidentally reused local namespace cannot
@@ -19,6 +19,66 @@ let mock_transform =
   Temporal.Activity.define ~name:"smoke.mock_transform"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun input ->
       Ok (String.uppercase_ascii input))
+
+(** The typed signal used by the live interaction scenario. The definition
+    carries the same string codec in the driver and worker processes, so the
+    client-side request and worker-side handler cannot silently disagree about
+    the payload representation. *)
+let signal_value =
+  Temporal.Signal.define ~name:"smoke.set_value" ~input:Temporal.Codec.string
+
+(** The signal handler and workflow body share this key, while every Temporal
+    execution receives an independent value slot. A new run therefore starts
+    with [None] even when the same worker process has already handled another
+    signal, which keeps this acceptance assertion tied to the current run. *)
+let signal_value_state = Temporal.Workflow_context.Local.create ()
+
+(** The marker path used to prove that the signal workflow's first worker-side
+    task has been accepted before the driver sends its signal. The file is only
+    test coordination state; it is never read by workflow code. *)
+let signal_condition_ready_file_env = "SMOKE_SIGNAL_CONDITION_READY_FILE"
+
+(** Validates the signal readiness marker path before an activity or driver
+    uses it. Absolute paths and NUL rejection keep the shared bind-mount write
+    bounded and prevent a malformed environment value from escaping the test
+    fixture's intended file. *)
+let validate_signal_condition_ready_file path =
+  if String.equal path "" then
+    Error
+      (Temporal.Error.defect
+         ~message:(signal_condition_ready_file_env ^ " must not be empty"))
+  else if String.contains path '\000' then
+    Error
+      (Temporal.Error.defect
+         ~message:(signal_condition_ready_file_env ^ " must not contain NUL"))
+  else if Filename.is_relative path then
+    Error
+      (Temporal.Error.defect
+         ~message:
+           (signal_condition_ready_file_env ^ " must be an absolute path"))
+  else Ok path
+
+(** Reads and validates the signal readiness marker path from the worker and
+    driver environment. *)
+let signal_condition_ready_file () =
+  match Sys.getenv_opt signal_condition_ready_file_env with
+  | None ->
+      Error
+        (Temporal.Error.defect
+           ~message:(signal_condition_ready_file_env ^ " must be set"))
+  | Some path -> validate_signal_condition_ready_file path
+
+(** Removes a stale signal readiness marker before a fresh live run. *)
+let clear_signal_condition_ready_file path =
+  try if Sys.file_exists path then Sys.remove path with _ -> ()
+
+(** Handles one typed signal by retaining its value in the current execution's
+    local state for the suspended workflow condition. The callback performs no
+    I/O and does not call the client, so the signal activation remains
+    deterministic. *)
+let signal_value_handler =
+  Temporal.Signal.Handler.make signal_value (fun value ->
+      Temporal.Workflow_context.Local.set signal_value_state value)
 
 (** Counts attempts for the intentionally transient activity used by the live
     retry scenario. This state belongs to the activity worker process rather
@@ -95,7 +155,7 @@ let clear_cancellation_ready_file path =
     activity at a time; a PID-only name would let concurrent invocations
     overwrite one another's staging file. Any temporary file is removed on
     failure before a typed activity error is returned. *)
-let publish_cancellation_ready path token =
+let publish_marker_token path token =
   let temporary = ref None in
   try
     let generated =
@@ -120,9 +180,15 @@ let publish_cancellation_ready path token =
     Error
       (Temporal.Error.make ~category:`Activity
          ~message:
-           (Printf.sprintf "cannot publish cancellation readiness marker: %s"
+           (Printf.sprintf "cannot publish readiness marker: %s"
               (Printexc.to_string exception_))
          ())
+
+(** Publishes the cancellation-specific marker using the shared atomic marker
+    implementation. Keeping this alias preserves the activity's descriptive
+    name at its call site while both live handshakes get identical file
+    ownership and cleanup behavior. *)
+let publish_cancellation_ready = publish_marker_token
 
 (** A test-only activity that publishes the cancellation handshake token. Its
     filesystem side effect is intentionally isolated to the activity process;
@@ -134,6 +200,40 @@ let cancellation_ready_activity =
       match cancellation_ready_file () with
       | Error error -> Error error
       | Ok path -> publish_cancellation_ready path token)
+
+(** Publishes a token from the signal workflow's first activity task. The
+    driver waits for this worker-side marker before sending the typed signal,
+    so the live scenario cannot be reduced to a start request whose signal was
+    buffered before the worker accepted any workflow work. *)
+let signal_condition_ready_activity =
+  Temporal.Activity.define ~name:"smoke.signal_condition_ready"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.unit (fun token ->
+      match signal_condition_ready_file () with
+      | Error error -> Error error
+      | Ok path -> publish_marker_token path token)
+
+(** Starts with a worker-visible readiness activity, then parks the workflow on
+    a deterministic condition. The signal handler stores its value in the
+    current execution's local state; the condition is rechecked after that
+    scheduler-owned handler mutates the same run. *)
+let signal_condition_workflow =
+  Temporal.Workflow.define ~name:"smoke.signal_condition"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun token ->
+      let open Temporal.Result_syntax in
+      let* () = Temporal.Activity.execute signal_condition_ready_activity token in
+      let* () =
+        Temporal.Condition.wait_until_result (fun () ->
+            match Temporal.Workflow_context.Local.get signal_value_state with
+            | Error error -> Error error
+            | Ok value -> Ok (Option.is_some value))
+      in
+      match Temporal.Workflow_context.Local.get signal_value_state with
+      | Ok (Some value) -> Ok ("SMOKE:SIGNAL:" ^ String.uppercase_ascii value)
+      | Ok None ->
+          Error
+            (Temporal.Error.defect
+               ~message:"signal condition resumed without a signal value")
+      | Error error -> Error error)
 
 (** Builds the short, bounded policy used by [activity_retry]. Keeping this as
     a result lets the workflow return a typed configuration defect if the
@@ -412,6 +512,186 @@ let activity_timeout_retry =
             ~start_to_close_timeout:timeout_retry_start_to_close_timeout
             ~retry_policy:policy ~do_not_eagerly_execute:true
             timeout_retry_activity seed)
+
+(** The start-to-close lease for the heartbeat-timeout scenario is deliberately
+    much longer than the heartbeat lease. If the server does not enforce the
+    heartbeat timeout, the first callback can return successfully and the
+    driver will observe the wrong attempt marker instead of a false retry. *)
+let heartbeat_timeout_retry_start_to_close_timeout =
+  Temporal.Duration.of_ms 10_000L
+
+(** The first callback remains active long enough for Temporal to observe the
+    missing heartbeat, but finishes before its start-to-close lease. Returning
+    late is important: it proves the retry was caused by the server-managed
+    heartbeat timeout rather than by an application error. *)
+let heartbeat_timeout_retry_first_attempt_sleep_seconds = 6.0
+
+(** Delays the heartbeat-timeout retry until the intentionally late first
+    callback has released the serialized activity adapter. The retry policy is
+    local to this scenario so the next task cannot be mistaken for a queue
+    timeout caused by the still-running first callback. *)
+let heartbeat_timeout_retry_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 7_000L)
+    ~backoff_coefficient:1.0
+    ~maximum_interval:(Temporal.Duration.of_ms 7_000L) ~maximum_attempts:2 ()
+
+(** Counts only activity callbacks in the worker process. The counter is never
+    read by workflow code; a fresh Compose worker starts each acceptance run,
+    and the second marker therefore proves that Temporal dispatched a retry
+    task after the first callback stopped heartbeating. *)
+let heartbeat_timeout_retry_attempts = Atomic.make 0
+
+(** Stops heartbeating on the first attempt and returns only after the 500 ms
+    heartbeat lease has expired. The second attempt validates its activity
+    context and returns a distinct marker. If Temporal accepted the late first
+    success, the driver would receive [ATTEMPT:1] and fail instead of passing. *)
+let heartbeat_timeout_retry_activity =
+  Temporal.Activity.define_with_context ~name:"smoke.heartbeat_timeout_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+    (fun context input ->
+      let open Temporal.Result_syntax in
+      let* () = require_heartbeat_timeout context in
+      let attempt = Atomic.fetch_and_add heartbeat_timeout_retry_attempts 1 + 1 in
+      match attempt with
+      | 1 ->
+          Unix.sleepf heartbeat_timeout_retry_first_attempt_sleep_seconds;
+          Ok "SMOKE:HEARTBEAT_TIMEOUT:ATTEMPT:1"
+      | 2 ->
+          (match Temporal.Activity.Context.details context with
+          | [] -> Ok ("SMOKE:HEARTBEAT_TIMEOUT:RETRIED:" ^ String.uppercase_ascii input)
+          | details ->
+              Error
+                (Temporal.Error.defect
+                   ~message:
+                     (Printf.sprintf
+                        "heartbeat-timeout retry unexpectedly received %d details"
+                        (List.length details))))
+      | attempt ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "heartbeat-timeout retry activity received unexpected attempt %d"
+                    attempt)))
+
+(** Schedules [heartbeat_timeout_retry_activity] with a heartbeat lease that
+    expires before its start-to-close lease. The first callback sends no
+    heartbeat, so the second result can only be produced by Temporal's
+    heartbeat-timeout retry state machine. *)
+let activity_heartbeat_timeout_retry =
+  Temporal.Workflow.define ~name:"smoke.activity_heartbeat_timeout_retry"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match heartbeat_timeout_retry_policy with
+      | Error error -> Error error
+      | Ok policy ->
+          Temporal.Activity.execute
+            ~heartbeat_timeout
+            ~start_to_close_timeout:heartbeat_timeout_retry_start_to_close_timeout
+            ~retry_policy:policy ~do_not_eagerly_execute:true
+            heartbeat_timeout_retry_activity seed)
+
+(** Uses Temporal's [non_retryable_error_types] policy matching against the
+    public activity error kind. The callback returns a retryable typed error on
+    its first attempt and would succeed on a second attempt; the workflow
+    catches the first activity future so the live result proves both that the
+    server stopped retrying and that the runtime preserved the activity
+    category and non-retryable decision. *)
+let non_retryable_activity_policy =
+  Temporal.Activity.Retry_policy.make
+    ~initial_interval:(Temporal.Duration.of_ms 100L)
+    ~backoff_coefficient:1.0
+    ~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:2
+    ~non_retryable_error_types:[ "activity" ] ()
+
+(** Counts attempts only inside the worker process. A correct policy match
+    leaves the second-attempt success branch unreachable; retaining that branch
+    makes an accidental retry observable instead of silently passing. *)
+let non_retryable_activity_attempts = Atomic.make 0
+
+(** Returns a retryable activity failure whose error type matches the policy's
+    non-retryable list. If Temporal retries despite that list, the second call
+    returns a different success marker and the workflow reports a defect. *)
+let non_retryable_activity =
+  Temporal.Activity.define ~name:"smoke.non_retryable_activity"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun _input ->
+      let attempt = Atomic.fetch_and_add non_retryable_activity_attempts 1 + 1 in
+      match attempt with
+      | 1 ->
+          (match
+             Temporal.Codec.encode Temporal.Codec.string
+               "SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1"
+           with
+          | Error error -> Error error
+          | Ok detail ->
+              Error
+                (Temporal.Error.make ~category:`Activity ~details:[ detail ]
+                   ~message:"SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1" ()))
+      | 2 -> Ok "SMOKE:ACTIVITY_NON_RETRYABLE:RETRIED"
+      | attempt ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "non-retryable activity received unexpected attempt %d"
+                    attempt)))
+
+(** Observes the activity future inside workflow code rather than relying on a
+    top-level client failure, whose public category is intentionally always
+    [Workflow]. The exact success marker is emitted only after the activity
+    error is seen as [Activity] and [non_retryable] by the replay-safe runtime.
+    The attempt marker travels in structured failure details because Temporal's
+    public activity-failure diagnostic is an outer wrapper whose leading text
+    is not the application message. *)
+let activity_non_retryable_failure =
+  Temporal.Workflow.define ~name:"smoke.activity_non_retryable_failure"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match non_retryable_activity_policy with
+      | Error error -> Error error
+      | Ok policy -> (
+          match
+            Temporal.Activity.execute ~retry_policy:policy
+              non_retryable_activity seed
+          with
+          | Error error ->
+              let view = Temporal.Error.view error in
+              if view.category <> `Activity || not view.non_retryable then
+                Error
+                  (Temporal.Error.defect
+                     ~message:
+                       (Printf.sprintf
+                          "activity non-retryable metadata was not preserved (kind=%s, non_retryable=%b)"
+                          (Temporal.Error.kind error) view.non_retryable))
+              else (
+                match view.details with
+                | [ detail ] -> (
+                    match
+                      Temporal.Codec.decode Temporal.Codec.string detail
+                    with
+                    | Ok "SMOKE:ACTIVITY_NON_RETRYABLE:ATTEMPT:1" ->
+                        Ok "SMOKE:ACTIVITY_NON_RETRYABLE:OBSERVED"
+                    | Ok marker ->
+                        Error
+                          (Temporal.Error.defect
+                             ~message:
+                               (Printf.sprintf
+                                  "activity non-retryable marker was unexpected: %S"
+                                  marker))
+                    | Error decode_error -> Error decode_error)
+                | details ->
+                    Error
+                      (Temporal.Error.defect
+                         ~message:
+                           (Printf.sprintf
+                              "activity non-retryable details were not preserved (count=%d)"
+                              (List.length details))))
+          | Ok value ->
+              Error
+                (Temporal.Error.defect
+                   ~message:
+                     (Printf.sprintf
+                        "non-retryable activity unexpectedly retried with %S"
+                        value))))
 
 (** A child workflow that waits on a short durable timer before deriving its
     result entirely from its input. The timer is deliberately inside the child

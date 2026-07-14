@@ -3,6 +3,9 @@
     workflow's OCaml code. *)
 type t
 
+(** A typed key for one value stored separately in every workflow execution. *)
+type 'a local
+
 (** Creates an empty context whose futures use [scheduler]. [task_queue] is the
     deterministic default used by activities that do not override their queue;
     a worker supplies its own queue when it creates an execution. *)
@@ -17,6 +20,18 @@ val validate_task_queue : string -> (unit, string) result
 
 (** Returns the context installed on the current OCaml Domain, if any. *)
 val current : unit -> t option
+
+(** Allocates a key for execution-local workflow state. The key itself may be
+    retained by a workflow definition and its registered interaction handlers;
+    values written through it never cross execution-context boundaries. *)
+val create_local : unit -> 'a local
+
+(** Reads a key from one execution context, returning [None] until that run has
+    assigned a value. *)
+val get_local : t -> 'a local -> 'a option
+
+(** Writes a key in one execution context. *)
+val set_local : t -> 'a local -> 'a -> unit
 
 (** Records the timestamp attached to the activation that is about to run user
     workflow code. [None] is used for synthetic runtime activations, such as

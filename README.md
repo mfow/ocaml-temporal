@@ -49,24 +49,25 @@ opaque bytes and applications may choose another deterministic codec.
 | --- | --- |
 | Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
-| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, records activity heartbeats, and supports retained asynchronous activity completion. The complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result Compose baseline and the separate two-generation restart/replay acceptance; the older [PR #210 run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859) remains historical evidence for the earlier nine-scenario slice. |
-| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, exact-run cancellation, and typed exact-run signals. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result; signal acknowledgement likewise does not claim that a worker handler has already run. The [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve current workflow assertions, including continue-as-new successor following and exact-run cancellation; signal request validation, identity, acknowledgement, and mock lifecycle remain focused-tested while live signal acceptance is pending. The earlier [PR #210 run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859) remains the linked evidence for the original nine-workflow slice. |
+| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, records activity heartbeats, and supports retained asynchronous activity completion. The complete [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result Compose baseline and the separate two-generation restart/replay acceptance; the older [PR #210 run](https://github.com/ocaml-temporal/actions/runs/29221151859) remains historical evidence for the earlier nine-scenario slice. |
+| Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, exact-run cancellation, and typed exact-run signals. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result; signal acknowledgement likewise does not claim that a worker handler has already run. The [PR #266 CI run](https://github.com/ocaml-temporal/actions/runs/29311239247) live-verified the thirteen current workflow assertions, including typed signal delivery and condition wake-up; the earlier [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471) remains evidence for the prior twelve-result slice, and [PR #210](https://github.com/ocaml-temporal/actions/runs/29221151859) remains the linked evidence for the original nine-workflow slice. |
 | Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
 | Safety boundary | Rust/Core protobuf handling stays in Rust. OCaml/Rust JSON validation, copied payloads, one-owner lifecycle serialization, and idempotent cleanup are covered by focused tests. |
 
 ## What is deliberately still pending
 
-- The two-public-OCaml-binary gate has a complete [PR #253 CI
-  run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) covering
-  all twelve current workflow assertions against one fresh
-  Temporal/PostgreSQL deployment. The driver starts eleven workflows before
-  waiting, observes delayed asynchronous completion, follows a continue-as-new
-  successor, and starts the timeout-retry workflow after heartbeat completion.
-  The same run then passes the separate two-generation restart/replay
-  acceptance. Sticky-cache eviction, heartbeat-timeout-triggered retry, crash
-  recovery, and broader child lifecycle scenarios remain separate acceptance
-  work; the historical [PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
-  remains useful evidence for the earlier nine-workflow slice.
+- The two-public-OCaml-binary gate has a local OCaml 5.5 run covering all thirteen
+  current workflow assertions against one fresh Temporal/PostgreSQL deployment.
+  The driver starts twelve workflows before waiting, waits for the signal
+  workflow's worker-visible readiness marker before signaling it, observes delayed
+  asynchronous completion, follows a continue-as-new successor, and starts the
+  timeout-retry workflow after heartbeat completion. The [PR #266 CI
+  run](https://github.com/ocaml-temporal/actions/runs/29311239247) verifies the
+  thirteen-result signal path; the complete [PR #253 CI
+  run](https://github.com/ocaml-temporal/actions/runs/29286560471) remains
+  evidence for the prior twelve-result baseline and restart/replay controller.
+  Sticky-cache eviction, heartbeat-timeout-triggered retry, crash recovery, and
+  broader child lifecycle scenarios remain separate acceptance work.
 - Child-workflow commands can be authored and are translated by the semantic
   layer. The native worker now accepts a parent completion containing a child
   start, retains the parent future through the start acknowledgment, and
@@ -153,15 +154,19 @@ runs the OCaml supervisor lifecycle acceptance executable, starts a public
 OCaml worker, and runs a separate public OCaml driver. The worker is the
 long-lived process that registers and executes the workflows and mock activity.
 The driver is a one-shot OCaml test runner: it does not register a worker. Its
-current implementation starts eleven smoke workflows before waiting, including
+current implementation starts twelve smoke workflows before waiting, including
 delayed asynchronous activity completion and continue-as-new, then starts the
-timeout-retry workflow after heartbeat completion. It sends an exact-run
-cancellation request for the long-running workflow, waits for all twelve exact
-terminal results, and exits nonzero if any expected result is not returned. The
-complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-passed all twelve assertions against Temporal Server 1.31 and PostgreSQL. The
-earlier [PR #210 CI
-run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+timeout-retry workflow after heartbeat completion. It waits for the signal
+workflow's exact readiness marker before signaling it, then sends an exact-run
+cancellation request for the long-running workflow, waits for all thirteen exact
+terminal results, and exits nonzero if any expected result is not returned. A
+local `OCAML_VERSION=5.5 DUNE_JOBS=1 make test-temporal-integration` run passed
+all thirteen assertions against Temporal Server 1.31 and PostgreSQL. The [PR #266
+CI run](https://github.com/ocaml-temporal/actions/runs/29311239247) is the current
+evidence for this signal path; the earlier [PR #253 CI run](https://github.com/
+ocaml-temporal/actions/runs/29286560471) remains evidence for the prior
+twelve-result path. The earlier [PR #210 CI
+run](https://github.com/ocaml-temporal/actions/runs/29221151859)
 live-verified the original nine assertions: four exact successes, ordinary
 activity retry, heartbeat-detail retry, parent/child success, propagated child
 failure, child cancellation, a typed non-retryable workflow failure, and
@@ -296,6 +301,7 @@ ongoing maintenance. No unreviewed model output is released.
 AI models used to help build this project:
 
 ### OpenAI
+- GPT-5
 - GPT 5.6 Sol
 - GPT 5.6 Terra
 - GPT 5.6 Luna

@@ -1,9 +1,10 @@
 (** Worker process for the two-OCaml-binary live acceptance test.
 
     The worker registers the same shared workflow definitions as the driver,
-    including the context-aware heartbeat/retry and timeout-triggered-retry
-    scenarios, and keeps the public native worker loop alive until graceful
-    shutdown. The executable remains
+    including the context-aware heartbeat/retry, timeout-triggered-retry,
+    heartbeat-timeout-triggered-retry, and activity-level non-retryable
+    scenarios, and keeps the public native
+    worker loop alive until graceful shutdown. The executable remains
     guarded by [TEMPORAL_TWO_BINARY_LIVE] so a local run cannot accidentally
     connect to a developer's Temporal endpoint; the Compose job is the only
     place that enables the live gate. *)
@@ -234,17 +235,25 @@ let run () =
       in
       let* () = clear_replay_diagnostics_before_start replay_diagnostics_file generation in
       let* cancellation_ready_file = Definitions.cancellation_ready_file () in
+      let* signal_condition_ready_file =
+        Definitions.signal_condition_ready_file ()
+      in
       (* Clear any marker left by a manually interrupted local run before the
          worker can advertise readiness. The driver performs the same cleanup
          immediately before starting workflows, closing the stale-marker race
          without allowing this test-only activity to touch workflow state. *)
       let () = Definitions.clear_cancellation_ready_file cancellation_ready_file in
+      let () =
+        Definitions.clear_signal_condition_ready_file signal_condition_ready_file
+      in
       let worker_result =
         Worker.create ~target_url ~namespace
           ~identity:"ocaml-temporal-two-binary-worker"
           ~task_queue:Definitions.task_queue
           ~workflows:
             [
+              Worker.workflow ~signals:[ Definitions.signal_value_handler ]
+                Definitions.signal_condition_workflow;
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;
               Worker.workflow Definitions.continue_as_new;
@@ -252,6 +261,8 @@ let run () =
               Worker.workflow Definitions.activity_heartbeat_retry;
               Worker.workflow Definitions.async_activity_completion;
               Worker.workflow Definitions.activity_timeout_retry;
+              Worker.workflow Definitions.activity_heartbeat_timeout_retry;
+              Worker.workflow Definitions.activity_non_retryable_failure;
               Worker.workflow Definitions.child_after_timer;
               Worker.workflow Definitions.parent_awaits_child;
               Worker.workflow Definitions.child_non_retryable_failure;
@@ -269,7 +280,10 @@ let run () =
               Worker.activity Definitions.heartbeat_retry_activity;
               Worker.activity Definitions.async_delayed_completion_activity;
               Worker.activity Definitions.timeout_retry_activity;
+              Worker.activity Definitions.heartbeat_timeout_retry_activity;
+              Worker.activity Definitions.non_retryable_activity;
               Worker.activity Definitions.cancellation_ready_activity;
+              Worker.activity Definitions.signal_condition_ready_activity;
             ]
           ()
       in

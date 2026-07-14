@@ -150,6 +150,44 @@ require_source_text "$driver" 'SMOKE:TIMEOUT:RETRIED:SMOKE'
 require_source_text "$worker" 'Worker.workflow Definitions.activity_timeout_retry'
 require_source_text "$worker" 'Worker.activity Definitions.timeout_retry_activity'
 
+require_source_text "$definitions" \
+  'Temporal.Activity.define_with_context ~name:"smoke.heartbeat_timeout_retry"'
+require_source_text "$definitions" \
+  'let heartbeat_timeout_retry_start_to_close_timeout ='
+require_source_text "$definitions" \
+  'Unix.sleepf heartbeat_timeout_retry_first_attempt_sleep_seconds'
+require_source_text "$definitions" \
+  'match Temporal.Activity.Context.details context'
+require_source_text "$definitions" \
+  'let activity_heartbeat_timeout_retry ='
+require_source_text "$driver" 'two-binary-activity-heartbeat-timeout-retry'
+require_source_text "$driver" 'SMOKE:HEARTBEAT_TIMEOUT:RETRIED:SMOKE'
+require_source_text "$worker" \
+  'Worker.workflow Definitions.activity_heartbeat_timeout_retry'
+require_source_text "$worker" \
+  'Worker.activity Definitions.heartbeat_timeout_retry_activity'
+
+require_source_text "$definitions" \
+  'Temporal.Activity.Retry_policy.make'
+require_source_text "$definitions" \
+  '~non_retryable_error_types:[ "activity" ] ()'
+require_source_text "$definitions" \
+  'Temporal.Activity.define ~name:"smoke.non_retryable_activity"'
+require_source_text "$definitions" \
+  'Temporal.Codec.encode Temporal.Codec.string'
+require_source_text "$definitions" \
+  'Temporal.Codec.decode Temporal.Codec.string detail'
+require_source_text "$definitions" \
+  'let activity_non_retryable_failure ='
+require_source_text "$driver" \
+  'two-binary-activity-non-retryable-failure'
+require_source_text "$driver" \
+  'SMOKE:ACTIVITY_NON_RETRYABLE:OBSERVED'
+require_source_text "$worker" \
+  'Worker.workflow Definitions.activity_non_retryable_failure'
+require_source_text "$worker" \
+  'Worker.activity Definitions.non_retryable_activity'
+
 # Child failure and cancellation are intentionally separate parent workflows.
 # The source contract keeps both cases in the two-binary fixture without
 # pretending that a Docker-backed Temporal run has been observed locally.

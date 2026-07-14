@@ -318,9 +318,12 @@ public worker wiring. The native heartbeat path is covered by focused tests in
 and [`rust/core-bridge/tests/activity_protocol.rs`](../../rust/core-bridge/tests/activity_protocol.rs),
 including binary detail preservation, prior-attempt detail delivery, lease
 retention, copied context payloads, callback-exception classification, and
-context invalidation. A live Temporal heartbeat scenario, asynchronous
-activity completion, and timeout/retry behavior still require dedicated
-acceptance scenarios.
+context invalidation. The complete [PR #253 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+also live-verifies server-delivered heartbeat detail/retry, delayed
+asynchronous activity completion, and start-to-close timeout retry. A
+heartbeat-timeout-triggered retry still requires a dedicated acceptance
+scenario because it must be driven by Temporal's timeout decision rather than
+a local timer.
 
 The worker handoff uses `Will_complete_async` only for `define_async` callbacks.
 The later client endpoint rejects that marker and accepts only completed,

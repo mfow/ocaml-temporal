@@ -5,11 +5,15 @@ COMPOSE := docker compose --project-directory "$(TEMPORAL_FIXTURE_DIR)" --file "
 # Compose services bind-mount the repository. Propagate the invoking user's
 # numeric identity, selected OCaml image, and bounded driver timeout so every
 # service shares Dune's lock/build ownership and overrides behave predictably.
-TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) SMOKE_DRIVER_TIMEOUT_SECONDS=$(TEMPORAL_DRIVER_TIMEOUT_SECONDS) SMOKE_WORKER_GENERATION=$(SMOKE_WORKER_GENERATION) SMOKE_WORKER_MAX_CACHED_WORKFLOWS=$(SMOKE_WORKER_MAX_CACHED_WORKFLOWS) SMOKE_WORKER_CACHE_EVICTION_FILE=$(SMOKE_WORKER_CACHE_EVICTION_FILE) SMOKE_REPLAY_WORKFLOW_ID=$(SMOKE_REPLAY_WORKFLOW_ID) $(COMPOSE) --profile temporal
+TEMPORAL_COMPOSE = OCAML_IMAGE=$(OCAML_IMAGE) HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) SMOKE_DRIVER_TIMEOUT_SECONDS=$(TEMPORAL_DRIVER_TIMEOUT_SECONDS) SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS=$(SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS) SMOKE_WORKER_GENERATION=$(SMOKE_WORKER_GENERATION) SMOKE_WORKER_MAX_CACHED_WORKFLOWS=$(SMOKE_WORKER_MAX_CACHED_WORKFLOWS) SMOKE_WORKER_CACHE_EVICTION_FILE=$(SMOKE_WORKER_CACHE_EVICTION_FILE) SMOKE_REPLAY_WORKFLOW_ID=$(SMOKE_REPLAY_WORKFLOW_ID) $(COMPOSE) --profile temporal
 # Keep the one-shot acceptance driver bounded while allowing a temporarily
 # stalled CI PostgreSQL checkpoint to finish. This is a process-level guard,
 # not a workflow timeout; callers can still override it for slower machines.
 TEMPORAL_DRIVER_TIMEOUT_SECONDS ?= 300
+# The cache driver has an isolated Dune build directory because its executable
+# must compile while the long-lived worker holds its own Dune lock. A cold Rust
+# bridge build can consume the normal driver budget before the executable starts.
+SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS ?= 900
 SMOKE_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.smoke-driver.log
 SMOKE_CANCELLATION_READY_FILE := $(TEMPORAL_FIXTURE_DIR)/.cancellation-ready
 SMOKE_WORKER_STOPPED_FILE := $(TEMPORAL_FIXTURE_DIR)/.worker-stopped

@@ -25,6 +25,7 @@ require_source() {
 
 require_source "$makefile" 'test-temporal-worker-cache-eviction:'
 require_source "$makefile" 'SMOKE_WORKER_MAX_CACHED_WORKFLOWS=1'
+require_source "$makefile" 'SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS'
 require_source "$makefile" 'SMOKE_WORKER_CACHE_EVICTION_FILE='
 require_source "$makefile" 'SMOKE_REPLAY_WORKFLOW_ID=two-binary-cache-eviction-a'
 require_source "$makefile" 'smoke-cache-eviction-driver'

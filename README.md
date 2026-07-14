@@ -49,7 +49,7 @@ opaque bytes and applications may choose another deterministic codec.
 | --- | --- |
 | Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
-| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, records activity heartbeats, and supports retained asynchronous activity completion. The complete [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) live-verifies the seventeen-result Compose acceptance, including Temporal-driven heartbeat-timeout retry, activity-level non-retryable error-type matching, child-workflow retry, and duplicate-ID child-start failure; [PR #253](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) remains evidence for the separate two-generation restart/replay acceptance. |
+| Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, records activity heartbeats, and supports retained asynchronous activity completion. The complete [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) live-verifies the seventeen-result Compose acceptance, including Temporal-driven heartbeat-timeout retry, activity-level non-retryable error-type matching, child-workflow retry, and duplicate-ID child-start failure; the [PR #298 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291) live-verifies the separate two-generation restart/replay acceptance, including a replacement worker retrying the activity to attempt two. |
 | Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, exact-run cancellation, and typed exact-run signals. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result; signal acknowledgement likewise does not claim that a worker handler has already run. The [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) live-verifies the current seventeen workflow assertions, including typed signal delivery and condition wake-up; earlier runs remain linked below as historical evidence for smaller slices. |
 | Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
 | Safety boundary | Rust/Core protobuf handling stays in Rust. OCaml/Rust JSON validation, copied payloads, one-owner lifecycle serialization, and idempotent cleanup are covered by focused tests. |
@@ -73,8 +73,9 @@ opaque bytes and applications may choose another deterministic codec.
   The separate restart/replay controller now also requires the replacement
   worker to complete the retrying activity at attempt two; the exact result
   marker proves the retry because Temporal compacts intermediate activity
-  retry events out of workflow history. Live verification of that extension is
-  pending.
+  retry events out of workflow history. The [PR #298 CI
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291)
+  live-verifies that extension against Temporal Server and PostgreSQL.
   Sticky-cache eviction, crash recovery, and broader child lifecycle scenarios
   remain separate acceptance work.
 - Child-workflow commands can be authored and are translated by the semantic

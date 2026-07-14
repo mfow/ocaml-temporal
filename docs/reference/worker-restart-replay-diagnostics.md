@@ -1,6 +1,6 @@
 # Worker restart/replay diagnostic contract
 
-**Status: implemented and live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).** This document defines the small, payload-free records used by the real-Temporal restart test to coordinate a worker replacement. The private worker activation callback and the machine-readable Temporal CLI adapter are implemented. The contract target and the Compose controller both passed: the run observed the exact run, replacement, replay marker, terminal result, normalized history, and volume cleanup. A deliberately failing run for bounded diagnostic preservation remains separate follow-up work.
+**Status: implemented and live-verified in the [PR #298 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291).** This document defines the small, payload-free records used by the real-Temporal restart test to coordinate a worker replacement. The private worker activation callback and the machine-readable Temporal CLI adapter are implemented. The contract target and the Compose controller both passed: the run observed the exact run, replacement, replay marker, retrying activity's attempt-two result, terminal result, normalized history, and volume cleanup. The earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) remains historical evidence for the original two-generation path. A deliberately failing run for bounded diagnostic preservation remains separate follow-up work.
 
 ## Why there is a normalized document
 
@@ -165,9 +165,11 @@ OCAML_VERSION=5.5 DUNE_JOBS=1 make test-temporal-worker-restart-live
 ```
 
 The live target starts the two OCaml binaries, stops/removes generation 1,
-starts generation 2, validates replay and the exact terminal result, and
-removes the PostgreSQL volume on both success and failure. The [PR #253
-Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-passed this sequence. An earlier local attempt was stopped by Docker
+starts generation 2, validates replay, the retrying activity's exact attempt-two
+result, and the exact terminal result, then removes the PostgreSQL volume on
+both success and failure. The [PR #298 Actions
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291) passed
+this current sequence; the earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+passed the original sequence. An earlier local attempt was stopped by Docker
 storage/daemon failure before readiness; that infrastructure failure is not
 part of the live evidence.

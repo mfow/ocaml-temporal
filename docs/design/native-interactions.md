@@ -78,7 +78,7 @@ Consequently:
   validation, duplicate-name rejection, and validator ordering locally.
 - The signal transport tests prove the native activation boundary. Separately,
   the typed signal/condition success path is live-verified against Temporal
-  Server in the [PR #266 Actions run](https://github.com/ocaml-temporal/actions/runs/29311239247):
+  Server in the [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247):
   the driver signals an exact run only after its worker-visible readiness
   marker, and the handler wakes a deterministic condition before returning its
   terminal value. That run does not establish live query or update delivery;
@@ -398,7 +398,7 @@ single side accepting a new variant early:
 6. Expand the Docker Compose acceptance scenario with Temporal Server and
    PostgreSQL to issue a query and wait for an update through the two OCaml
    binaries. The typed signal/condition path is already live-verified by the
-   [PR #266 Actions run](https://github.com/ocaml-temporal/actions/runs/29311239247);
+   [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247);
    record the query and update results separately from synthetic and
    bridge-only evidence.
 

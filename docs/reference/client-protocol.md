@@ -199,11 +199,11 @@ Both OCaml and Rust validate every field, reject unknown/duplicate members,
 and validate the positive acknowledgement before it crosses the FFI boundary.
 The exact-run cancellation path is covered by local mock, supervisor, OCaml
 bridge, and Rust protocol tests. The live driver contains the same scenario,
-and the complete [PR #277 run](https://github.com/ocaml-temporal/actions/runs/29318684069)
+and the complete [PR #277 run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069)
 verified exact-run cancellation, the eventual typed cancelled result, and
 graceful shutdown with outstanding work against a real Temporal Server. The
-earlier [PR #253 run](https://github.com/ocaml-temporal/actions/runs/29286560471)
-remains evidence for the prior twelve-result slice, while [PR #210](https://github.com/ocaml-temporal/actions/runs/29221151859)
+earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
+remains evidence for the prior twelve-result slice, while [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 remains historical evidence for the original nine-workflow slice. See the
 [live acceptance coverage](live-acceptance-coverage.md) for the remaining
 evidence boundary.
@@ -277,7 +277,7 @@ The request and response shapes are defined by
 and
 [`client-signal-response.schema.json`](../schemas/bridge/client-signal-response.schema.json).
 
-The complete [PR #266 Actions run](https://github.com/ocaml-temporal/actions/runs/29311239247)
+The complete [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
 live-verified the signal path against Temporal Server: the driver waited for
 the worker-visible readiness marker before sending the typed signal, then
 observed the handler's value after the condition resumed. The acknowledgement
@@ -422,10 +422,10 @@ The current milestone wires these messages through private OCaml/C/Rust
 bindings and the single-owner supervisor. Public `Temporal.Client` uses this
 native path for `http://` and `https://` targets, including asynchronous start
 and exact-run wait. The deterministic `mock://` transport remains available
-only as a private unit-test seam. The complete [PR #277 Actions run](https://github.com/ocaml-temporal/actions/runs/29318684069)
+only as a private unit-test seam. The complete [PR #277 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069)
 live-verified native client starts and exact-run waits alongside the current
 heartbeat-detail retry and exact-run cancellation assertions against a public
 worker and real Temporal Server. The signal-specific readiness and handler
-assertion is documented above with [PR #266](https://github.com/ocaml-temporal/actions/runs/29311239247).
+assertion is documented above with [PR #266](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247).
 The boundary and remaining cases are tracked in the
 [`two-OCaml-binary acceptance design`](two-ocaml-binary-e2e-acceptance.md).

@@ -32,6 +32,7 @@ require_source "$worker" 'Worker.create ?max_cached_workflows'
 require_source "$worker" 'Worker.workflow Definitions.cache_eviction'
 require_source "$driver_dune" '(name cache_eviction_driver)'
 require_source "$driver" 'wait_for_marker'
+require_source "$driver" 'SMOKE_CANCELLATION_READY_FILE'
 require_source "$driver" 'two-binary-cache-eviction-a'
 require_source "$driver" 'two-binary-cache-eviction-b'
 require_source "$driver" 'Client.cancel ~request_id ~reason:'
@@ -40,6 +41,8 @@ require_source "$driver" 'Client.wait second'
 require_source "$root/lib/public/worker.mli" '?max_cached_workflows:int'
 require_source "$root/lib/public/native_worker.ml" '| Some "" -> Ok None'
 require_source "$root/lib/runtime/native_worker_execution.ml" 'cache_removal_reason'
+require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
+  'Activity.execute cancellation_ready_activity seed'
 
 expected='{"workflow_id":"two-binary-cache-eviction-a","run_id":"22222222-2222-4222-8222-222222222222","reason":"cache_full"}'
 normalized=$(tr -d '[:space:]' <"$fixture")

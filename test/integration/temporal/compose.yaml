@@ -233,6 +233,7 @@ services:
       TEMPORAL_ADDRESS: http://temporal:7233
       TEMPORAL_NAMESPACE: temporal-sdk-test
       SMOKE_DRIVER_TIMEOUT_SECONDS: "${SMOKE_DRIVER_TIMEOUT_SECONDS:-300}"
+      SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready
       SMOKE_CACHE_EVICTION_FILE: /workspace/test/integration/temporal/.cache-eviction.json
     command:
       - timeout

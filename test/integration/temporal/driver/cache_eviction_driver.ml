@@ -80,8 +80,12 @@ let require_cancelled label = function
 let cancel handle ~request_id =
   Client.cancel ~request_id ~reason:"cache eviction acceptance requested" handle
 
-(** Starts both parked executions, observes the worker's explicit eviction
-    marker, and then proves that cancellation still reaches each exact run. *)
+(** Starts the first execution and waits for its readiness activity before
+    admitting the second execution. That activity marker proves the first
+    workflow task has already been completed and prevents two initial tasks
+    from racing through the one-slot Core cache. The driver then observes the
+    worker's explicit eviction marker and proves cancellation still reaches
+    each exact run. *)
 let run () =
   match Sys.getenv_opt "TEMPORAL_TWO_BINARY_LIVE" with
   | Some "1" ->
@@ -89,6 +93,7 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* marker = required_env "SMOKE_CACHE_EVICTION_FILE" in
+      let* ready_marker = required_env "SMOKE_CANCELLATION_READY_FILE" in
       let* timeout = timeout_seconds () in
       let* client =
         Client.create ~target_url ~namespace
@@ -105,6 +110,7 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-cache-eviction-a" ~input:"first" ()
         in
+        let* () = wait_for_marker ready_marker ~timeout in
         let* second =
           Client.start client ~workflow:Definitions.cache_eviction
             ~task_queue:Definitions.task_queue

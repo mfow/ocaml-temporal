@@ -79,7 +79,9 @@ for those rules.
   combines the existing client, workflow definition, and successor identity;
   it does not start or implicitly follow a run. A successful cancel or signal
   acknowledges the server request; it does not claim that workflow code has
-  already processed it.
+  already processed it. Call `Client.shutdown` when the client is no longer
+  needed to release its native graph; shutdown is idempotent and retains a
+  teardown failure so cleanup problems are not silently discarded.
 - `Temporal.Worker` registers workflows and activities, owns one supervisor
   graph, runs the poll loops, and performs idempotent shutdown. The final
   executable remains an OCaml application; Rust is a private linked

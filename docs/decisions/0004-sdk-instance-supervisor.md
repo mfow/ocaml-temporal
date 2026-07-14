@@ -6,8 +6,10 @@ Accepted and implemented on 2026-07-11. The native graph contains the real
 Rust runtime, one official client connection, and one worker configured for
 workflows and remote activities. Typed nonblocking polling, completion, and
 rejection now use the same graph. The native boundary also provides bounded
-wakeable readiness; integrating it into the supervisor's production scheduling
-loop remains Phase 2 work.
+wakeable readiness, and the private production worker loop composes those
+waits with the typed supervisor operations. The earlier Phase 2 wording in
+this record is historical; broader runtime adapters remain future work, but
+the current `Temporal.Worker.run` path is implemented.
 
 ## Context
 
@@ -54,8 +56,9 @@ client, start a validated workflow/remote-activity worker, stop that worker,
 and disconnect the client. The same typed language drains already-ready
 workflow and remote-activity tasks, completes them, and rejects an exact
 malformed polled document without leaking its retained native lease. The
-bridge's bounded readiness operations remain private and will be composed into
-this language by the production scheduling loop.
+bridge's bounded readiness operations remain private and are composed into the
+private production scheduling loop. The public worker API does not expose the
+supervisor, native handles, or readiness primitives.
 
 ## Lifecycle and failure rules
 
@@ -148,6 +151,7 @@ Focused tests prove:
   API.
 - Cooperative runtime adapters are still required and must not weaken the
   blocking boundary.
-- The supervisor can perform one nonblocking poll or completion operation, but
-  the production execution loop that coordinates those operations with the
-  existing wakeable readiness seam remains Phase 2 work.
+- The supervisor performs one nonblocking poll or completion operation at a
+  time, while the production execution loop coordinates those operations with
+  the existing wakeable readiness seam. Broader runtime adapters still require
+  their own documented blocking boundary.

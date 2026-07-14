@@ -150,6 +150,20 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Reclaim disposable GitHub-hosted runner disk
+        # Linking the Rust static library into the OCaml test executables can
+        # temporarily require more space than the preinstalled Android, .NET,
+        # and Haskell toolchains leave on the amd64 hosted image. This guard
+        # keeps the destructive cleanup confined to GitHub's disposable
+        # runner; arm64 and any future self-hosted runners are left untouched.
+        if: matrix.runner == 'ubuntu-24.04' && runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          docker system prune --all --force --volumes
+          df -h /
       - name: Build, lint, and test
         run: make verify OCAML_VERSION=${{ matrix.ocaml }}
 

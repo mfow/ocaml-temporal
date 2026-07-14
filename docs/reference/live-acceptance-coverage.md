@@ -36,16 +36,18 @@ in the terminal result. After the heartbeat result is terminal it starts
 passed the prior twelve assertions against Temporal Server 1.31 and PostgreSQL,
 including the exact delayed asynchronous result, timeout retry, and
 continue-as-new successor. The same run then passed the two-generation
-restart/replay controller. The historical [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
+continue-as-new successor. The [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29310656994)
+then passed all thirteen assertions, including the typed signal acknowledgement,
+worker handler delivery, deterministic condition wake-up, and exact terminal
+value. The PR #253 run also passed the two-generation restart/replay controller.
+The historical [PR #210 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 and [PR #226 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29224854182)
 remain useful CI evidence for the earlier nine- and ten-scenario slices.
 
-The signal scenario is **Implemented — live verification pending** until a
-green integration job proves the client acknowledgement, worker handler
-delivery, condition wake-up, and exact terminal value against Temporal Server.
-The signal request is deliberately sent before the other waits, so a green
-result demonstrates server delivery to a suspended execution rather than a
-local callback or a driver-side shortcut.
+The signal scenario is now **Verified (live success path)** by PR #266. The
+signal request is deliberately sent before the other waits, so the green
+integration result demonstrates server delivery to a suspended execution
+rather than a local callback or a driver-side shortcut.
 
 The earlier run live-verified four exact successes, a second activity task delivered
 by an ordinary retry policy, a heartbeat detail and timeout delivered to a

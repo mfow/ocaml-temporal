@@ -96,10 +96,13 @@ val create :
 
 val observe : t -> activation -> (observation, error) result
 (** Validates and classifies one activation without mutating [state]. A target
-    workflow/run mismatch, wrong replay bit, non-positive history length, or
-    child-before-parent initial observation returns [Error]. The caller can
-    therefore leave its retained state untouched when atomic publication fails.
-*)
+    workflow/run mismatch always returns [Error]. For a role's first observation
+    in the current generation, a wrong replay bit, non-positive history length,
+    or child-before-parent initial observation also returns [Error]. Once that
+    exact role and run have supplied their checkpoint, later replay or live
+    activations return [Duplicate] without revalidating phase metadata. The
+    caller can therefore leave its retained state untouched when atomic
+    publication fails. *)
 
 val role_name : role -> string
 (** Returns a lowercase closed spelling used by the JSON adapter. *)

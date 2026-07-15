@@ -211,11 +211,12 @@ let test_generation_two_replay_checkpoint () =
       failwith "a replay without initialization metadata was not deduplicated"
   | Error error -> failwith ("repeated replay failed: " ^ error.code)
 
-(** Once generation two has published its complete replay checkpoint, later
-    live activations for either exact execution are outside this diagnostic's
-    remit. In particular, a durable timer may fire with [is_replaying = false];
-    treating that as a duplicate keeps the observer from failing an otherwise
-    valid workflow task. *)
+(** Once a generation-two role has supplied its replay checkpoint, later live
+    activations for that exact execution are outside this diagnostic's remit,
+    both before and after the other role completes the atomic checkpoint. In
+    particular, a durable timer may fire with [is_replaying = false]; treating
+    that as a duplicate keeps the observer from failing an otherwise valid
+    workflow task. Identity classification remains fail-closed throughout. *)
 let test_generation_two_ignores_post_checkpoint_live_activations () =
   let _generation_one_state, previous = complete_generation_one () in
   let generation_two =
@@ -235,21 +236,67 @@ let test_generation_two_ignores_post_checkpoint_live_activations () =
     | Ok _ -> failwith "child replay did not retain its partial checkpoint"
     | Error error -> failwith ("child replay failed: " ^ error.code)
   in
-  let complete_state, _document =
+  (match
+     Checkpoint.observe after_child_replay
+       (activation ~workflow_id:child_workflow_id ~run_id:child_run_id
+          ~is_replaying:false ~history_length:12L ())
+   with
+  | Ok Checkpoint.Duplicate -> ()
+  | Ok _ -> failwith "partial post-checkpoint live activation was not deduplicated"
+  | Error error ->
+      failwith ("partial post-checkpoint live activation failed: " ^ error.code));
+  let complete_state, document =
     Checkpoint.observe after_child_replay
       (activation ~workflow_id:parent_workflow_id ~run_id:parent_run_id
          ~is_replaying:true ~history_length:13L ())
     |> require_checkpoint "parent replay before live activation"
   in
-  match
-    Checkpoint.observe complete_state
-      (activation ~workflow_id:child_workflow_id ~run_id:child_run_id
-         ~is_replaying:false ~history_length:15L ())
-  with
+  expect "interleaved generation-two canonical records"
+    [
+      {
+        Checkpoint.role = Checkpoint.Parent;
+        phase = Checkpoint.Initial;
+        generation = 1;
+        is_replaying = false;
+        history_length = 5L;
+      };
+      {
+        Checkpoint.role = Checkpoint.Child;
+        phase = Checkpoint.Initial;
+        generation = 1;
+        is_replaying = false;
+        history_length = 7L;
+      };
+      {
+        Checkpoint.role = Checkpoint.Parent;
+        phase = Checkpoint.Replay;
+        generation = 2;
+        is_replaying = true;
+        history_length = 13L;
+      };
+      {
+        Checkpoint.role = Checkpoint.Child;
+        phase = Checkpoint.Replay;
+        generation = 2;
+        is_replaying = true;
+        history_length = 11L;
+      };
+    ]
+    document.records;
+  (match
+     Checkpoint.observe complete_state
+       (activation ~workflow_id:child_workflow_id ~run_id:child_run_id
+          ~is_replaying:false ~history_length:15L ())
+   with
   | Ok Checkpoint.Duplicate -> ()
-  | Ok _ -> failwith "post-checkpoint live activation was not deduplicated"
+  | Ok _ -> failwith "complete post-checkpoint live activation was not deduplicated"
   | Error error ->
-      failwith ("post-checkpoint live activation failed: " ^ error.code)
+      failwith ("complete post-checkpoint live activation failed: " ^ error.code));
+  Checkpoint.observe complete_state
+    (activation ~workflow_id:"wrong-child-workflow" ~run_id:child_run_id
+       ~is_replaying:false ~history_length:15L ())
+  |> expect_error "post-checkpoint workflow mismatch"
+       "activation_identity_mismatch"
 
 (** Tests the fail-closed identity and phase checks that prevent one wrong run
     or non-replay task from being mistaken for parent/child recovery evidence.

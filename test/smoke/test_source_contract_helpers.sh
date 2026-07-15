@@ -28,7 +28,6 @@ printf '%s\n' \
   '  make' \
   '    ~maximum_attempts:1 ()' \
   '' \
-  '(** The next binding must not satisfy the target policy contract. *)' \
   'let unrelated_policy =' \
   '  make' \
   '    ~maximum_attempts:2 ()' >"$fixture"

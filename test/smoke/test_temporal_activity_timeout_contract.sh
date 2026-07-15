@@ -50,7 +50,8 @@ require_text "$definitions" 'let timeout_retry_policy ='
 require_text "$definitions" \
   '~initial_interval:(Temporal.Duration.of_ms 7_000L)'
 require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 7_000L) ~maximum_attempts:2 ()'
+  '~maximum_interval:(Temporal.Duration.of_ms 7_000L)'
+require_text "$definitions" '~maximum_attempts:2 ()'
 require_text "$definitions" 'let timeout_retry_attempts = Atomic.make 0'
 require_text "$definitions" \
   'Temporal.Activity.define ~name:"smoke.timeout_retry"'

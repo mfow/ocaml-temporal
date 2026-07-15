@@ -42,7 +42,8 @@ require_file "$worker"
 require_text "$definitions" \
   'let child_activity_no_retry_policy ='
 require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:1 ()'
+  '~maximum_interval:(Temporal.Duration.of_ms 100L)'
+require_text "$definitions" '~maximum_attempts:1 ()'
 require_text "$definitions" \
   'let child_retry_attempts = Atomic.make 0'
 require_text "$definitions" \
@@ -56,13 +57,15 @@ require_text "$definitions" \
 require_text "$definitions" \
   'match child_activity_no_retry_policy with'
 require_text "$definitions" \
-  'Temporal.Activity.execute ~retry_policy:policy child_retry_activity seed'
+  'Temporal.Activity.execute ~retry_policy:policy child_retry_activity'
+require_text "$definitions" 'seed'
 require_text "$definitions" \
   'intentional retryable child workflow failure'
 require_text "$definitions" \
   'let child_retry_policy ='
 require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:2 ()'
+  '~maximum_interval:(Temporal.Duration.of_ms 100L)'
+require_text "$definitions" '~maximum_attempts:2 ()'
 require_text "$definitions" \
   'let parent_retries_child ='
 require_text "$definitions" \

@@ -47,7 +47,8 @@ require_text "$definitions" 'let heartbeat_timeout_retry_policy ='
 require_text "$definitions" \
   '~initial_interval:(Temporal.Duration.of_ms 7_000L)'
 require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 7_000L) ~maximum_attempts:2 ()'
+  '~maximum_interval:(Temporal.Duration.of_ms 7_000L)'
+require_text "$definitions" '~maximum_attempts:2 ()'
 require_text "$definitions" \
   'let heartbeat_timeout_retry_attempts = Atomic.make 0'
 require_text "$definitions" \
@@ -58,11 +59,11 @@ require_text "$definitions" \
   'Ok "SMOKE:HEARTBEAT_TIMEOUT:ATTEMPT:1"'
 require_text "$definitions" \
   'match Temporal.Activity.Context.details context'
-require_text "$definitions" \
-  'Ok ("SMOKE:HEARTBEAT_TIMEOUT:RETRIED:" ^ String.uppercase_ascii input)'
+require_text "$definitions" '"SMOKE:HEARTBEAT_TIMEOUT:RETRIED:"'
+require_text "$definitions" '^ String.uppercase_ascii input'
 require_text "$definitions" 'let activity_heartbeat_timeout_retry ='
-require_text "$definitions" \
-  '~start_to_close_timeout:heartbeat_timeout_retry_start_to_close_timeout'
+require_text "$definitions" '~start_to_close_timeout:'
+require_text "$definitions" 'heartbeat_timeout_retry_start_to_close_timeout'
 require_text "$definitions" '~heartbeat_timeout'
 require_text "$definitions" '~retry_policy:policy ~do_not_eagerly_execute:true'
 

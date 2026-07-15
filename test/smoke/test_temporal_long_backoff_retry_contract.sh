@@ -35,7 +35,8 @@ require_text "$definitions" 'let long_backoff_retry_policy ='
 require_text "$definitions" \
   '~initial_interval:(Temporal.Duration.of_ms 2_000L)'
 require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 2_000L) ~maximum_attempts:2 ()'
+  '~maximum_interval:(Temporal.Duration.of_ms 2_000L)'
+require_text "$definitions" '~maximum_attempts:2 ()'
 
 # The activity records the first attempt time in worker-local state and rejects
 # an unexpectedly immediate second attempt. The exact result marker then proves

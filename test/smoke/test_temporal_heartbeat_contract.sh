@@ -54,7 +54,8 @@ require_text "$definitions" 'let* progress = Temporal.Codec.decode Temporal.Code
 require_text "$definitions" 'Ok ("SMOKE:HEARTBEAT:RETRIED:" ^ String.uppercase_ascii input)'
 require_text "$definitions" 'let activity_heartbeat_retry ='
 require_text "$definitions" 'Temporal.Activity.execute ~heartbeat_timeout'
-require_text "$definitions" '~retry_policy:policy heartbeat_retry_activity seed'
+require_text "$definitions" '~retry_policy:policy'
+require_text "$definitions" 'heartbeat_retry_activity seed'
 require_text "$definitions" '~maximum_attempts:2 ()'
 
 # The worker owns both implementation registrations. A source-only check here

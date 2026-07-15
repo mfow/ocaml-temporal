@@ -719,11 +719,6 @@ let replay_diagnostic_hook () =
           second_target_workflow_id;
         }
       in
-      (* This latch is advanced only by the post-acknowledgement completion
-         callback below. It therefore distinguishes the cache fixture's
-         expected same-worker rehydration from an unrelated generation-one
-         replay, which remains a diagnostic failure. *)
-      let cache_full_acknowledged = ref false in
       let matches_target (info : Workflow_adapter.activation_info) =
         match (state.target_workflow_id, info.workflow_id, state.workflow_id) with
         | Some target, Some workflow_id, _ -> String.equal target workflow_id
@@ -749,19 +744,20 @@ let replay_diagnostic_hook () =
           | Some expected, actual when not (String.equal expected actual) -> ()
           | _ ->
               if Option.is_none info.cache_removal_reason then
-                (* A one-slot cache test intentionally rehydrates the evicted
-                   run in the same worker generation. Restart diagnostics use
-                   generation one to reject unexpected replay, but applying
-                   that invariant to the cache fixture turns a valid replay
-                   activation into a workflow failure. The eviction callback
-                   has already recorded the acknowledged CacheFull removal, so
-                   this replay needs no additional restart record. *)
-                let cache_rehydration =
+                (* The one-slot cache fixture can legitimately receive a
+                   replaying normal activation both after CacheFull eviction
+                   and before cache pressure when Temporal redelivers an
+                   unacknowledged workflow task. Restart diagnostics use
+                   generation one to reject unexpected replay, but the cache
+                   fixture is identified by its otherwise absent marker path
+                   and must not turn either valid delivery into workflow
+                   failure. Its dedicated post-acknowledgement markers, not
+                   this restart record, provide the acceptance evidence. *)
+                let cache_fixture_replay =
                   state.generation = 1 && info.is_replaying
                   && Option.is_some state.cache_eviction_path
-                  && !cache_full_acknowledged
                 in
-                if not cache_rehydration then
+                if not cache_fixture_replay then
                   let phase = if info.is_replaying then "replay" else "initial" in
                   let already_recorded =
                     List.exists
@@ -810,21 +806,23 @@ let replay_diagnostic_hook () =
                  later remove the same run because its execution ended; that
                  lifecycle event must not overwrite the acknowledged
                  CacheFull evidence before the post-driver validator reads it. *)
-              write_cache_eviction_marker state ~reason:"cache_full";
-              cache_full_acknowledged := true
+              write_cache_eviction_marker state ~reason:"cache_full"
           | Some _ -> ()
-          | None when not info.is_replaying ->
+          | None ->
+              (* This barrier proves only that Core acknowledged a normal
+                 activation completion. A pre-pressure task redelivery is
+                 replaying but is still a valid cached execution, so excluding
+                 it can deadlock the client-only driver before run B starts. *)
               (match state.cache_eviction_ready_path with
               | Some path -> write_cache_eviction_ready_marker path
               | None -> ())
-          | None -> ()
         else if matches_second_target info then
           match info.cache_removal_reason with
-          | None when not info.is_replaying ->
+          | None ->
               (match state.cache_eviction_second_ready_path with
               | Some path -> write_cache_eviction_ready_marker path
               | None -> ())
-          | Some _ | None -> ()
+          | Some _ -> ()
       in
       Ok (Some callback, Some completion_callback)
   | Some _ ->

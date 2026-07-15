@@ -580,7 +580,7 @@ let write_replay_diagnostics state =
          raise exception_)
   | _ -> failwith "replay diagnostics state has no workflow/run identity"
 
-(** Writes one payload-free eviction marker after Core has delivered an
+(** Writes one payload-free eviction marker after Core has acknowledged an
     explicit cache-removal activation. The marker is separate from replay
     history because an eviction can occur between two replay records and must
     not change the restart document's two-record contract. *)
@@ -708,10 +708,7 @@ let replay_diagnostic_hook () =
           (match (state.run_id, info.run_id) with
           | Some expected, actual when not (String.equal expected actual) -> ()
           | _ ->
-              (match info.cache_removal_reason with
-              | Some reason ->
-                  write_cache_eviction_marker state ~reason
-              | None ->
+              if Option.is_none info.cache_removal_reason then
                   let phase = if info.is_replaying then "replay" else "initial" in
                   let already_recorded =
                     List.exists
@@ -748,15 +745,18 @@ let replay_diagnostic_hook () =
                           };
                         ];
                     write_replay_diagnostics state
-                  end)
+                  end
           )
         end
       in
       let completion_callback (info : Workflow_adapter.activation_info) =
-        if matches_target info && not info.is_replaying
-           && Option.is_none info.cache_removal_reason then
-          match state.cache_eviction_ready_path with
-          | Some path -> write_cache_eviction_ready_marker path
+        if matches_target info then
+          match info.cache_removal_reason with
+          | Some reason -> write_cache_eviction_marker state ~reason
+          | None when not info.is_replaying ->
+              (match state.cache_eviction_ready_path with
+              | Some path -> write_cache_eviction_ready_marker path
+              | None -> ())
           | None -> ()
       in
       Ok (Some callback, Some completion_callback)

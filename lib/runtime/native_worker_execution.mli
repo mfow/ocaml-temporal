@@ -59,7 +59,8 @@ type activation_info = {
     workflow code is entered, so an activation diagnostic sink can prove
     replay or an explicit Core cache eviction without introducing an
     asynchronous cross-language callback. The same value may be delivered to
-    the completion observer after Core has acknowledged a normal completion. *)
+    the completion observer after Core has acknowledged the activation
+    completion. *)
 
 (** One workflow definition registered with the worker. The existential
     wrapper preserves the input/output codec relationship while allowing one

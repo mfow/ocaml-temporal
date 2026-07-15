@@ -494,9 +494,10 @@ module Make (Supervisor : SUPERVISOR) = struct
        thread. *)
     on_activation : (activation_info -> unit) option;
     (* Optional owner-Domain completion hook. It is called only after the
-       supervisor acknowledges a normal activation completion, so a test can
-       use it as an exact admission barrier without inferring completion from
-       an earlier activation callback. *)
+       supervisor acknowledges an activation completion, including the empty
+       completion used for cache eviction, so a test can use it as an exact
+       admission barrier without inferring completion from an earlier
+       activation callback. *)
     on_completion : (activation_info -> unit) option;
   }
 
@@ -782,7 +783,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     | Protocol.Pagination_or_history_fetch -> "pagination_or_history_fetch"
     | Protocol.Workflow_execution_ending -> "workflow_execution_ending"
 
-  (** Reports a completed normal activation without allowing a diagnostic
+  (** Reports an acknowledged activation without allowing a diagnostic
       observer defect to undo an already acknowledged native lease. *)
   let notify_completion adapter (info : activation_info) =
     match adapter.on_completion with

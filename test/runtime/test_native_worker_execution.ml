@@ -1104,10 +1104,17 @@ let test_eviction () =
        [ initialize ~run_id:"run-eviction"
            ~workflow_type:"native_worker_eviction" ]);
   let seen = ref [] in
+  let completed = ref [] in
+  let eviction_completion_lease_retired = ref false in
   let worker =
     match
       Worker.create
         ~on_activation:(fun info -> seen := info :: !seen)
+        ~on_completion:(fun info ->
+          completed := info :: !completed;
+          if Option.is_some info.cache_removal_reason then
+            eviction_completion_lease_retired :=
+              not (Hashtbl.mem supervisor.leased info.run_id))
         ~supervisor ~workflows:[ Adapter.register workflow ] ()
     with
     | Ok worker -> worker
@@ -1133,6 +1140,16 @@ let test_eviction () =
   begin match (latest_completion supervisor).commands with
   | [] -> ()
   | _ -> failwith "cache eviction unexpectedly emitted a workflow command"
+  end;
+  if not !eviction_completion_lease_retired then
+    failwith "cache eviction completion hook ran before the native lease retired";
+  begin
+    match !completed with
+    | eviction :: _
+      when String.equal eviction.run_id "run-eviction"
+           && eviction.cache_removal_reason = Some "cache_full" ->
+        ()
+    | _ -> failwith "cache eviction completion metadata was not delivered"
   end;
   enqueue supervisor
     (activation ~run_id:"run-eviction" [ Protocol.Fire_timer { seq = 1L } ]);

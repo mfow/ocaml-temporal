@@ -127,6 +127,11 @@ type pending_result =
       command_count : int;
       terminal : bool;
       evicted : bool;
+      (* Completion observers must run after native acknowledgement, including
+         when an initially rejected completion succeeds on a later poll. Keep
+         the immutable metadata beside the retained completion so retry cannot
+         lose the observer event or reconstruct it from already-dropped state. *)
+      activation_info : activation_info;
     }
   | Pending_rejected of {
       error : error_view;
@@ -671,14 +676,27 @@ module Make (Supervisor : SUPERVISOR) = struct
         (try Execution.shutdown execution with _ -> ());
         adapter.runs <- Run_map.remove run_id adapter.runs
 
+  (** Reports an acknowledged activation without allowing a diagnostic
+      observer defect to undo an already acknowledged native lease. Keeping
+      this call in [accepted_pending] gives immediate submissions and retained
+      retries the same exactly-once notification path. *)
+  let notify_completion adapter (info : activation_info) =
+    match adapter.on_completion with
+    | None -> ()
+    | Some callback ->
+        (try callback info with _ ->
+          report Logs.Warning ~operation:"workflow_completion_diagnostic_failed" ())
+
   (** Applies bookkeeping only after the supervisor acknowledges a retained
       completion. This is the single release point for both normal and
       adapter-generated failure completions. *)
   let accepted_pending adapter pending =
     adapter.pending <- Run_map.remove pending.run_id adapter.pending;
     match pending.result with
-    | Pending_completed { command_count; terminal; evicted } ->
+    | Pending_completed
+        { command_count; terminal; evicted; activation_info } ->
         if terminal || evicted then drop_run adapter pending.run_id;
+        notify_completion adapter activation_info;
         report Logs.Debug ~operation:"workflow_activation_completed" ();
         Ok
           (Completed
@@ -783,15 +801,6 @@ module Make (Supervisor : SUPERVISOR) = struct
     | Protocol.Pagination_or_history_fetch -> "pagination_or_history_fetch"
     | Protocol.Workflow_execution_ending -> "workflow_execution_ending"
 
-  (** Reports an acknowledged activation without allowing a diagnostic
-      observer defect to undo an already acknowledged native lease. *)
-  let notify_completion adapter (info : activation_info) =
-    match adapter.on_completion with
-    | None -> ()
-    | Some callback ->
-        (try callback info with _ ->
-          report Logs.Warning ~operation:"workflow_completion_diagnostic_failed" ())
-
   (** Produces activation metadata once so activation and completion observers
       receive the exact same translated identity and replay state. *)
   let activation_info_of_translated
@@ -828,6 +837,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                 List.exists
                   (function Protocol.Remove_from_cache _ -> true | _ -> false)
                   activation.Protocol.jobs;
+              activation_info;
             };
       }
     in
@@ -838,10 +848,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     else begin
       adapter.pending <- Run_map.add pending.run_id pending adapter.pending;
       match attempt_completion adapter.supervisor pending.completion with
-      | Accepted ->
-          let result = accepted_pending adapter pending in
-          notify_completion adapter activation_info;
-          result
+      | Accepted -> accepted_pending adapter pending
       | Rejected_by_supervisor error -> Error error
       | Raised_by_supervisor exception_ ->
           (* Eviction acknowledgements must stay empty completions. Removing
@@ -864,7 +871,8 @@ module Make (Supervisor : SUPERVISOR) = struct
       the ordinary submission path: if the native completion call raises, the
       exact empty acknowledgement remains pending for a later retry and is
       never replaced by an invalid failure command. *)
-  let submit_eviction_acknowledgement adapter (activation : Protocol.activation) =
+  let submit_eviction_acknowledgement adapter (activation : Protocol.activation)
+      ~activation_info =
     let completion =
       Protocol.{ run_id = activation.run_id; commands = [] }
     in
@@ -873,7 +881,13 @@ module Make (Supervisor : SUPERVISOR) = struct
         run_id = activation.run_id;
         completion = copy_completion completion;
         result =
-          Pending_completed { command_count = 0; terminal = false; evicted = true };
+          Pending_completed
+            {
+              command_count = 0;
+              terminal = false;
+              evicted = true;
+              activation_info;
+            };
       }
     in
     enqueue_pending adapter pending
@@ -916,7 +930,8 @@ module Make (Supervisor : SUPERVISOR) = struct
                    removed it for a terminal completion. The eviction still
                    owns a native lease and must receive the exact successful
                    empty completion; a failure command is invalid here. *)
-                submit_eviction_acknowledgement adapter activation
+                    submit_eviction_acknowledgement adapter activation
+                      ~activation_info
             | _ -> (
                 match initialization activation with
                 | Error error -> retire_with_failure adapter activation error

@@ -719,6 +719,11 @@ let replay_diagnostic_hook () =
           second_target_workflow_id;
         }
       in
+      (* This latch is advanced only by the post-acknowledgement completion
+         callback below. It therefore distinguishes the cache fixture's
+         expected same-worker rehydration from an unrelated generation-one
+         replay, which remains a diagnostic failure. *)
+      let cache_full_acknowledged = ref false in
       let matches_target (info : Workflow_adapter.activation_info) =
         match (state.target_workflow_id, info.workflow_id, state.workflow_id) with
         | Some target, Some workflow_id, _ -> String.equal target workflow_id
@@ -744,6 +749,19 @@ let replay_diagnostic_hook () =
           | Some expected, actual when not (String.equal expected actual) -> ()
           | _ ->
               if Option.is_none info.cache_removal_reason then
+                (* A one-slot cache test intentionally rehydrates the evicted
+                   run in the same worker generation. Restart diagnostics use
+                   generation one to reject unexpected replay, but applying
+                   that invariant to the cache fixture turns a valid replay
+                   activation into a workflow failure. The eviction callback
+                   has already recorded the acknowledged CacheFull removal, so
+                   this replay needs no additional restart record. *)
+                let cache_rehydration =
+                  state.generation = 1 && info.is_replaying
+                  && Option.is_some state.cache_eviction_path
+                  && !cache_full_acknowledged
+                in
+                if not cache_rehydration then
                   let phase = if info.is_replaying then "replay" else "initial" in
                   let already_recorded =
                     List.exists
@@ -787,7 +805,10 @@ let replay_diagnostic_hook () =
       let completion_callback (info : Workflow_adapter.activation_info) =
         if matches_target info then
           match info.cache_removal_reason with
-          | Some reason -> write_cache_eviction_marker state ~reason
+          | Some reason ->
+              write_cache_eviction_marker state ~reason;
+              if String.equal reason "cache_full" then
+                cache_full_acknowledged := true
           | None when not info.is_replaying ->
               (match state.cache_eviction_ready_path with
               | Some path -> write_cache_eviction_ready_marker path

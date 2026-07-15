@@ -422,6 +422,69 @@ let test_completion_metadata_hook_runs_after_acknowledgement () =
   | None -> failwith "completion metadata hook was not called"
   | Some _ -> failwith "completion metadata hook received incorrect metadata"
 
+(** A completion rejected by the native supervisor remains retained for a
+    later poll. The observer must stay silent until that retry succeeds, then
+    receive the original CacheFull metadata exactly once after lease retirement.
+    This preserves the post-acknowledgement evidence that the live cache test
+    uses even when the native completion call is transiently unavailable. *)
+let test_completion_metadata_hook_survives_retry () =
+  let run_id = "run-completion-hook-retry" in
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_completion_hook_retry"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id
+           ~workflow_type:"native_worker_completion_hook_retry" ]);
+  let seen = ref [] in
+  let worker =
+    match
+      Worker.create
+        ~on_completion:(fun info ->
+          if Option.is_some info.cache_removal_reason then seen := info :: !seen)
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          (Printf.sprintf "completion retry hook creation failed: %s"
+             error.message)
+  in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  supervisor.reject_next_completion := true;
+  enqueue supervisor
+    (eviction_activation ~run_id
+       [ Protocol.Remove_from_cache
+           { message = "cache pressure"; reason = Protocol.Cache_full } ]);
+  begin
+    match Worker.poll worker with
+    | Error { code = "completion_failed"; _ } -> ()
+    | Ok _ -> failwith "rejected eviction acknowledgement unexpectedly succeeded"
+    | Error error ->
+        failwith
+          (Printf.sprintf "eviction acknowledgement returned %s" error.code)
+  end;
+  if !seen <> [] then
+    failwith "completion observer ran before the retained retry was accepted";
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin
+    match !seen with
+    | [
+     {
+       Raw_adapter.run_id = observed_run_id;
+       cache_removal_reason = Some "cache_full";
+       _;
+     } ]
+      when String.equal observed_run_id run_id ->
+        ()
+    | _ -> failwith "retained completion did not notify exactly once"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "retained eviction acknowledgement left a native lease outstanding"
+
 (** A diagnostic callback is outside workflow code and must not be able to
     escape the worker poll with an unretired lease. The adapter converts its
     exception to a typed rejection and submits the normal failure completion. *)
@@ -1226,19 +1289,34 @@ let test_eviction_allows_fresh_replay_execution () =
     eviction with Core's exact successful empty completion instead of trying
     to report an invalid workflow failure. *)
 let test_eviction_after_terminal_completion () =
+  let run_id = "run-terminal-eviction" in
   let supervisor = fake_supervisor () in
   let workflow =
     Temporal.Workflow.define ~name:"native_worker_terminal_eviction"
       ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () -> Ok ())
   in
   enqueue supervisor
-    (activation ~run_id:"run-terminal-eviction"
-       [ initialize ~run_id:"run-terminal-eviction"
+    (activation ~run_id
+       [ initialize ~run_id
            ~workflow_type:"native_worker_terminal_eviction" ]);
-  let worker = worker supervisor [ Adapter.register workflow ] in
+  let eviction_notifications = ref [] in
+  let worker =
+    match
+      Worker.create
+        ~on_completion:(fun info ->
+          if Option.is_some info.cache_removal_reason then
+            eviction_notifications := info :: !eviction_notifications)
+        ~supervisor ~workflows:[ Adapter.register workflow ] ()
+    with
+    | Ok worker -> worker
+    | Error error ->
+        failwith
+          (Printf.sprintf "terminal eviction worker creation failed: %s"
+             error.message)
+  in
   expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
   enqueue supervisor
-    (eviction_activation ~run_id:"run-terminal-eviction"
+    (eviction_activation ~run_id
        [ Protocol.Remove_from_cache
            {
              message = "terminal run eviction";
@@ -1258,6 +1336,8 @@ let test_eviction_after_terminal_completion () =
   end;
   if Hashtbl.length supervisor.leased <> 1 then
     failwith "raised terminal eviction did not retain its native lease";
+  if !eviction_notifications <> [] then
+    failwith "terminal eviction observer ran before acknowledgement retry";
   begin
     match Worker.poll worker with
     | Ok
@@ -1273,6 +1353,17 @@ let test_eviction_after_terminal_completion () =
     match (latest_completion supervisor).commands with
     | [] -> ()
     | _ -> failwith "terminal eviction emitted a workflow command"
+  end;
+  begin
+    match !eviction_notifications with
+    | [ { Raw_adapter.run_id = observed_run_id;
+          cache_removal_reason = Some "cache_full";
+          _ } ]
+      when String.equal observed_run_id run_id ->
+        ()
+    | _ ->
+        failwith
+          "terminal eviction retry did not notify exactly once after acknowledgement"
   end;
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "terminal eviction left a native lease outstanding"
@@ -2189,6 +2280,7 @@ let () =
   test_terminal_workflow ();
   test_activation_metadata_hook ();
   test_completion_metadata_hook_runs_after_acknowledgement ();
+  test_completion_metadata_hook_survives_retry ();
   test_activation_metadata_hook_failure_is_typed ();
   test_timer_suspension_and_resume ();
   test_cancellation ();

@@ -738,6 +738,23 @@ let replay_diagnostic_hook () =
         | Some expected, Some actual -> String.equal expected actual
         | _ -> false
       in
+      (* Binds the exact target identity before a later RemoveFromCache
+         activation omits InitializeWorkflow metadata. A replayed activation
+         can be the first delivery this worker observes after a workflow-task
+         timeout, so the cache-fixture replay exemption must retain identity
+         even though it intentionally skips the restart diagnostic record. *)
+      let remember_target_identity (info : Workflow_adapter.activation_info) =
+        (match (state.workflow_id, info.workflow_id) with
+        | None, Some workflow_id -> state.workflow_id <- Some workflow_id
+        | Some expected, Some actual when not (String.equal expected actual) ->
+            failwith "replay activation workflow ID changed"
+        | _ -> ());
+        match state.run_id with
+        | None -> state.run_id <- Some info.run_id
+        | Some expected when not (String.equal expected info.run_id) ->
+            failwith "replay activation run ID changed"
+        | Some _ -> ()
+      in
       let callback (info : Workflow_adapter.activation_info) =
         if matches_target info then begin
           (match (state.run_id, info.run_id) with
@@ -757,7 +774,12 @@ let replay_diagnostic_hook () =
                   state.generation = 1 && info.is_replaying
                   && Option.is_some state.cache_eviction_path
                 in
-                if not cache_fixture_replay then
+                if cache_fixture_replay then begin
+                  if info.history_length < 0L then
+                    failwith "replay diagnostics history length was negative";
+                  remember_target_identity info
+                end
+                else
                   let phase = if info.is_replaying then "replay" else "initial" in
                   let already_recorded =
                     List.exists
@@ -771,18 +793,7 @@ let replay_diagnostic_hook () =
                       failwith "generation one unexpectedly reported replay";
                     if state.generation > 1 && not info.is_replaying then
                       failwith "replacement worker did not report replay";
-                    (match (state.workflow_id, info.workflow_id) with
-                    | None, Some workflow_id ->
-                        state.workflow_id <- Some workflow_id
-                    | Some expected, Some actual
-                      when not (String.equal expected actual) ->
-                        failwith "replay activation workflow ID changed"
-                    | _ -> ());
-                    (match state.run_id with
-                    | None -> state.run_id <- Some info.run_id
-                    | Some expected when not (String.equal expected info.run_id) ->
-                        failwith "replay activation run ID changed"
-                    | Some _ -> ());
+                    remember_target_identity info;
                     state.records <-
                       state.records
                       @ [

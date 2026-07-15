@@ -7,6 +7,7 @@ set -eu
 # server retried an activity that stopped heartbeating before its longer
 # start-to-close lease expired.
 root=${1:-.}
+. "$root/test/smoke/source_contract_helpers.sh"
 fixture="$root/test/integration/temporal"
 definitions="$fixture/common/smoke_definitions.ml"
 driver="$fixture/driver/smoke_driver.ml"
@@ -43,12 +44,12 @@ require_text "$definitions" \
   'let heartbeat_timeout_retry_start_to_close_timeout ='
 require_text "$definitions" \
   'let heartbeat_timeout_retry_first_attempt_sleep_seconds = 6.0'
-require_text "$definitions" 'let heartbeat_timeout_retry_policy ='
-require_text "$definitions" \
-  '~initial_interval:(Temporal.Duration.of_ms 7_000L)'
-require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 7_000L)'
-require_text "$definitions" '~maximum_attempts:2 ()'
+require_ocaml_binding_tokens "$definitions" heartbeat_timeout_retry_policy \
+  '~initial_interval:(Temporal.Duration.of_ms 7_000L)
+   ~backoff_coefficient:1.0
+   ~maximum_interval:(Temporal.Duration.of_ms 7_000L)
+   ~maximum_attempts:2 ()' \
+  'heartbeat-timeout acceptance contract'
 require_text "$definitions" \
   'let heartbeat_timeout_retry_attempts = Atomic.make 0'
 require_text "$definitions" \
@@ -59,13 +60,16 @@ require_text "$definitions" \
   'Ok "SMOKE:HEARTBEAT_TIMEOUT:ATTEMPT:1"'
 require_text "$definitions" \
   'match Temporal.Activity.Context.details context'
-require_text "$definitions" '"SMOKE:HEARTBEAT_TIMEOUT:RETRIED:"'
-require_text "$definitions" '^ String.uppercase_ascii input'
-require_text "$definitions" 'let activity_heartbeat_timeout_retry ='
-require_text "$definitions" '~start_to_close_timeout:'
-require_text "$definitions" 'heartbeat_timeout_retry_start_to_close_timeout'
-require_text "$definitions" '~heartbeat_timeout'
-require_text "$definitions" '~retry_policy:policy ~do_not_eagerly_execute:true'
+require_ocaml_binding_tokens "$definitions" heartbeat_timeout_retry_activity \
+  '"SMOKE:HEARTBEAT_TIMEOUT:RETRIED:"
+   ^ String.uppercase_ascii input' \
+  'heartbeat-timeout acceptance contract'
+require_ocaml_binding_tokens "$definitions" activity_heartbeat_timeout_retry \
+  'Temporal.Activity.execute ~heartbeat_timeout
+   ~start_to_close_timeout:heartbeat_timeout_retry_start_to_close_timeout
+   ~retry_policy:policy ~do_not_eagerly_execute:true
+   heartbeat_timeout_retry_activity seed' \
+  'heartbeat-timeout acceptance contract'
 
 # The worker must register the workflow and context-aware activity so this
 # test crosses the real worker boundary rather than stopping at source text.

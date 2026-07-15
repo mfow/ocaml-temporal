@@ -34,6 +34,7 @@
 (rule
  (alias runtest)
  (deps
+  source_contract_helpers.sh
   test_temporal_heartbeat_contract.sh
   ../integration/temporal/common/smoke_definitions.ml
   ../integration/temporal/driver/smoke_driver.ml
@@ -44,6 +45,7 @@
 (rule
  (alias runtest)
  (deps
+  source_contract_helpers.sh
   test_temporal_activity_timeout_contract.sh
   ../integration/temporal/common/smoke_definitions.ml
   ../integration/temporal/driver/smoke_driver.ml
@@ -54,6 +56,7 @@
 (rule
  (alias runtest)
  (deps
+  source_contract_helpers.sh
   test_temporal_long_backoff_retry_contract.sh
   ../integration/temporal/common/smoke_definitions.ml
   ../integration/temporal/driver/smoke_driver.ml
@@ -64,6 +67,7 @@
 (rule
  (alias runtest)
  (deps
+  source_contract_helpers.sh
   test_temporal_heartbeat_timeout_contract.sh
   ../integration/temporal/common/smoke_definitions.ml
   ../integration/temporal/driver/smoke_driver.ml
@@ -84,6 +88,7 @@
 (rule
  (alias runtest)
  (deps
+  source_contract_helpers.sh
   test_temporal_child_retry_contract.sh
   ../integration/temporal/common/smoke_definitions.ml
   ../integration/temporal/driver/smoke_driver.ml

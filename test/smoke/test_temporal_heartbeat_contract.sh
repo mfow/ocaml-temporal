@@ -7,6 +7,7 @@ set -eu
 # real contextual activity callback with an in-memory context. Neither test
 # claims that a local fake observed server-managed retry delivery.
 root=${1:-.}
+. "$root/test/smoke/source_contract_helpers.sh"
 fixture="$root/test/integration/temporal"
 definitions="$fixture/common/smoke_definitions.ml"
 driver="$fixture/driver/smoke_driver.ml"
@@ -52,11 +53,13 @@ require_text "$definitions" 'intentional retry after recording an activity heart
 require_text "$definitions" '| [ detail ] ->'
 require_text "$definitions" 'let* progress = Temporal.Codec.decode Temporal.Codec.string detail'
 require_text "$definitions" 'Ok ("SMOKE:HEARTBEAT:RETRIED:" ^ String.uppercase_ascii input)'
-require_text "$definitions" 'let activity_heartbeat_retry ='
-require_text "$definitions" 'Temporal.Activity.execute ~heartbeat_timeout'
-require_text "$definitions" '~retry_policy:policy'
-require_text "$definitions" 'heartbeat_retry_activity seed'
-require_text "$definitions" '~maximum_attempts:2 ()'
+require_ocaml_binding_tokens "$definitions" retry_policy \
+  '~maximum_attempts:2 ()' \
+  'heartbeat acceptance contract'
+require_ocaml_binding_tokens "$definitions" activity_heartbeat_retry \
+  'Temporal.Activity.execute ~heartbeat_timeout ~retry_policy:policy
+   heartbeat_retry_activity seed' \
+  'heartbeat acceptance contract'
 
 # The worker owns both implementation registrations. A source-only check here
 # catches a refactor that leaves the driver assertion in place but quietly

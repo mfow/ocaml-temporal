@@ -6,6 +6,7 @@ set -eu
 # server-owned retry delay; these checks prevent a fast local retry or an
 # unregistered fixture from masquerading as that evidence.
 root=${1:-.}
+. "$root/test/smoke/source_contract_helpers.sh"
 fixture="$root/test/integration/temporal"
 definitions="$fixture/common/smoke_definitions.ml"
 driver="$fixture/driver/smoke_driver.ml"
@@ -31,12 +32,12 @@ done
 
 # The policy must wait long enough to distinguish a server-scheduled retry from
 # the existing 100ms ordinary retry path, while remaining bounded for CI.
-require_text "$definitions" 'let long_backoff_retry_policy ='
-require_text "$definitions" \
-  '~initial_interval:(Temporal.Duration.of_ms 2_000L)'
-require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 2_000L)'
-require_text "$definitions" '~maximum_attempts:2 ()'
+require_ocaml_binding_tokens "$definitions" long_backoff_retry_policy \
+  '~initial_interval:(Temporal.Duration.of_ms 2_000L)
+   ~backoff_coefficient:1.0
+   ~maximum_interval:(Temporal.Duration.of_ms 2_000L)
+   ~maximum_attempts:2 ()' \
+  'long-backoff retry acceptance contract'
 
 # The activity records the first attempt time in worker-local state and rejects
 # an unexpectedly immediate second attempt. The exact result marker then proves
@@ -52,8 +53,10 @@ require_text "$definitions" \
   'elapsed < long_backoff_retry_minimum_delay_seconds'
 require_text "$definitions" \
   'SMOKE:BACKOFF:RETRIED:'
-require_text "$definitions" 'let activity_long_backoff_retry ='
-require_text "$definitions" '~do_not_eagerly_execute:true'
+require_ocaml_binding_tokens "$definitions" activity_long_backoff_retry \
+  'Temporal.Activity.execute ~retry_policy:policy
+   ~do_not_eagerly_execute:true long_backoff_retry_activity seed' \
+  'long-backoff retry acceptance contract'
 
 # Both executable sides must own their normal responsibilities: the worker
 # registers the workflow/activity, and the separate driver starts and waits on

@@ -7,6 +7,7 @@ set -eu
 # after Temporal starts a retry; this script checks that the fixture still makes
 # that server-visible distinction.
 root=${1:-.}
+. "$root/test/smoke/source_contract_helpers.sh"
 fixture="$root/test/integration/temporal"
 definitions="$fixture/common/smoke_definitions.ml"
 driver="$fixture/driver/smoke_driver.ml"
@@ -46,12 +47,12 @@ require_text "$definitions" \
   'let timeout_retry_start_to_close_timeout = Temporal.Duration.of_ms 500L'
 require_text "$definitions" \
   'let timeout_retry_first_attempt_sleep_seconds = 6.0'
-require_text "$definitions" 'let timeout_retry_policy ='
-require_text "$definitions" \
-  '~initial_interval:(Temporal.Duration.of_ms 7_000L)'
-require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 7_000L)'
-require_text "$definitions" '~maximum_attempts:2 ()'
+require_ocaml_binding_tokens "$definitions" timeout_retry_policy \
+  '~initial_interval:(Temporal.Duration.of_ms 7_000L)
+   ~backoff_coefficient:1.0
+   ~maximum_interval:(Temporal.Duration.of_ms 7_000L)
+   ~maximum_attempts:2 ()' \
+  'activity timeout acceptance contract'
 require_text "$definitions" 'let timeout_retry_attempts = Atomic.make 0'
 require_text "$definitions" \
   'Temporal.Activity.define ~name:"smoke.timeout_retry"'
@@ -59,12 +60,13 @@ require_text "$definitions" 'Unix.sleepf timeout_retry_first_attempt_sleep_secon
 require_text "$definitions" 'Ok "SMOKE:TIMEOUT:ATTEMPT:1"'
 require_text "$definitions" \
   'Ok ("SMOKE:TIMEOUT:RETRIED:" ^ String.uppercase_ascii input)'
-require_text "$definitions" 'let activity_timeout_retry ='
-require_text "$definitions" \
-  '~start_to_close_timeout:timeout_retry_start_to_close_timeout'
 require_text "$definitions" 'match timeout_retry_policy with'
-require_text "$definitions" '~retry_policy:policy ~do_not_eagerly_execute:true'
-require_text "$definitions" '~maximum_attempts:2 ()'
+require_ocaml_binding_tokens "$definitions" activity_timeout_retry \
+  'Temporal.Activity.execute
+   ~start_to_close_timeout:timeout_retry_start_to_close_timeout
+   ~retry_policy:policy ~do_not_eagerly_execute:true
+   timeout_retry_activity seed' \
+  'activity timeout acceptance contract'
 
 # The worker must own both the workflow registration and executable activity;
 # otherwise a driver-only source assertion could pass without a real poll or

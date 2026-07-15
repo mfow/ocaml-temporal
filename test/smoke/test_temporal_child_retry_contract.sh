@@ -7,6 +7,7 @@ set -eu
 # future edit cannot silently replace that boundary with an activity-only retry
 # or a local parent loop.
 root=${1:-.}
+. "$root/test/smoke/source_contract_helpers.sh"
 fixture="$root/test/integration/temporal"
 definitions="$fixture/common/smoke_definitions.ml"
 driver="$fixture/driver/smoke_driver.ml"
@@ -39,11 +40,10 @@ require_file "$worker"
 # The activity may fail only once, and its own policy is limited to one
 # attempt. The separate child policy must be the only retry boundary under
 # test, with the second marker proving that the retried child succeeded.
-require_text "$definitions" \
-  'let child_activity_no_retry_policy ='
-require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 100L)'
-require_text "$definitions" '~maximum_attempts:1 ()'
+require_ocaml_binding_tokens "$definitions" child_activity_no_retry_policy \
+  '~maximum_interval:(Temporal.Duration.of_ms 100L)
+   ~maximum_attempts:1 ()' \
+  'child-retry acceptance contract'
 require_text "$definitions" \
   'let child_retry_attempts = Atomic.make 0'
 require_text "$definitions" \
@@ -53,23 +53,21 @@ require_text "$definitions" \
 require_text "$definitions" \
   'SMOKE:CHILD_RETRY:ATTEMPT:%d'
 require_text "$definitions" \
-  'let child_retryable_failure ='
-require_text "$definitions" \
   'match child_activity_no_retry_policy with'
-require_text "$definitions" \
-  'Temporal.Activity.execute ~retry_policy:policy child_retry_activity'
-require_text "$definitions" 'seed'
+require_ocaml_binding_tokens "$definitions" child_retryable_failure \
+  'Temporal.Activity.execute ~retry_policy:policy child_retry_activity seed' \
+  'child-retry acceptance contract'
 require_text "$definitions" \
   'intentional retryable child workflow failure'
-require_text "$definitions" \
-  'let child_retry_policy ='
-require_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 100L)'
-require_text "$definitions" '~maximum_attempts:2 ()'
-require_text "$definitions" \
-  'let parent_retries_child ='
-require_text "$definitions" \
-  'Temporal.Child_workflow.execute ~retry_policy:policy'
+require_ocaml_binding_tokens "$definitions" child_retry_policy \
+  '~maximum_interval:(Temporal.Duration.of_ms 100L)
+   ~maximum_attempts:2 ()' \
+  'child-retry acceptance contract'
+require_ocaml_binding_tokens "$definitions" parent_retries_child \
+  'Temporal.Child_workflow.execute ~retry_policy:policy
+   ~id:("two-binary-parent-retries-child-" ^ seed)
+   child_retryable_failure seed' \
+  'child-retry acceptance contract'
 
 # Both child workflow definitions and the activity must be registered in the
 # worker. Otherwise the driver could start a workflow without exercising the

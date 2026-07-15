@@ -70,6 +70,18 @@ val sleep : Duration.t -> (unit, Error.t) result
     a typed defect rather than reading the host wall clock. *)
 val now : unit -> (Time.t, Error.t) result
 
+(** Returns whether workflow code should take the new branch identified by
+    [id]. On a new execution the first call returns [true] and records a patch
+    marker; replay returns [true] only when Core reports that marker, otherwise
+    it returns [false]. The decision is retained per workflow run and every
+    call emits Core's idempotent marker command.
+
+    Patch IDs must be non-empty, valid UTF-8, NUL-free, and at most 65,536
+    bytes. Invalid IDs or calls outside workflow execution raise
+    [Invalid_argument] as programmer misuse. IDs are durable history keys:
+    never reuse an ID for a different behavioral change. *)
+val patched : id:string -> bool
+
 (** Ends the current run and starts a new run of [definition] with [input].
     This operation never returns to the calling workflow fiber. It is
     deterministic: the input is encoded through the definition's codec before

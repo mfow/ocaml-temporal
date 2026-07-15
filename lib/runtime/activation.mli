@@ -47,6 +47,8 @@ type job =
       identity : string;
       headers : (string * Temporal_base.Codec.payload) list;
     }
+  (** Reports a patch marker found in this execution's history. *)
+  | Notify_has_patch of { patch_id : string }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow
   | Remove_from_cache
@@ -125,6 +127,8 @@ type command =
         | `Rejected of Temporal_base.Error.t
         | `Completed of Temporal_base.Codec.payload ];
     }
+  (** Records one evaluation of a replay-safe workflow patch gate. *)
+  | Set_patch_marker of { patch_id : string; deprecated : bool }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t
   (** Replaces the current run with a new run of the same workflow type. The

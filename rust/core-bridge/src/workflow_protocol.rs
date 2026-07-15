@@ -526,6 +526,10 @@ pub enum ActivationJob {
         meta: UpdateMeta,
         run_validator: bool,
     },
+    /// Reports authoritative history evidence for one workflow patch.
+    NotifyHasPatch {
+        patch_id: String,
+    },
     FireTimer {
         seq: u32,
     },
@@ -675,6 +679,12 @@ pub enum CompletionCommand {
     UpdateResponse {
         protocol_instance_id: String,
         response: UpdateResponseResult,
+    },
+    /// Records one patch-gate evaluation. Core owns history deduplication, so
+    /// the language runtime intentionally sends this on every public call.
+    SetPatchMarker {
+        patch_id: String,
+        deprecated: bool,
     },
 }
 
@@ -1318,6 +1328,9 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                     identifier(key, "$.jobs.headers")?;
                 }
             }
+            ActivationJob::NotifyHasPatch { patch_id } => {
+                identifier(patch_id, "$.jobs.patch_id")?;
+            }
             ActivationJob::CancelWorkflow { reason } => bounded_text(reason, "$.jobs.reason")?,
             ActivationJob::RemoveFromCache { message, .. } => {
                 bounded_text(message, "$.jobs.message")?
@@ -1486,6 +1499,9 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                         }
                     }
                 }
+            }
+            CompletionCommand::SetPatchMarker { patch_id, .. } => {
+                identifier(patch_id, "$.commands.patch_id")?;
             }
             _ => {}
         }
@@ -2385,6 +2401,9 @@ pub fn activation_from_core(
                         run_validator: value.run_validator,
                     })
                 }
+                Variant::NotifyHasPatch(value) => Ok(ActivationJob::NotifyHasPatch {
+                    patch_id: value.patch_id.clone(),
+                }),
                 Variant::FireTimer(value) => Ok(ActivationJob::FireTimer { seq: value.seq }),
                 Variant::CancelWorkflow(value) => Ok(ActivationJob::CancelWorkflow {
                     reason: value.reason.clone(),
@@ -2712,6 +2731,13 @@ fn command_to_core(
                 response: Some(response),
             })
         }
+        CompletionCommand::SetPatchMarker {
+            patch_id,
+            deprecated,
+        } => Variant::SetPatchMarker(core_commands::SetPatchMarker {
+            patch_id: patch_id.clone(),
+            deprecated: *deprecated,
+        }),
     };
     Ok(core_commands::WorkflowCommand {
         variant: Some(variant),
@@ -2919,6 +2945,10 @@ fn command_from_core(
                 response,
             })
         }
+        Variant::SetPatchMarker(value) => Ok(CompletionCommand::SetPatchMarker {
+            patch_id: value.patch_id.clone(),
+            deprecated: value.deprecated,
+        }),
         _ => Err(unsupported("Core workflow command kind is not supported")),
     }
 }

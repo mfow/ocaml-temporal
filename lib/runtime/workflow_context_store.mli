@@ -45,6 +45,22 @@ val set_activation_timestamp :
 val activation_timestamp :
   t -> Temporal_protocol.Workflow_protocol.timestamp option
 
+(** Records whether Core is replaying history for the activation about to run.
+    This must be installed before patch notifications and workflow dispatch. *)
+val set_activation_is_replaying : t -> bool -> unit
+
+(** Records authoritative history evidence that [patch_id] is present for this
+    execution. The ID has already passed the closed protocol validator and is
+    copied before this execution retains it. *)
+val notify_has_patch : t -> patch_id:string -> unit
+
+(** Returns this execution's deterministic decision for [patch_id] and emits a
+    non-deprecated marker command on every call. The first decision is true in
+    live execution and false during replay unless Core previously notified the
+    marker. The ID is copied before retention and emission. Calling this after
+    shutdown raises [Invalid_argument]. *)
+val patched : t -> patch_id:string -> bool
+
 (** Runs [action] with [t] dynamically installed and restores the previous
     context even if [action] raises. Nested calls are supported. *)
 val with_context : t -> (unit -> 'value) -> 'value

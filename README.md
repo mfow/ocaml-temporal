@@ -81,8 +81,9 @@ opaque bytes and applications may choose another deterministic codec.
   larger-backoff extension is the next live gate.
   Forced worker crash recovery is live-verified by the separate
   `make test-temporal-worker-crash-recovery` gate and the [PR #306 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29356904816);
-  sticky-cache eviction and broader child lifecycle scenarios remain separate
-  acceptance work.
+  sticky-cache eviction is live-verified by the complete [PR #322
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748);
+  broader child replay and recovery scenarios remain separate acceptance work.
 - Child-workflow commands can be authored and are translated by the semantic
   layer. The native worker now accepts a parent completion containing a child
   start, retains the parent future through the start acknowledgment, and
@@ -106,8 +107,11 @@ opaque bytes and applications may choose another deterministic codec.
   delivery and condition wake-up are also covered by the [PR #289 Compose
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368);
   live query/update acceptance, typed query inputs, suspended update
-  continuations, richer handler policies, versioning, local activities, Nexus,
-  and the remaining cross-SDK parity surface remain roadmap work. Continue-as-
+  continuations, richer handler policies, full workflow versioning, local
+  activities, Nexus, and the remaining cross-SDK parity surface remain roadmap
+  work. `Temporal.Workflow.patched` now provides the focused-tested first
+  non-deprecated patch-in primitive; live old/new-history replay and patch
+  deprecation remain pending. Continue-as-
   new is implemented and locally tested at the workflow/native bridge boundary
   and is verified by the [PR #253 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
   Context-aware activity heartbeats are live-verified for a server-delivered
@@ -216,9 +220,9 @@ database state is preserved between acceptance runs. A separate
 replacement and replay. `make test-temporal-worker-crash-recovery` repeats the
 exact-run acceptance after a forced generation-one process kill, requiring the
 replacement worker to replay and complete before accepting the run. Child
-replay and recovery, sticky-cache eviction, and broader recovery coverage
-remain follow-up work; child retry and duplicate-ID child-start failure are
-live-verified by PR #289 above.
+replay and recovery and broader cache/recovery coverage remain follow-up work;
+sticky-cache eviction is live-verified by PR #322, while child retry and
+duplicate-ID child-start failure are live-verified by PR #289 above.
 
 For manual inspection, use `make temporal-start`, `make temporal-health`,
 `make temporal-status`, `make temporal-logs`, and `make temporal-clean`.
@@ -328,6 +332,7 @@ are excluded from log messages. See the [observability reference](docs/reference
   [native interaction design](docs/design/native-interactions.md)
 - [Logging and observability](docs/reference/observability.md)
 - [Feature coverage and implementation status](docs/reference/feature-coverage.md)
+- [Workflow patching and replay contract](docs/reference/workflow-patching.md)
 - [Live acceptance coverage](docs/reference/live-acceptance-coverage.md)
 - [Worker restart and replay acceptance](docs/reference/worker-restart-replay-acceptance.md)
 - [Worker restart/replay diagnostic contract](docs/reference/worker-restart-replay-diagnostics.md)

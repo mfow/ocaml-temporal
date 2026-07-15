@@ -1,12 +1,12 @@
 (** Driver for the live sticky-cache eviction acceptance.
 
     The client starts two exact runs while the worker is configured with one
-    Core cache slot. It waits for the worker's payload-free eviction marker,
-    waits until the second run has completed its first post-eviction task,
-    then cancels the second run before rehydrating and cancelling the evicted
-    first run. It requires both exact runs to reach Temporal's typed
-    cancellation outcome. The client never registers or executes workflow
-    code. *)
+    Core cache slot. It waits until both initial workflow tasks have been
+    acknowledged, then observes the worker's payload-free eviction marker.
+    It cancels the still-cached second run before rehydrating and cancelling
+    the evicted first run. It requires both exact runs to reach Temporal's
+    typed cancellation outcome. The client never registers or executes
+    workflow code. *)
 
 module Client = Temporal.Client
 module Error = Temporal.Error
@@ -179,14 +179,14 @@ let run () =
             ~id:"two-binary-cache-eviction-b" ~input:"second" ()
         in
         phase "start_b" "ok";
-        phase "eviction_marker" "begin";
-        let* () = wait_for_marker marker ~timeout in
-        phase "eviction_marker" "observed";
         phase "ready_b" "begin";
         let* () =
           wait_for_marker ~expected:"initial-completion\n" second_ready ~timeout
         in
         phase "ready_b" "observed";
+        phase "eviction_marker" "begin";
+        let* () = wait_for_marker marker ~timeout in
+        phase "eviction_marker" "observed";
         phase "cancel_b" "begin";
         let* () = cancel second ~request_id:"two-binary-cache-eviction-cancel-b" in
         phase "cancel_b" "ok";

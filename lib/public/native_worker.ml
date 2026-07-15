@@ -345,7 +345,7 @@ type replay_diagnostics = {
   cache_eviction_ready_path : string option;
   (* Optional marker for the second cache fixture run's first acknowledged
      activation. It is intentionally separate from the A-run barrier so the
-     client can wait for B without confusing an overwritten file. *)
+     client can prove B completed before waiting for A's eviction marker. *)
   cache_eviction_second_ready_path : string option;
   generation : int;
   target_workflow_id : string option;
@@ -730,9 +730,9 @@ let replay_diagnostic_hook () =
             | Some expected -> String.equal expected workflow_id)
         | None, None, _ -> true
       in
-      (* Selects only the second cache fixture run for its independent
-         post-eviction completion barrier. A missing target or workflow ID
-         fails closed and cannot publish a misleading marker. *)
+      (* Selects only the second cache fixture run for its independent initial
+         completion barrier. A missing target or workflow ID fails closed and
+         cannot publish a misleading marker. *)
       let matches_second_target (info : Workflow_adapter.activation_info) =
         match (state.second_target_workflow_id, info.workflow_id) with
         | Some expected, Some actual -> String.equal expected actual

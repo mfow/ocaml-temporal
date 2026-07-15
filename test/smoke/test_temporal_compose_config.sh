@@ -62,7 +62,7 @@ require_text '--build-dir=/workspace/_build/patch-replay-driver'
 require_text '--build-dir=/workspace/_build/parent-child-restart-worker'
 require_text '--build-dir=/workspace/_build/parent-child-restart-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "300"'
-require_text 'SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS: "900"'
+require_text '- "900"'
 require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready'
 require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
 require_text 'SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE:'
@@ -452,6 +452,10 @@ require_workflow_text 'make --silent cargo-metadata'
 if ! grep -F 'SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS ?= 900' "$makefile" >/dev/null \
   || ! grep -F 'SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS="$(SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS)"' "$makefile" >/dev/null; then
   echo "parent/child recovery must preserve and propagate its cold-build timeout" >&2
+  exit 1
+fi
+if ! grep -F '"${SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS:-900}"' "$compose_file" >/dev/null; then
+  echo "parent/child driver must use the configurable 900-second timeout" >&2
   exit 1
 fi
 

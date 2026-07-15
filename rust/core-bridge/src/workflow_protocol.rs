@@ -1511,13 +1511,14 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                 deprecated,
             } => {
                 identifier(patch_id, "$.commands.patch_id")?;
-                if let Some(existing) = patch_modes.insert(patch_id.as_str(), *deprecated) {
-                    if existing != *deprecated {
-                        return Err(ProtocolError::invalid(
-                            "$.commands.patch_id",
-                            "one patch ID cannot use both active and deprecated marker modes",
-                        ));
-                    }
+                if matches!(
+                    patch_modes.insert(patch_id.as_str(), *deprecated),
+                    Some(existing) if existing != *deprecated
+                ) {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.patch_id",
+                        "one patch ID cannot use both active and deprecated marker modes",
+                    ));
                 }
             }
             _ => {}

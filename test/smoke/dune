@@ -33,6 +33,12 @@
 
 (rule
  (alias runtest)
+ (deps source_contract_helpers.sh test_source_contract_helpers.sh)
+ (action
+  (run sh %{dep:test_source_contract_helpers.sh} %{workspace_root})))
+
+(rule
+ (alias runtest)
  (deps
   source_contract_helpers.sh
   test_temporal_heartbeat_contract.sh

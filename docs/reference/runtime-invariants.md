@@ -124,9 +124,10 @@ and bridge, read the [documentation guide](../README.md) first.
   runtime does not deduplicate marker commands or share patch state between
   runs. Patch IDs are durable history keys, not deployment or process state.
 - Replay-safe randomness, side effects, and workflow logging APIs remain
-  required before production release. A two-history live patch-replay target
-  now exists, but no successful run is recorded; deprecation/removal remains a
-  separate lifecycle.
+  required before production release. The complete [PR #348 CI
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) verifies
+  the two-history live patch-in target; deprecation/removal remains a separate
+  lifecycle.
 
 ## Core boundary assumptions
 

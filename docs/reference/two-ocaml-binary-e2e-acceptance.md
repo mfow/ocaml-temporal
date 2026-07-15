@@ -37,8 +37,9 @@ The baseline driver/worker smoke is not workflow-code versioning evidence. The
 separate [`make test-temporal-workflow-patching`](workflow-patching.md#intended-live-replay-acceptance)
 target uses the same client-only-driver/worker role split but replaces workers
 around both a marker-free legacy history and a marker-bearing new history. Its
-real-server result is not yet recorded, so it must not be inferred from the
-baseline's green historical runs.
+real-server result is independently verified by the complete [PR #348 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374); it must
+not be inferred from the baseline's green historical runs.
 
 The current implementation starts sixteen top-level workflows before waiting
 for any terminal result, including the delayed asynchronous completion,

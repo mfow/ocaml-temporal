@@ -159,8 +159,9 @@ branch during replay. It validates server history before and after each
 replacement, observes `is_replaying=true` from generation two, and removes the
 project's PostgreSQL volume during teardown. The legacy snapshots must contain
 zero patch markers; the new snapshots must contain exactly one non-deprecated
-marker. No successful invocation of this live target is recorded in this
-document.
+marker. The complete [PR #348 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) records a
+successful invocation of both scenarios.
 
 Running `docker compose` directly from the repository root is unsupported. The
 root Make targets are the stable interface and deliberately hide the fixture's

@@ -4,9 +4,11 @@
 
 This restart/replay result is not evidence for workflow-code versioning. The
 separate [`make test-temporal-workflow-patching`](workflow-patching.md#intended-live-replay-acceptance)
-target is configured to prove that a marker-free legacy history and a
-marker-bearing new history select their respective branches after worker
-replacement. It has no recorded successful live run yet.
+target proves that a marker-free legacy history and a marker-bearing new
+history select their respective branches after worker replacement. That
+separate result is live-verified by the complete [PR #348 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374); it is not
+part of the restart/replay evidence described here.
 
 `make test-temporal-worker-restart-contract` is the fast Docker-free contract
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,

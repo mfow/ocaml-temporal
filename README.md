@@ -49,7 +49,7 @@ opaque bytes and applications may choose another deterministic codec.
 | --- | --- |
 | Workflow authoring | Ordinary OCaml functions, typed `result` errors, codecs, timers, activities, futures, workflow-local conditions, cooperative cancellation scopes, and deterministic replay-oriented scheduling are implemented and covered by unit tests. |
 | Synthetic execution | The in-memory runtime exercises activity and child-workflow scheduling, timer resolution, cancellation, replay, future aggregation, and cache cleanup without a server. |
-| Workflow patching | `Temporal.Workflow.patched` implements the initial non-deprecated patch-in step: a marker-free replay takes the legacy branch and a marker-bearing replay takes the new branch. Focused runtime and bridge tests cover the public decision and conversion boundary. `make test-temporal-workflow-patching` is the dedicated real-server target; it is configured to exercise both histories, but no successful invocation is cited here. |
+| Workflow patching | `Temporal.Workflow.patched` implements the initial non-deprecated patch-in step: a marker-free replay takes the legacy branch and a marker-bearing replay takes the new branch. Focused runtime and bridge tests cover the public decision and conversion boundary. The complete [PR #348 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) live-verifies both histories through fresh worker replacement. |
 | Native worker | An HTTP(S) worker can be built with the OCaml-owned supervisor. The current native command slice polls and completes workflow/activity tasks, runs OCaml implementations, handles timers and terminal/cancellation paths, drains retryable completions safely, records activity heartbeats, and supports retained asynchronous activity completion. The complete [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) live-verifies the seventeen-result Compose acceptance, including Temporal-driven heartbeat-timeout retry, activity-level non-retryable error-type matching, child-workflow retry, and duplicate-ID child-start failure; the source fixture's additional long-backoff assertion is described below and still awaits live evidence. The [PR #298 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291) live-verifies the separate two-generation restart/replay acceptance, including a replacement worker retrying the activity to attempt two; the [PR #306 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29356904816) live-verifies forced generation-one crash recovery and replacement-worker replay. |
 | Native client | The HTTP(S) client path is wired to the Rust/Core client for typed workflow starts, exact workflow/run waits, exact-run cancellation, and typed exact-run signals. Cancellation is acknowledged by the server before the caller waits on the same handle for the eventual typed cancelled terminal result; signal acknowledgement likewise does not claim that a worker handler has already run. The [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) live-verifies the current seventeen workflow assertions, including typed signal delivery and condition wake-up; the source fixture's eighteenth long-backoff assertion remains pending live evidence, and earlier runs remain linked below as historical evidence for smaller slices. |
 | Local development | Docker Compose supplies the OCaml development image and a separate real Temporal Server backed by PostgreSQL. Make targets are the supported interface. |
@@ -103,11 +103,12 @@ opaque bytes and applications may choose another deterministic codec.
   cancellation is required.
 - `Temporal.Workflow.patched` currently supports only initial patch-in. The
   dedicated `make test-temporal-workflow-patching` target first checks an
-  offline contract and then is configured to exercise a marker-free legacy
-  history and a marker-bearing new history against Temporal Server. No
-  successful live invocation is recorded in this README. Patch deprecation and
-  removal, worker deployment/build-ID versioning, arbitrary historical
-  compatibility, and migration tooling remain pending.
+  offline contract and then exercises a marker-free legacy history and a
+  marker-bearing new history against Temporal Server. The complete [PR #348 CI
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374)
+  live-verifies both scenarios. Patch deprecation and removal, worker
+  deployment/build-ID versioning, arbitrary historical compatibility, and
+  migration tooling remain pending.
 - Typed signal, query, and update definitions plus deterministic local handler
   dispatch are available as an experimental slice. Native signal delivery,
   output-only query delivery, immediate one-input non-suspending updates, and
@@ -252,8 +253,9 @@ containers, and the driver requires the exact branch-specific terminal result.
 The Docker-free companion checks the checked-in normalized-history,
 diagnostics, and controller fixtures and their rejection paths. It does not
 build workers, start containers, contact Temporal Server, or establish that a
-replay occurred. The real-server target has not yet produced a successful live
-result cited by this README. It also does not establish patch deprecation or
+replay occurred. The complete [PR #348 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) is the
+corresponding real-server evidence. It does not establish patch deprecation or
 removal, deployment/build-ID routing, arbitrary historical compatibility, or
 migration tooling. See [workflow patching](docs/reference/workflow-patching.md)
 for the authoring and replay contract.

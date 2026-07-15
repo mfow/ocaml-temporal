@@ -90,8 +90,9 @@ readable JSON objects, the history normalizer, and representative malformed
 cases. It does not run a JSON Schema validator against those fixtures, build
 workers, start containers, contact Temporal Server, or establish that a replay
 occurred.
-There is no recorded successful invocation of the real-server target in this
-document.
+The complete [PR #348 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) records the
+successful real-server invocation of both scenarios.
 
 ## Focused evidence and remaining boundary
 

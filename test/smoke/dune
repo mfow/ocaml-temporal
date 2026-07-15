@@ -100,3 +100,20 @@
   ../integration/temporal/worker/smoke_worker.ml)
  (action
   (run sh %{dep:test_temporal_child_start_failure_contract.sh} %{workspace_root})))
+
+(rule
+ (alias runtest)
+ (deps
+  test_temporal_worker_cache_eviction_contract.sh
+  ../../Makefile
+  ../../lib/public/native_worker.ml
+  ../../lib/public/worker.mli
+  ../../lib/runtime/native_worker_execution.ml
+  ../integration/temporal/common/smoke_definitions.ml
+  ../integration/temporal/compose.yaml
+  ../integration/temporal/driver/cache_eviction_driver.ml
+  ../integration/temporal/driver/dune
+  ../integration/temporal/worker/smoke_worker.ml
+  ../integration/temporal/fixtures/cache-eviction/marker.json)
+ (action
+  (run sh %{dep:test_temporal_worker_cache_eviction_contract.sh} %{workspace_root})))

@@ -43,6 +43,7 @@ type activation_info = {
   workflow_id : string option;
   is_replaying : bool;
   history_length : int64;
+  cache_removal_reason : string option;
 }
 
 (** Runtime signal and query handler aliases kept private to this adapter. *)
@@ -126,6 +127,11 @@ type pending_result =
       command_count : int;
       terminal : bool;
       evicted : bool;
+      (* Completion observers must run after native acknowledgement, including
+         when an initially rejected completion succeeds on a later poll. Keep
+         the immutable metadata beside the retained completion so retry cannot
+         lose the observer event or reconstruct it from already-dropped state. *)
+      activation_info : activation_info;
     }
   | Pending_rejected of {
       error : error_view;
@@ -492,6 +498,12 @@ module Make (Supervisor : SUPERVISOR) = struct
        see partially validated protocol data or run on an arbitrary Rust
        thread. *)
     on_activation : (activation_info -> unit) option;
+    (* Optional owner-Domain completion hook. It is called only after the
+       supervisor acknowledges an activation completion, including the empty
+       completion used for cache eviction, so a test can use it as an exact
+       admission barrier without inferring completion from an earlier
+       activation callback. *)
+    on_completion : (activation_info -> unit) option;
   }
 
   (** The public worker handle is the mutex-confined state above. *)
@@ -502,7 +514,8 @@ module Make (Supervisor : SUPERVISOR) = struct
       empty, NUL-containing, oversized, or non-UTF-8 defaults fail as a typed
       configuration result rather than breaking the first workflow activation.
       No supervisor operation or workflow implementation runs on this path. *)
-  let create ?on_activation ?(task_queue = "default") ~supervisor ~workflows () =
+  let create ?on_activation ?on_completion ?(task_queue = "default") ~supervisor
+      ~workflows () =
     let* () = validate_task_queue task_queue in
     let* definitions = build_definitions workflows in
     Ok
@@ -514,6 +527,7 @@ module Make (Supervisor : SUPERVISOR) = struct
         pending = Run_map.empty;
         mutex = Mutex.create ();
         on_activation;
+        on_completion;
       }
 
   (** Copies a payload without retaining a mutable buffer owned by an earlier
@@ -662,14 +676,27 @@ module Make (Supervisor : SUPERVISOR) = struct
         (try Execution.shutdown execution with _ -> ());
         adapter.runs <- Run_map.remove run_id adapter.runs
 
+  (** Reports an acknowledged activation without allowing a diagnostic
+      observer defect to undo an already acknowledged native lease. Keeping
+      this call in [accepted_pending] gives immediate submissions and retained
+      retries the same exactly-once notification path. *)
+  let notify_completion adapter (info : activation_info) =
+    match adapter.on_completion with
+    | None -> ()
+    | Some callback ->
+        (try callback info with _ ->
+          report Logs.Warning ~operation:"workflow_completion_diagnostic_failed" ())
+
   (** Applies bookkeeping only after the supervisor acknowledges a retained
       completion. This is the single release point for both normal and
       adapter-generated failure completions. *)
   let accepted_pending adapter pending =
     adapter.pending <- Run_map.remove pending.run_id adapter.pending;
     match pending.result with
-    | Pending_completed { command_count; terminal; evicted } ->
+    | Pending_completed
+        { command_count; terminal; evicted; activation_info } ->
         if terminal || evicted then drop_run adapter pending.run_id;
+        notify_completion adapter activation_info;
         report Logs.Debug ~operation:"workflow_activation_completed" ();
         Ok
           (Completed
@@ -759,9 +786,44 @@ module Make (Supervisor : SUPERVISOR) = struct
     in
     enqueue_pending adapter pending
 
+  (** Converts Core's closed eviction-reason variant to the stable diagnostic
+      spelling exposed to the private activation observer. *)
+  let eviction_reason_name = function
+    | Protocol.Eviction_unspecified -> "unspecified"
+    | Protocol.Cache_full -> "cache_full"
+    | Protocol.Cache_miss -> "cache_miss"
+    | Protocol.Nondeterminism -> "nondeterminism"
+    | Protocol.Lang_fail -> "lang_fail"
+    | Protocol.Lang_requested -> "lang_requested"
+    | Protocol.Task_not_found -> "task_not_found"
+    | Protocol.Unhandled_command -> "unhandled_command"
+    | Protocol.Fatal -> "fatal"
+    | Protocol.Pagination_or_history_fetch -> "pagination_or_history_fetch"
+    | Protocol.Workflow_execution_ending -> "workflow_execution_ending"
+
+  (** Produces activation metadata once so activation and completion observers
+      receive the exact same translated identity and replay state. *)
+  let activation_info_of_translated
+      (translated : Native_execution.translated_activation) : activation_info =
+    {
+      run_id = translated.run_id;
+      workflow_id =
+        Option.map
+          (fun (initialization : Native_execution.initialization) ->
+            initialization.workflow_id)
+          translated.initialization;
+      is_replaying = translated.is_replaying;
+      history_length = translated.history_length;
+      cache_removal_reason =
+        Option.map
+          (fun (removal : Native_execution.cache_removal) ->
+            eviction_reason_name removal.reason)
+          translated.cache_removal;
+    }
+
   (** Produces a typed completion for a successfully executed activation and
       updates the registry only after the supervisor confirms retirement. *)
-  let submit_completion adapter activation completion ~run_id =
+  let submit_completion adapter activation completion ~run_id ~activation_info =
     let pending =
       {
         run_id;
@@ -775,6 +837,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                 List.exists
                   (function Protocol.Remove_from_cache _ -> true | _ -> false)
                   activation.Protocol.jobs;
+              activation_info;
             };
       }
     in
@@ -808,7 +871,8 @@ module Make (Supervisor : SUPERVISOR) = struct
       the ordinary submission path: if the native completion call raises, the
       exact empty acknowledgement remains pending for a later retry and is
       never replaced by an invalid failure command. *)
-  let submit_eviction_acknowledgement adapter (activation : Protocol.activation) =
+  let submit_eviction_acknowledgement adapter (activation : Protocol.activation)
+      ~activation_info =
     let completion =
       Protocol.{ run_id = activation.run_id; commands = [] }
     in
@@ -817,32 +881,28 @@ module Make (Supervisor : SUPERVISOR) = struct
         run_id = activation.run_id;
         completion = copy_completion completion;
         result =
-          Pending_completed { command_count = 0; terminal = false; evicted = true };
+          Pending_completed
+            {
+              command_count = 0;
+              terminal = false;
+              evicted = true;
+              activation_info;
+            };
       }
     in
     enqueue_pending adapter pending
 
-  (** Delivers replay metadata to the optional private observer. The observer
-      runs while the adapter mutex is held, on the same Domain that owns the
-      deterministic execution registry. A raised observer is converted into a
-      typed activation error so the leased activation still follows the normal
-      failure-completion path instead of escaping with an unacknowledged lease. *)
+  (** Delivers replay and eviction metadata to the optional private observer.
+      The observer runs while the adapter mutex is held, on the same Domain
+      that owns the deterministic execution registry. A raised observer is
+      converted into a typed activation error so the leased activation still
+      follows the normal failure-completion path instead of escaping with an
+      unacknowledged lease. *)
   let notify_activation adapter (translated : Native_execution.translated_activation) =
     match adapter.on_activation with
     | None -> Ok ()
     | Some callback ->
-        let info : activation_info =
-          {
-            run_id = translated.run_id;
-            workflow_id =
-              Option.map
-                (fun (initialization : Native_execution.initialization) ->
-                  initialization.workflow_id)
-                translated.initialization;
-            is_replaying = translated.is_replaying;
-            history_length = translated.history_length;
-          }
-        in
+        let info = activation_info_of_translated translated in
         (try
            callback info;
            Ok ()
@@ -858,6 +918,7 @@ module Make (Supervisor : SUPERVISOR) = struct
     | Error error ->
         retire_with_failure adapter activation (native_error error)
     | Ok translated ->
+        let activation_info = activation_info_of_translated translated in
         (match notify_activation adapter translated with
         | Error error -> retire_with_failure adapter activation error
         | Ok () ->
@@ -869,7 +930,8 @@ module Make (Supervisor : SUPERVISOR) = struct
                    removed it for a terminal completion. The eviction still
                    owns a native lease and must receive the exact successful
                    empty completion; a failure command is invalid here. *)
-                submit_eviction_acknowledgement adapter activation
+                    submit_eviction_acknowledgement adapter activation
+                      ~activation_info
             | _ -> (
                 match initialization activation with
                 | Error error -> retire_with_failure adapter activation error
@@ -907,7 +969,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                                           activation (native_error error)
                                     | Ok completion ->
                                         submit_completion adapter activation completion
-                                          ~run_id:activation.run_id
+                                          ~run_id:activation.run_id ~activation_info
                                   end
                             end
                       end
@@ -924,7 +986,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                               (native_error error)
                         | Ok completion ->
                             submit_completion adapter activation completion
-                              ~run_id:activation.run_id)))
+                              ~run_id:activation.run_id ~activation_info)))
 
   (** Applies one activation with a final cleanup guard. All expected
       rejections already use [retire_with_failure]; this catch handles a

@@ -51,12 +51,16 @@ type activation_info = {
   workflow_id : string option;
   is_replaying : bool;
   history_length : int64;
+  cache_removal_reason : string option;
 }
 (** Metadata observed after one activation has passed strict protocol
     translation. The callback receives no payloads, continuations, or native
     handles. It runs on the worker's serialized OCaml owner Domain, before
-    workflow code is entered, so a diagnostic sink can prove replay without
-    introducing an asynchronous cross-language callback. *)
+    workflow code is entered, so an activation diagnostic sink can prove
+    replay or an explicit Core cache eviction without introducing an
+    asynchronous cross-language callback. The same value may be delivered to
+    the completion observer after Core has acknowledged the activation
+    completion. *)
 
 (** One workflow definition registered with the worker. The existential
     wrapper preserves the input/output codec relationship while allowing one
@@ -157,6 +161,7 @@ module Make (Supervisor : SUPERVISOR) : sig
       performed and no workflow function is called during creation. *)
   val create :
     ?on_activation:(activation_info -> unit) ->
+    ?on_completion:(activation_info -> unit) ->
     ?task_queue:string ->
     supervisor:Supervisor.t ->
     workflows:registered_workflow list ->

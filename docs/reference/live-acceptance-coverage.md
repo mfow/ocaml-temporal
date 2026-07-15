@@ -90,8 +90,9 @@ implemented as `make test-temporal-worker-restart`; its contract and
 real-server execution passed in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
 The controller's thirteen-step record, exact run identity, replay marker,
 normalized history, and volume cleanup are now live evidence; the larger-backoff
-retry contract is the next live extension; sticky-cache
-eviction and crash recovery remain separate scenarios.
+retry contract is the next live extension; sticky-cache eviction is implemented
+as a separate one-slot live scenario and awaits its first green CI run, while
+crash recovery remains a separate scenario.
 
 The driver in this matrix is a one-shot OCaml assertion runner, not another
 worker. It starts known workflows through `Temporal.Client`, waits for their
@@ -137,6 +138,13 @@ separate runs.
 | Child-workflow start, acknowledgement, and terminal resolution | **Verified (synthetic only).** Focused Rust and OCaml tests cover ordered start/resolution, failures, duplicate sequences, and lease retirement. | **Verified live for success, propagated failure, cancellation, retry, and duplicate-ID start failure.** The [PR #289 run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) requires `smoke.parent_retries_child` to return `SMOKE:CHILD_RETRY:ATTEMPT:2` and `smoke.parent_observes_child_start_failure` to return `SMOKE:CHILD:START_FAILED`; the latter proves Temporal rejects a child start that conflicts with an accepted top-level workflow ID and that the typed error crosses the bridge. | Child replay and recovery remain **Planned — later expansion**. |
 | Worker restart, replay, sticky-cache eviction, and continued execution | **Verified (live restart/replay path).** Runtime tests cover replay-stable commands and cache eviction; native activation diagnostics, strict history normalization, and the ordered controller contract pass locally. The Docker-free restart contract now requires the replacement worker's exact attempt-two result and the logical terminal activity path; Temporal's compact retry history is modeled explicitly rather than requiring omitted intermediate events. The crash-recovery contract additionally requires an exit-137 generation-one replacement without a graceful-stop marker. | **Verified live for the original restart/replay path** in the [PR #253 run](https://github.com/ocaml-temporal/actions/runs/29286560471) and the retry-after-restart extension in [PR #298](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291). | `make test-temporal-worker-crash-recovery` is live-verified for forced generation-one termination; sticky-cache eviction still needs a separate live `RemoveFromCache` scenario. |
 
+The sticky-cache eviction row's live implementation is now present in
+`make test-temporal-worker-cache-eviction`: it configures one Core cache slot,
+starts two runs parked on a replay-safe condition, waits for the worker's
+payload-free `cache_full` marker, and checks empty eviction acknowledgement
+plus typed cancellation of both exact runs. The first real-server result
+remains pending CI.
+
 ## Stable evidence commands
 
 These commands are the supported local gates for the corresponding matrix
@@ -149,12 +157,14 @@ make test-bridge               # OCaml/Rust ABI and protocol fixtures
 make verify                    # broad build, lint, Rust, bridge, and repository contracts
 make test-temporal-integration # real PostgreSQL/Temporal + two OCaml binaries
 make test-temporal-worker-restart # contract plus two-generation live restart/replay
+make test-temporal-worker-cache-eviction # contract plus one-slot live eviction
 ```
 
 Both `make test-temporal-integration` and `make test-temporal-worker-restart`
 start a real Temporal Server. The former owns the current eighteen-result gate;
 latter owns the two-generation restart/replay sequence and its Docker-free
-contract. Each target owns the fixture lifecycle, starts the independent
+contract; the cache-eviction target owns the one-slot `RemoveFromCache`
+sequence and its Docker-free contract. Each target owns the fixture lifecycle, starts the independent
 worker and one-shot assertion driver, and removes the PostgreSQL volume. A
 green `make verify` alone is not live workflow evidence, and the baseline
 two-binary gate must not be generalized to unlisted terminal, cache-eviction,

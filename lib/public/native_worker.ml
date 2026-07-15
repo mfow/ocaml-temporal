@@ -341,8 +341,16 @@ type replay_record = {
     itself is replaced atomically after every new record. *)
 type replay_diagnostics = {
   path : string;
+  cache_eviction_path : string option;
+  cache_eviction_ready_path : string option;
+  (* Optional marker for the second cache fixture run's first acknowledged
+     activation. It is intentionally separate from the A-run barrier so the
+     client can prove B completed before waiting for A's eviction marker. *)
+  cache_eviction_second_ready_path : string option;
   generation : int;
   target_workflow_id : string option;
+  (* Optional exact workflow ID used by the second cache fixture barrier. *)
+  second_target_workflow_id : string option;
   mutable workflow_id : string option;
   mutable run_id : string option;
   mutable records : replay_record list;
@@ -461,8 +469,12 @@ let load_replay_diagnostics path generation target_workflow_id =
     Ok
       {
         path;
+        cache_eviction_path = None;
+        cache_eviction_ready_path = None;
+        cache_eviction_second_ready_path = None;
         generation;
         target_workflow_id;
+        second_target_workflow_id = None;
         workflow_id = None;
         run_id = None;
         records = [];
@@ -520,8 +532,12 @@ let load_replay_diagnostics path generation target_workflow_id =
         Ok
           {
             path;
+            cache_eviction_path = None;
+            cache_eviction_ready_path = None;
+            cache_eviction_second_ready_path = None;
             generation;
             target_workflow_id;
+            second_target_workflow_id = None;
             workflow_id = Some workflow_id;
             run_id = Some run_id;
             records;
@@ -574,13 +590,91 @@ let write_replay_diagnostics state =
          raise exception_)
   | _ -> failwith "replay diagnostics state has no workflow/run identity"
 
+(** Writes one payload-free eviction marker after Core has acknowledged an
+    explicit cache-removal activation. The marker is separate from replay
+    history because an eviction can occur between two replay records and must
+    not change the restart document's two-record contract. *)
+let write_cache_eviction_marker state ~reason =
+  match (state.cache_eviction_path, state.workflow_id, state.run_id) with
+  | Some path, Some workflow_id, Some run_id ->
+      let json =
+        `Assoc
+          [
+            ("workflow_id", `String workflow_id);
+            ("run_id", `String run_id);
+            ("reason", `String reason);
+          ]
+      in
+      let temporary = ref None in
+      (try
+         let generated =
+           Filename.temp_file ~temp_dir:(Filename.dirname path)
+             (Filename.basename path ^ ".tmp.") ""
+         in
+         temporary := Some generated;
+         let channel = open_out_bin generated in
+         Fun.protect
+           ~finally:(fun () -> close_out_noerr channel)
+           (fun () ->
+             Yojson.Safe.to_channel channel json;
+             output_char channel '\n';
+             flush channel);
+         Sys.rename generated path;
+         temporary := None
+       with exception_ ->
+         Option.iter
+           (fun generated -> try Sys.remove generated with _ -> ())
+           !temporary;
+         raise exception_)
+  | None, _, _ -> ()
+  | _ -> failwith "cache eviction state has no workflow/run identity"
+
+(** Publishes a private completion barrier after the first cache fixture run's
+    normal activation completion has been acknowledged by Core. Atomic replace
+    keeps the client-only driver from observing a partial marker. *)
+let write_cache_eviction_ready_marker path =
+  let temporary = ref None in
+  (try
+     let generated =
+       Filename.temp_file ~temp_dir:(Filename.dirname path)
+         (Filename.basename path ^ ".tmp.") ""
+     in
+     temporary := Some generated;
+     let channel = open_out_bin generated in
+     Fun.protect
+       ~finally:(fun () -> close_out_noerr channel)
+       (fun () ->
+         output_string channel "initial-completion\n";
+         flush channel);
+     Sys.rename generated path;
+     temporary := None
+   with exception_ ->
+     Option.iter
+       (fun generated -> try Sys.remove generated with _ -> ())
+       !temporary;
+     raise exception_)
+
+(** Validates an optional payload-free cache-eviction marker path. *)
+let optional_marker_path name = function
+  | None -> Ok None
+  | Some "" -> Ok None
+  | Some path
+    when path <> "" && not (String.contains path '\000')
+         && not (Filename.is_relative path) ->
+      Ok (Some path)
+  | Some _ ->
+      Error
+        (Base_error.defect
+           ~message:
+             (name ^ " must be a non-empty absolute path without NUL"))
+
 (** Creates the optional replay observer from test-only environment settings.
     Production workers do not set these variables and therefore pay no file
     I/O or callback cost. The observer records only the first initial and first
     replay activation for the configured workflow/run. *)
 let replay_diagnostic_hook () =
   match Sys.getenv_opt "SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE" with
-  | None -> Ok None
+  | None -> Ok (None, None)
   | Some path when path <> "" && not (String.contains path '\000') && not (Filename.is_relative path) ->
       let* generation =
         match Sys.getenv_opt "SMOKE_WORKER_GENERATION" with
@@ -598,59 +692,150 @@ let replay_diagnostic_hook () =
         | Some value when value <> "" -> Some value
         | _ -> None
       in
+      let* cache_eviction_path =
+        optional_marker_path "SMOKE_WORKER_CACHE_EVICTION_FILE"
+          (Sys.getenv_opt "SMOKE_WORKER_CACHE_EVICTION_FILE")
+      in
+      let* cache_eviction_ready_path =
+        optional_marker_path "SMOKE_WORKER_CACHE_EVICTION_READY_FILE"
+          (Sys.getenv_opt "SMOKE_WORKER_CACHE_EVICTION_READY_FILE")
+      in
+      let* cache_eviction_second_ready_path =
+        optional_marker_path "SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE"
+          (Sys.getenv_opt "SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE")
+      in
+      let second_target_workflow_id =
+        match Sys.getenv_opt "SMOKE_CACHE_EVICTION_SECOND_WORKFLOW_ID" with
+        | Some value when value <> "" -> Some value
+        | _ -> None
+      in
       let* state = load_replay_diagnostics path generation target_workflow_id in
+      let state =
+        {
+          state with
+          cache_eviction_path;
+          cache_eviction_ready_path;
+          cache_eviction_second_ready_path;
+          second_target_workflow_id;
+        }
+      in
+      let matches_target (info : Workflow_adapter.activation_info) =
+        match (state.target_workflow_id, info.workflow_id, state.workflow_id) with
+        | Some target, Some workflow_id, _ -> String.equal target workflow_id
+        | Some target, None, Some workflow_id -> String.equal target workflow_id
+        | Some _, None, None -> false
+        | None, Some workflow_id, _ ->
+            (match state.workflow_id with
+            | None -> true
+            | Some expected -> String.equal expected workflow_id)
+        | None, None, _ -> true
+      in
+      (* Selects only the second cache fixture run for its independent initial
+         completion barrier. A missing target or workflow ID fails closed and
+         cannot publish a misleading marker. *)
+      let matches_second_target (info : Workflow_adapter.activation_info) =
+        match (state.second_target_workflow_id, info.workflow_id) with
+        | Some expected, Some actual -> String.equal expected actual
+        | _ -> false
+      in
+      (* Binds the exact target identity before a later RemoveFromCache
+         activation omits InitializeWorkflow metadata. A replayed activation
+         can be the first delivery this worker observes after a workflow-task
+         timeout, so the cache-fixture replay exemption must retain identity
+         even though it intentionally skips the restart diagnostic record. *)
+      let remember_target_identity (info : Workflow_adapter.activation_info) =
+        (match (state.workflow_id, info.workflow_id) with
+        | None, Some workflow_id -> state.workflow_id <- Some workflow_id
+        | Some expected, Some actual when not (String.equal expected actual) ->
+            failwith "replay activation workflow ID changed"
+        | _ -> ());
+        match state.run_id with
+        | None -> state.run_id <- Some info.run_id
+        | Some expected when not (String.equal expected info.run_id) ->
+            failwith "replay activation run ID changed"
+        | Some _ -> ()
+      in
       let callback (info : Workflow_adapter.activation_info) =
-        let matches_target =
-          match (state.target_workflow_id, info.workflow_id, state.workflow_id) with
-          | Some target, Some workflow_id, _ -> String.equal target workflow_id
-          | Some target, None, Some workflow_id -> String.equal target workflow_id
-          | Some _, None, None -> false
-          | None, Some workflow_id, _ ->
-              (match state.workflow_id with
-              | None -> true
-              | Some expected -> String.equal expected workflow_id)
-          | None, None, _ -> true
-        in
-        if matches_target then begin
+        if matches_target info then begin
           (match (state.run_id, info.run_id) with
           | Some expected, actual when not (String.equal expected actual) -> ()
           | _ ->
-              let phase = if info.is_replaying then "replay" else "initial" in
-              let already_recorded =
-                List.exists (fun record -> String.equal record.phase phase) state.records
-              in
-              if not already_recorded then begin
-                if info.history_length < 0L then
-                  failwith "replay diagnostics history length was negative";
-                if state.generation = 1 && info.is_replaying then
-                  failwith "generation one unexpectedly reported replay";
-                if state.generation > 1 && not info.is_replaying then
-                  failwith "replacement worker did not report replay";
-                (match (state.workflow_id, info.workflow_id) with
-                | None, Some workflow_id -> state.workflow_id <- Some workflow_id
-                | Some expected, Some actual when not (String.equal expected actual) ->
-                    failwith "replay activation workflow ID changed"
-                | _ -> ());
-                (match state.run_id with
-                | None -> state.run_id <- Some info.run_id
-                | Some expected when not (String.equal expected info.run_id) ->
-                    failwith "replay activation run ID changed"
-                | Some _ -> ());
-                state.records <-
-                  state.records
-                  @ [
-                      {
-                        phase;
-                        generation = state.generation;
-                        is_replaying = info.is_replaying;
-                        history_length = info.history_length;
-                      };
-                    ];
-                write_replay_diagnostics state
-              end)
+              if Option.is_none info.cache_removal_reason then
+                (* The one-slot cache fixture can legitimately receive a
+                   replaying normal activation both after CacheFull eviction
+                   and before cache pressure when Temporal redelivers an
+                   unacknowledged workflow task. Restart diagnostics use
+                   generation one to reject unexpected replay, but the cache
+                   fixture is identified by its otherwise absent marker path
+                   and must not turn either valid delivery into workflow
+                   failure. Its dedicated post-acknowledgement markers, not
+                   this restart record, provide the acceptance evidence. *)
+                let cache_fixture_replay =
+                  state.generation = 1 && info.is_replaying
+                  && Option.is_some state.cache_eviction_path
+                in
+                if cache_fixture_replay then begin
+                  if info.history_length < 0L then
+                    failwith "replay diagnostics history length was negative";
+                  remember_target_identity info
+                end
+                else
+                  let phase = if info.is_replaying then "replay" else "initial" in
+                  let already_recorded =
+                    List.exists
+                      (fun record -> String.equal record.phase phase)
+                      state.records
+                  in
+                  if not already_recorded then begin
+                    if info.history_length < 0L then
+                      failwith "replay diagnostics history length was negative";
+                    if state.generation = 1 && info.is_replaying then
+                      failwith "generation one unexpectedly reported replay";
+                    if state.generation > 1 && not info.is_replaying then
+                      failwith "replacement worker did not report replay";
+                    remember_target_identity info;
+                    state.records <-
+                      state.records
+                      @ [
+                          {
+                            phase;
+                            generation = state.generation;
+                            is_replaying = info.is_replaying;
+                            history_length = info.history_length;
+                          };
+                        ];
+                    write_replay_diagnostics state
+                  end
+          )
         end
       in
-      Ok (Some callback)
+      let completion_callback (info : Workflow_adapter.activation_info) =
+        if matches_target info then
+          match info.cache_removal_reason with
+          | Some "cache_full" ->
+              (* Publish only the cache-pressure event under test. Core can
+                 later remove the same run because its execution ended; that
+                 lifecycle event must not overwrite the acknowledged
+                 CacheFull evidence before the post-driver validator reads it. *)
+              write_cache_eviction_marker state ~reason:"cache_full"
+          | Some _ -> ()
+          | None ->
+              (* This barrier proves only that Core acknowledged a normal
+                 activation completion. A pre-pressure task redelivery is
+                 replaying but is still a valid cached execution, so excluding
+                 it can deadlock the client-only driver before run B starts. *)
+              (match state.cache_eviction_ready_path with
+              | Some path -> write_cache_eviction_ready_marker path
+              | None -> ())
+        else if matches_second_target info then
+          match info.cache_removal_reason with
+          | None ->
+              (match state.cache_eviction_second_ready_path with
+              | Some path -> write_cache_eviction_ready_marker path
+              | None -> ())
+          | Some _ -> ()
+      in
+      Ok (Some callback, Some completion_callback)
   | Some _ ->
       Error
         (Base_error.defect
@@ -1002,15 +1187,16 @@ let cleanup_abandoned worker =
     [Native.create] enters [cleanup], which joins the supervisor owner Domain
     and closes all native resources before returning. Successful construction
     attaches a GC finalizer so abandoned workers still drain leases. *)
-let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities () =
-  let* on_activation = replay_diagnostic_hook () in
+let create ?(max_cached_workflows = default_max_cached_workflows) ~target_url
+    ~namespace ~identity ~task_queue ~workflows ~activities () =
+  let* on_activation, on_completion = replay_diagnostic_hook () in
   let* client_config =
     Native.client_config ~target_url ~identity
     |> Result.map_error (public_bridge_error "client configuration")
   in
   let* worker_config =
     Native.worker_config ~namespace ~task_queue ~build_id:default_build_id
-      ~max_cached_workflows:default_max_cached_workflows
+      ~max_cached_workflows
       ~max_outstanding_workflow_tasks:default_max_outstanding_workflow_tasks
       ~max_concurrent_workflow_task_polls:
         default_max_concurrent_workflow_task_polls
@@ -1035,7 +1221,7 @@ let create ~target_url ~namespace ~identity ~task_queue ~workflows ~activities (
       |> Result.map_error (public_native_error "worker startup")
     in
     let* workflows =
-      Workflow.create ?on_activation ~task_queue ~supervisor ~workflows ()
+      Workflow.create ?on_activation ?on_completion ~task_queue ~supervisor ~workflows ()
       |> Result.map_error (public_adapter_error "workflow registration")
     in
     let* activities =

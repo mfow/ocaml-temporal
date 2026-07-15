@@ -31,9 +31,13 @@ type t
     return typed defects before any backend graph is allocated. A [mock://]
     target selects the deterministic test backend; an [http://] or [https://]
     target creates the OCaml-owned native Core worker and its private Rust
-    bridge. *)
+    bridge. [max_cached_workflows] optionally bounds Core's sticky workflow
+    cache; omitting it preserves the default, while a small positive bound can
+    cause explicit cache-eviction activations that the worker acknowledges with
+    an empty completion. *)
 val create :
   ?identity:string ->
+  ?max_cached_workflows:int ->
   target_url:string ->
   namespace:string ->
   task_queue:string ->

@@ -86,6 +86,26 @@ need intervention are `Error`. Applications that need a broad worker view
 should filter `temporal.sdk.lifecycle`; applications diagnosing deterministic
 workflow execution should filter `temporal.sdk.workflow`.
 
+### Activity lease events
+
+The activity adapter reports a few lifecycle operations whose names describe
+lease transitions rather than user-level activity outcomes. Their distinction
+matters when diagnosing retries:
+
+| Operation | Level | Meaning |
+|---|---|---|
+| `activity_task_completed` | `Debug` | The native worker accepted a terminal completion for the leased task. The adapter retires that lease; it does not call the activity again. |
+| `activity_task_rejected` | `Warning` | The adapter submitted a typed task-level rejection and the lease was retired. This is acknowledged task progress, so the worker loop continues; inspect `temporal.error_kind` for the stable rejection category. |
+| `activity_completion_retry` | `Warning` | Submission of a terminal completion returned the explicitly retryable bridge status. The exact completion remains retained for a later drain, and the activity callback is not rerun. This event is a transient lease condition, not evidence that the activity ran twice. |
+| `activity_async_handoff_accepted` | `Debug` | Core accepted `Will_complete_async`, moving the task from the worker lease to the namespace-bound asynchronous lease. This is not a terminal activity result; a later `Async_handle.complete`, `fail`, or `cancel` call must retire that lease. |
+
+The `activity_async_handoff_accepted` record therefore proves only that the
+worker-side handoff was accepted. It does not prove that a later asynchronous
+completion or heartbeat was accepted. Those operations have their own bridge
+records (`client_complete_async_activity_json` and
+`client_record_async_activity_heartbeat_json`), while the public handle keeps
+their typed result and retry semantics.
+
 Latency is measured around the local OCaml operation with the portable Unix
 wall clock, expressed as fractional milliseconds, and clamped to zero if the
 clock moves backwards. The SDK currently attaches this tag to bridge-operation

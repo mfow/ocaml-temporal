@@ -92,12 +92,13 @@ opaque bytes and applications may choose another deterministic codec.
   paths against Temporal Server, including a child that retries to a second
   server-owned attempt and a duplicate-ID child-start failure. Child replay and
   recovery remain follow-up scenarios.
-- `Temporal.Scope` provides an experimental, workflow-local cancellation
-  boundary for observing futures. It returns typed cancellation and ownership
-  errors without blocking an OS thread, but it is intentionally cooperative:
-  cancelling a scope does not emit Temporal activity or child-workflow
-  cancellation commands. Use activity cancellation options or the public client
-  cancel operation when server-side cancellation is required.
+- [`Temporal.Scope`](docs/reference/workflow-scopes.md) provides an
+  experimental, workflow-local cancellation boundary for observing futures.
+  It returns typed cancellation and ownership errors without blocking an OS
+  thread, but it is intentionally cooperative: cancelling a scope does not
+  emit Temporal activity or child-workflow cancellation commands. Use activity
+  cancellation options or the public client cancel operation when server-side
+  cancellation is required.
 - Typed signal, query, and update definitions plus deterministic local handler
   dispatch are available as an experimental slice. Native signal delivery,
   output-only query delivery, immediate one-input non-suspending updates, and

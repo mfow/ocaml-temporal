@@ -2,9 +2,11 @@
 
     The client starts two exact runs while the worker is configured with one
     Core cache slot. It waits for the worker's payload-free eviction marker,
-    cancels both runs by their returned handles, and requires both exact runs
-    to reach Temporal's typed cancellation outcome. The client never registers
-    or executes workflow code. *)
+    waits until the second run has completed its first post-eviction task,
+    then cancels the second run before rehydrating and cancelling the evicted
+    first run. It requires both exact runs to reach Temporal's typed
+    cancellation outcome. The client never registers or executes workflow
+    code. *)
 
 module Client = Temporal.Client
 module Error = Temporal.Error
@@ -139,6 +141,9 @@ let run () =
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* marker = required_env "SMOKE_CACHE_EVICTION_FILE" in
       let* ready = required_env "SMOKE_CACHE_EVICTION_READY_FILE" in
+      let* second_ready =
+        required_env "SMOKE_CACHE_EVICTION_SECOND_READY_FILE"
+      in
       let* timeout = timeout_seconds () in
       phase "client_create" "begin";
       let* client =
@@ -156,6 +161,7 @@ let run () =
       let result =
         let* () = clear_marker marker in
         let* () = clear_marker ready in
+        let* () = clear_marker second_ready in
         phase "start_a" "begin";
         let* first =
           Client.start client ~workflow:Definitions.cache_eviction
@@ -176,20 +182,25 @@ let run () =
         phase "eviction_marker" "begin";
         let* () = wait_for_marker marker ~timeout in
         phase "eviction_marker" "observed";
-        phase "cancel_a" "begin";
-        let* () = cancel first ~request_id:"two-binary-cache-eviction-cancel-a" in
-        phase "cancel_a" "ok";
+        phase "ready_b" "begin";
+        let* () =
+          wait_for_marker ~expected:"initial-completion\n" second_ready ~timeout
+        in
+        phase "ready_b" "observed";
         phase "cancel_b" "begin";
         let* () = cancel second ~request_id:"two-binary-cache-eviction-cancel-b" in
         phase "cancel_b" "ok";
-        phase "wait_a" "begin";
-        let* first_outcome = Client.wait first in
-        phase "wait_a" "ok";
         phase "wait_b" "begin";
         let* second_outcome = Client.wait second in
         phase "wait_b" "ok";
-        let* () = require_cancelled "cache eviction run A" first_outcome in
-        require_cancelled "cache eviction run B" second_outcome
+        let* () = require_cancelled "cache eviction run B" second_outcome in
+        phase "cancel_a" "begin";
+        let* () = cancel first ~request_id:"two-binary-cache-eviction-cancel-a" in
+        phase "cancel_a" "ok";
+        phase "wait_a" "begin";
+        let* first_outcome = Client.wait first in
+        phase "wait_a" "ok";
+        require_cancelled "cache eviction run A" first_outcome
       in
       finish result
   | _ ->

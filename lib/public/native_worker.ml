@@ -343,8 +343,14 @@ type replay_diagnostics = {
   path : string;
   cache_eviction_path : string option;
   cache_eviction_ready_path : string option;
+  (* Optional marker for the second cache fixture run's first acknowledged
+     activation. It is intentionally separate from the A-run barrier so the
+     client can wait for B without confusing an overwritten file. *)
+  cache_eviction_second_ready_path : string option;
   generation : int;
   target_workflow_id : string option;
+  (* Optional exact workflow ID used by the second cache fixture barrier. *)
+  second_target_workflow_id : string option;
   mutable workflow_id : string option;
   mutable run_id : string option;
   mutable records : replay_record list;
@@ -465,8 +471,10 @@ let load_replay_diagnostics path generation target_workflow_id =
         path;
         cache_eviction_path = None;
         cache_eviction_ready_path = None;
+        cache_eviction_second_ready_path = None;
         generation;
         target_workflow_id;
+        second_target_workflow_id = None;
         workflow_id = None;
         run_id = None;
         records = [];
@@ -526,8 +534,10 @@ let load_replay_diagnostics path generation target_workflow_id =
             path;
             cache_eviction_path = None;
             cache_eviction_ready_path = None;
+            cache_eviction_second_ready_path = None;
             generation;
             target_workflow_id;
+            second_target_workflow_id = None;
             workflow_id = Some workflow_id;
             run_id = Some run_id;
             records;
@@ -690,8 +700,25 @@ let replay_diagnostic_hook () =
         optional_marker_path "SMOKE_WORKER_CACHE_EVICTION_READY_FILE"
           (Sys.getenv_opt "SMOKE_WORKER_CACHE_EVICTION_READY_FILE")
       in
+      let* cache_eviction_second_ready_path =
+        optional_marker_path "SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE"
+          (Sys.getenv_opt "SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE")
+      in
+      let second_target_workflow_id =
+        match Sys.getenv_opt "SMOKE_CACHE_EVICTION_SECOND_WORKFLOW_ID" with
+        | Some value when value <> "" -> Some value
+        | _ -> None
+      in
       let* state = load_replay_diagnostics path generation target_workflow_id in
-      let state = { state with cache_eviction_path; cache_eviction_ready_path } in
+      let state =
+        {
+          state with
+          cache_eviction_path;
+          cache_eviction_ready_path;
+          cache_eviction_second_ready_path;
+          second_target_workflow_id;
+        }
+      in
       let matches_target (info : Workflow_adapter.activation_info) =
         match (state.target_workflow_id, info.workflow_id, state.workflow_id) with
         | Some target, Some workflow_id, _ -> String.equal target workflow_id
@@ -702,6 +729,14 @@ let replay_diagnostic_hook () =
             | None -> true
             | Some expected -> String.equal expected workflow_id)
         | None, None, _ -> true
+      in
+      (* Selects only the second cache fixture run for its independent
+         post-eviction completion barrier. A missing target or workflow ID
+         fails closed and cannot publish a misleading marker. *)
+      let matches_second_target (info : Workflow_adapter.activation_info) =
+        match (state.second_target_workflow_id, info.workflow_id) with
+        | Some expected, Some actual -> String.equal expected actual
+        | _ -> false
       in
       let callback (info : Workflow_adapter.activation_info) =
         if matches_target info then begin
@@ -758,6 +793,13 @@ let replay_diagnostic_hook () =
               | Some path -> write_cache_eviction_ready_marker path
               | None -> ())
           | None -> ()
+        else if matches_second_target info then
+          match info.cache_removal_reason with
+          | None when not info.is_replaying ->
+              (match state.cache_eviction_second_ready_path with
+              | Some path -> write_cache_eviction_ready_marker path
+              | None -> ())
+          | Some _ | None -> ()
       in
       Ok (Some callback, Some completion_callback)
   | Some _ ->

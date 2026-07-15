@@ -32,7 +32,9 @@ for those rules.
   by Temporal and never falls back to host wall-clock time. `continue_as_new`
   ends the current run and starts a successor. `patched ~id` introduces a new
   deterministic branch while allowing histories created before that marker to
-  replay the old branch; see [workflow patching](workflow-patching.md).
+  replay the old branch. `deprecate_patch ~id` is the later unit-returning
+  lifecycle marker used while phasing that branch gate out; see
+  [workflow patching](workflow-patching.md).
 - `Temporal.Activity` defines local, remote, context-aware, and asynchronous
   activities. `start` schedules an activity without waiting; `execute` is the
   convenience composition of `start` and `Future.await`. Keep the handle from

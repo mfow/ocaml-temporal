@@ -127,7 +127,7 @@ type command =
         | `Rejected of Temporal_base.Error.t
         | `Completed of Temporal_base.Codec.payload ];
     }
-  (** Records one evaluation of a replay-safe workflow patch gate. *)
+  (** Records one active or deprecated replay-safe patch lifecycle operation. *)
   | Set_patch_marker of { patch_id : string; deprecated : bool }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t

@@ -136,8 +136,9 @@ type command =
         | `Rejected of Temporal_base.Error.t
         | `Completed of Temporal_base.Codec.payload ];
     }
-  (** Tells Core that workflow code evaluated one patch gate. Core owns marker
-      deduplication; the OCaml runtime emits this command on every call. *)
+  (** Tells Core that workflow code invoked one active or deprecated patch
+      lifecycle operation. Core owns same-mode marker deduplication, so the
+      OCaml runtime emits this command on every public patch call. *)
   | Set_patch_marker of { patch_id : string; deprecated : bool }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t

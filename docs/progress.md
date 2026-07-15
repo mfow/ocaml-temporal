@@ -14,11 +14,27 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-15: Workflow patch deprecation surface
+
+`Temporal.Workflow.deprecate_patch ~id` now records the lifecycle phase after
+initial patch-in without exposing a meaningless branch decision. It shares the
+per-execution replay decision with `patched`, emits a deprecated Core marker on
+every permitted call, copies durable IDs, and rejects active/deprecated calls
+for one ID before Core's first-command-wins behavior could make history depend
+on call order. Focused tests cover live and replay emission, notification state,
+same-mode repetition, mixed-mode rejection, execution isolation, mutable ID
+aliases, shutdown, and native completion translation.
+
+This milestone does not claim live deprecation or safe call removal. The next
+acceptance slice must replay an active-marker history under deprecation-only
+code, create and replay a fresh deprecated-marker history, and only then prove
+removal against that deprecated history.
+
 ## 2026-07-15: Bilateral parent/child restart-replay gate
 
-Status at the time of this entry: the Docker-free protocol contract passes.
-The real Temporal/PostgreSQL controller is implemented and wired into CI, but
-its live result is not yet recorded.
+Status: the complete [PR #351 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013) passed all
+nine jobs, including the real Temporal/PostgreSQL acceptance in 23m11s.
 
 The dedicated gate starts a fixed parent execution from an independent OCaml
 client process and runs both parent and child definitions in a separate OCaml
@@ -32,6 +48,8 @@ positive bounded replay diagnostics make the evidence fail closed. The
 checkpoint file is private to the acceptance worker and is atomically replaced;
 the runtime validates UTF-8 identifier bytes, canonical decimal history
 lengths, record order, and the full document size before publishing it.
+This proves one exact parent/child restart-replay path; broader cache pressure,
+crash timing, and child-failure recovery remain separate scenarios.
 
 ## 2026-07-15: Live old/new-history workflow patch replay (#348)
 

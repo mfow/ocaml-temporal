@@ -1,13 +1,13 @@
 # Workflow patching
 
-`Temporal.Workflow.patched` is the first workflow-versioning primitive in the
-public OCaml API. It supports the initial **patch-in** step: a workflow can
-retain its legacy branch for histories created before a behavior change while
-new executions take the new branch.
+`Temporal.Workflow.patched` and `Temporal.Workflow.deprecate_patch` implement
+the first two workflow-patching lifecycle steps in the public OCaml API. A
+workflow can retain its legacy branch for histories created before a behavior
+change, then mark the patch as deprecated while incompatible histories drain.
 
-It is not a general deployment-versioning system. Public patch deprecation and
-removal, worker deployment/build-ID routing, side effects, arbitrary historic
-compatibility, and migration tooling remain separate work.
+This is not a general deployment-versioning system. Patch removal, worker
+deployment/build-ID routing, side effects, arbitrary historic compatibility,
+and migration tooling remain separate work.
 
 ## Authoring contract
 
@@ -41,6 +41,42 @@ commands: Core owns durable marker state and history-machine deduplication.
 An emitted completion command is not itself history evidence; the live
 acceptance below checks the normalized server history separately.
 
+### Deprecate a patch
+
+Only after marker-free executions can no longer replay across the changed
+branch, replace the gate at the same logical point with a lifecycle-only call:
+
+```ocaml
+let process_order order =
+  let open Temporal.Result_syntax in
+  Temporal.Workflow.deprecate_patch ~id:"orders.validate-address.v2";
+  let* () = validate_address order in
+  ship order
+```
+
+`deprecate_patch` returns `unit`: it records lifecycle intent and must never be
+used as a branch decision. Repeated deprecation calls are allowed and emit
+`SetPatchMarker { deprecated = true }` for Core to deduplicate. Do not call
+`patched` and `deprecate_patch` for the same ID during one workflow execution.
+Core retains the first marker command for an ID, so the OCaml runtime rejects
+mixed modes with `Invalid_argument` before it can emit an ambiguous completion.
+
+A history notification establishes only that the marker exists; it does not
+lock the source-level mode. This lets replacement code replay an older
+non-deprecated marker while calling only `deprecate_patch`. A fresh execution
+of that replacement code emits a deprecated marker.
+
+There are two separate safety gates. Before replacing `patched`, old worker
+builds must no longer create marker-free executions and every execution that
+could replay the old branch at this point must have drained, continued as new,
+been reset or migrated, or been proved command-compatible with the new branch.
+Core accepting a deprecation call without a marker does not make different
+old/new branch commands deterministic. Later, before removing
+`deprecate_patch`, histories containing the older non-deprecated marker must
+also have drained or been otherwise accounted for. The live acceptance plan
+therefore migrates active-marker histories, never marker-free legacy histories,
+into the deprecation phase.
+
 ## Replay contract
 
 The bridge preserves this order for each workflow task:
@@ -49,8 +85,10 @@ The bridge preserves this order for each workflow task:
    protocol.
 2. OCaml validates the complete activation and installs the execution-local
    replay and patch-notification state before workflow fibers run.
-3. `Temporal.Workflow.patched` selects the execution-local decision and emits
-   `SetPatchMarker { deprecated = false }`.
+3. `Temporal.Workflow.patched` selects the execution-local branch decision and
+   emits `SetPatchMarker { deprecated = false }`, while
+   `Temporal.Workflow.deprecate_patch` retains the same private decision state
+   and emits `SetPatchMarker { deprecated = true }` without exposing a boolean.
 4. Rust validates the completion and converts the marker back to Core's
    protobuf command.
 
@@ -96,15 +134,17 @@ successful real-server invocation of both scenarios.
 
 ## Focused evidence and remaining boundary
 
-Focused OCaml runtime tests cover new execution, replay with and without a
-notification, repeated calls, execution isolation, and copying a mutable
-source string before it enters durable state. Shared fixtures and Rust tests
-cover strict JSON validation, duplicate command preservation, and round trips
-through the pinned Core protobuf types. These are local semantic and bridge
-evidence, not a substitute for the live acceptance scenario above.
+Focused OCaml runtime tests cover patch-in decisions, deprecated marker
+emission, replay with and without a notification, repeated same-mode calls,
+mixed-mode rejection, execution isolation, native completion translation, and
+copying mutable source strings before they enter durable state. Shared fixtures
+and Rust tests cover strict JSON validation, duplicate command preservation,
+and round trips through the pinned Core protobuf types. These are local semantic
+and bridge evidence, not a substitute for live deprecation/removal acceptance.
 
-This first slice proves only the non-deprecated patch-in primitive. There is no
-public deprecation or patch-removal operation yet. Worker deployment/build-ID
+The live target currently proves only the non-deprecated patch-in scenarios in
+the table above. Live active-to-deprecated compatibility, fresh deprecated
+history, and eventual call removal remain unverified. Worker deployment/build-ID
 versioning, side effects, arbitrary historical compatibility, and migration
-tooling remain separate roadmap work. For the overall evidence boundary, read
-[live acceptance coverage](live-acceptance-coverage.md).
+tooling also remain separate roadmap work. For the overall evidence boundary,
+read [live acceptance coverage](live-acceptance-coverage.md).

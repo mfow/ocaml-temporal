@@ -96,10 +96,11 @@ let test_ordinary_helper_composition () =
   | Error _ -> failwith "detached activity handle returned the wrong error"
   | Ok () -> failwith "detached activity handle cancellation unexpectedly succeeded"
 
-(** Patch gates are synchronous workflow control flow, so malformed durable
-    IDs and calls without an active execution are programmer misuse rather
-    than detached futures. *)
-let test_patched_misuse_and_identifier_validation () =
+(** Patch APIs are synchronous workflow control flow, so malformed durable IDs
+    and calls without an active execution are programmer misuse rather than
+    detached futures. Both the branching and lifecycle surfaces enforce the
+    same durable identifier contract. *)
+let test_patch_api_misuse_and_identifier_validation () =
   let expect_invalid label action =
     match action () with
     | exception Invalid_argument message when not (String.equal message "") -> ()
@@ -117,10 +118,20 @@ let test_patched_misuse_and_identifier_validation () =
   expect_invalid "invalid UTF-8 patch id"
     (fun () -> Temporal.Workflow.patched ~id:(String.make 1 '\255'));
   expect_invalid "oversized patch id"
-    (fun () -> Temporal.Workflow.patched ~id:(String.make 65_537 'p'))
+    (fun () -> Temporal.Workflow.patched ~id:(String.make 65_537 'p'));
+  expect_invalid "deprecate patch outside workflow"
+    (fun () -> Temporal.Workflow.deprecate_patch ~id:"orders.v2");
+  expect_invalid "empty deprecated patch id"
+    (fun () -> Temporal.Workflow.deprecate_patch ~id:"");
+  expect_invalid "NUL deprecated patch id"
+    (fun () -> Temporal.Workflow.deprecate_patch ~id:"orders\000v2");
+  expect_invalid "invalid UTF-8 deprecated patch id" (fun () ->
+      Temporal.Workflow.deprecate_patch ~id:(String.make 1 '\255'));
+  expect_invalid "oversized deprecated patch id" (fun () ->
+      Temporal.Workflow.deprecate_patch ~id:(String.make 65_537 'p'))
 
 (** Executes the standalone authoring and validation checks. *)
 let () =
   test_ordinary_helper_composition ();
   test_activity_option_validation_precedes_encoding ();
-  test_patched_misuse_and_identifier_validation ()
+  test_patch_api_misuse_and_identifier_validation ()

@@ -33,9 +33,10 @@ remain pending.
 
 ## 2026-07-15: Non-deprecated workflow patch-in primitive
 
-Status: focused OCaml and Rust tests pass locally. The Docker-free contract and
-real Temporal Server target are implemented, but no successful live replay run
-is recorded here.
+Status at the time of this entry: focused OCaml and Rust tests passed locally.
+The Docker-free contract and real Temporal Server target were implemented, but
+no successful live replay run had yet been recorded. The newer entry above
+supersedes that live-evidence status.
 
 `Temporal.Workflow.patched ~id` now lets direct-style workflow code introduce
 a new branch while older histories without the marker select the old branch.

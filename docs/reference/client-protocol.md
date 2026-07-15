@@ -256,8 +256,12 @@ When `request_id` is omitted, OCaml allocates a fresh process-wide ID shared by
 all `Temporal.Client.t` values in that process. This keeps two independent
 handles from accidentally presenting the same signal as a retry of an earlier
 delivery. Supply an explicit ID when retrying an uncertain transport result so
-Temporal can deduplicate the same logical signal. A successful native response
-is exactly:
+Temporal can deduplicate the same logical signal. An idempotency key must not be
+reused for a different signal name or payload: the deterministic mock accepts
+an exact retry, but returns a typed workflow error when the same ID is paired
+with different signal data. The native transport passes the key to Temporal,
+whose server-side idempotency behavior remains authoritative. A successful
+native response is exactly:
 
 ```json
 {"acknowledged":true}

@@ -314,6 +314,33 @@ command may occur at most once and must be last.
 When acknowledging an eviction, the completion command list must be empty and
 the run ID must match the activation.
 
+### Patch notification and marker
+
+Core reports durable patch history with a passive activation job:
+
+```json
+{"kind":"notify_has_patch","patch_id":"orders.v2"}
+```
+
+The activation decoder validates `patch_id` as a non-empty, NUL-free UTF-8
+identifier within the 65,536-byte boundary. The runtime installs every
+notification before running workflow fibers. Core prepares query jobs in their
+own activation, so both language validators reject a query mixed with this
+notification.
+
+Each `Temporal.Workflow.patched` call returns a per-execution decision and
+emits this completion command:
+
+```json
+{"kind":"set_patch_marker","patch_id":"orders.v2","deprecated":false}
+```
+
+The command is a closed record and `deprecated` is required. The public first
+slice always emits `false`, while the private semantic type retains the boolean
+so conversion to and from pinned Core values remains lossless. Repeated marker
+commands are preserved in order; Core, rather than the OCaml runtime or JSON
+bridge, owns durable marker deduplication.
+
 ### Continue-as-new
 
 The public OCaml operation `Temporal.Workflow.continue_as_new` emits this

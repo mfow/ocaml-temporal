@@ -102,6 +102,11 @@ val activate : ('input, 'output) t -> Activation.job list -> Activation.command 
 val set_activation_timestamp :
   ('input, 'output) t -> Temporal_protocol.Workflow_protocol.timestamp option -> unit
 
+(** Installs Core's replay status for the activation currently being
+    dispatched. The native adapter calls this before patch notifications and
+    workflow fibers are processed. *)
+val set_activation_is_replaying : ('input, 'output) t -> bool -> unit
+
 (** Releases paused fibers and pending operation tables for this execution.
     Idempotent. Call when removing a run from a worker registry if a terminal
     or eviction path has not already shut the execution down. *)

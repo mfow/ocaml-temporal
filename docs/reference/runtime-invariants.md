@@ -117,8 +117,14 @@ and bridge, read the [documentation guide](../README.md) first.
   identical command bytes.
 - Workflow code must not use unrecorded wall time, randomness, I/O, process
   state, or nondeterministic iteration to affect commands.
-- Replay-safe time, randomness, side effects, patching, and logging APIs are
-  required before production release.
+- Patch decisions belong to one workflow execution. Core's `NotifyHasPatch`
+  jobs are applied before workflow fibers run; absent known marker state,
+  `patched` returns `not is_replaying`, retains that decision, and emits a
+  non-deprecated marker on every call. The runtime does not deduplicate marker
+  commands or share patch state between runs.
+- Replay-safe randomness, side effects, and workflow logging APIs remain
+  required before production release. The patch-in primitive still needs live
+  old/new-history replay and a deprecation/removal lifecycle.
 
 ## Core boundary assumptions
 

@@ -524,6 +524,14 @@ let runtime_job path = function
           None,
           None,
           None )
+  | Protocol.Notify_has_patch { patch_id } ->
+      let* () = validate_identifier (path ^ ".patch_id") patch_id in
+      Ok
+        ( Activation.Notify_has_patch { patch_id },
+          None,
+          None,
+          None,
+          None )
   | Protocol.Fire_timer { seq } ->
       let* () = validate_sequence (path ^ ".seq") seq in
       Ok
@@ -888,6 +896,9 @@ let command_to_protocol command =
             Ok (Protocol.Update_completed payload)
       in
       Ok (Protocol.Update_response { protocol_instance_id; response })
+  | Activation.Set_patch_marker { patch_id; deprecated } ->
+      let* () = validate_identifier "$.command.patch_id" patch_id in
+      Ok (Protocol.Set_patch_marker { patch_id; deprecated })
   | Activation.Complete_workflow payload ->
       let* payload = protocol_payload "$.command.result" payload in
       let result =
@@ -984,6 +995,7 @@ let activate execution activation =
      explicitly clear the previous value rather than leaving stale time
      visible to [Temporal.Workflow.now]. *)
   Execution.set_activation_timestamp execution translated.timestamp;
+  Execution.set_activation_is_replaying execution translated.is_replaying;
   let commands = Execution.activate execution translated.jobs in
   let* completion = completion_of_commands ~run_id:translated.run_id commands in
   let* () = validate_completion_for_activation activation completion in

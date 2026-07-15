@@ -685,8 +685,8 @@ adding a separate pseudo-worker test:
 
 * child workflow replay and recovery;
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
-* sticky-cache eviction and broader recovery beyond the live worker
-  restart/replay path; and
+* broader cache and recovery cases beyond the separately verified one-slot
+  sticky-cache eviction and live worker restart/replay paths; and
 * cancellation of child/activity work and graceful shutdown while multiple
   executions are outstanding.
 
@@ -702,13 +702,15 @@ run adds start-to-close timeout-triggered retry for the earlier delay. The PR
 #229 run verifies the delayed retry policy and ordering guard against the live
 server. PR #289 adds heartbeat-timeout, non-retryable activity, and child retry
 plus duplicate-ID child-start-failure evidence; the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
-adds live worker restart/replay evidence. None of these assertions claims
-coverage of sticky-cache eviction or crash recovery.
+adds live worker restart/replay evidence. These baseline assertions do not
+claim sticky-cache eviction or crash-recovery coverage; those behaviors have
+their own live acceptance gates recorded in the [coverage
+matrix](live-acceptance-coverage.md).
 
 ## Completion criteria for this design
 
 The accepted seventeen-result baseline
-was verified by the complete [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719). The separate two-generation restart/replay acceptance was verified by the complete [PR #253 CI run](https://github.com/ocaml-temporal/actions/runs/29286560471).
+was verified by the complete [PR #289 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719). The separate two-generation restart/replay acceptance was verified by the complete [PR #253 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
 The baseline driver assertions and the restart controller are separate gates;
 the pending long-backoff extension adds an eighteenth exact outcome. The
 former waits for all seventeen exact workflow outcomes, while the latter

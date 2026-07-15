@@ -82,6 +82,7 @@ let test_valid_activations () =
       "child-initialize";
       "child-resolution";
       "child-cancellation-before-start";
+      "patch-activation";
     ]
 
 (** Proves continuation initialization metadata remains typed through the OCaml
@@ -184,10 +185,46 @@ let test_valid_completion () =
   check_string "completion" expected (unwrap (Protocol.encode_completion value));
   ignore (unwrap (Protocol.decode_completion expected))
 
+(** Proves the OCaml side normalizes the shared patch-marker fixtures and
+    rejects an empty identifier, an unknown activation field, and a completion
+    marker missing its required deprecation flag. Rust exercises these same
+    fixtures and the pinned Core conversions in its separate protocol suite. *)
+let test_patch_marker_protocol_slice () =
+  let completion =
+    unwrap
+      (Protocol.decode_completion
+         (fixture [ "valid"; "patch-completion.input.json" ]))
+  in
+  let expected =
+    String.trim (fixture [ "valid"; "patch-completion.normalized.json" ])
+  in
+  check_string "patch completion" expected
+    (unwrap (Protocol.encode_completion completion));
+  ignore (unwrap (Protocol.decode_completion expected));
+  let activation : Protocol.activation =
+    {
+      run_id = "patch-run";
+      timestamp = Some { seconds = 1L; nanoseconds = 0 };
+      is_replaying = true;
+      history_length = 1L;
+      jobs = [ Protocol.Notify_has_patch { patch_id = "orders.v2" } ];
+      metadata = None;
+    }
+  in
+  require_error
+    (Protocol.encode_activation
+       { activation with jobs = [ Protocol.Notify_has_patch { patch_id = "" } ] });
+  require_error
+    (Protocol.decode_activation
+       "{\"run_id\":\"patch-run\",\"timestamp\":{\"seconds\":1,\"nanoseconds\":0},\"is_replaying\":true,\"history_length\":1,\"jobs\":[{\"kind\":\"notify_has_patch\",\"patch_id\":\"orders.v2\",\"extra\":true}]}");
+  require_error
+    (Protocol.decode_completion
+       "{\"run_id\":\"patch-run\",\"commands\":[{\"kind\":\"set_patch_marker\",\"patch_id\":\"orders.v2\"}]}")
+
 (** Proves that modern and legacy query IDs, repeated arguments, and headers
     survive the OCaml semantic JSON boundary. Query activations and
-    completions are query-only, and duplicate IDs are rejected before bytes
-    reach the Rust bridge. *)
+    completions are query-only—including rejection of a mixed patch
+    notification—and duplicate IDs are rejected before bytes reach Rust. *)
 let test_query_protocol_slice () =
   let payload text : Protocol.payload =
     { metadata = [ ("encoding", Bytes.of_string "binary/plain") ]; data = Bytes.of_string text }
@@ -243,6 +280,14 @@ let test_query_protocol_slice () =
   require_error
     (Protocol.encode_activation
        { activation with jobs = [ query "query-1"; Protocol.Fire_timer { seq = 1L } ] });
+  require_error
+    (Protocol.encode_activation
+       {
+         activation with
+         jobs =
+           [ query "query-1";
+             Protocol.Notify_has_patch { patch_id = "orders.v2" } ];
+       });
   require_error
     (Protocol.encode_completion
        {
@@ -1114,6 +1159,7 @@ let () =
   run "workflow activations" test_valid_activations;
   run "continuation initialization metadata" test_continuation_initialize_metadata;
   run "workflow completion" test_valid_completion;
+  run "workflow patch marker protocol" test_patch_marker_protocol_slice;
   run "query protocol slice" test_query_protocol_slice;
   run "update protocol slice" test_update_protocol_slice;
   run "start child workflow command" test_start_child_workflow_command;

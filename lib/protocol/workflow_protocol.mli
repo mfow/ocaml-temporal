@@ -268,6 +268,8 @@ type activation_job =
       identity : string;
       headers : (string * payload) list;
     }
+  (** Reports a patch marker already present in this run's history. *)
+  | Notify_has_patch of { patch_id : string }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow of { reason : string }
   | Remove_from_cache of { message : string; reason : eviction_reason }
@@ -358,6 +360,8 @@ type completion_command =
       protocol_instance_id : string;
       response : update_response;
     }
+  (** Records one active or deprecated patch marker decision. *)
+  | Set_patch_marker of { patch_id : string; deprecated : bool }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
   (** Ends this run and starts a successor run of [workflow_type] with the

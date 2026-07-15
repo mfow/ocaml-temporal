@@ -98,12 +98,13 @@ let unwrap label = function
 (** Creates a valid ordinary activation envelope around an ordered job list. *)
 let default_timestamp : Protocol.timestamp = { seconds = 1L; nanoseconds = 0 }
 
-let activation ?(timestamp = Some default_timestamp) ?metadata jobs :
+let activation ?(timestamp = Some default_timestamp) ?(is_replaying = true)
+    ?metadata jobs :
     Protocol.activation =
   {
     run_id = "run-native-translation";
     timestamp;
-    is_replaying = true;
+    is_replaying;
     history_length = 7L;
     jobs;
     metadata;
@@ -150,6 +151,7 @@ let test_activation_metadata_and_order () =
             seq = 3L;
             result = Protocol.Completed (Some (protocol_payload "ok"));
           };
+        Protocol.Notify_has_patch { patch_id = "native.patch" };
         Protocol.Fire_timer { seq = 4L };
       ]
   in
@@ -163,6 +165,7 @@ let test_activation_metadata_and_order () =
          Activation.Start_workflow;
          Activation.Resolve_activity
            { seq = 3L; result = Ok (runtime_payload "ok") };
+         Activation.Notify_has_patch { patch_id = "native.patch" };
          Activation.Fire_timer { seq = 4L };
        ]
   then failwith "activation job order or payload conversion differed";
@@ -885,6 +888,45 @@ let test_activate_installs_workflow_time () =
       failwith ("workflow time implementation failed: " ^ failure.message)
   | _ -> failwith "workflow time activation did not complete with unit result"
 
+(** Proves the native adapter installs replay state and patch notifications
+    before entering workflow code. The replayed body must take the new branch
+    only because Core supplied the marker, then return the marker command in
+    the same activation completion. *)
+let test_activate_installs_workflow_patch_state () =
+  let observed = ref None in
+  let workflow =
+    Temporal_base.Definition.make ~name:"native_workflow_patch"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:
+        (Some
+           (fun () ->
+             observed := Some (Temporal.Workflow.patched ~id:"native.patch");
+             Ok ()))
+  in
+  let execution = Execution.start workflow () in
+  let completion =
+    unwrap "workflow patch activation"
+      (Native_execution.activate execution
+         (activation ~is_replaying:true
+            [ Protocol.Initialize_workflow
+                {
+                  workflow_id = "workflow-patch";
+                  workflow_type = "native_workflow_patch";
+                  arguments = [];
+                  randomness_seed = "1";
+                  attempt = 1;
+                  context = None;
+                };
+              Protocol.Notify_has_patch { patch_id = "native.patch" } ]))
+  in
+  if !observed <> Some true then
+    failwith "native adapter did not install replay patch state before workflow code";
+  match completion.commands with
+  | [ Protocol.Set_patch_marker
+        { patch_id = "native.patch"; deprecated = false };
+      Protocol.Complete_workflow { result = None } ] -> ()
+  | _ -> failwith "native patch activation emitted unexpected commands"
+
 (** Cache eviction acknowledges Core without running or emitting workflow
     commands, while retaining the exact run identity. *)
 let test_activate_eviction_completion () =
@@ -1197,6 +1239,7 @@ let () =
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();
   test_activate_installs_workflow_time ();
+  test_activate_installs_workflow_patch_state ();
   test_activate_eviction_completion ();
   test_command_order_and_validation ();
   test_activity_command_translation_and_validation ();

@@ -17,7 +17,13 @@
   "$defs": {
     "payload": {"$ref": "temporal-payload.schema.json"},
     "failure": {"$ref": "temporal-failure.schema.json"},
-    "identifier": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "identifier": {
+      "description": "A nonempty, NUL-free identifier. JSON Schema maxLength counts Unicode code points; both bridge implementations additionally enforce the authoritative 65,536-byte UTF-8 limit.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "^[^\\u0000]+$"
+    },
     "u32": {"type": "integer", "minimum": 0, "maximum": 4294967295},
     "u64_decimal": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,19})$"},
     "timestamp": {
@@ -271,6 +277,15 @@
             "identity": {"type": "string", "maxLength": 65536},
             "headers": {"type": "object", "maxProperties": 201326592, "additionalProperties": {"$ref": "#/$defs/payload"}}
           }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "patch_id"],
+          "properties": {
+            "kind": {"const": "notify_has_patch"},
+            "patch_id": {"$ref": "#/$defs/identifier"}
+          },
+          "description": "History metadata stating that this run already contains the named patch marker. Core orders it before jobs that can run workflow fibers and never places it in a query-only activation."
         },
         {
           "type": "object", "additionalProperties": false,

@@ -107,6 +107,31 @@ let now () =
           Time.of_unix ~seconds:timestamp.seconds
             ~nanoseconds:timestamp.nanoseconds)
 
+(** Validates and snapshots a patch ID before consulting workflow state. The
+    copy prevents a caller-created mutable string from changing the hash-table
+    key or emitted command after this call returns. *)
+let validated_patch_id id =
+  if String.length id = 0 then
+    invalid_arg "Temporal.Workflow.patched id is empty";
+  if String.contains id '\000' then
+    invalid_arg "Temporal.Workflow.patched id contains a NUL byte"
+  else if String.length id > max_name_bytes then
+    invalid_arg "Temporal.Workflow.patched id exceeds 65536 bytes"
+  else if not (Temporal_base.Codec.valid_utf_8 id) then
+    invalid_arg "Temporal.Workflow.patched id must be valid UTF-8";
+  Bytes.to_string (Bytes.of_string id)
+
+(** Returns the replay-safe branch decision for one named workflow patch.
+    Core notifications and the activation replay flag determine the first
+    decision; the execution context retains it for later calls in this run. *)
+let patched ~id =
+  let patch_id = validated_patch_id id in
+  match Temporal_runtime.Workflow_context_store.current () with
+  | None ->
+      invalid_arg "Temporal.Workflow.patched used outside a workflow execution"
+  | Some context ->
+      Temporal_runtime.Workflow_context_store.patched context ~patch_id
+
 (** Requests a fresh run of the same workflow type with [input]. This is a
     terminal direct-style operation: it encodes the successor input, buffers a
     Core continue-as-new command, and aborts the current private workflow

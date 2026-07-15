@@ -363,7 +363,8 @@ let is_terminal completion =
       | Protocol.Start_timer _
       | Protocol.Cancel_timer _
       | Protocol.Query_result _
-      | Protocol.Update_response _ -> false)
+      | Protocol.Update_response _
+      | Protocol.Set_patch_marker _ -> false)
     completion.Protocol.commands
 
 (** Reports one bounded lifecycle message without allowing a reporter defect to
@@ -620,6 +621,7 @@ module Make (Supervisor : SUPERVISOR) = struct
       | Protocol.Request_cancel_activity _ as command -> command
       | Protocol.Start_timer _ as command -> command
       | Protocol.Cancel_timer _ as command -> command
+      | Protocol.Set_patch_marker _ as command -> command
       | Protocol.Cancel_workflow_execution as command -> command
     in
     {

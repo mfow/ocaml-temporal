@@ -427,13 +427,19 @@ let run_mock worker backend =
     in
     loop false false
 
-(** Runs the selected backend. The native path owns its own typed adapters and
-    therefore does not convert semantic activations into the mock task shape. *)
+(** Runs the selected backend while it is open. The public admission check is
+    intentionally before backend dispatch: mock polling and native readiness
+    loops both treat an already-closed worker as a clean stop, but a caller
+    re-entering [run] after shutdown must receive the same typed lifecycle
+    error on either backend. *)
 let run worker =
-  match worker.backend with
-  | Mock_backend backend -> run_mock worker backend
-  | Native_backend backend ->
-      Native_worker.run backend |> Result.map_error Error_private.of_base
+  if Atomic.get worker.closed then
+    Error (Error.make ~category:`Bridge ~message:"worker is shut down" ())
+  else
+    match worker.backend with
+    | Mock_backend backend -> run_mock worker backend
+    | Native_backend backend ->
+        Native_worker.run backend |> Result.map_error Error_private.of_base
 
 (** Shuts down the backend once and remembers that no new poll may be admitted. *)
 let shutdown worker =

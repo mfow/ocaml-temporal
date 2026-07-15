@@ -143,6 +143,30 @@ but do not currently have separate named workflow log operations; absence of
 was accepted. Suspended update continuations are outside this current native
 boundary.
 
+### Native worker lifecycle and completion events
+
+Lifecycle-source records describe the worker adapter's ownership and cleanup
+boundaries. They help separate a completion that was accepted by the native
+adapter from a public `Worker.run` or `Worker.shutdown` result:
+
+| Operation | Level | Meaning |
+|---|---|---|
+| `workflow_activation_completed` | `Debug` | The native supervisor accepted a retained workflow completion and the adapter retired that completion. A terminal or eviction completion also removes the corresponding execution from the adapter registry; this is not a server-side workflow-result acknowledgement. |
+| `workflow_activation_rejected` | `Warning` | The adapter submitted an SDK-generated failure completion for a malformed or otherwise rejected activation, and the native supervisor accepted that rejection. `temporal.error_kind` identifies the stable reason; a transport failure that leaves the completion pending does not emit this event. |
+| `workflow_task_rejected` | `Warning` | The public worker observed an adapter rejection whose failure completion already retired the workflow lease. The worker loop treats that as progress and continues polling; a rejection that did not retire its lease is returned as a worker error instead. |
+| `worker_run_started` | `Info` | One invocation of `Temporal.Worker.run` acquired the run ownership guard and began polling. It does not mean that a workflow or activity task is currently available. |
+| `worker_run_finished` | `Info` | That polling invocation returned and released the run guard. It may have stopped because shutdown was requested or because the loop returned an error; inspect the public `result` rather than treating this event as success. |
+| `worker_terminal_cleanup` | `Info` | A terminal cleanup attempt obtained a native shutdown result and the adapter then discarded its OCaml-owned maps. It can occur after an earlier public shutdown error because cleanup is the force-release boundary. |
+| `worker_terminal_cleanup_failed` | `Error` | Native terminal cleanup returned an error or raised before its release result was proven. The worker retains the cleanup-pending state and may schedule another detached attempt; inspect `temporal.error_kind` when present. |
+| `worker_shutdown` | `Info` | Public worker shutdown drained the adapters and the native supervisor returned `Ok`. Repeated shutdown calls are cached and do not represent new native work. |
+| `worker_shutdown_failed` | `Error` | An unexpected exception escaped the public native-shutdown call before a typed result was returned. This is narrower than every typed shutdown error; the cleanup path is scheduled separately. |
+
+The workflow and activity task-rejection events are lease outcomes, not
+application-level retries. A `Warning` for an acknowledged rejection means the
+worker can continue polling, while `activity_completion_retry` specifically
+means that the exact activity completion remains retained for a safe later
+submission. Neither event means that the callback was invoked twice.
+
 Latency is measured around the local OCaml operation with the portable Unix
 wall clock, expressed as fractional milliseconds, and clamped to zero if the
 clock moves backwards. The SDK currently attaches this tag to bridge-operation

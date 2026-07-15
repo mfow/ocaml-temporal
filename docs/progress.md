@@ -14,6 +14,23 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-15: Live old/new-history workflow patch replay (#348)
+
+Status: the complete [PR #348 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) passed all
+nine jobs, including the real Temporal/PostgreSQL acceptance in 18m15s.
+
+The live controller created a marker-free history under a legacy OCaml worker
+whose workflow source contains no patch call, replaced it with a fresh
+patch-aware worker, observed replay, and required the legacy activity and
+result. It separately created a marker-bearing history under the patch-aware
+definition, replaced that worker, observed replay, and required the new
+activity and result. Exact workflow/run identity, history-prefix preservation,
+Core marker encoding, controller chronology, and PostgreSQL-volume removal were
+validated. This proves the initial non-deprecated patch-in path only; patch
+deprecation/removal, deployment versioning, and broader history migrations
+remain pending.
+
 ## 2026-07-15: Non-deprecated workflow patch-in primitive
 
 Status: focused OCaml and Rust tests pass locally. The Docker-free contract and

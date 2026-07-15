@@ -106,6 +106,43 @@ records (`client_complete_async_activity_json` and
 `client_record_async_activity_heartbeat_json`), while the public handle keeps
 their typed result and retry semantics.
 
+### Workflow execution and interaction events
+
+Workflow-source events describe the in-memory execution state machine. They
+are not server acknowledgements, and an event can be emitted by the synthetic
+runtime or by the native worker adapter before a corresponding completion is
+accepted by Temporal:
+
+| Operation | Level | Meaning |
+|---|---|---|
+| `execution_created` | `Debug` | The SDK allocated the scheduler and workflow context for one execution. This is local state creation, not proof that Temporal accepted a start request. |
+| `workflow_started` | `Info` | A `Start_workflow` activation was accepted and the workflow callback was queued. The callback is run at most once for that execution. |
+| `workflow_completed` | `Info` | Workflow code returned successfully, its output was encoded, and the SDK buffered a terminal completion command. It does not by itself prove that the worker's native completion RPC succeeded. |
+| `workflow_failed` | `Error` | The SDK buffered a terminal failure command for a typed workflow, codec, activation, or bridge error. Inspect `temporal.error_kind`; the event is local failure evidence, not a server-side failure classification. |
+| `workflow_cancelled` | `Info` | A cancellation activation was received for a non-terminal execution and the SDK is emitting its terminal cancellation command. It does not mean that the server has already observed the completion. |
+| `execution_evicted` | `Debug` | Core asked the SDK to remove an execution from its sticky cache. The execution context is shut down and no workflow commands are produced for that eviction activation. |
+| `activation_ignored` | `Warning` | A later activation arrived for an execution already removed from the cache. The SDK intentionally ignores it and returns no commands; repeated occurrences indicate a stale or out-of-order delivery that needs investigation. |
+| `activate` | `Debug` | One activation batch finished local processing. `temporal.job_count`, `temporal.command_count`, `temporal.workflow_type`, and `temporal.duration_ms` describe that batch, including a zero-command ignored batch. |
+
+Interaction events distinguish admission from handler completion. A matching
+signal emits `workflow_signal_received` when it is queued on the owning
+scheduler and `workflow_signal_handled` only after the handler returns `Ok ()`.
+An absent signal handler emits `workflow_signal_unhandled` and fails the
+workflow; a handler error instead leads to `workflow_failed` without a
+successful handled event. Queries are synchronous and do not fail the
+workflow: `workflow_query_completed` means that the output was encoded,
+`workflow_query_failed` records a typed handler or encoding error, and
+`workflow_query_unhandled` means that no handler was registered. Each query
+outcome is still returned to the caller as a query response.
+
+The current update event set is deliberately smaller. A missing update handler
+emits `workflow_update_unhandled` at `Error` level and returns a rejected
+update response. Validator or implementation errors also return a rejection,
+but do not currently have separate named workflow log operations; absence of
+`workflow_update_unhandled` must therefore not be read as proof that an update
+was accepted. Suspended update continuations are outside this current native
+boundary.
+
 Latency is measured around the local OCaml operation with the portable Unix
 wall clock, expressed as fractional milliseconds, and clamped to zero if the
 clock moves backwards. The SDK currently attaches this tag to bridge-operation

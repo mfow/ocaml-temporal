@@ -399,7 +399,9 @@ let test_completed_mock_run_is_immutable () =
 (** A signal is sent to the exact handle run and acknowledged independently of
     waiting. Repeating an explicit request ID remains accepted by the
     deterministic mock, matching Temporal's retry-safe control operation shape.
-    A signal to an already completed run is rejected rather than silently
+    Reusing that ID for different signal data is rejected, so a caller cannot
+    accidentally turn an idempotent retry key into an unrelated delivery. A
+    signal to an already completed run is rejected rather than silently
     pretending that workflow code could still receive it. *)
 let test_exact_run_signal () =
   let client =
@@ -415,6 +417,10 @@ let test_exact_run_signal () =
   unwrap
     (Temporal.Client.signal ~request_id:"signal-unit-1" handle
        ~signal:add_document_signal ~input:"document");
+  expect_error_message_contains "workflow"
+    "signal request ID was already used for different signal data"
+    (Temporal.Client.signal ~request_id:"signal-unit-1" handle
+       ~signal:add_document_signal ~input:"different-document");
   unwrap
     (Temporal.Client.signal ~request_id:"signal-unit-1" handle
        ~signal:add_document_signal ~input:"document");

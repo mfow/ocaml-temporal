@@ -79,6 +79,14 @@ let unit_activity calls =
       Atomic.incr calls;
       Ok ())
 
+(** An asynchronous activity definition used to prove that the deterministic
+    mock reports its native-only mode as an activity failure instead of
+    invoking a callback without a real completion lease. *)
+let unsupported_async_activity =
+  Temporal.Activity.define_async ~name:"unit.aaa-async-activity"
+    ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun _context () ->
+      Temporal.Activity.Completed ())
+
 (** Definitions that return an expected failure. A worker must acknowledge
     these failures to the backend and continue serving later tasks. *)
 let failing_workflow =
@@ -218,6 +226,23 @@ let test_worker_continues_after_task_failure () =
   in
   unwrap (Temporal.Worker.run worker);
   assert (Atomic.get workflow_calls = 1);
+  assert (Atomic.get activity_calls = 1);
+  unwrap (Temporal.Worker.shutdown worker)
+
+(** The mock backend cannot provide the native lease required by an
+    asynchronous activity, so it acknowledges that task as a typed activity
+    failure and continues to the next ordinary activity task. *)
+let test_mock_worker_rejects_async_activity_without_stopping () =
+  let activity_calls = Atomic.make 0 in
+  let worker =
+    unwrap
+      (Temporal.Worker.create ~target_url:"mock://dispatch"
+         ~namespace:"unit-test" ~task_queue:"unit-test" ~workflows:[]
+         ~activities:
+           [ Temporal.Worker.activity unsupported_async_activity;
+             Temporal.Worker.activity (unit_activity activity_calls) ] ())
+  in
+  unwrap (Temporal.Worker.run worker);
   assert (Atomic.get activity_calls = 1);
   unwrap (Temporal.Worker.shutdown worker)
 
@@ -583,6 +608,7 @@ let () =
   test_remote_registration_is_rejected ();
   test_worker_registration_and_dispatch ();
   test_worker_continues_after_task_failure ();
+  test_mock_worker_rejects_async_activity_without_stopping ();
   test_typed_start_and_wait_handle ();
   test_follow_continued_as_new_handle ();
   test_follow_rejects_malformed_successor_identity ();

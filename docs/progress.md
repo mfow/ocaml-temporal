@@ -14,6 +14,28 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-15: Non-deprecated workflow patch-in primitive
+
+Status: focused OCaml and Rust tests pass locally; live Temporal Server replay
+is pending.
+
+`Temporal.Workflow.patched ~id` now lets direct-style workflow code introduce
+a new branch while older histories without the marker select the old branch.
+Core's `NotifyHasPatch` activation is validated and applied before workflow
+fibers run. Each call emits a non-deprecated `SetPatchMarker` command, including
+repeated calls, and decisions remain isolated to one workflow execution.
+
+The local OCaml unit/runtime/bridge suites pass, including new-execution,
+replay-present, replay-absent, repeated-call, run-isolation, mutable-source
+copying, malformed JSON, and strict query-only cases. The Rust workflow
+protocol suite passes all 39 tests, including closed JSON fixtures, duplicate
+marker preservation, and round trips through the pinned Core protobuf types.
+
+This evidence does not claim patch deprecation/removal, worker deployment
+versioning, side effects, arbitrary historical compatibility, or live replay.
+The live acceptance must create and replay both a genuine legacy history
+without the marker and a newer history containing it.
+
 ## 2026-07-14: Retry-after-restart acceptance extension
 
 Status: verified in the Temporal/PostgreSQL integration job of the complete

@@ -1512,6 +1512,130 @@ let test_continue_as_new_finally_cannot_emit_cancel () =
   expect "continue-as-new activation is terminal" []
     (Execution.activate execution [ Activation.Start_workflow ])
 
+(** Exercises the complete per-execution patch decision rule. Live code takes
+    the new branch, replay without a marker takes the old branch, and replay
+    with Core's notification takes the new branch. Repeated calls deliberately
+    emit repeated marker commands for Core to deduplicate. *)
+let test_workflow_patch_decisions () =
+  let run ~name ~is_replaying ~jobs implementation =
+    let definition =
+      Temporal.Workflow.define ~name ~input:Temporal.Codec.unit
+        ~output:Temporal.Codec.unit implementation
+    in
+    let execution = Execution.start definition () in
+    Execution.set_activation_is_replaying execution is_replaying;
+    Execution.activate execution jobs
+  in
+  let live_decisions = ref [] in
+  let live_commands =
+    run ~name:"patch_live" ~is_replaying:false
+      ~jobs:[ Activation.Start_workflow ] (fun () ->
+        live_decisions :=
+          [ Temporal.Workflow.patched ~id:"orders.v2";
+            Temporal.Workflow.patched ~id:"orders.v2" ];
+        Ok ())
+  in
+  expect "live patch decisions" [ true; true ] !live_decisions;
+  (match live_commands with
+  | [ Activation.Set_patch_marker
+        { patch_id = "orders.v2"; deprecated = false };
+      Activation.Set_patch_marker
+        { patch_id = "orders.v2"; deprecated = false };
+      Activation.Complete_workflow _ ] -> ()
+  | _ -> failwith "repeated live patch calls emitted unexpected commands");
+  let absent_decision = ref None in
+  let absent_commands =
+    run ~name:"patch_replay_absent" ~is_replaying:true
+      ~jobs:[ Activation.Start_workflow ] (fun () ->
+        absent_decision := Some (Temporal.Workflow.patched ~id:"orders.v2");
+        Ok ())
+  in
+  expect "replay absent patch decision" (Some false) !absent_decision;
+  (match absent_commands with
+  | Activation.Set_patch_marker
+      { patch_id = "orders.v2"; deprecated = false }
+    :: Activation.Complete_workflow _ :: [] -> ()
+  | _ -> failwith "replay without marker emitted unexpected commands");
+  let present_decision = ref None in
+  let present_commands =
+    run ~name:"patch_replay_present" ~is_replaying:true
+      ~jobs:
+        [ Activation.Start_workflow;
+          Activation.Notify_has_patch { patch_id = "orders.v2" } ]
+      (fun () ->
+        present_decision := Some (Temporal.Workflow.patched ~id:"orders.v2");
+        Ok ())
+  in
+  expect "replay present patch decision" (Some true) !present_decision;
+  match present_commands with
+  | Activation.Set_patch_marker
+      { patch_id = "orders.v2"; deprecated = false }
+    :: Activation.Complete_workflow _ :: [] -> ()
+  | _ -> failwith "replay with marker emitted unexpected commands"
+
+(** Patch state belongs to one workflow execution and patch IDs are copied at
+    the public boundary. A notification in run A must not affect run B, and a
+    caller mutating an unsafe string alias after [patched] returns must not
+    change the emitted durable marker. *)
+let test_workflow_patch_isolation_and_public_id_snapshot () =
+  let decision_a = ref None in
+  let definition_a =
+    Temporal.Workflow.define ~name:"patch_run_a" ~input:Temporal.Codec.unit
+      ~output:Temporal.Codec.unit (fun () ->
+        decision_a := Some (Temporal.Workflow.patched ~id:"shared.patch");
+        Ok ())
+  in
+  let decision_b = ref None in
+  let mutable_id = Bytes.of_string "shared.patch" in
+  let aliased_id = Bytes.unsafe_to_string mutable_id in
+  let definition_b =
+    Temporal.Workflow.define ~name:"patch_run_b" ~input:Temporal.Codec.unit
+      ~output:Temporal.Codec.unit (fun () ->
+        decision_b := Some (Temporal.Workflow.patched ~id:aliased_id);
+        Bytes.set mutable_id 0 'X';
+        Ok ())
+  in
+  let execution_a = Execution.start definition_a () in
+  let execution_b = Execution.start definition_b () in
+  Execution.set_activation_is_replaying execution_a true;
+  Execution.set_activation_is_replaying execution_b true;
+  let commands_a =
+    Execution.activate execution_a
+      [ Activation.Start_workflow;
+        Activation.Notify_has_patch { patch_id = "shared.patch" } ]
+  in
+  let commands_b =
+    Execution.activate execution_b [ Activation.Start_workflow ]
+  in
+  expect "patch run A decision" (Some true) !decision_a;
+  expect "patch run B decision" (Some false) !decision_b;
+  (match commands_a with
+  | Activation.Set_patch_marker { patch_id = "shared.patch"; _ } :: _ -> ()
+  | _ -> failwith "patch run A did not emit its marker");
+  match commands_b with
+  | Activation.Set_patch_marker { patch_id = "shared.patch"; _ } :: _ -> ()
+  | _ -> failwith "patch ID mutation changed the emitted marker"
+
+(** Proves the runtime snapshots a notification ID before retaining it as a
+    per-execution hash-table key. Native/protocol adapters normally supply
+    ordinary immutable strings, but a private caller can still pass an unsafe
+    alias. Mutating that alias after notification must neither lose the
+    recorded decision nor alter the marker emitted by a later [patched] call. *)
+let test_incoming_patch_notification_snapshot () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  Workflow_context_store.set_activation_is_replaying context true;
+  let mutable_id = Bytes.of_string "orders.v2" in
+  let aliased_id = Bytes.unsafe_to_string mutable_id in
+  Workflow_context_store.notify_has_patch context ~patch_id:aliased_id;
+  Bytes.set mutable_id 0 'X';
+  expect "snapshotted notification decision" true
+    (Workflow_context_store.patched context ~patch_id:"orders.v2");
+  match Workflow_context_store.take_commands context with
+  | [ Activation.Set_patch_marker
+        { patch_id = "orders.v2"; deprecated = false } ] -> ()
+  | _ -> failwith "notification ID mutation changed retained patch state"
+
 let () =
   test_commands_and_completion ();
   test_activity_options_and_queue ();
@@ -1543,4 +1667,7 @@ let () =
   test_continue_as_new_terminal ();
   test_continue_as_new_encode_failure_is_terminal ();
   test_terminal_finally_cannot_emit_cancel ();
-  test_continue_as_new_finally_cannot_emit_cancel ()
+  test_continue_as_new_finally_cannot_emit_cancel ();
+  test_workflow_patch_decisions ();
+  test_workflow_patch_isolation_and_public_id_snapshot ();
+  test_incoming_patch_notification_snapshot ()

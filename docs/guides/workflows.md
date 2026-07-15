@@ -208,6 +208,29 @@ Activities are the place for external work such as calling an LLM. The
 activity result is recorded by Temporal, so replay can use that recorded result
 without calling the external service again.
 
+### Introduce a new branch with a patch marker
+
+When deployed workflow code must make a new command-producing decision, guard
+the change with one stable patch ID:
+
+```ocaml
+if Temporal.Workflow.patched ~id:"agent.add-review-step.v1" then
+  review_draft draft
+else Ok draft
+```
+
+New executions take the `true` branch and record the marker. Replay of a
+history that already contains the marker also takes that branch; replay of an
+older history without it takes the `false` branch. A helper can call
+`patched` like an ordinary OCaml function because the SDK keeps the decision
+inside the current workflow execution.
+
+Treat the ID as permanent history data: use a source-code constant, never
+reuse it for a different change, and do not derive it from configuration or
+other mutable state. This release has no public deprecation/removal operation,
+so retain both branches. See [workflow patching](../reference/workflow-patching.md)
+for the bridge contract and the current evidence boundary.
+
 ## 2. Use typed codecs
 
 Temporal stores values as payloads: bytes plus metadata naming the encoding.

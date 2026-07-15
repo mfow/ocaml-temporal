@@ -238,6 +238,8 @@ type activation_job =
       identity : string;
       headers : (string * payload) list;
     }
+  (** Reports that Core found the named patch marker while replaying this run. *)
+  | Notify_has_patch of { patch_id : string }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow of { reason : string }
   | Remove_from_cache of { message : string; reason : eviction_reason }
@@ -314,6 +316,9 @@ type completion_command =
       protocol_instance_id : string;
       response : update_response;
     }
+  (** Records one workflow patch decision. [deprecated] is carried explicitly
+      even though the first public OCaml slice emits only active markers. *)
+  | Set_patch_marker of { patch_id : string; deprecated : bool }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
   | Continue_as_new of { workflow_type : string; input : payload list }
@@ -1710,6 +1715,11 @@ let activation_job path json =
       let* headers_json = field path "headers" entries in
       let* headers = payload_map (path ^ ".headers") headers_json in
       Ok (Signal_workflow { signal_name; input; identity; headers })
+  | "notify_has_patch" ->
+      let* entries = exact_object path [ "kind"; "patch_id" ] json in
+      let* patch_id_json = field path "patch_id" entries in
+      let* patch_id = identifier (path ^ ".patch_id") patch_id_json in
+      Ok (Notify_has_patch { patch_id })
   | "fire_timer" ->
       let* entries = exact_object path [ "kind"; "seq" ] json in
       let* seq_json = field path "seq" entries in
@@ -1811,6 +1821,10 @@ let activation_job_json = function
             ("identity", `String identity);
             ("headers", headers);
           ])
+  | Notify_has_patch { patch_id } ->
+      Ok
+        (`Assoc
+          [ ("kind", `String "notify_has_patch"); ("patch_id", `String patch_id) ])
   | Fire_timer { seq } ->
       Ok
         (`Assoc
@@ -2191,6 +2205,13 @@ let completion_command path json =
       let* response_json = field path "response" entries in
       let* response = update_response (path ^ ".response") response_json in
       Ok (Update_response { protocol_instance_id; response })
+  | "set_patch_marker" ->
+      let* entries = exact_object path [ "kind"; "patch_id"; "deprecated" ] json in
+      let* patch_id_json = field path "patch_id" entries in
+      let* patch_id = identifier (path ^ ".patch_id") patch_id_json in
+      let* deprecated_json = field path "deprecated" entries in
+      let* deprecated = bool (path ^ ".deprecated") deprecated_json in
+      Ok (Set_patch_marker { patch_id; deprecated })
   | "complete_workflow" ->
       let* entries = exact_object path [ "kind"; "result" ] json in
       let* result_json = field path "result" entries in
@@ -2305,6 +2326,12 @@ let completion_command_json = function
           [ ("kind", `String "update_response");
             ("protocol_instance_id", `String protocol_instance_id);
             ("response", response) ])
+  | Set_patch_marker { patch_id; deprecated } ->
+      Ok
+        (`Assoc
+          [ ("kind", `String "set_patch_marker");
+            ("patch_id", `String patch_id);
+            ("deprecated", `Bool deprecated) ])
   | Complete_workflow { result } ->
       let* result = match result with None -> Ok `Null | Some value -> payload_json value in
       Ok (`Assoc [ ("kind", `String "complete_workflow"); ("result", result) ])

@@ -74,6 +74,7 @@ fn accepts_and_normalizes_workflow_activations() {
         "child-initialize",
         "child-resolution",
         "child-cancellation-before-start",
+        "patch-activation",
     ] {
         let input = fixture(&["valid", &format!("{name}.input.json")]);
         let expected = fixture(&["valid", &format!("{name}.normalized.json")]);
@@ -97,6 +98,232 @@ fn accepts_and_normalizes_workflow_completion() {
         expected.trim()
     );
     workflow_protocol::decode_completion(expected.trim()).unwrap();
+}
+
+/// Proves patch notifications and marker commands survive the semantic JSON
+/// boundary and the pinned Core protobuf conversion without deduplication.
+/// The language runtime emits one marker command for every `patched` call and
+/// Core owns durable-history deduplication, so retaining two identical bridge
+/// commands here is a replay-safety requirement. The private bridge also
+/// retains Core's deprecation bit even though the current public OCaml helper
+/// emits only non-deprecated markers.
+#[test]
+fn converts_patch_markers_losslessly() {
+    use core_activation::workflow_activation_job::Variant;
+
+    let activation = core_activation::WorkflowActivation {
+        run_id: "patch-run".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp {
+            seconds: 4,
+            nanos: 7,
+        }),
+        is_replaying: true,
+        history_length: 12,
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::NotifyHasPatch(core_activation::NotifyHasPatch {
+                patch_id: "orders.v2".to_owned(),
+            })),
+        }],
+        ..Default::default()
+    };
+    let semantic = workflow_protocol::activation_from_core(&activation).unwrap();
+    assert_eq!(
+        semantic.jobs,
+        vec![workflow_protocol::ActivationJob::NotifyHasPatch {
+            patch_id: "orders.v2".to_owned(),
+        }]
+    );
+    let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
+
+    let command = workflow_protocol::CompletionCommand::SetPatchMarker {
+        patch_id: "orders.v2".to_owned(),
+        deprecated: false,
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "patch-run".to_owned(),
+        commands: vec![
+            command.clone(),
+            command,
+            workflow_protocol::CompletionCommand::SetPatchMarker {
+                patch_id: "orders.v1".to_owned(),
+                deprecated: true,
+            },
+        ],
+    };
+    let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        completion
+    );
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("patch-marker completion must be successful");
+    };
+    assert_eq!(success.commands.len(), 3);
+    let expected = [
+        ("orders.v2", false),
+        ("orders.v2", false),
+        ("orders.v1", true),
+    ];
+    for (command, (expected_id, expected_deprecated)) in success.commands.iter().zip(expected) {
+        let Some(core_commands::workflow_command::Variant::SetPatchMarker(marker)) =
+            command.variant.as_ref()
+        else {
+            panic!("semantic patch marker must map to Core's patch-marker command");
+        };
+        assert_eq!(marker.patch_id, expected_id);
+        assert_eq!(marker.deprecated, expected_deprecated);
+    }
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+
+    let fixture_input = fixture(&["valid", "patch-completion.input.json"]);
+    let fixture_expected = fixture(&["valid", "patch-completion.normalized.json"]);
+    let fixture_value = workflow_protocol::decode_completion(&fixture_input).unwrap();
+    assert_eq!(
+        workflow_protocol::encode_completion(&fixture_value).unwrap(),
+        fixture_expected.trim()
+    );
+}
+
+/// Rejects malformed patch documents and the query-plus-notification shape
+/// that Core itself forbids when preparing query-only activations.
+#[test]
+fn rejects_invalid_patch_marker_documents() {
+    let empty_activation = r#"{"run_id":"r","timestamp":{"seconds":0,"nanoseconds":0},"is_replaying":true,"history_length":1,"jobs":[{"kind":"notify_has_patch","patch_id":""}]}"#;
+    assert!(workflow_protocol::decode_activation(empty_activation).is_err());
+
+    let empty_completion = r#"{"run_id":"r","commands":[{"kind":"set_patch_marker","patch_id":"","deprecated":false}]}"#;
+    assert!(workflow_protocol::decode_completion(empty_completion).is_err());
+
+    let missing_deprecated =
+        r#"{"run_id":"r","commands":[{"kind":"set_patch_marker","patch_id":"orders.v2"}]}"#;
+    assert!(workflow_protocol::decode_completion(missing_deprecated).is_err());
+
+    let unknown_field = r#"{"run_id":"r","timestamp":{"seconds":0,"nanoseconds":0},"is_replaying":true,"history_length":1,"jobs":[{"kind":"notify_has_patch","patch_id":"orders.v2","extra":true}]}"#;
+    assert!(workflow_protocol::decode_activation(unknown_field).is_err());
+
+    let query_with_notification = r#"{"run_id":"r","timestamp":{"seconds":0,"nanoseconds":0},"is_replaying":true,"history_length":1,"jobs":[{"kind":"query_workflow","query_id":"q","query_type":"state","arguments":[],"headers":{}},{"kind":"notify_has_patch","patch_id":"orders.v2"}]}"#;
+    assert!(workflow_protocol::decode_activation(query_with_notification).is_err());
+
+    for invalid_id in ["".to_owned(), "patch\0id".to_owned(), "x".repeat(65_537)] {
+        let semantic_activation = workflow_protocol::Activation {
+            run_id: "r".to_owned(),
+            timestamp: Some(workflow_protocol::Timestamp {
+                seconds: 0,
+                nanoseconds: 0,
+            }),
+            is_replaying: true,
+            history_length: 1,
+            jobs: vec![workflow_protocol::ActivationJob::NotifyHasPatch {
+                patch_id: invalid_id.clone(),
+            }],
+            metadata: None,
+        };
+        assert!(workflow_protocol::encode_activation(&semantic_activation).is_err());
+
+        let semantic_completion = workflow_protocol::Completion {
+            run_id: "r".to_owned(),
+            commands: vec![workflow_protocol::CompletionCommand::SetPatchMarker {
+                patch_id: invalid_id.clone(),
+                deprecated: false,
+            }],
+        };
+        assert!(workflow_protocol::encode_completion(&semantic_completion).is_err());
+
+        let core_activation = core_activation::WorkflowActivation {
+            run_id: "r".to_owned(),
+            timestamp: Some(prost_wkt_types::Timestamp::default()),
+            jobs: vec![core_activation::WorkflowActivationJob {
+                variant: Some(
+                    core_activation::workflow_activation_job::Variant::NotifyHasPatch(
+                        core_activation::NotifyHasPatch {
+                            patch_id: invalid_id.clone(),
+                        },
+                    ),
+                ),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            workflow_protocol::activation_from_core(&core_activation)
+                .unwrap_err()
+                .code,
+            workflow_protocol::CoreConversionErrorCode::InvalidCore
+        );
+
+        let core_completion = core_completion::WorkflowActivationCompletion {
+            run_id: "r".to_owned(),
+            status: Some(
+                core_completion::workflow_activation_completion::Status::Successful(
+                    core_completion::Success {
+                        commands: vec![core_commands::WorkflowCommand {
+                            user_metadata: None,
+                            variant: Some(
+                                core_commands::workflow_command::Variant::SetPatchMarker(
+                                    core_commands::SetPatchMarker {
+                                        patch_id: invalid_id,
+                                        deprecated: false,
+                                    },
+                                ),
+                            ),
+                        }],
+                        used_internal_flags: Vec::new(),
+                        versioning_behavior: 0,
+                    },
+                ),
+            ),
+        };
+        assert_eq!(
+            workflow_protocol::completion_from_core(&core_completion)
+                .unwrap_err()
+                .code,
+            workflow_protocol::CoreConversionErrorCode::InvalidCore
+        );
+    }
+
+    let query_and_notification = core_activation::WorkflowActivation {
+        run_id: "r".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![
+            core_activation::WorkflowActivationJob {
+                variant: Some(
+                    core_activation::workflow_activation_job::Variant::QueryWorkflow(
+                        core_activation::QueryWorkflow {
+                            query_id: "q".to_owned(),
+                            query_type: "state".to_owned(),
+                            arguments: Vec::new(),
+                            headers: Default::default(),
+                        },
+                    ),
+                ),
+            },
+            core_activation::WorkflowActivationJob {
+                variant: Some(
+                    core_activation::workflow_activation_job::Variant::NotifyHasPatch(
+                        core_activation::NotifyHasPatch {
+                            patch_id: "orders.v2".to_owned(),
+                        },
+                    ),
+                ),
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        workflow_protocol::activation_from_core(&query_and_notification)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
 }
 
 /// Proves the minimal child-workflow start command survives JSON, semantic

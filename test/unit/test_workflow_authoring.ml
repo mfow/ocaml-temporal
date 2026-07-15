@@ -96,7 +96,31 @@ let test_ordinary_helper_composition () =
   | Error _ -> failwith "detached activity handle returned the wrong error"
   | Ok () -> failwith "detached activity handle cancellation unexpectedly succeeded"
 
+(** Patch gates are synchronous workflow control flow, so malformed durable
+    IDs and calls without an active execution are programmer misuse rather
+    than detached futures. *)
+let test_patched_misuse_and_identifier_validation () =
+  let expect_invalid label action =
+    match action () with
+    | exception Invalid_argument message when not (String.equal message "") -> ()
+    | exception Invalid_argument _ ->
+        failwith (label ^ " returned an empty diagnostic")
+    | exception _ -> failwith (label ^ " raised the wrong exception")
+    | _ -> failwith (label ^ " unexpectedly succeeded")
+  in
+  expect_invalid "patched outside workflow"
+    (fun () -> Temporal.Workflow.patched ~id:"orders.v2");
+  expect_invalid "empty patch id"
+    (fun () -> Temporal.Workflow.patched ~id:"");
+  expect_invalid "NUL patch id"
+    (fun () -> Temporal.Workflow.patched ~id:"orders\000v2");
+  expect_invalid "invalid UTF-8 patch id"
+    (fun () -> Temporal.Workflow.patched ~id:(String.make 1 '\255'));
+  expect_invalid "oversized patch id"
+    (fun () -> Temporal.Workflow.patched ~id:(String.make 65_537 'p'))
+
 (** Executes the standalone authoring and validation checks. *)
 let () =
   test_ordinary_helper_composition ();
-  test_activity_option_validation_precedes_encoding ()
+  test_activity_option_validation_precedes_encoding ();
+  test_patched_misuse_and_identifier_validation ()

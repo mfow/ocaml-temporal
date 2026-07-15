@@ -1,6 +1,6 @@
 # Worker restart and replay acceptance design
 
-**Status: the original path is live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471), the retry-after-restart extension is live-verified in [PR #298](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291), and forced crash recovery is live-verified in [PR #306](https://github.com/mfow/ocaml-temporal/actions/runs/29355426605).** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The extension requires generation 2 to complete the retrying activity at attempt two, proven by the exact result marker; Temporal compacts intermediate activity retry events out of workflow history. `make test-temporal-worker-crash-recovery` adds the same exact-run evidence after a forced generation-one process kill and now has a green live result. `make test-temporal-worker-cache-eviction` adds the separate one-slot sticky-cache eviction scenario, whose first real-server result is still pending CI. The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
+**Status: the original path is live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471), the retry-after-restart extension is live-verified in [PR #298](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291), forced crash recovery is live-verified in [PR #306](https://github.com/mfow/ocaml-temporal/actions/runs/29355426605), and one-slot sticky-cache eviction is live-verified in the complete [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748).** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The extension requires generation 2 to complete the retrying activity at attempt two, proven by the exact result marker; Temporal compacts intermediate activity retry events out of workflow history. `make test-temporal-worker-crash-recovery` adds the same exact-run evidence after a forced generation-one process kill and now has a green live result. `make test-temporal-worker-cache-eviction` exercises the separate one-slot eviction scenario and requires Core's real `RemoveFromCache` activation, an empty acknowledgement, and continued workflow progress. The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
 
 `make test-temporal-worker-restart-contract` is the fast Docker-free contract
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
@@ -12,10 +12,10 @@ not reach the acceptance assertions because the Docker daemon ran out of
 storage during the native build, which was an infrastructure failure rather
 than replay evidence.
 
-The separate `make test-temporal-worker-cache-eviction` target now implements
-the one-slot `RemoveFromCache` acceptance described by the live coverage
-matrix. Its first real-server result remains pending; worker restart alone is
-not used as eviction evidence.
+The separate `make test-temporal-worker-cache-eviction` target implements the
+one-slot `RemoveFromCache` acceptance described by the live coverage matrix.
+It passed against the real server in the complete PR #322 run; worker restart
+alone is not used as eviction evidence.
 
 ## What this scenario proves
 
@@ -293,7 +293,8 @@ The implementation should land as a separate acceptance slice, in this order:
    references and this document.
 6. Extend the replacement-worker activity path with the bounded retry policy
    and require the normalized history to contain the first failure and second
-   activity schedule. **Done locally; live verification is pending.**
+   activity schedule. **Live-verified in the [PR #298 Actions
+   run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291).**
 
 This sequencing keeps a passing terminal result from being mistaken for
 replay evidence and keeps the current one-shot driver/long-lived-worker

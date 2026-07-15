@@ -218,6 +218,11 @@ let workflow_type execution =
 let set_activation_timestamp execution timestamp =
   Workflow_context_store.set_activation_timestamp execution.context timestamp
 
+(** Updates the task-local replay flag before patch notifications and workflow
+    code are dispatched through this execution. *)
+let set_activation_is_replaying execution is_replaying =
+  Workflow_context_store.set_activation_is_replaying execution.context is_replaying
+
 (** Emits the workflow's completion, failure, or cancellation command once and
     immediately releases every paused fiber. *)
 let emit_terminal execution command =
@@ -236,7 +241,8 @@ let emit_terminal execution command =
     | Fail_workflow _ | Cancel_workflow_execution
     | Schedule_activity _ | Start_child_workflow _ | Request_cancel_activity _
     | Cancel_child_workflow _ | Start_timer _ | Cancel_timer _
-    | Query_result _ | Update_response _ | Continue_as_new _ -> ())
+    | Query_result _ | Update_response _ | Set_patch_marker _
+    | Continue_as_new _ -> ())
 
 (** Fails the workflow through the same one-terminal-command check. *)
 let fail execution error =
@@ -458,6 +464,11 @@ let process_job execution = function
                     "workflow signal handler completed"
               | Error error -> fail execution error)
       end
+  | Activation.Notify_has_patch { patch_id } ->
+      (* Core history is authoritative. Applying the notification during the
+         job pass guarantees the decision is installed before any workflow
+         fiber is drained for this activation. *)
+      Workflow_context_store.notify_has_patch execution.context ~patch_id
   | Fire_timer { seq } -> (
       match Workflow_context_store.fire_timer execution.context ~seq with
       | Ok () -> ()

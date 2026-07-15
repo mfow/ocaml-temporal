@@ -73,6 +73,7 @@ bridge failure rather than silently ignoring a Core event.
 | `Resolve_child_workflow_start` with `Failed` or `Cancelled` | `Resolve_child_workflow_start` with `Error` | The translation produces a typed child-workflow or cancellation error; `Workflow_context_store` removes the pending child so a rejected start cannot remain suspended forever. |
 | `Resolve_child_workflow` with `Completed` | `Resolve_child_workflow` with `Ok payload` | The translation preserves the terminal payload (including canonical null); `Workflow_context_store` resolves the child only after a successful start acknowledgment. |
 | `Resolve_child_workflow` with `Failed` or `Cancelled` | `Resolve_child_workflow` with `Error` | Child failure identity, retry state, details, cancellation category, and the bounded recursive diagnostic are retained. |
+| `Notify_has_patch` | `Notify_has_patch` | The validated patch ID is copied into execution-local patch state before workflow fibers run. Query-only activations cannot contain this or any other non-query job. |
 | `Fire_timer` | `Fire_timer` | The exact sequence is retained. |
 | `Cancel_workflow` | `Cancel_workflow` | The reason is retained in `translated_activation.cancellation_reason`. |
 | `Remove_from_cache` | `Remove_from_cache` | The message and eviction reason are retained in `translated_activation.cache_removal`. |
@@ -105,6 +106,7 @@ the complete result before returning it to the bridge.
 | `Complete_workflow` with another payload | `Complete_workflow { result = Some payload }` | Metadata must be valid UTF-8 in the current runtime payload type and body bytes are copied. |
 | `Fail_workflow` | `Fail_workflow` with an OCaml application or cancellation failure | Details are copied and the runtime category/retryability are retained. Recursive Core-only fields are represented in a bounded diagnostic until the runtime has a richer error type. |
 | `Continue_as_new` | `Continue_as_new` with the successor workflow type and one copied input payload | This is terminal direct-style control flow. The scheduler stops the current workflow fiber after buffering the command, and the translator rejects invalid workflow identifiers or payload metadata before a completion is sent. |
+| `Set_patch_marker` | `Set_patch_marker` | The validated durable patch ID and explicit `deprecated` flag are preserved. The public first slice emits `false`; the private bridge remains lossless for Core's boolean field. Repeated commands are not deduplicated. |
 | `Cancel_workflow_execution` | `Cancel_workflow_execution` | This is already an exact marker. |
 
 Child starts and both Core child-resolution jobs now have closed semantic
@@ -218,6 +220,5 @@ even though several of their local worker paths are already tested. The later
 [PR #306 Build run](https://github.com/mfow/ocaml-temporal/actions/runs/29356904816)
 adds a separate forced-crash proof: generation one must exit with code 137 and
 without a graceful-stop marker before generation two is allowed to replay and
-complete. That run verifies worker-process recovery; it does not turn the
-still-deferred sticky-cache or child-workflow recovery scenarios into live
-coverage.
+complete. That run verifies worker-process recovery; it does not establish
+child-workflow recovery coverage.

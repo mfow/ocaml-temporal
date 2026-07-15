@@ -48,6 +48,10 @@ type job =
       identity : string;
       headers : (string * Temporal_base.Codec.payload) list;
     }
+  (** Records that replay history already contains the named patch marker.
+      The execution applies this metadata before running workflow fibers so
+      [Temporal.Workflow.patched] can reproduce the historical branch. *)
+  | Notify_has_patch of { patch_id : string }
   | Fire_timer of { seq : int64 }
   | Cancel_workflow
   | Remove_from_cache
@@ -132,6 +136,9 @@ type command =
         | `Rejected of Temporal_base.Error.t
         | `Completed of Temporal_base.Codec.payload ];
     }
+  (** Tells Core that workflow code evaluated one patch gate. Core owns marker
+      deduplication; the OCaml runtime emits this command on every call. *)
+  | Set_patch_marker of { patch_id : string; deprecated : bool }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t
   (** Ends this run and asks Temporal to start the same workflow type with a

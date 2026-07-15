@@ -40,6 +40,13 @@ type t = {
   conditions : Condition_store.t;
   mutable activation_timestamp :
     Temporal_protocol.Workflow_protocol.timestamp option;
+  (* Replaced before every activation. Patch decisions use this flag only when
+     their ID has not already been fixed for this workflow execution. *)
+  mutable activation_is_replaying : bool;
+  (* Patch decisions are execution-local durable-language state. A cached
+     [false] is as significant as [true], because replay without a marker must
+     continue taking the pre-patch branch for the lifetime of this run. *)
+  patches : (string, bool) Hashtbl.t;
   mutable next_sequence : int64;
   activities : (int64, activity_resolution) Hashtbl.t;
   child_workflows : (int64, child_workflow_state) Hashtbl.t;
@@ -90,6 +97,8 @@ let create ?(task_queue = "default") scheduler =
         task_queue;
         conditions = Condition_store.create scheduler;
         activation_timestamp = None;
+        activation_is_replaying = false;
+        patches = Hashtbl.create 8;
         next_sequence = 0L;
         activities = Hashtbl.create 16;
         child_workflows = Hashtbl.create 16;
@@ -132,6 +141,49 @@ let set_activation_timestamp context timestamp =
 
 (** Reads the timestamp most recently installed for this execution context. *)
 let activation_timestamp context = context.activation_timestamp
+
+(** Stores Core's replay status for the activation about to run. The value is
+    task-local; previously established patch decisions remain execution-local
+    and therefore are not cleared here. *)
+let set_activation_is_replaying context is_replaying =
+  context.activation_is_replaying <- is_replaying
+
+(** Copies a protocol identifier before retaining it in execution state or an
+    emitted command. Although OCaml strings are normally immutable, callers at
+    private/native boundaries can construct aliases with [Bytes.unsafe_to_string].
+    A private copy keeps later mutation from corrupting a hash-table key or
+    changing a command after the runtime has accepted it. *)
+let snapshot_identifier value = Bytes.to_string (Bytes.of_string value)
+
+(** Applies passive patch metadata before workflow fibers run. Replacing a
+    prior decision is deliberate: a marker reported by Core is authoritative
+    history evidence and must win over any earlier provisional absence. The ID
+    is copied because this execution retains it beyond the activation adapter. *)
+let notify_has_patch context ~patch_id =
+  let patch_id = snapshot_identifier patch_id in
+  Hashtbl.replace context.patches patch_id true
+
+(** Evaluates one direct-style patch gate and emits Core's marker command on
+    every call. Core owns marker deduplication; local deduplication would alter
+    the established language-SDK protocol and could hide replay mismatches.
+    Snapshotting here also protects private callers that bypass the validated
+    public helper. *)
+let patched context ~patch_id =
+  if context.sealed then
+    invalid_arg "Temporal.Workflow.patched used after workflow execution ended";
+  let patch_id = snapshot_identifier patch_id in
+  let decision =
+    match Hashtbl.find_opt context.patches patch_id with
+    | Some decision -> decision
+    | None ->
+        let decision = not context.activation_is_replaying in
+        Hashtbl.add context.patches patch_id decision;
+        decision
+  in
+  context.commands_rev <-
+    Activation.Set_patch_marker { patch_id; deprecated = false }
+    :: context.commands_rev;
+  decision
 
 (** Makes [context] current while [action] runs, then restores the previous
     value even if [action] raises. This prevents later code on the same Domain
@@ -499,4 +551,5 @@ let shutdown context =
   Scheduler.shutdown context.scheduler;
   Hashtbl.clear context.activities;
   Hashtbl.clear context.child_workflows;
-  Hashtbl.clear context.timers
+  Hashtbl.clear context.timers;
+  Hashtbl.clear context.patches

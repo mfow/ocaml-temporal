@@ -123,7 +123,30 @@ let test_permanent_protocol_error_remains_fatal () =
   if !waits <> [] then
     failwith "permanent protocol error incorrectly entered retry wait"
 
+(** A native stop request must short-circuit before either readiness lane or
+    retry callback is touched. This protects shutdown liveness from a future
+    loop refactor that accidentally polls a retired supervisor once more. *)
+let test_closed_loop_does_not_poll () =
+  let calls = ref 0 in
+  let unexpected_poll () =
+    incr calls;
+    failwith "closed worker loop polled a backend lane"
+  in
+  let unexpected_wait ~workflow_lane:_ =
+    incr calls;
+    failwith "closed worker loop waited on a backend lane"
+  in
+  match
+    Loop.run ~closed:(fun () -> true)
+      ~poll_workflow:unexpected_poll ~poll_activity:unexpected_poll
+      ~wait_for_lane:unexpected_wait ~retry_pending:unexpected_wait
+  with
+  | Ok () when !calls = 0 -> ()
+  | Ok () -> failwith "closed worker loop invoked a backend callback"
+  | Error _ -> failwith "closed worker loop returned an unexpected error"
+
 (** Runs the focused scheduler regressions. *)
 let () =
   test_transient_completion_retries_and_progresses ();
-  test_permanent_protocol_error_remains_fatal ()
+  test_permanent_protocol_error_remains_fatal ();
+  test_closed_loop_does_not_poll ()

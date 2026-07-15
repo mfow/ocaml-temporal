@@ -40,6 +40,8 @@ worker_one=parent-child-restart-worker-one
 worker_two=parent-child-restart-worker-two
 driver_pid=''
 initial_deadline_epoch=''
+parent_run_id=''
+child_run_id=''
 
 # Normalizes every Compose invocation so the bind-mounted build tree has one
 # numeric owner and every process joins the same isolated Temporal project.
@@ -81,12 +83,19 @@ cleanup() {
   if [ -n "$driver_pid" ] && kill -0 "$driver_pid" 2>/dev/null; then
     kill -TERM "$driver_pid" 2>/dev/null || true
   fi
-  docker rm -f "$driver_container" >/dev/null 2>&1 || true
   if [ "$status" -ne 0 ]; then
     tail -n 200 "$driver_log" 2>/dev/null >&2 || true
+    docker inspect --format \
+      'parent/child restart driver exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{json .State.Error}}' \
+      "$driver_container" >&2 2>/dev/null || true
+    report_history_timeline "$parent_workflow_id" "$parent_run_id" \
+      "$parent_raw" parent >&2 || true
+    report_history_timeline "$child_workflow_id" "$child_run_id" \
+      "$child_raw" child >&2 || true
     compose logs --no-color --tail 200 temporal "$worker_one" "$worker_two" \
       >&2 2>/dev/null || true
   fi
+  docker rm -f "$driver_container" >/dev/null 2>&1 || true
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   remove_artifacts
   exit "$status"
@@ -107,7 +116,12 @@ wait_for_marker() {
   for _attempt in $(seq 1 "$marker_timeout"); do
     if [ -s "$marker" ]; then return 0; fi
     if [ -n "$producer_pid" ] && ! kill -0 "$producer_pid" 2>/dev/null; then
-      echo "$label exited before publishing $marker" >&2
+      if wait "$producer_pid"; then
+        producer_status=0
+      else
+        producer_status=$?
+      fi
+      echo "$label exited with status $producer_status before publishing $marker" >&2
       return 1
     fi
     if [ -n "$deadline_epoch" ] && [ "$(date +%s)" -ge "$deadline_epoch" ]; then
@@ -143,6 +157,31 @@ fetch_raw_history() {
   compose run --rm --no-deps temporal-admin-tools temporal workflow show \
     --workflow-id "$workflow_id" --run-id "$run_id" \
     --namespace temporal-sdk-test --output json >"$destination" 2>/dev/null
+}
+
+# Prints a payload-free event timeline for a failed live run. This diagnostic
+# is deliberately generated before Compose teardown and includes only event
+# IDs, event types, and workflow-task failure causes; workflow payloads and
+# server-controlled failure messages never enter the CI log.
+report_history_timeline() {
+  workflow_id=$1
+  run_id=$2
+  destination=$3
+  role=$4
+  [ -n "$run_id" ] || return 0
+  fetch_raw_history "$workflow_id" "$run_id" "$destination" || return 0
+  jq -r --arg role "$role" '
+    def events: (.history.events // .history_events // .events
+      // .workflowExecutionHistory.events // .workflow_execution_history.events);
+    events[]
+    | (.workflowTaskFailedEventAttributes
+       // .workflow_task_failed_event_attributes // {}) as $failed
+    | ["parent/child restart history", $role,
+       (.eventId // .event_id // "unknown"),
+       (.eventType // .event_type // "unknown"),
+       ($failed.cause // "-")]
+    | @tsv
+  ' "$destination"
 }
 
 # Extracts exactly one child run and initiation event from the parent's raw
@@ -260,7 +299,7 @@ generation_one_container=$(compose ps -q "$worker_one")
 [ -n "$generation_one_container" ]
 
 docker rm -f "$driver_container" >/dev/null 2>&1 || true
-compose run --build --rm --name "$driver_container" --no-deps \
+compose run --build --name "$driver_container" --no-deps \
   parent-child-restart-driver >"$driver_log" 2>&1 &
 driver_pid=$!
 wait_for_marker "$accepted" "$driver_pid" "parent/child restart driver"
@@ -379,6 +418,7 @@ wait_for_marker "$result" "$driver_pid" "parent/child restart result"
 wait "$driver_pid"
 driver_pid=''
 [ "$(cat "$result")" = "completed" ]
+docker rm "$driver_container" >/dev/null
 
 terminal_valid=false
 for _attempt in $(seq 1 120); do

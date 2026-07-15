@@ -97,9 +97,13 @@ for those rules.
   teardown failure so cleanup problems are not silently discarded.
 - `Temporal.Worker` registers workflows, activities, and the signal, query, and
   update handlers attached to each workflow registration. It owns one
-  supervisor graph, runs the poll loops, and performs idempotent shutdown. The
-  interaction handler registration modes and their current native limitations
-  are described in the [interactive-workflow reference](interactive-workflows.md).
+  supervisor graph, runs the poll loops, and performs idempotent shutdown. A
+  successfully shut-down worker is not reusable: the mock backend reports a
+  typed `bridge` error if `Worker.run` is called again, while the native backend
+  returns without polling because its closed gate is already set. Create a new
+  worker for a new polling lifecycle rather than relying on either backend's
+  post-shutdown behavior. The interaction handler registration modes and their
+  current native limitations are described in the [interactive-workflow reference](interactive-workflows.md).
   The final executable remains an OCaml application; Rust is a private linked
   implementation detail.
 - `Temporal.Runtime_info` is for installation and diagnostics. Its ABI check

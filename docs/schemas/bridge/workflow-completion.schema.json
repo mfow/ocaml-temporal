@@ -190,7 +190,7 @@
             "patch_id": {"$ref": "#/$defs/identifier"},
             "deprecated": {"type": "boolean"}
           },
-          "description": "Records one replay-safe patch decision. Core owns marker deduplication; the language runtime sends this command for every patched call."
+          "description": "Records one replay-safe patch lifecycle command. Core owns same-mode marker deduplication, so the language runtime preserves repeated calls in order. Both implementations reject active and deprecated values for the same patch_id within one completion; that cross-element invariant is enforced semantically rather than by this schema."
         },
         {
           "type": "object", "additionalProperties": false,

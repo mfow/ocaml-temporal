@@ -102,11 +102,10 @@ fn accepts_and_normalizes_workflow_completion() {
 
 /// Proves patch notifications and marker commands survive the semantic JSON
 /// boundary and the pinned Core protobuf conversion without deduplication.
-/// The language runtime emits one marker command for every `patched` call and
+/// The language runtime emits one marker command for every patch API call and
 /// Core owns durable-history deduplication, so retaining two identical bridge
-/// commands here is a replay-safety requirement. The private bridge also
-/// retains Core's deprecation bit even though the current public OCaml helper
-/// emits only non-deprecated markers.
+/// commands here is a replay-safety requirement. Active and deprecated marker
+/// modes both survive the private bridge losslessly.
 #[test]
 fn converts_patch_markers_losslessly() {
     use core_activation::workflow_activation_job::Variant;
@@ -152,6 +151,10 @@ fn converts_patch_markers_losslessly() {
                 patch_id: "orders.v1".to_owned(),
                 deprecated: true,
             },
+            workflow_protocol::CompletionCommand::SetPatchMarker {
+                patch_id: "orders.v1".to_owned(),
+                deprecated: true,
+            },
         ],
     };
     let encoded = workflow_protocol::encode_completion(&completion).unwrap();
@@ -165,10 +168,11 @@ fn converts_patch_markers_losslessly() {
     else {
         panic!("patch-marker completion must be successful");
     };
-    assert_eq!(success.commands.len(), 3);
+    assert_eq!(success.commands.len(), 4);
     let expected = [
         ("orders.v2", false),
         ("orders.v2", false),
+        ("orders.v1", true),
         ("orders.v1", true),
     ];
     for (command, (expected_id, expected_deprecated)) in success.commands.iter().zip(expected) {
@@ -207,6 +211,25 @@ fn rejects_invalid_patch_marker_documents() {
     let missing_deprecated =
         r#"{"run_id":"r","commands":[{"kind":"set_patch_marker","patch_id":"orders.v2"}]}"#;
     assert!(workflow_protocol::decode_completion(missing_deprecated).is_err());
+
+    let conflicting_modes = r#"{"run_id":"r","commands":[{"kind":"set_patch_marker","patch_id":"orders.v2","deprecated":false},{"kind":"set_patch_marker","patch_id":"orders.v2","deprecated":true}]}"#;
+    assert!(workflow_protocol::decode_completion(conflicting_modes).is_err());
+
+    let conflicting_semantic = workflow_protocol::Completion {
+        run_id: "r".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::SetPatchMarker {
+                patch_id: "orders.v2".to_owned(),
+                deprecated: true,
+            },
+            workflow_protocol::CompletionCommand::SetPatchMarker {
+                patch_id: "orders.v2".to_owned(),
+                deprecated: false,
+            },
+        ],
+    };
+    assert!(workflow_protocol::encode_completion(&conflicting_semantic).is_err());
+    assert!(workflow_protocol::completion_to_core(&conflicting_semantic).is_err());
 
     let unknown_field = r#"{"run_id":"r","timestamp":{"seconds":0,"nanoseconds":0},"is_replaying":true,"history_length":1,"jobs":[{"kind":"notify_has_patch","patch_id":"orders.v2","extra":true}]}"#;
     assert!(workflow_protocol::decode_activation(unknown_field).is_err());

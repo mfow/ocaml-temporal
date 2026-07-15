@@ -19,6 +19,20 @@ type child_workflow_state = {
   mutable start_run_id : string option;
 }
 
+(** Identifies the one language-level patch operation selected for a durable
+    patch ID during this reconstructed execution. Temporal Core keeps the first
+    marker command for an ID, so silently mixing active and deprecated commands
+    would make source order determine durable history. *)
+type patch_mode = Active | Deprecated
+
+(** Replay evidence and source-level API mode retained for one durable patch
+    ID. History notification may update [decision] before or after source code
+    selects [mode], while [mode = None] means no local patch call has run yet. *)
+type patch_state = {
+  mutable decision : bool;
+  mutable mode : patch_mode option;
+}
+
 (** A typed key for one workflow-local value. The integer is allocated once at
     key creation; each execution context stores its own value under that key,
     so two workflow runs cannot observe one another's mutable state. The
@@ -46,7 +60,7 @@ type t = {
   (* Patch decisions are execution-local durable-language state. A cached
      [false] is as significant as [true], because replay without a marker must
      continue taking the pre-patch branch for the lifetime of this run. *)
-  patches : (string, bool) Hashtbl.t;
+  patches : (string, patch_state) Hashtbl.t;
   mutable next_sequence : int64;
   activities : (int64, activity_resolution) Hashtbl.t;
   child_workflows : (int64, child_workflow_state) Hashtbl.t;
@@ -161,29 +175,54 @@ let snapshot_identifier value = Bytes.to_string (Bytes.of_string value)
     is copied because this execution retains it beyond the activation adapter. *)
 let notify_has_patch context ~patch_id =
   let patch_id = snapshot_identifier patch_id in
-  Hashtbl.replace context.patches patch_id true
+  match Hashtbl.find_opt context.patches patch_id with
+  | Some state -> state.decision <- true
+  | None ->
+      Hashtbl.add context.patches patch_id { decision = true; mode = None }
 
-(** Evaluates one direct-style patch gate and emits Core's marker command on
-    every call. Core owns marker deduplication; local deduplication would alter
-    the established language-SDK protocol and could hide replay mismatches.
-    Snapshotting here also protects private callers that bypass the validated
-    public helper. *)
-let patched context ~patch_id =
+(** Evaluates one patch operation and emits its Core marker command on every
+    call. Repeated same-mode commands are intentional because Core owns normal
+    marker deduplication. A conflicting mode is rejected before emission:
+    Core retains the first command for an ID, so accepting both would silently
+    make durable deprecation depend on call order. *)
+let call_patch_api context ~patch_id ~mode =
   if context.sealed then
-    invalid_arg "Temporal.Workflow.patched used after workflow execution ended";
+    invalid_arg "Temporal workflow patch API used after workflow execution ended";
   let patch_id = snapshot_identifier patch_id in
-  let decision =
+  let state =
     match Hashtbl.find_opt context.patches patch_id with
-    | Some decision -> decision
+    | Some state -> state
     | None ->
-        let decision = not context.activation_is_replaying in
-        Hashtbl.add context.patches patch_id decision;
-        decision
+        let state =
+          {
+            decision = not context.activation_is_replaying;
+            mode = None;
+          }
+        in
+        Hashtbl.add context.patches patch_id state;
+        state
   in
+  (match state.mode with
+  | Some existing when existing <> mode ->
+      invalid_arg
+        "Temporal workflow patch ID cannot be both active and deprecated in one execution"
+  | Some _ -> ()
+  | None -> state.mode <- Some mode);
   context.commands_rev <-
-    Activation.Set_patch_marker { patch_id; deprecated = false }
+    Activation.Set_patch_marker
+      { patch_id; deprecated = (mode = Deprecated) }
     :: context.commands_rev;
-  decision
+  state.decision
+
+(** Returns the deterministic branch decision for one active patch ID. *)
+let patched context ~patch_id =
+  call_patch_api context ~patch_id ~mode:Active
+
+(** Marks one patch ID as deprecated without exposing a branch decision. The
+    internal decision remains cached so replay state matches [patched], but the
+    public operation exists only to record the marker lifecycle transition. *)
+let deprecate_patch context ~patch_id =
+  ignore (call_patch_api context ~patch_id ~mode:Deprecated)
 
 (** Makes [context] current while [action] runs, then restores the previous
     value even if [action] raises. This prevents later code on the same Domain

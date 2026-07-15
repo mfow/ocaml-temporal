@@ -35,9 +35,9 @@ The remaining reference documents are useful when changing one subsystem:
 - [Deterministic workflow time](reference/workflow-time.md) documents
   `Temporal.Workflow.now`, its exact timestamp representation, and its replay
   safety contract.
-- [Workflow patching](reference/workflow-patching.md) documents the public
-  non-deprecated patch-in primitive, durable patch IDs, its per-execution
-  replay decision, and the dedicated live target verified by PR #348.
+- [Workflow patching](reference/workflow-patching.md) documents public patch-in
+  and deprecation, durable patch IDs, per-execution decisions and mode safety,
+  and the initial live patch-in target verified by PR #348.
 - [Interactive workflows](reference/interactive-workflows.md) documents the
   experimental typed signal, query, and update definitions, deterministic
   handler dispatcher, and the remaining native-delivery boundary.
@@ -112,10 +112,10 @@ opaque bytes with encoding metadata.
 | Layer | Evidence today | Important limit |
 | --- | --- | --- |
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
-| Workflow patching | Public patch-in semantics, protocol conversion, fixtures, and an offline contract are implemented; the complete [PR #348 live run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) verifies the old/new-history replacement scenarios. | Patch deprecation/removal, deployment versioning, and broader historical compatibility remain pending. |
-| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and real two-binary Compose paths. Restart/replay is live-verified by PR #253, retry after restart by PR #298, and sticky-cache eviction by the complete [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748). A bilateral parent/child replacement gate is implemented and awaiting live CI evidence. | Broader cache/recovery scenarios remain untested live |
+| Workflow patching | Public patch-in and deprecation semantics are implemented and focused-tested; protocol conversion already preserves both marker modes. The complete [PR #348 live run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) verifies the initial old/new-history replacement scenarios. | Live deprecation migration, call removal, deployment versioning, and broader historical compatibility remain pending. |
+| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and real two-binary Compose paths. Restart/replay is live-verified by PR #253, retry after restart by PR #298, sticky-cache eviction by the complete [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748), and exact parent/child restart-replay by the complete [PR #351 run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013). | Broader cache/recovery scenarios remain untested live |
 | Public native client | Typed start/wait/cancel/signal protocol. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result baseline, including continue-as-new successor following and exact-run cancellation. | Typed signal delivery and other client commands remain untested live |
-| Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests; [PR #289](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) live-verified success, propagated failure, cancellation, retry, and duplicate-ID start failure. The new recovery gate binds and validates both exact histories across worker replacement. | The new bilateral replay/recovery gate still needs a successful live CI run. |
+| Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests; [PR #289](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) live-verified success, propagated failure, cancellation, retry, and duplicate-ID start failure. The complete [PR #351 run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013) binds and validates both exact histories across worker replacement. | Broader child failure recovery remains untested live. |
 | Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts the eighteen-result baseline; dedicated targets add restart, crash recovery, cache eviction, workflow patching, and parent/child replay/recovery paths. | The acceptance suite remains deliberately narrower than the complete Temporal feature surface. |
 
 This distinction prevents a green local synthetic test from being read as a
@@ -131,12 +131,12 @@ output-only query delivery and immediate one-input update dispatch are implement
 at the
 bridge boundary but still need live Temporal Server acceptance; suspended
 updates, full versioning, local activities, Nexus, and the remaining SDK parity
-work are tracked as later milestones. The first non-deprecated
-`Workflow.patched` primitive is focused-tested. The complete [PR #348 CI
+work are tracked as later milestones. `Workflow.patched` and the unit-returning
+`Workflow.deprecate_patch` lifecycle operation are focused-tested. The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) also
 live-verifies its dedicated old/new-history replacement target. This evidence
-is limited to initial patch-in; deprecation/removal, deployment versioning, and
-arbitrary-history compatibility remain pending. The typed definitions and
+is limited to initial patch-in; live deprecation/removal, deployment versioning,
+and arbitrary-history compatibility remain pending. The typed definitions and
 deterministic local dispatcher are documented in the [interactive workflow
 reference](reference/interactive-workflows.md).
 

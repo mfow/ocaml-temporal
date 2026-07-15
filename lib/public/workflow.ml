@@ -110,27 +110,41 @@ let now () =
 (** Validates and snapshots a patch ID before consulting workflow state. The
     copy prevents a caller-created mutable string from changing the hash-table
     key or emitted command after this call returns. *)
-let validated_patch_id id =
+let validated_patch_id ~operation id =
+  let prefix = "Temporal.Workflow." ^ operation ^ " id " in
   if String.length id = 0 then
-    invalid_arg "Temporal.Workflow.patched id is empty";
+    invalid_arg (prefix ^ "is empty");
   if String.contains id '\000' then
-    invalid_arg "Temporal.Workflow.patched id contains a NUL byte"
+    invalid_arg (prefix ^ "contains a NUL byte")
   else if String.length id > max_name_bytes then
-    invalid_arg "Temporal.Workflow.patched id exceeds 65536 bytes"
+    invalid_arg (prefix ^ "exceeds 65536 bytes")
   else if not (Temporal_base.Codec.valid_utf_8 id) then
-    invalid_arg "Temporal.Workflow.patched id must be valid UTF-8";
+    invalid_arg (prefix ^ "must be valid UTF-8");
   Bytes.to_string (Bytes.of_string id)
 
 (** Returns the replay-safe branch decision for one named workflow patch.
     Core notifications and the activation replay flag determine the first
     decision; the execution context retains it for later calls in this run. *)
 let patched ~id =
-  let patch_id = validated_patch_id id in
+  let patch_id = validated_patch_id ~operation:"patched" id in
   match Temporal_runtime.Workflow_context_store.current () with
   | None ->
       invalid_arg "Temporal.Workflow.patched used outside a workflow execution"
   | Some context ->
       Temporal_runtime.Workflow_context_store.patched context ~patch_id
+
+(** Records that one previously active patch is being phased out. The runtime
+    retains Core's deterministic decision internally but exposes no branch
+    result: application code should replace the old [patched] gate with this
+    lifecycle marker while compatible histories drain. *)
+let deprecate_patch ~id =
+  let patch_id = validated_patch_id ~operation:"deprecate_patch" id in
+  match Temporal_runtime.Workflow_context_store.current () with
+  | None ->
+      invalid_arg
+        "Temporal.Workflow.deprecate_patch used outside a workflow execution"
+  | Some context ->
+      Temporal_runtime.Workflow_context_store.deprecate_patch context ~patch_id
 
 (** Requests a fresh run of the same workflow type with [input]. This is a
     terminal direct-style operation: it encodes the successor input, buffers a

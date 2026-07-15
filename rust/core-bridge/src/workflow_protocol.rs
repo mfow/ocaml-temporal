@@ -680,8 +680,9 @@ pub enum CompletionCommand {
         protocol_instance_id: String,
         response: UpdateResponseResult,
     },
-    /// Records one patch-gate evaluation. Core owns history deduplication, so
-    /// the language runtime intentionally sends this on every public call.
+    /// Records one active or deprecated patch lifecycle operation. Core owns
+    /// same-mode history deduplication, so the language runtime intentionally
+    /// sends this on every public patch call.
     SetPatchMarker {
         patch_id: String,
         deprecated: bool,
@@ -1360,9 +1361,14 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-/// Applies timeout and terminal-command invariants.
+/// Applies completion-wide ordering, identity, and cross-command invariants.
 fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
     identifier(&value.run_id, "$.run_id")?;
+    // Core retains the first patch-marker command for an ID. Tracking modes
+    // while validating prevents a private caller from making durable
+    // deprecation depend silently on command order. Same-mode repetitions are
+    // intentionally preserved for Core to deduplicate.
+    let mut patch_modes: BTreeMap<&str, bool> = BTreeMap::new();
     for (index, command) in value.commands.iter().enumerate() {
         let terminal = matches!(
             command,
@@ -1500,8 +1506,19 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                     }
                 }
             }
-            CompletionCommand::SetPatchMarker { patch_id, .. } => {
+            CompletionCommand::SetPatchMarker {
+                patch_id,
+                deprecated,
+            } => {
                 identifier(patch_id, "$.commands.patch_id")?;
+                if let Some(existing) = patch_modes.insert(patch_id.as_str(), *deprecated) {
+                    if existing != *deprecated {
+                        return Err(ProtocolError::invalid(
+                            "$.commands.patch_id",
+                            "one patch ID cannot use both active and deprecated marker modes",
+                        ));
+                    }
+                }
             }
             _ => {}
         }

@@ -316,8 +316,8 @@ type completion_command =
       protocol_instance_id : string;
       response : update_response;
     }
-  (** Records one workflow patch decision. [deprecated] is carried explicitly
-      even though the first public OCaml slice emits only active markers. *)
+  (** Records one workflow patch lifecycle operation. [deprecated]
+      distinguishes an active patch-in call from a deprecation call. *)
   | Set_patch_marker of { patch_id : string; deprecated : bool }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
@@ -2434,6 +2434,26 @@ let validate_update_responses path commands =
   in
   loop [] commands
 
+(** Rejects two marker modes for one patch ID in a single completion. Temporal
+    Core retains only the first marker command for an ID, so allowing a later
+    conflicting value would make durable history depend silently on source
+    order. Same-mode repetitions remain valid and ordered for Core to
+    deduplicate. *)
+let validate_patch_marker_modes path commands =
+  let rec loop modes = function
+    | [] -> Ok ()
+    | Set_patch_marker { patch_id; deprecated } :: rest -> (
+        match List.assoc_opt patch_id modes with
+        | Some existing when existing <> deprecated ->
+            Error
+              (invalid (path ^ ".patch_id")
+                 "one patch ID cannot use both active and deprecated marker modes")
+        | Some _ -> loop modes rest
+        | None -> loop ((patch_id, deprecated) :: modes) rest)
+    | _ :: rest -> loop modes rest
+  in
+  loop [] commands
+
 (** Converts a strict completion object to typed values. *)
 let completion_from_json json =
   let* entries = exact_object "$" [ "run_id"; "commands" ] json in
@@ -2444,6 +2464,7 @@ let completion_from_json json =
   let* () = validate_terminal_order "$.commands" commands in
   let* () = validate_query_results "$.commands" commands in
   let* () = validate_update_responses "$.commands" commands in
+  let* () = validate_patch_marker_modes "$.commands" commands in
   Ok { run_id; commands }
 
 (** Strictly decodes one completion through the shared JSON foundation. *)

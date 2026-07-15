@@ -88,11 +88,10 @@ strictly rejects a missing, partial, oversized, or non-canonical document.
 
 ## Evidence boundary
 
-Before the live GitHub Actions target succeeds, this scenario is
-**implemented — live verification pending**. Local state-machine tests and the
-contract fixtures prove validation and ordering rules, but they cannot replace
-real Temporal Server history. Once a complete live run is green, record its PR
-and Actions URL in `docs/progress.md`, `feature-coverage.md`, and
-`live-acceptance-coverage.md`; do not generalize one parent/child recovery run
-to arbitrary cache pressure, crashes, child failure recovery, or a replay
-corpus.
+The complete [PR #351 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013) passed all
+nine jobs and live-verified this scenario against Temporal Server and
+PostgreSQL. Local state-machine tests and contract fixtures remain supporting
+validation evidence rather than substitutes for that run. Do not generalize
+one parent/child recovery run to arbitrary cache pressure, crashes, child
+failure recovery, or a replay corpus.

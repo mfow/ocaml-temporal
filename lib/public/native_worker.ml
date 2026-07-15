@@ -805,10 +805,14 @@ let replay_diagnostic_hook () =
       let completion_callback (info : Workflow_adapter.activation_info) =
         if matches_target info then
           match info.cache_removal_reason with
-          | Some reason ->
-              write_cache_eviction_marker state ~reason;
-              if String.equal reason "cache_full" then
-                cache_full_acknowledged := true
+          | Some "cache_full" ->
+              (* Publish only the cache-pressure event under test. Core can
+                 later remove the same run because its execution ended; that
+                 lifecycle event must not overwrite the acknowledged
+                 CacheFull evidence before the post-driver validator reads it. *)
+              write_cache_eviction_marker state ~reason:"cache_full";
+              cache_full_acknowledged := true
+          | Some _ -> ()
           | None when not info.is_replaying ->
               (match state.cache_eviction_ready_path with
               | Some path -> write_cache_eviction_ready_marker path

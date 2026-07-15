@@ -50,6 +50,7 @@ require_source "$driver" 'Client.wait second'
 require_source "$root/lib/public/worker.mli" '?max_cached_workflows:int'
 require_source "$root/lib/public/native_worker.ml" '| Some "" -> Ok None'
 require_source "$root/lib/public/native_worker.ml" 'SMOKE_WORKER_CACHE_EVICTION_READY_FILE'
+require_source "$root/lib/public/native_worker.ml" '| Some "cache_full" ->'
 require_source "$root/lib/runtime/native_worker_execution.ml" 'cache_removal_reason'
 require_source "$root/lib/runtime/native_worker_execution.ml" 'on_completion'
 require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \

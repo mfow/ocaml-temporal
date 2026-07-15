@@ -10,6 +10,7 @@ Give each behavioral change a stable, descriptive identifier:
 
 ```ocaml
 let process_order order =
+  let open Temporal.Result_syntax in
   if Temporal.Workflow.patched ~id:"orders.validate-address.v2" then
     let* () = validate_address order in
     ship order

@@ -98,7 +98,7 @@ let test_ordinary_helper_composition () =
 
 (** Patch gates are synchronous workflow control flow, so malformed durable
     IDs and calls without an active execution are programmer misuse rather
-    than detached futures. Validation must happen before context lookup. *)
+    than detached futures. *)
 let test_patched_misuse_and_identifier_validation () =
   let expect_invalid label action =
     match action () with

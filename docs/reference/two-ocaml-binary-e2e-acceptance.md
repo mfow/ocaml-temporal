@@ -5,7 +5,7 @@ verified the current seventeen-result baseline, including typed signal delivery,
 activity retry classification, heartbeat-timeout retry, child-workflow retry,
 and duplicate-ID child-start failure against real Temporal Server and PostgreSQL.
 The complete
-[PR #253 Actions run](https://github.com/ocaml-temporal/actions/runs/29286560471) verified the separate two-generation worker restart/replay acceptance against real Temporal Server and PostgreSQL.
+[PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) verified the separate two-generation worker restart/replay acceptance against real Temporal Server and PostgreSQL.
 The PR #253 run passed the supported Linux and native platform matrix. The
 earlier [PR #229 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29235144016)
 verified all ten scenarios against real Temporal Server and PostgreSQL for
@@ -173,7 +173,7 @@ non-retryable classification, heartbeat-timeout retry, and child-workflow
 retry and duplicate-ID child-start failure. The [PR #289 run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719)
 also carries the child retry policy and typed child-start failure through the
 private Rust/OCaml
-activation bridge. The [PR #253 run](https://github.com/ocaml-temporal/actions/runs/29286560471)
+activation bridge. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 also verifies the separate worker restart/replay controller. Child start
 replay and recovery, sticky-cache eviction, and crash recovery remain separate
 scenarios. The

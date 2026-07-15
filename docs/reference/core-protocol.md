@@ -329,17 +329,20 @@ own activation, so both language validators reject a query mixed with this
 notification.
 
 Each `Temporal.Workflow.patched` call returns a per-execution decision and
-emits this completion command:
+emits an active completion command:
 
 ```json
 {"kind":"set_patch_marker","patch_id":"orders.v2","deprecated":false}
 ```
 
-The command is a closed record and `deprecated` is required. The public first
-slice always emits `false`, while the private semantic type retains the boolean
-so conversion to and from pinned Core values remains lossless. Repeated marker
-commands are preserved in order; Core, rather than the OCaml runtime or JSON
-bridge, owns durable marker deduplication.
+`Temporal.Workflow.deprecate_patch` emits the same command with
+`deprecated:true` and returns `unit`, because deprecation is a lifecycle marker
+rather than a branch decision. The command is a closed record and `deprecated`
+is required. Repeated commands in the same mode are preserved in order; Core,
+rather than the OCaml runtime or JSON bridge, owns durable marker
+deduplication. Both language validators reject active and deprecated commands
+for the same ID in one completion, preventing Core's first-command-wins rule
+from making durable history depend on ambiguous source order.
 
 ### Continue-as-new
 

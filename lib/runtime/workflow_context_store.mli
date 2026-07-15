@@ -61,6 +61,14 @@ val notify_has_patch : t -> patch_id:string -> unit
     shutdown raises [Invalid_argument]. *)
 val patched : t -> patch_id:string -> bool
 
+(** Emits a deprecated marker command for [patch_id] and retains the same
+    execution-local decision state used by [patched]. Repeated deprecation calls
+    are allowed. Mixing [patched] and [deprecate_patch] for one ID in the same
+    execution raises [Invalid_argument] before a conflicting command is emitted;
+    Core would otherwise keep only the first mode. The ID is copied before
+    retention and emission, and calls after shutdown raise [Invalid_argument]. *)
+val deprecate_patch : t -> patch_id:string -> unit
+
 (** Runs [action] with [t] dynamically installed and restores the previous
     context even if [action] raises. Nested calls are supported. *)
 val with_context : t -> (unit -> 'value) -> 'value

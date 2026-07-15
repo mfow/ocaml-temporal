@@ -1567,11 +1567,164 @@ let test_workflow_patch_decisions () =
         Ok ())
   in
   expect "replay present patch decision" (Some true) !present_decision;
-  match present_commands with
+  (match present_commands with
   | Activation.Set_patch_marker
       { patch_id = "orders.v2"; deprecated = false }
     :: Activation.Complete_workflow _ :: [] -> ()
-  | _ -> failwith "replay with marker emitted unexpected commands"
+  | _ -> failwith "replay with marker emitted unexpected commands");
+  let deprecated_commands =
+    run ~name:"patch_deprecated" ~is_replaying:false
+      ~jobs:[ Activation.Start_workflow ] (fun () ->
+        Temporal.Workflow.deprecate_patch ~id:"orders.v2";
+        Temporal.Workflow.deprecate_patch ~id:"orders.v2";
+        Ok ())
+  in
+  (match deprecated_commands with
+  | [ Activation.Set_patch_marker
+        { patch_id = "orders.v2"; deprecated = true };
+      Activation.Set_patch_marker
+        { patch_id = "orders.v2"; deprecated = true };
+      Activation.Complete_workflow _ ] -> ()
+  | _ -> failwith "repeated patch deprecation emitted unexpected commands");
+  let replay_deprecated_commands =
+    run ~name:"patch_deprecated_replay_absent" ~is_replaying:true
+      ~jobs:[ Activation.Start_workflow ] (fun () ->
+        Temporal.Workflow.deprecate_patch ~id:"orders.v2";
+        Ok ())
+  in
+  match replay_deprecated_commands with
+  | [ Activation.Set_patch_marker
+        { patch_id = "orders.v2"; deprecated = true };
+      Activation.Complete_workflow _ ] -> ()
+  | _ -> failwith "marker-free replay rejected patch deprecation"
+
+(** One execution may repeat one marker mode but must never emit both active
+    and deprecated commands for the same ID. Core retains the first command,
+    so rejecting the second mode prevents source order from silently deciding
+    durable history. History notification establishes only the replay decision
+    and therefore remains compatible with deprecation-only replacement code. *)
+let test_workflow_patch_mode_invariant () =
+  let expect_invalid label action =
+    match action () with
+    | exception Invalid_argument message when not (String.equal message "") -> ()
+    | exception _ -> failwith (label ^ " raised the wrong exception")
+    | _ -> failwith (label ^ " unexpectedly succeeded")
+  in
+  let active_context = Workflow_context_store.create (Scheduler.create ()) in
+  ignore (Workflow_context_store.patched active_context ~patch_id:"orders.v2");
+  expect_invalid "active then deprecated" (fun () ->
+      Workflow_context_store.deprecate_patch active_context
+        ~patch_id:"orders.v2");
+  (match Workflow_context_store.take_commands active_context with
+  | [ Activation.Set_patch_marker
+        { patch_id = "orders.v2"; deprecated = false } ] -> ()
+  | _ -> failwith "active/deprecated conflict appended a second command");
+  let drained_active_context =
+    Workflow_context_store.create (Scheduler.create ())
+  in
+  ignore
+    (Workflow_context_store.patched drained_active_context
+       ~patch_id:"orders.v2");
+  ignore (Workflow_context_store.take_commands drained_active_context);
+  expect_invalid "active then deprecated after command drain" (fun () ->
+      Workflow_context_store.deprecate_patch drained_active_context
+        ~patch_id:"orders.v2");
+  expect "active/deprecated conflict left drained buffer empty" []
+    (Workflow_context_store.take_commands drained_active_context);
+  let deprecated_context =
+    Workflow_context_store.create (Scheduler.create ())
+  in
+  Workflow_context_store.deprecate_patch deprecated_context
+    ~patch_id:"orders.v2";
+  ignore (Workflow_context_store.take_commands deprecated_context);
+  Workflow_context_store.deprecate_patch deprecated_context
+    ~patch_id:"orders.v2";
+  (match Workflow_context_store.take_commands deprecated_context with
+  | [ Activation.Set_patch_marker
+        { patch_id = "orders.v2"; deprecated = true } ] -> ()
+  | _ -> failwith "deprecation mode did not survive command-buffer drain");
+  expect_invalid "deprecated then active after command drain" (fun () ->
+      ignore
+        (Workflow_context_store.patched deprecated_context
+           ~patch_id:"orders.v2"));
+  expect "deprecated/active conflict left next buffer empty" []
+    (Workflow_context_store.take_commands deprecated_context);
+  let independent_context =
+    Workflow_context_store.create (Scheduler.create ())
+  in
+  ignore
+    (Workflow_context_store.patched independent_context
+       ~patch_id:"orders.active");
+  Workflow_context_store.deprecate_patch independent_context
+    ~patch_id:"orders.deprecated";
+  (match Workflow_context_store.take_commands independent_context with
+  | [ Activation.Set_patch_marker
+        { patch_id = "orders.active"; deprecated = false };
+      Activation.Set_patch_marker
+        { patch_id = "orders.deprecated"; deprecated = true } ] -> ()
+  | _ -> failwith "independent patch IDs did not retain separate modes");
+  let snapshot_context = Workflow_context_store.create (Scheduler.create ()) in
+  let mutable_id = Bytes.of_string "orders.deprecated" in
+  let aliased_id = Bytes.unsafe_to_string mutable_id in
+  Workflow_context_store.deprecate_patch snapshot_context ~patch_id:aliased_id;
+  Bytes.set mutable_id 0 'X';
+  (match Workflow_context_store.take_commands snapshot_context with
+  | [ Activation.Set_patch_marker
+        { patch_id = "orders.deprecated"; deprecated = true } ] -> ()
+  | _ -> failwith "mutable deprecated patch ID changed retained command");
+  let notified_context = Workflow_context_store.create (Scheduler.create ()) in
+  Workflow_context_store.set_activation_is_replaying notified_context true;
+  Workflow_context_store.notify_has_patch notified_context
+    ~patch_id:"orders.v2";
+  Workflow_context_store.deprecate_patch notified_context
+    ~patch_id:"orders.v2";
+  (match Workflow_context_store.take_commands notified_context with
+  | [ Activation.Set_patch_marker
+        { patch_id = "orders.v2"; deprecated = true } ] -> ()
+  | _ -> failwith "history notification incorrectly fixed local patch mode");
+  Workflow_context_store.shutdown notified_context;
+  expect_invalid "deprecate after execution shutdown" (fun () ->
+      Workflow_context_store.deprecate_patch notified_context
+        ~patch_id:"orders.v2")
+
+(** Patch modes and copied identifiers belong to one workflow execution. Two
+    runs may legitimately use the same durable ID at different migration
+    phases, and mutation of a public-call alias after deprecation must not alter
+    the command already retained by that run. *)
+let test_workflow_patch_mode_isolation_and_public_deprecation_snapshot () =
+  let active_definition =
+    Temporal.Workflow.define ~name:"patch_mode_active"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        ignore (Temporal.Workflow.patched ~id:"shared.patch");
+        Ok ())
+  in
+  let mutable_id = Bytes.of_string "shared.patch" in
+  let aliased_id = Bytes.unsafe_to_string mutable_id in
+  let deprecated_definition =
+    Temporal.Workflow.define ~name:"patch_mode_deprecated"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.deprecate_patch ~id:aliased_id;
+        Bytes.set mutable_id 0 'X';
+        Ok ())
+  in
+  let active_commands =
+    Execution.start active_definition ()
+    |> fun execution -> Execution.activate execution [ Activation.Start_workflow ]
+  in
+  let deprecated_commands =
+    Execution.start deprecated_definition ()
+    |> fun execution -> Execution.activate execution [ Activation.Start_workflow ]
+  in
+  (match active_commands with
+  | Activation.Set_patch_marker
+      { patch_id = "shared.patch"; deprecated = false }
+    :: _ -> ()
+  | _ -> failwith "active execution did not retain its independent mode");
+  match deprecated_commands with
+  | Activation.Set_patch_marker
+      { patch_id = "shared.patch"; deprecated = true }
+    :: _ -> ()
+  | _ -> failwith "public deprecation ID mutation changed retained command"
 
 (** Patch state belongs to one workflow execution and patch IDs are copied at
     the public boundary. A notification in run A must not affect run B, and a
@@ -1669,5 +1822,7 @@ let () =
   test_terminal_finally_cannot_emit_cancel ();
   test_continue_as_new_finally_cannot_emit_cancel ();
   test_workflow_patch_decisions ();
+  test_workflow_patch_mode_invariant ();
+  test_workflow_patch_mode_isolation_and_public_deprecation_snapshot ();
   test_workflow_patch_isolation_and_public_id_snapshot ();
   test_incoming_patch_notification_snapshot ()

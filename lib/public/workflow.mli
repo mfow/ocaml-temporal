@@ -82,6 +82,22 @@ val now : unit -> (Time.t, Error.t) result
     never reuse an ID for a different behavioral change. *)
 val patched : id:string -> bool
 
+(** Records that the behavioral change identified by [id] is being phased out.
+    A transition release replaces its [patched] call with [deprecate_patch] at
+    the same logical point; it must not call both operations for one ID during a
+    workflow execution. This function returns [unit] because deprecation is a
+    durable lifecycle marker, not a branch decision.
+
+    Patch IDs have the same validation and immutable-history requirements as
+    [patched]. Invalid IDs, calls outside workflow execution, calls after that
+    execution ends, or mixed patch modes raise [Invalid_argument] as programmer
+    misuse. Replacing [patched] is safe only after marker-free executions that
+    could take the old branch can no longer replay across that point. Removing
+    the deprecation call is a later gate, safe only after incompatible
+    non-deprecated-marker histories have drained or been otherwise accounted
+    for. *)
+val deprecate_patch : id:string -> unit
+
 (** Ends the current run and starts a new run of [definition] with [input].
     This operation never returns to the calling workflow fiber. It is
     deterministic: the input is encoded through the definition's codec before

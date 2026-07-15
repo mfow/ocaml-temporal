@@ -360,7 +360,9 @@ type completion_command =
       protocol_instance_id : string;
       response : update_response;
     }
-  (** Records one active or deprecated patch marker decision. *)
+  (** Records one active or deprecated patch lifecycle operation. A completion
+      may repeat one mode for an ID, but validation rejects both modes for the
+      same ID because Core durably retains the first such command. *)
   | Set_patch_marker of { patch_id : string; deprecated : bool }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
@@ -371,7 +373,8 @@ type completion_command =
   | Cancel_workflow_execution
 
 (** Successful completion of one activation. At most one terminal workflow
-    command may appear, and it must be last. *)
+    command may appear, and it must be last. Patch commands may repeat one mode
+    per ID but may not mix active and deprecated modes for the same ID. *)
 type completion = { run_id : string; commands : completion_command list }
 
 type error

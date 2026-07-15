@@ -201,6 +201,34 @@ let test_patch_marker_protocol_slice () =
   check_string "patch completion" expected
     (unwrap (Protocol.encode_completion completion));
   ignore (unwrap (Protocol.decode_completion expected));
+  let repeated : Protocol.completion =
+    {
+      run_id = "patch-run";
+      commands =
+        [ Protocol.Set_patch_marker
+            { patch_id = "orders.v2"; deprecated = false };
+          Protocol.Set_patch_marker
+            { patch_id = "orders.v2"; deprecated = false };
+          Protocol.Set_patch_marker
+            { patch_id = "orders.v1"; deprecated = true };
+          Protocol.Set_patch_marker
+            { patch_id = "orders.v1"; deprecated = true } ];
+    }
+  in
+  ignore (unwrap (Protocol.encode_completion repeated));
+  require_error
+    (Protocol.encode_completion
+       {
+         repeated with
+         commands =
+           [ Protocol.Set_patch_marker
+               { patch_id = "orders.v2"; deprecated = false };
+             Protocol.Set_patch_marker
+               { patch_id = "orders.v2"; deprecated = true } ];
+       });
+  require_error
+    (Protocol.decode_completion
+       "{\"run_id\":\"patch-run\",\"commands\":[{\"kind\":\"set_patch_marker\",\"patch_id\":\"orders.v2\",\"deprecated\":true},{\"kind\":\"set_patch_marker\",\"patch_id\":\"orders.v2\",\"deprecated\":false}]}");
   let activation : Protocol.activation =
     {
       run_id = "patch-run";

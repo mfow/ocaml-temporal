@@ -106,7 +106,7 @@ the complete result before returning it to the bridge.
 | `Complete_workflow` with another payload | `Complete_workflow { result = Some payload }` | Metadata must be valid UTF-8 in the current runtime payload type and body bytes are copied. |
 | `Fail_workflow` | `Fail_workflow` with an OCaml application or cancellation failure | Details are copied and the runtime category/retryability are retained. Recursive Core-only fields are represented in a bounded diagnostic until the runtime has a richer error type. |
 | `Continue_as_new` | `Continue_as_new` with the successor workflow type and one copied input payload | This is terminal direct-style control flow. The scheduler stops the current workflow fiber after buffering the command, and the translator rejects invalid workflow identifiers or payload metadata before a completion is sent. |
-| `Set_patch_marker` | `Set_patch_marker` | The validated durable patch ID and explicit `deprecated` flag are preserved. The public first slice emits `false`; the private bridge remains lossless for Core's boolean field. Repeated commands are not deduplicated. |
+| `Set_patch_marker` | `Set_patch_marker` | The validated durable patch ID and explicit `deprecated` flag are preserved. `patched` emits `false`; `deprecate_patch` emits `true`. Same-mode repetitions are retained in order, while both language validators reject mixed modes for one ID before Core conversion. |
 | `Cancel_workflow_execution` | `Cancel_workflow_execution` | This is already an exact marker. |
 
 Child starts and both Core child-resolution jobs now have closed semantic

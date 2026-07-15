@@ -142,7 +142,10 @@ lease retirement. The live Compose fixture now also covers one parent calling
 `Child_workflow.execute` and receiving a successful child result after the
 child's durable timer. The live Compose fixture also covers propagated child
 failure, child cancellation, child retry, and duplicate-ID child-start failure;
-replay and recovery remain separate acceptance scenarios.
+the complete [PR #351
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013) additionally
+verifies exact parent and child replay through worker replacement. Broader
+child failure recovery remains a separate acceptance scenario.
 
 ## 1. Write a deterministic OCaml function
 
@@ -227,9 +230,14 @@ inside the current workflow execution.
 
 Treat the ID as permanent history data: use a source-code constant, never
 reuse it for a different change, and do not derive it from configuration or
-other mutable state. This release has no public deprecation/removal operation,
-so retain both branches. See [workflow patching](../reference/workflow-patching.md)
-for the bridge contract and the current evidence boundary.
+other mutable state. After marker-free histories can no longer replay through
+this point, replace the conditional with
+`Temporal.Workflow.deprecate_patch ~id:"agent.add-review-step.v1"` and keep the
+new behavior unconditional. Removing that deprecation call is a later step,
+after every non-deprecated marker history has been drained, migrated, or
+otherwise proven safe. See
+[workflow patching](../reference/workflow-patching.md) for both migration gates,
+the bridge contract, and the current live-evidence boundary.
 
 ## 2. Use typed codecs
 
@@ -618,7 +626,9 @@ success path, propagated failure, child cancellation, and child retry: the
 parent calls `Child_workflow.execute`, the registered child waits on a durable
 timer, and the driver asserts the parent's exact result. The complete [PR #289
 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) also
-live-verifies duplicate-ID child-start failure; replay and recovery remain
+live-verifies duplicate-ID child-start failure. The complete [PR #351
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013) verifies
+the exact parent and child replay path; broader child failure recovery remains
 separate acceptance work.
 
 ### Continue a run with fresh history

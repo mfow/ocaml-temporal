@@ -121,13 +121,16 @@ and bridge, read the [documentation guide](../README.md) first.
   jobs are applied before workflow fibers run; absent a known marker,
   `Temporal.Workflow.patched` returns `not is_replaying`, retains that
   decision, and emits a non-deprecated marker command on every call. The
-  runtime does not deduplicate marker commands or share patch state between
-  runs. Patch IDs are durable history keys, not deployment or process state.
+  unit-returning `Temporal.Workflow.deprecate_patch` retains the same private
+  decision state and emits a deprecated marker. The runtime does not deduplicate
+  same-mode commands or share patch state between runs, but it rejects active
+  and deprecated calls for one ID in one execution before emitting the second
+  mode. Patch IDs are durable history keys, not deployment or process state.
 - Replay-safe randomness, side effects, and workflow logging APIs remain
   required before production release. The complete [PR #348 CI
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) verifies
-  the two-history live patch-in target; deprecation/removal remains a separate
-  lifecycle.
+  the two-history live patch-in target; deprecation is focused-tested but its
+  live migration and later call removal remain separate acceptance work.
 
 ## Core boundary assumptions
 

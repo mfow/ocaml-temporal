@@ -927,6 +927,41 @@ let test_activate_installs_workflow_patch_state () =
       Protocol.Complete_workflow { result = None } ] -> ()
   | _ -> failwith "native patch activation emitted unexpected commands"
 
+(** Proves the native adapter preserves the deprecated marker bit emitted by
+    the public lifecycle API. A history notification may precede deprecation:
+    it selects replay state without fixing which marker mode new code emits. *)
+let test_activate_emits_deprecated_workflow_patch () =
+  let workflow =
+    Temporal_base.Definition.make ~name:"native_workflow_patch_deprecation"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:
+        (Some
+           (fun () ->
+             Temporal.Workflow.deprecate_patch ~id:"native.patch";
+             Ok ()))
+  in
+  let execution = Execution.start workflow () in
+  let completion =
+    unwrap "workflow patch deprecation activation"
+      (Native_execution.activate execution
+         (activation ~is_replaying:true
+            [ Protocol.Initialize_workflow
+                {
+                  workflow_id = "workflow-patch-deprecation";
+                  workflow_type = "native_workflow_patch_deprecation";
+                  arguments = [];
+                  randomness_seed = "1";
+                  attempt = 1;
+                  context = None;
+                };
+              Protocol.Notify_has_patch { patch_id = "native.patch" } ]))
+  in
+  match completion.commands with
+  | [ Protocol.Set_patch_marker
+        { patch_id = "native.patch"; deprecated = true };
+      Protocol.Complete_workflow { result = None } ] -> ()
+  | _ -> failwith "native patch deprecation emitted unexpected commands"
+
 (** Cache eviction acknowledges Core without running or emitting workflow
     commands, while retaining the exact run identity. *)
 let test_activate_eviction_completion () =
@@ -1240,6 +1275,7 @@ let () =
   test_activate_terminal_completion ();
   test_activate_installs_workflow_time ();
   test_activate_installs_workflow_patch_state ();
+  test_activate_emits_deprecated_workflow_patch ();
   test_activate_eviction_completion ();
   test_command_order_and_validation ();
   test_activity_command_translation_and_validation ();

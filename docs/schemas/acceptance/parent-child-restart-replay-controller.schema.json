@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/acceptance/parent-child-restart-replay-controller.schema.json",
+  "title": "Parent-child restart-replay controller evidence",
+  "description": "A payload-free, closed chronology for one parent workflow and its child. It records the initial durable snapshots, complete replacement of the generation-one worker, replay observations for both roles, terminal history checks, and PostgreSQL volume removal. The executable validator pins all role, identity, container, and ordering relationships that JSON Schema cannot express alone.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "parent_workflow_id",
+    "parent_run_id",
+    "child_workflow_id",
+    "child_run_id",
+    "initiated_event_id",
+    "events"
+  ],
+  "properties": {
+    "parent_workflow_id": {"$ref": "#/$defs/identifier"},
+    "parent_run_id": {"$ref": "#/$defs/identifier"},
+    "child_workflow_id": {"$ref": "#/$defs/identifier"},
+    "child_run_id": {"$ref": "#/$defs/identifier"},
+    "initiated_event_id": {"$ref": "#/$defs/event_id"},
+    "events": {
+      "type": "array",
+      "minItems": 18,
+      "maxItems": 18,
+      "prefixItems": [
+        {"$ref": "#/$defs/stack_ready"},
+        {"$ref": "#/$defs/parent_driver_accepted"},
+        {"$ref": "#/$defs/child_execution_observed"},
+        {"$ref": "#/$defs/history_checked"},
+        {"$ref": "#/$defs/history_checked"},
+        {"$ref": "#/$defs/worker_stopped"},
+        {"$ref": "#/$defs/worker_removed"},
+        {"$ref": "#/$defs/history_checked"},
+        {"$ref": "#/$defs/history_checked"},
+        {"$ref": "#/$defs/worker_ready"},
+        {"$ref": "#/$defs/replay_observed"},
+        {"$ref": "#/$defs/replay_observed"},
+        {"$ref": "#/$defs/parent_driver_completed"},
+        {"$ref": "#/$defs/history_checked"},
+        {"$ref": "#/$defs/history_checked"},
+        {"$ref": "#/$defs/worker_stopped"},
+        {"$ref": "#/$defs/worker_removed"},
+        {"$ref": "#/$defs/volume_removed"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+      "description": "The schema limit is JSON character count. The executable validator additionally caps the UTF-8 encoding at 4096 bytes before an identifier crosses the native boundary."
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[01][0-9]{17}|92[01][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[01][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$"
+    },
+    "positive_signed_64": {
+      "type": "string",
+      "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[01][0-9]{17}|92[01][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[01][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$"
+    },
+    "container_id": {
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{12,64}$"
+    },
+    "positive_count": {"type": "integer", "minimum": 1, "maximum": 1000000},
+    "status": {"const": "ok"},
+    "role": {"enum": ["parent", "child"]},
+    "stack_ready": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "temporal_healthy", "remaining_project_volumes_before_start"],
+      "properties": {
+        "step": {"const": "stack_ready"},
+        "status": {"$ref": "#/$defs/status"},
+        "temporal_healthy": {"const": true},
+        "remaining_project_volumes_before_start": {"const": 0}
+      }
+    },
+    "parent_driver_accepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "workflow_id", "run_id"],
+      "properties": {
+        "step": {"const": "parent_driver_accepted"},
+        "status": {"$ref": "#/$defs/status"},
+        "workflow_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "child_execution_observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "status",
+        "workflow_id",
+        "run_id",
+        "parent_workflow_id",
+        "parent_run_id",
+        "initiated_event_id"
+      ],
+      "properties": {
+        "step": {"const": "child_execution_observed"},
+        "status": {"$ref": "#/$defs/status"},
+        "workflow_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "parent_workflow_id": {"$ref": "#/$defs/identifier"},
+        "parent_run_id": {"$ref": "#/$defs/identifier"},
+        "initiated_event_id": {"$ref": "#/$defs/event_id"}
+      }
+    },
+    "history_checked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "role", "stage", "event_count"],
+      "properties": {
+        "step": {"const": "history_checked"},
+        "status": {"$ref": "#/$defs/status"},
+        "role": {"$ref": "#/$defs/role"},
+        "stage": {"enum": ["initial", "post_removal", "terminal"]},
+        "event_count": {"$ref": "#/$defs/positive_count"}
+      }
+    },
+    "worker_stopped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "generation", "container_id", "exit_code", "shutdown_marker"],
+      "properties": {
+        "step": {"const": "worker_generation_stopped"},
+        "status": {"$ref": "#/$defs/status"},
+        "generation": {"enum": [1, 2]},
+        "container_id": {"$ref": "#/$defs/container_id"},
+        "exit_code": {"const": 0},
+        "shutdown_marker": {"const": true}
+      }
+    },
+    "worker_removed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "generation", "container_id", "remaining_worker_containers"],
+      "properties": {
+        "step": {"const": "worker_generation_removed"},
+        "status": {"$ref": "#/$defs/status"},
+        "generation": {"enum": [1, 2]},
+        "container_id": {"$ref": "#/$defs/container_id"},
+        "remaining_worker_containers": {"const": 0}
+      }
+    },
+    "worker_ready": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "generation", "container_id", "readiness_generation", "fresh_container"],
+      "properties": {
+        "step": {"const": "worker_generation_ready"},
+        "status": {"$ref": "#/$defs/status"},
+        "generation": {"const": 2},
+        "container_id": {"$ref": "#/$defs/container_id"},
+        "readiness_generation": {"const": 2},
+        "fresh_container": {"const": true}
+      }
+    },
+    "replay_observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "role", "generation", "is_replaying", "history_length"],
+      "properties": {
+        "step": {"const": "replay_observed"},
+        "status": {"$ref": "#/$defs/status"},
+        "role": {"$ref": "#/$defs/role"},
+        "generation": {"const": 2},
+        "is_replaying": {"const": true},
+        "history_length": {"$ref": "#/$defs/positive_signed_64"}
+      }
+    },
+    "parent_driver_completed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "workflow_id", "run_id", "outcome"],
+      "properties": {
+        "step": {"const": "parent_driver_completed"},
+        "status": {"$ref": "#/$defs/status"},
+        "workflow_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "outcome": {"const": "completed"}
+      }
+    },
+    "volume_removed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "status", "remaining_project_volumes"],
+      "properties": {
+        "step": {"const": "postgres_volume_removed"},
+        "status": {"$ref": "#/$defs/status"},
+        "remaining_project_volumes": {"const": 0}
+      }
+    }
+  }
+}

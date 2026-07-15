@@ -149,6 +149,7 @@ make quality                  # pinned Rust quality and spelling tools
 make license-check            # permissive dependency audit
 make test-temporal-integration # real PostgreSQL + Temporal + two OCaml binaries
 make test-temporal-workflow-patching # contract plus old/new patch replay target
+make test-temporal-parent-child-restart # bilateral exact-run recovery target
 ```
 
 The default development image uses OCaml 5.2. To try another supported image,
@@ -259,6 +260,18 @@ corresponding real-server evidence. It does not establish patch deprecation or
 removal, deployment/build-ID routing, arbitrary historical compatibility, or
 migration tooling. See [workflow patching](docs/reference/workflow-patching.md)
 for the authoring and replay contract.
+
+### Parent/child restart and replay acceptance
+
+`make test-temporal-parent-child-restart` runs a client-only OCaml binary and
+two sequential instances of a worker-only OCaml binary. The controller derives
+the exact child run from the exact parent's server history, replaces the worker
+while both executions are pending, and validates replay plus terminal
+correlation for both runs. The
+[acceptance reference](docs/reference/parent-child-restart-replay-acceptance.md)
+documents its private checkpoint and evidence boundary. Until the complete
+live CI target passes, this gate remains implemented with live verification
+pending.
 
 For manual inspection, use `make temporal-start`, `make temporal-health`,
 `make temporal-status`, `make temporal-logs`, and `make temporal-clean`.

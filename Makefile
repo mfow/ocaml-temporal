@@ -14,6 +14,10 @@ TEMPORAL_DRIVER_TIMEOUT_SECONDS ?= 300
 # must compile while the long-lived worker holds its own Dune lock. A cold Rust
 # bridge build can consume the normal driver budget before the executable starts.
 SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS ?= 900
+# Parent/child recovery also builds its client in an isolated Dune tree while
+# the first worker remains alive. Give a cold bridge build plus the durable
+# child timer a process-level budget independent of the ordinary smoke driver.
+SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS ?= 900
 SMOKE_DRIVER_LOG_FILE := $(TEMPORAL_FIXTURE_DIR)/.smoke-driver.log
 SMOKE_CANCELLATION_READY_FILE := $(TEMPORAL_FIXTURE_DIR)/.cancellation-ready
 SMOKE_WORKER_STOPPED_FILE := $(TEMPORAL_FIXTURE_DIR)/.worker-stopped
@@ -74,7 +78,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-temporal-worker-cache-eviction-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-temporal-worker-cache-eviction-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live test-temporal-parent-child-restart test-temporal-parent-child-restart-contract test-temporal-parent-child-restart-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -344,6 +348,22 @@ test-temporal-workflow-patching-live: test-temporal-config
 		TEMPORAL_COMPOSE_PROJECT="$(TEMPORAL_COMPOSE_PROJECT)" \
 		SMOKE_DRIVER_TIMEOUT_SECONDS="$(TEMPORAL_DRIVER_TIMEOUT_SECONDS)" \
 		sh test/integration/temporal/scripts/run-patch-replay-live.sh
+
+# Exercises a parent and its long-running child across a complete worker
+# replacement. The contract target proves the fail-closed evidence format
+# without Docker; the live target binds and validates both exact server runs.
+test-temporal-parent-child-restart:
+	$(MAKE) test-temporal-parent-child-restart-contract
+	$(MAKE) test-temporal-parent-child-restart-live
+
+test-temporal-parent-child-restart-contract:
+	sh test/integration/temporal/scripts/test-parent-child-restart-replay-contract.sh
+
+test-temporal-parent-child-restart-live: test-temporal-config
+	OCAML_IMAGE="$(OCAML_IMAGE)" HOST_UID="$(HOST_UID)" HOST_GID="$(HOST_GID)" \
+		TEMPORAL_COMPOSE_PROJECT="$(TEMPORAL_COMPOSE_PROJECT)" \
+		SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS="$(SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS)" \
+		sh test/integration/temporal/scripts/run-parent-child-restart-replay-live.sh
 
 test-temporal-worker-cache-eviction-live: test-temporal-config
 	@set -eu; \

@@ -13,5 +13,6 @@
   test_activity_retry_policy
   test_scope
   test_workflow_time
-  test_condition)
+  test_condition
+  test_workflow_role_checkpoint)
  (libraries temporal-sdk temporal_runtime))

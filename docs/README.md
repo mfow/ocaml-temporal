@@ -67,6 +67,9 @@ The remaining reference documents are useful when changing one subsystem:
   defines the payload-free normalized history, generation/replay records, and
   ordered controller lifecycle evidence used by both the offline contract gate
   and the live controller.
+- [Parent/child restart and replay acceptance](reference/parent-child-restart-replay-acceptance.md)
+  defines the bilateral exact-run authority, three history stages, private
+  atomic checkpoint lifecycle, and evidence boundary for child recovery.
 - [Feature coverage and implementation status](reference/feature-coverage.md)
   gives the short status reference and distinguishes live evidence, mock-only
   tests, partly live-tested native bridge support, and deferred features.
@@ -110,10 +113,10 @@ opaque bytes with encoding metadata.
 | --- | --- | --- |
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
 | Workflow patching | Public patch-in semantics, protocol conversion, fixtures, and an offline contract are implemented; the complete [PR #348 live run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) verifies the old/new-history replacement scenarios. | Patch deprecation/removal, deployment versioning, and broader historical compatibility remain pending. |
-| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose path. Restart/replay is live-verified by PR #253, retry after restart by PR #298, and sticky-cache eviction by the complete [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748). | Broader child replay and cache/recovery scenarios remain untested live |
+| Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and real two-binary Compose paths. Restart/replay is live-verified by PR #253, retry after restart by PR #298, and sticky-cache eviction by the complete [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748). A bilateral parent/child replacement gate is implemented and awaiting live CI evidence. | Broader cache/recovery scenarios remain untested live |
 | Public native client | Typed start/wait/cancel/signal protocol. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result baseline, including continue-as-new successor following and exact-run cancellation. | Typed signal delivery and other client commands remain untested live |
-| Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests; the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified parent/child success, propagated failure, and cancellation | Child start failure, retry, replay, and recovery remain untested live |
-| Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts the twelve-result baseline; `make test-temporal-worker-restart` adds the two-generation restart/replay path | The acceptance suite remains deliberately narrow and does not yet cover every terminal, eviction, or recovery path |
+| Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests; [PR #289](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) live-verified success, propagated failure, cancellation, retry, and duplicate-ID start failure. The new recovery gate binds and validates both exact histories across worker replacement. | The new bilateral replay/recovery gate still needs a successful live CI run. |
+| Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts the eighteen-result baseline; dedicated targets add restart, crash recovery, cache eviction, workflow patching, and parent/child replay/recovery paths. | The acceptance suite remains deliberately narrower than the complete Temporal feature surface. |
 
 This distinction prevents a green local synthetic test from being read as a
 claim that an unimplemented native feature is ready. Continue-as-new and
@@ -153,6 +156,7 @@ make license-check
 make test-temporal-worker-restart
 make test-temporal-integration
 make test-temporal-workflow-patching
+make test-temporal-parent-child-restart
 ```
 
 `make verify` combines the OCaml version check, Dune build/lint, Rust format and

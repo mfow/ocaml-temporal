@@ -200,7 +200,9 @@ parent_child_contract="$fixture/scripts/test-parent-child-restart-replay-contrac
 require_source_text "$driver_dune" '(name parent_child_restart_driver)'
 require_source_text "$worker_dune" '(name parent_child_restart_worker)'
 require_source_text "$parent_child_driver" 'module Client = Temporal.Client'
-require_source_text "$parent_child_driver" 'Client.start client ~workflow:'
+require_source_text "$parent_child_driver" 'Client.start client'
+require_source_text "$parent_child_driver" \
+  '~workflow:Definitions.parent_child_restart_parent'
 require_source_text "$parent_child_driver" 'Client.wait handle'
 require_source_absent "$parent_child_driver" 'Worker.create'
 require_source_absent "$parent_child_driver" 'Worker.run'
@@ -323,7 +325,8 @@ require_source_text "$worker" \
 # to both executable registrations.
 require_source_text "$definitions" 'let child_activity_no_retry_policy ='
 require_source_text "$definitions" \
-  '~maximum_interval:(Temporal.Duration.of_ms 100L) ~maximum_attempts:1 ()'
+  '~maximum_interval:(Temporal.Duration.of_ms 100L)'
+require_source_text "$definitions" '~maximum_attempts:1 ()'
 require_source_text "$definitions" \
   'Temporal.Activity.define ~name:"smoke.child_retry_once"'
 require_source_text "$definitions" 'let child_retryable_failure ='

@@ -42,6 +42,7 @@ driver_pid=''
 initial_deadline_epoch=''
 parent_run_id=''
 child_run_id=''
+producer_status=0
 
 # Normalizes every Compose invocation so the bind-mounted build tree has one
 # numeric owner and every process joins the same isolated Temporal project.
@@ -75,18 +76,52 @@ remove_artifacts() {
     "$child_terminal"
 }
 
+# Waits for the background Compose CLI exactly once and disarms its PID before
+# returning. Clearing first means an EXIT trap can never signal a recycled PID,
+# including when the child exits nonzero and [set -e] would otherwise interrupt
+# the caller immediately after [wait].
+reap_driver() {
+  [ -n "$driver_pid" ] || {
+    producer_status=0
+    return 0
+  }
+  reaped_pid=$driver_pid
+  driver_pid=''
+  if wait "$reaped_pid"; then
+    producer_status=0
+  else
+    producer_status=$?
+  fi
+  [ "$producer_status" -eq 0 ]
+}
+
 # Always terminates the client and destroys the stack and PostgreSQL volume.
 # Failure output is deliberately bounded to the relevant three OCaml roles.
 cleanup() {
   status=$?
   trap - EXIT HUP INT TERM
   if [ -n "$driver_pid" ] && kill -0 "$driver_pid" 2>/dev/null; then
-    kill -TERM "$driver_pid" 2>/dev/null || true
+    # The Compose CLI may still be building, before the named container exists.
+    # In that case there is nothing for [docker stop] to terminate, so signal
+    # the CLI itself and bound the grace period before reaping it.
+    if ! docker stop --time 10 "$driver_container" >/dev/null 2>&1; then
+      kill -TERM "$driver_pid" 2>/dev/null || true
+    fi
+    for _attempt in $(seq 1 100); do
+      if ! kill -0 "$driver_pid" 2>/dev/null; then break; fi
+      sleep 0.1
+    done
+    if kill -0 "$driver_pid" 2>/dev/null; then
+      kill -KILL "$driver_pid" 2>/dev/null || true
+    fi
+  fi
+  if [ -n "$driver_pid" ]; then
+    reap_driver || true
   fi
   if [ "$status" -ne 0 ]; then
     tail -n 200 "$driver_log" 2>/dev/null >&2 || true
     docker inspect --format \
-      'parent/child restart driver exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{json .State.Error}}' \
+      'parent/child restart driver running={{.State.Running}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{json .State.Error}}' \
       "$driver_container" >&2 2>/dev/null || true
     report_history_timeline "$parent_workflow_id" "$parent_run_id" \
       "$parent_raw" parent >&2 || true
@@ -116,11 +151,7 @@ wait_for_marker() {
   for _attempt in $(seq 1 "$marker_timeout"); do
     if [ -s "$marker" ]; then return 0; fi
     if [ -n "$producer_pid" ] && ! kill -0 "$producer_pid" 2>/dev/null; then
-      if wait "$producer_pid"; then
-        producer_status=0
-      else
-        producer_status=$?
-      fi
+      reap_driver || true
       echo "$label exited with status $producer_status before publishing $marker" >&2
       return 1
     fi
@@ -404,7 +435,9 @@ for _attempt in $(seq 1 180); do
     break
   fi
   if ! kill -0 "$driver_pid" 2>/dev/null && [ ! -s "$result" ]; then
-    cat "$driver_log" >&2
+    reap_driver || true
+    tail -n 200 "$driver_log" 2>/dev/null >&2 || true
+    echo "parent/child restart driver exited with status $producer_status before both replay checkpoints" >&2
     exit 1
   fi
   sleep 1
@@ -415,8 +448,7 @@ done
 }
 
 wait_for_marker "$result" "$driver_pid" "parent/child restart result"
-wait "$driver_pid"
-driver_pid=''
+reap_driver
 [ "$(cat "$result")" = "completed" ]
 docker rm "$driver_container" >/dev/null
 

@@ -246,9 +246,9 @@ let test_mock_worker_rejects_async_activity_without_stopping () =
   assert (Atomic.get activity_calls = 1);
   unwrap (Temporal.Worker.shutdown worker)
 
-(** A worker is closed before backend teardown begins, so attempting to run it
-    again must return a typed lifecycle error instead of polling a retired
-    transport or silently succeeding with no tasks. *)
+(** The public run admission gate is shared by mock and native workers. After
+    shutdown, attempting to run again must return a typed lifecycle error
+    before it can poll a retired transport or silently succeed with no tasks. *)
 let test_worker_run_after_shutdown_is_rejected () =
   let worker =
     unwrap
@@ -257,7 +257,8 @@ let test_worker_run_after_shutdown_is_rejected () =
          ~activities:[] ())
   in
   unwrap (Temporal.Worker.shutdown worker);
-  expect_error "bridge" (Temporal.Worker.run worker)
+  expect_error_message_contains "bridge" "worker is shut down"
+    (Temporal.Worker.run worker)
 
 (** A client start returns the server-issued run id and [wait] decodes the
     terminal payload using the definition's output codec. *)

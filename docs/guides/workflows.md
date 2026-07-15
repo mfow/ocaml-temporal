@@ -814,7 +814,7 @@ the workflow definition; the [interactive workflow reference](../reference/inter
 describes the typed definition and deterministic handler boundary. The client
 signal bridge and mock lifecycle are focused-tested at this baseline. The
 complete [PR #266 CI
-run](https://github.com/ocaml-temporal/actions/runs/29311239247) live-verifies
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247) live-verifies
 typed signal delivery and condition wake-up, and the expanded [PR #289 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) retains those
 assertions in the current seventeen-result acceptance. A successful signal call
@@ -850,9 +850,9 @@ results. The complete [PR #289 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) passed this
 expanded acceptance against Temporal Server 1.31 and PostgreSQL, then passed
 the separate two-generation worker restart/replay acceptance. The [PR #266 CI
-run](https://github.com/ocaml-temporal/actions/runs/29311239247) remains focused
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247) remains focused
 evidence for typed signal delivery and condition wake-up, while the historical
-[PR #210 CI run](https://github.com/ocaml-temporal/actions/runs/29221151859)
+[PR #210 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 remains evidence for the earlier nine-scenario slice. The implementation scope
 and evidence boundary are described in the [acceptance design](../reference/two-ocaml-binary-e2e-acceptance.md)
 and [live acceptance coverage](../reference/live-acceptance-coverage.md).

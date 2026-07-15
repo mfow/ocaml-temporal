@@ -10,3 +10,4 @@ __pycache__/
 .worktrees/
 test/integration/temporal/.cancellation-ready
 test/integration/temporal/.worker-stopped
+test/integration/temporal/.patch-replay-*

@@ -33,6 +33,13 @@ live child-start rejection to the timeout path, for seventeen top-level
 assertions in the accepted baseline. The current fixture adds a long-backoff
 retry assertion, bringing the pending gate to eighteen.
 
+The baseline driver/worker smoke is not workflow-code versioning evidence. The
+separate [`make test-temporal-workflow-patching`](workflow-patching.md#intended-live-replay-acceptance)
+target uses the same client-only-driver/worker role split but replaces workers
+around both a marker-free legacy history and a marker-bearing new history. Its
+real-server result is not yet recorded, so it must not be inferred from the
+baseline's green historical runs.
+
 The current implementation starts sixteen top-level workflows before waiting
 for any terminal result, including the delayed asynchronous completion,
 continue-as-new successor, signal/condition, long-backoff retry, and

@@ -36,15 +36,24 @@ require_text 'smoke-worker:'
 require_text 'smoke-driver:'
 require_text 'smoke-restart-driver:'
 require_text 'smoke-cache-eviction-driver:'
+require_text 'patch-replay-legacy-worker:'
+require_text 'patch-replay-patched-worker:'
+require_text 'patch-replay-driver:'
 require_text 'TEMPORAL_TWO_BINARY_LIVE: "1"'
 require_text 'smoke_worker.exe'
 require_text 'smoke_driver.exe'
 require_text 'restart_driver.exe'
 require_text 'cache_eviction_driver.exe'
+require_text 'legacy_worker.exe'
+require_text 'patched_worker.exe'
+require_text 'patch_replay_driver.exe'
 require_text '--build-dir=/workspace/_build/smoke-worker'
 require_text '--build-dir=/workspace/_build/smoke-driver'
 require_text '--build-dir=/workspace/_build/smoke-restart-driver'
 require_text '--build-dir=/workspace/_build/smoke-cache-eviction-driver'
+require_text '--build-dir=/workspace/_build/patch-replay-legacy-worker'
+require_text '--build-dir=/workspace/_build/patch-replay-patched-worker'
+require_text '--build-dir=/workspace/_build/patch-replay-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "300"'
 require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready'
 require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
@@ -133,6 +142,46 @@ require_source_text "$worker" 'let publish_stopped path'
 require_source_text "$worker" 'publish_stopped stopped_file'
 require_source_absent "$worker" 'Client.start'
 require_source_absent "$worker" 'Client.wait'
+
+# Patching acceptance uses three isolated OCaml executables. The legacy worker
+# must select a source definition with no patch gate, the replacement worker
+# selects the patched definition, and the driver remains client-only. The live
+# target proves the server behavior; these source checks prevent a refactor
+# from collapsing the roles before that expensive gate starts.
+patch_fixture="$fixture/patch_replay"
+patch_support="$patch_fixture/patch_replay_support.ml"
+patch_legacy_definition="$patch_fixture/legacy_definition.ml"
+patch_patched_definition="$patch_fixture/patched_definition.ml"
+patch_legacy_worker="$patch_fixture/legacy_worker.ml"
+patch_patched_worker="$patch_fixture/patched_worker.ml"
+patch_driver="$patch_fixture/patch_replay_driver.ml"
+patch_dune="$patch_fixture/dune"
+
+require_source_text "$patch_dune" '(name legacy_worker)'
+require_source_text "$patch_dune" '(name patched_worker)'
+require_source_text "$patch_dune" '(name patch_replay_driver)'
+require_source_text "$patch_dune" '(modules legacy_definition legacy_worker)'
+require_source_text "$patch_dune" '(modules patched_definition patched_worker)'
+require_source_absent "$patch_support" 'let legacy_workflow ='
+require_source_absent "$patch_support" 'let patched_workflow ='
+require_source_absent "$patch_support" 'Workflow.patched ~id'
+require_source_text "$patch_legacy_definition" 'let legacy_workflow ='
+require_source_text "$patch_legacy_definition" \
+  'run_worker ~workflows:[ Worker.workflow legacy_workflow ]'
+require_source_absent "$patch_legacy_definition" 'Workflow.patched ~id'
+require_source_text "$patch_patched_definition" 'let patched_workflow ='
+require_source_text "$patch_patched_definition" 'Workflow.patched ~id:Support.patch_id'
+require_source_text "$patch_patched_definition" \
+  'run_worker ~workflows:[ Worker.workflow patched_workflow ]'
+require_source_text "$patch_legacy_worker" \
+  'Legacy_definition.run ()'
+require_source_text "$patch_patched_worker" \
+  'Patched_definition.run ()'
+require_source_text "$patch_driver" 'module Client = Temporal.Client'
+require_source_text "$patch_driver" 'Client.start client ~workflow:'
+require_source_text "$patch_driver" 'Client.wait handle'
+require_source_absent "$patch_driver" 'Worker.create'
+require_source_absent "$patch_driver" 'Worker.run'
 
 require_source_text "$definitions" 'Temporal.Activity.define_with_context ~name:"smoke.heartbeat_retry"'
 require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat_timeout'

@@ -2,6 +2,12 @@
 
 **Status: the original path is live-verified in the [PR #253 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471), the retry-after-restart extension is live-verified in [PR #298](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291), forced crash recovery is live-verified in [PR #306](https://github.com/mfow/ocaml-temporal/actions/runs/29355426605), and one-slot sticky-cache eviction is live-verified in the complete [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748).** The private Rust bridge validates and feeds one history at a time into a workflow-only Temporal Core replay worker. The public worker reports bounded activation metadata through a private OCaml callback, and the Compose fixture replaces generation 1 with a fresh generation 2 while an independent OCaml driver waits for the exact run. The extension requires generation 2 to complete the retrying activity at attempt two, proven by the exact result marker; Temporal compacts intermediate activity retry events out of workflow history. `make test-temporal-worker-crash-recovery` adds the same exact-run evidence after a forced generation-one process kill and now has a green live result. `make test-temporal-worker-cache-eviction` exercises the separate one-slot eviction scenario and requires Core's real `RemoveFromCache` activation, an empty acknowledgement, and continued workflow progress. The bridge format and ownership rules are documented in the [internal replay bridge reference](replay-bridge.md).
 
+This restart/replay result is not evidence for workflow-code versioning. The
+separate [`make test-temporal-workflow-patching`](workflow-patching.md#intended-live-replay-acceptance)
+target is configured to prove that a marker-free legacy history and a
+marker-bearing new history select their respective branches after worker
+replacement. It has no recorded successful live run yet.
+
 `make test-temporal-worker-restart-contract` is the fast Docker-free contract
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
 Temporal Server, two-generation OCaml worker, and OCaml driver sequence, while

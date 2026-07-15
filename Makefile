@@ -74,7 +74,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-temporal-worker-cache-eviction-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-temporal-worker-cache-eviction-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -327,6 +327,23 @@ test-temporal-worker-cache-eviction:
 
 test-temporal-worker-cache-eviction-contract:
 	sh test/smoke/test_temporal_worker_cache_eviction_contract.sh
+
+# Proves patch-in compatibility with two genuine server histories. The legacy
+# run begins under a binary that contains no patch call and is completed by the
+# patched binary through the old branch. A second run begins under patched code
+# and is replayed by a fresh patched process through the new branch.
+test-temporal-workflow-patching:
+	$(MAKE) test-temporal-workflow-patching-contract
+	$(MAKE) test-temporal-workflow-patching-live
+
+test-temporal-workflow-patching-contract:
+	sh test/integration/temporal/scripts/test-patch-replay-contract.sh
+
+test-temporal-workflow-patching-live: test-temporal-config
+	OCAML_IMAGE="$(OCAML_IMAGE)" HOST_UID="$(HOST_UID)" HOST_GID="$(HOST_GID)" \
+		TEMPORAL_COMPOSE_PROJECT="$(TEMPORAL_COMPOSE_PROJECT)" \
+		SMOKE_DRIVER_TIMEOUT_SECONDS="$(TEMPORAL_DRIVER_TIMEOUT_SECONDS)" \
+		sh test/integration/temporal/scripts/run-patch-replay-live.sh
 
 test-temporal-worker-cache-eviction-live: test-temporal-config
 	@set -eu; \

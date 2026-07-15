@@ -1,0 +1,25 @@
+; Private fixture executables for the live old/new workflow-patch replay
+; acceptance. The source definitions are separate compilation units: the
+; legacy executable does not link the unit containing the real public
+; Temporal.Workflow.patched call.
+
+(library
+ (name temporal_patch_replay_support)
+ (wrapped false)
+ (modules patch_replay_support)
+ (libraries temporal-sdk unix))
+
+(executable
+ (name legacy_worker)
+ (modules legacy_definition legacy_worker)
+ (libraries temporal-sdk temporal_patch_replay_support unix))
+
+(executable
+ (name patched_worker)
+ (modules patched_definition patched_worker)
+ (libraries temporal-sdk temporal_patch_replay_support unix))
+
+(executable
+ (name patch_replay_driver)
+ (modules patch_replay_driver)
+ (libraries temporal-sdk temporal_patch_replay_support unix))

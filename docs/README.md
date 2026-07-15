@@ -35,9 +35,9 @@ The remaining reference documents are useful when changing one subsystem:
 - [Deterministic workflow time](reference/workflow-time.md) documents
   `Temporal.Workflow.now`, its exact timestamp representation, and its replay
   safety contract.
-- [Workflow patching](reference/workflow-patching.md) documents the first
-  non-deprecated patch-in primitive, its per-execution replay decision, and the
-  live replay evidence that is still pending.
+- [Workflow patching](reference/workflow-patching.md) documents the public
+  non-deprecated patch-in primitive, durable patch IDs, its per-execution
+  replay decision, and the dedicated live target whose result is still pending.
 - [Interactive workflows](reference/interactive-workflows.md) documents the
   experimental typed signal, query, and update definitions, deterministic
   handler dispatcher, and the remaining native-delivery boundary.
@@ -109,6 +109,7 @@ opaque bytes with encoding metadata.
 | Layer | Evidence today | Important limit |
 | --- | --- | --- |
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
+| Workflow patching | Public patch-in semantics, protocol conversion, fixtures, and an offline contract are implemented. | The target for live legacy-history and new-history replay is configured, but no successful real-server run is recorded. |
 | Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and a real two-binary Compose path. Restart/replay is live-verified by PR #253, retry after restart by PR #298, and sticky-cache eviction by the complete [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748). | Broader child replay and cache/recovery scenarios remain untested live |
 | Public native client | Typed start/wait/cancel/signal protocol. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result baseline, including continue-as-new successor following and exact-run cancellation. | Typed signal delivery and other client commands remain untested live |
 | Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests; the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified parent/child success, propagated failure, and cancellation | Child start failure, retry, replay, and recovery remain untested live |
@@ -128,8 +129,10 @@ at the
 bridge boundary but still need live Temporal Server acceptance; suspended
 updates, full versioning, local activities, Nexus, and the remaining SDK parity
 work are tracked as later milestones. The first non-deprecated
-`Workflow.patched` primitive is focused-tested but not yet live
-replay-verified. The typed definitions and
+`Workflow.patched` primitive is focused-tested. Its dedicated
+`make test-temporal-workflow-patching` target covers the intended old/new
+history replacement shape, but it has no recorded successful live result. The
+typed definitions and
 deterministic local dispatcher are documented in the [interactive workflow
 reference](reference/interactive-workflows.md).
 
@@ -148,6 +151,7 @@ make quality
 make license-check
 make test-temporal-worker-restart
 make test-temporal-integration
+make test-temporal-workflow-patching
 ```
 
 `make verify` combines the OCaml version check, Dune build/lint, Rust format and
@@ -196,6 +200,13 @@ restart-controller lifecycle contract, and their rejection paths. The umbrella
 two-generation replacement scenario. A green contract-only run must not be
 used as evidence that a worker was restarted or that Temporal replay occurred;
 the live target is required for that claim.
+
+`make test-temporal-workflow-patching-contract` is likewise Docker-free. It
+validates the checked-in patch-history, replay-diagnostic, and controller
+fixtures plus fail-closed normalization and validation cases. The umbrella
+`make test-temporal-workflow-patching` runs that contract before the real
+two-scenario Compose controller. A green contract-only run is not evidence of
+Temporal Server replay, and no successful live run is recorded here.
 
 ## Terms used in this project
 

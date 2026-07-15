@@ -13,15 +13,19 @@ require_ocaml_binding_tokens() (
   compact_expected=$(printf '%s' "$expected" | tr -d '[:space:]')
 
   if ! awk -v header="let $binding =" -v expected="$compact_expected" '
-    $0 == header {
+    {
+      line = $0
+      sub(/\r$/, "", line)
+    }
+    line == header {
       found = 1
       collecting = 1
     }
-    collecting && $0 != header && (/^let / || /^\(\*\*/) {
+    collecting && line != header && (line ~ /^let / || line ~ /^\(\*\*/) {
       collecting = 0
     }
     collecting {
-      body = body $0
+      body = body line
     }
     END {
       gsub(/[[:space:]]/, "", body)

@@ -1,0 +1,33 @@
+{
+  "workflow_id": "two-binary-patch-replay-new",
+  "run_id": "22222222-2222-4222-8222-222222222222",
+  "events": [
+    {"event_id": "1", "type": "WorkflowExecutionStarted"},
+    {"event_id": "2", "type": "WorkflowTaskScheduled"},
+    {"event_id": "3", "type": "WorkflowTaskStarted"},
+    {"event_id": "4", "type": "WorkflowTaskCompleted"},
+    {
+      "event_id": "5",
+      "type": "MarkerRecorded",
+      "marker_name": "core_patch",
+      "patch_id": "smoke.patch_replay_history.activity.v1",
+      "deprecated": false
+    },
+    {"event_id": "6", "type": "TimerStarted"},
+    {"event_id": "7", "type": "TimerFired"},
+    {"event_id": "8", "type": "WorkflowTaskScheduled"},
+    {"event_id": "9", "type": "WorkflowTaskStarted"},
+    {"event_id": "10", "type": "WorkflowTaskCompleted"},
+    {
+      "event_id": "11",
+      "type": "ActivityTaskScheduled",
+      "activity_type": "smoke.patch_replay_history.patched_activity"
+    },
+    {"event_id": "12", "type": "ActivityTaskStarted"},
+    {"event_id": "13", "type": "ActivityTaskCompleted"},
+    {"event_id": "14", "type": "WorkflowTaskScheduled"},
+    {"event_id": "15", "type": "WorkflowTaskStarted"},
+    {"event_id": "16", "type": "WorkflowTaskCompleted"},
+    {"event_id": "17", "type": "WorkflowExecutionCompleted"}
+  ]
+}

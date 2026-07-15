@@ -16,8 +16,9 @@ for the two-binary Temporal acceptance path.
 
 ## 2026-07-15: Non-deprecated workflow patch-in primitive
 
-Status: focused OCaml and Rust tests pass locally; live Temporal Server replay
-is pending.
+Status: focused OCaml and Rust tests pass locally. The Docker-free contract and
+real Temporal Server target are implemented, but no successful live replay run
+is recorded here.
 
 `Temporal.Workflow.patched ~id` now lets direct-style workflow code introduce
 a new branch while older histories without the marker select the old branch.
@@ -32,9 +33,15 @@ protocol suite passes all 39 tests, including closed JSON fixtures, duplicate
 marker preservation, and round trips through the pinned Core protobuf types.
 
 This evidence does not claim patch deprecation/removal, worker deployment
-versioning, side effects, arbitrary historical compatibility, or live replay.
-The live acceptance must create and replay both a genuine legacy history
-without the marker and a newer history containing it.
+versioning, side effects, or arbitrary historical compatibility. The dedicated
+`make test-temporal-workflow-patching` target now creates two histories: a
+legacy definition with no patch call is replaced by patch-aware code and must
+finish through the old branch, while a new patch-aware definition is replaced
+by a fresh patch-aware worker and must finish through the new branch. The
+controller requires `is_replaying=true` after each replacement, zero patch
+markers in both normalized legacy snapshots, and one non-deprecated marker in
+both normalized new snapshots. This is an implemented acceptance design, not a
+claim that the real-server target has already passed.
 
 ## 2026-07-14: Retry-after-restart acceptance extension
 

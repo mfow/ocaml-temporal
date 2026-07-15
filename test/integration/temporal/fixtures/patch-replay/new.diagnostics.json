@@ -1,0 +1,18 @@
+{
+  "workflow_id": "two-binary-patch-replay-new",
+  "run_id": "22222222-2222-4222-8222-222222222222",
+  "records": [
+    {
+      "phase": "initial",
+      "generation": 1,
+      "is_replaying": false,
+      "history_length": "6"
+    },
+    {
+      "phase": "replay",
+      "generation": 2,
+      "is_replaying": true,
+      "history_length": "6"
+    }
+  ]
+}

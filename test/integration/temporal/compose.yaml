@@ -255,6 +255,111 @@ services:
       - test/integration/temporal/driver/cache_eviction_driver.exe
     init: true
 
+  # The patch-replay gate deliberately builds the pre-patch and patched
+  # workflow sources into different executables. Starting a legacy process and
+  # later replacing it with this second binary is what makes the old-history
+  # replay evidence representative of a real code deployment.
+  patch-replay-legacy-worker:
+    profiles: [temporal]
+    extends:
+      service: dev
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      PATCH_REPLAY_WORKER_READY_FILE: /tmp/ocaml-temporal-patch-replay.ready
+      PATCH_REPLAY_WORKER_STOPPED_FILE: "${PATCH_REPLAY_WORKER_STOPPED_FILE:-/workspace/test/integration/temporal/.patch-replay-worker-stopped}"
+      SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE: "${PATCH_REPLAY_DIAGNOSTICS_FILE:-/workspace/test/integration/temporal/.patch-replay-legacy-diagnostics.json}"
+      SMOKE_WORKER_GENERATION: "${PATCH_REPLAY_GENERATION:-1}"
+      SMOKE_REPLAY_WORKFLOW_ID: "${PATCH_REPLAY_WORKFLOW_ID:-two-binary-patch-replay-legacy}"
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/patch-replay-legacy-worker
+      - test/integration/temporal/patch_replay/legacy_worker.exe
+    healthcheck:
+      test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-patch-replay.ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 300
+      start_period: 60s
+    stop_grace_period: 30s
+    init: true
+
+  patch-replay-patched-worker:
+    profiles: [temporal]
+    extends:
+      service: dev
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      PATCH_REPLAY_WORKER_READY_FILE: /tmp/ocaml-temporal-patch-replay.ready
+      PATCH_REPLAY_WORKER_STOPPED_FILE: "${PATCH_REPLAY_WORKER_STOPPED_FILE:-/workspace/test/integration/temporal/.patch-replay-worker-stopped}"
+      SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE: "${PATCH_REPLAY_DIAGNOSTICS_FILE:-/workspace/test/integration/temporal/.patch-replay-legacy-diagnostics.json}"
+      SMOKE_WORKER_GENERATION: "${PATCH_REPLAY_GENERATION:-2}"
+      SMOKE_REPLAY_WORKFLOW_ID: "${PATCH_REPLAY_WORKFLOW_ID:-two-binary-patch-replay-legacy}"
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/patch-replay-patched-worker
+      - test/integration/temporal/patch_replay/patched_worker.exe
+    healthcheck:
+      test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-patch-replay.ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 300
+      start_period: 60s
+    stop_grace_period: 30s
+    init: true
+
+  # This client-only OCaml executable starts an exact run and waits for its
+  # typed result. The host controller changes only IDs and expected results;
+  # it never selects the workflow implementation used by either worker.
+  patch-replay-driver:
+    profiles: [temporal]
+    extends:
+      service: dev
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      PATCH_REPLAY_EXECUTION_ID: "${PATCH_REPLAY_EXECUTION_ID:-two-binary-patch-replay-legacy}"
+      PATCH_REPLAY_EXPECTED_RESULT: "${PATCH_REPLAY_EXPECTED_RESULT:-PATCH_REPLAY:OLD_HISTORY}"
+      PATCH_REPLAY_ACCEPTED_FILE: "${PATCH_REPLAY_ACCEPTED_FILE:-/workspace/test/integration/temporal/.patch-replay-accepted}"
+      PATCH_REPLAY_RESULT_FILE: "${PATCH_REPLAY_RESULT_FILE:-/workspace/test/integration/temporal/.patch-replay-result}"
+    command:
+      - timeout
+      - --signal=TERM
+      - --kill-after=10s
+      - "${SMOKE_DRIVER_TIMEOUT_SECONDS:-300}"
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/patch-replay-driver
+      - test/integration/temporal/patch_replay/patch_replay_driver.exe
+    init: true
+
 networks:
   temporal-network:
     driver: bridge

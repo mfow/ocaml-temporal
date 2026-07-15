@@ -139,6 +139,29 @@ cancelled Actions run is not live acceptance evidence. It is intentionally
 absent from the multi-version build matrix because starting a real database and
 Temporal cluster once provides the same infrastructure evidence.
 
+## Workflow-patch replay acceptance
+
+`make test-temporal-workflow-patching` uses the same isolated Compose topology
+but has its own controller and worker services. It first invokes
+`make test-temporal-workflow-patching-contract`, which is Docker-free and
+checks the checked-in fixtures, history-normalization, and fail-closed
+validation contract. It checks only that the acceptance-schema documents are
+readable JSON objects; it does not run a JSON Schema validator against the
+fixtures. The live portion starts a client-only OCaml driver plus distinct
+legacy and patch-aware worker processes.
+
+The controller creates a marker-free history under a workflow definition with
+no `Temporal.Workflow.patched` call, replaces that worker with a fresh
+patch-aware process, and requires the old activity/result branch during replay.
+It then creates a marker-bearing history under the patch-aware definition,
+replaces that worker with a fresh patch-aware process, and requires the new
+branch during replay. It validates server history before and after each
+replacement, observes `is_replaying=true` from generation two, and removes the
+project's PostgreSQL volume during teardown. The legacy snapshots must contain
+zero patch markers; the new snapshots must contain exactly one non-deprecated
+marker. No successful invocation of this live target is recorded in this
+document.
+
 Running `docker compose` directly from the repository root is unsupported. The
 root Make targets are the stable interface and deliberately hide the fixture's
 test-only location and Compose project identity.

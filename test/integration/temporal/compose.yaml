@@ -360,6 +360,114 @@ services:
       - test/integration/temporal/patch_replay/patch_replay_driver.exe
     init: true
 
+  # These two services execute the same dedicated OCaml worker binary but use
+  # separate containers. They share one Dune directory only after generation
+  # one has stopped and been removed, avoiding a redundant native rebuild
+  # without allowing two Dune owners to overlap. Generation one learns the exact
+  # parent and child run IDs from their initial activations; generation two is
+  # pinned to those IDs and can therefore reject an unrelated replay.
+  parent-child-restart-worker-one:
+    profiles: [temporal]
+    extends:
+      service: dev
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      SMOKE_WORKER_READY_FILE: /tmp/ocaml-temporal-parent-child-restart.ready
+      SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.parent-child-restart-worker-one-stopped
+      SMOKE_PARENT_CHILD_REPLAY_DIAGNOSTICS_FILE: /workspace/test/integration/temporal/.parent-child-restart-diagnostics.json
+      SMOKE_PARENT_CHILD_REPLAY_GENERATION: "1"
+      SMOKE_PARENT_CHILD_REPLAY_PARENT_WORKFLOW_ID: two-binary-parent-child-restart
+      SMOKE_PARENT_CHILD_REPLAY_CHILD_WORKFLOW_ID: two-binary-parent-child-restart-child-smoke
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/parent-child-restart-worker
+      - test/integration/temporal/worker/parent_child_restart_worker.exe
+    healthcheck:
+      test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-parent-child-restart.ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 300
+      start_period: 60s
+    stop_grace_period: 45s
+    init: true
+
+  parent-child-restart-worker-two:
+    profiles: [temporal]
+    extends:
+      service: dev
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      SMOKE_WORKER_READY_FILE: /tmp/ocaml-temporal-parent-child-restart.ready
+      SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.parent-child-restart-worker-two-stopped
+      SMOKE_PARENT_CHILD_REPLAY_DIAGNOSTICS_FILE: /workspace/test/integration/temporal/.parent-child-restart-diagnostics.json
+      SMOKE_PARENT_CHILD_REPLAY_GENERATION: "2"
+      SMOKE_PARENT_CHILD_REPLAY_PARENT_WORKFLOW_ID: two-binary-parent-child-restart
+      SMOKE_PARENT_CHILD_REPLAY_PARENT_RUN_ID: "${SMOKE_PARENT_CHILD_REPLAY_PARENT_RUN_ID:-not-configured}"
+      SMOKE_PARENT_CHILD_REPLAY_CHILD_WORKFLOW_ID: two-binary-parent-child-restart-child-smoke
+      SMOKE_PARENT_CHILD_REPLAY_CHILD_RUN_ID: "${SMOKE_PARENT_CHILD_REPLAY_CHILD_RUN_ID:-not-configured}"
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/parent-child-restart-worker
+      - test/integration/temporal/worker/parent_child_restart_worker.exe
+    healthcheck:
+      test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-parent-child-restart.ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 300
+      start_period: 60s
+    stop_grace_period: 45s
+    init: true
+
+  # The client process starts only the parent and remains attached to that
+  # exact run while the host controller replaces the worker generation.
+  parent-child-restart-driver:
+    profiles: [temporal]
+    extends:
+      service: dev
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      SMOKE_PARENT_CHILD_RESTART_ACCEPTED_FILE: /workspace/test/integration/temporal/.parent-child-restart-accepted
+      SMOKE_PARENT_CHILD_RESTART_RESULT_FILE: /workspace/test/integration/temporal/.parent-child-restart-result
+    command:
+      - timeout
+      - --signal=TERM
+      - --kill-after=10s
+      - "${SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS:-900}"
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/parent-child-restart-driver
+      - test/integration/temporal/driver/parent_child_restart_driver.exe
+    init: true
+
 networks:
   temporal-network:
     driver: bridge

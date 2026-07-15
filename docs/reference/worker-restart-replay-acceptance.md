@@ -10,6 +10,12 @@ separate result is live-verified by the complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374); it is not
 part of the restart/replay evidence described here.
 
+It is also not bilateral parent/child recovery evidence. The dedicated
+[`make test-temporal-parent-child-restart`](parent-child-restart-replay-acceptance.md)
+target records and validates the exact parent and child run identities before
+and after worker replacement, then requires both roles to report generation-two
+replay checkpoints before the parent may complete.
+
 `make test-temporal-worker-restart-contract` is the fast Docker-free contract
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
 Temporal Server, two-generation OCaml worker, and OCaml driver sequence, while

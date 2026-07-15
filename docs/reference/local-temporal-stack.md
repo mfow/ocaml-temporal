@@ -163,6 +163,18 @@ marker. The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) records a
 successful invocation of both scenarios.
 
+## Parent/child restart and replay acceptance
+
+`make test-temporal-parent-child-restart` first runs a Docker-free bilateral
+history/checkpoint contract, then starts the same fresh PostgreSQL/Temporal
+topology with a client-only OCaml driver and two sequential instances of one
+worker-only OCaml binary. The controller binds both exact runs, removes
+generation one while parent and child are pending, requires generation-two
+replay for both, and deletes the project volume. See the
+[dedicated acceptance reference](parent-child-restart-replay-acceptance.md) for
+the three history stages, private atomic checkpoint, and current live-evidence
+status.
+
 Running `docker compose` directly from the repository root is unsupported. The
 root Make targets are the stable interface and deliberately hide the fixture's
 test-only location and Compose project identity.

@@ -39,6 +39,9 @@ require_text 'smoke-cache-eviction-driver:'
 require_text 'patch-replay-legacy-worker:'
 require_text 'patch-replay-patched-worker:'
 require_text 'patch-replay-driver:'
+require_text 'parent-child-restart-worker-one:'
+require_text 'parent-child-restart-worker-two:'
+require_text 'parent-child-restart-driver:'
 require_text 'TEMPORAL_TWO_BINARY_LIVE: "1"'
 require_text 'smoke_worker.exe'
 require_text 'smoke_driver.exe'
@@ -47,6 +50,8 @@ require_text 'cache_eviction_driver.exe'
 require_text 'legacy_worker.exe'
 require_text 'patched_worker.exe'
 require_text 'patch_replay_driver.exe'
+require_text 'parent_child_restart_worker.exe'
+require_text 'parent_child_restart_driver.exe'
 require_text '--build-dir=/workspace/_build/smoke-worker'
 require_text '--build-dir=/workspace/_build/smoke-driver'
 require_text '--build-dir=/workspace/_build/smoke-restart-driver'
@@ -54,7 +59,10 @@ require_text '--build-dir=/workspace/_build/smoke-cache-eviction-driver'
 require_text '--build-dir=/workspace/_build/patch-replay-legacy-worker'
 require_text '--build-dir=/workspace/_build/patch-replay-patched-worker'
 require_text '--build-dir=/workspace/_build/patch-replay-driver'
+require_text '--build-dir=/workspace/_build/parent-child-restart-worker'
+require_text '--build-dir=/workspace/_build/parent-child-restart-driver'
 require_text 'SMOKE_DRIVER_TIMEOUT_SECONDS: "300"'
+require_text 'SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS: "900"'
 require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/temporal/.cancellation-ready'
 require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
 require_text 'SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE:'
@@ -182,6 +190,58 @@ require_source_text "$patch_driver" 'Client.start client ~workflow:'
 require_source_text "$patch_driver" 'Client.wait handle'
 require_source_absent "$patch_driver" 'Worker.create'
 require_source_absent "$patch_driver" 'Worker.run'
+
+# Parent/child recovery keeps the same strict process split as the baseline
+# fixture, while two separate worker services make replacement observable.
+parent_child_driver="$fixture/driver/parent_child_restart_driver.ml"
+parent_child_worker="$fixture/worker/parent_child_restart_worker.ml"
+parent_child_runner="$fixture/scripts/run-parent-child-restart-replay-live.sh"
+parent_child_contract="$fixture/scripts/test-parent-child-restart-replay-contract.sh"
+require_source_text "$driver_dune" '(name parent_child_restart_driver)'
+require_source_text "$worker_dune" '(name parent_child_restart_worker)'
+require_source_text "$parent_child_driver" 'module Client = Temporal.Client'
+require_source_text "$parent_child_driver" 'Client.start client ~workflow:'
+require_source_text "$parent_child_driver" 'Client.wait handle'
+require_source_absent "$parent_child_driver" 'Worker.create'
+require_source_absent "$parent_child_driver" 'Worker.run'
+require_source_text "$parent_child_worker" 'module Worker = Temporal.Worker'
+require_source_text "$parent_child_worker" 'Worker.create ~target_url ~namespace'
+require_source_text "$parent_child_worker" 'Worker.run worker'
+require_source_text "$parent_child_worker" 'Worker.shutdown worker'
+require_source_absent "$parent_child_worker" 'Client.start'
+require_source_absent "$parent_child_worker" 'Client.wait'
+
+# The external controller, Compose services, shared definitions, and offline
+# contract must all identify the same two durable executions. Pinning these
+# literals here prevents a rename in one layer from silently turning the live
+# gate into a timeout or, worse, evidence about a different execution.
+require_source_text "$definitions" \
+  'let parent_child_restart_parent_id : string = "two-binary-parent-child-restart"'
+require_source_text "$definitions" \
+  '"two-binary-parent-child-restart-child-" ^ seed'
+require_source_text "$definitions" \
+  'Temporal.Workflow.define ~name:"smoke.parent_child_restart_child"'
+require_source_text "$parent_child_runner" \
+  'parent_workflow_id=two-binary-parent-child-restart'
+require_source_text "$parent_child_runner" \
+  'child_workflow_id=two-binary-parent-child-restart-child-smoke'
+require_source_text "$parent_child_runner" 'compose stop --timeout 40 "$service"'
+require_source_text "$parent_child_contract" \
+  "child_type='smoke.parent_child_restart_child'"
+require_source_text "$compose_file" \
+  'SMOKE_PARENT_CHILD_REPLAY_PARENT_WORKFLOW_ID: two-binary-parent-child-restart'
+require_source_text "$compose_file" \
+  'SMOKE_PARENT_CHILD_REPLAY_CHILD_WORKFLOW_ID: two-binary-parent-child-restart-child-smoke'
+parent_child_stop_periods=$(awk '
+  /^  parent-child-restart-worker-(one|two):$/ { in_service = 1; next }
+  in_service && /^  [^ ]/ { in_service = 0 }
+  in_service && /stop_grace_period: 45s/ { count += 1 }
+  END { print count + 0 }
+' "$compose_file")
+if [ "$parent_child_stop_periods" -ne 2 ]; then
+  echo "both parent/child worker services need a 45-second stop grace period" >&2
+  exit 1
+fi
 
 require_source_text "$definitions" 'Temporal.Activity.define_with_context ~name:"smoke.heartbeat_retry"'
 require_source_text "$definitions" 'Temporal.Activity.Context.heartbeat_timeout'
@@ -339,7 +399,7 @@ if ! grep -F '$(MAKE) temporal-clean;' "$makefile" >/dev/null \
   echo "integration setup and its failure trap must both invoke temporal-clean" >&2
   exit 1
 fi
-for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery-contract test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction-contract test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live; do
+for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery-contract test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction-contract test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live test-temporal-parent-child-restart test-temporal-parent-child-restart-contract test-temporal-parent-child-restart-live; do
   if ! grep -E "^${target}:" "$makefile" >/dev/null; then
     echo "Makefile does not define required target: $target" >&2
     exit 1
@@ -363,6 +423,23 @@ if [ "$(grep -Fc '  temporal-integration:' "$workflow")" -ne 1 ]; then
   echo "GitHub Actions must define one standalone Temporal integration job" >&2
   exit 1
 fi
+master_smoke=$(sed -n '/^  temporal-integration:/,/^  verify:/p' "$workflow")
+require_master_smoke_text() {
+  needle=$1
+  if ! printf '%s\n' "$master_smoke" | grep -F -- "$needle" >/dev/null; then
+    echo "master Temporal integration job is missing: $needle" >&2
+    exit 1
+  fi
+}
+require_master_smoke_text 'name: Temporal/PostgreSQL integration smoke (OCaml 5.5)'
+require_master_smoke_text 'timeout-minutes: 45'
+require_master_smoke_text 'OCAML_VERSION: "5.5"'
+require_master_smoke_text 'make test-temporal-integration'
+require_master_smoke_text 'make test-temporal-worker-restart'
+require_master_smoke_text 'make test-temporal-worker-crash-recovery'
+require_master_smoke_text 'make test-temporal-worker-cache-eviction'
+require_master_smoke_text 'make test-temporal-workflow-patching'
+require_master_smoke_text 'make test-temporal-parent-child-restart'
 require_workflow_text() {
   needle=$1
   if ! grep -F -- "$needle" "$workflow" >/dev/null; then
@@ -370,13 +447,13 @@ require_workflow_text() {
     exit 1
   fi
 }
-require_workflow_text 'name: Temporal/PostgreSQL integration smoke (OCaml 5.5)'
-require_workflow_text 'OCAML_VERSION: "5.5"'
-require_workflow_text 'make test-temporal-integration'
-require_workflow_text 'make test-temporal-worker-restart'
-require_workflow_text 'make test-temporal-worker-crash-recovery'
-require_workflow_text 'make test-temporal-worker-cache-eviction'
 require_workflow_text 'make --silent cargo-metadata'
+
+if ! grep -F 'SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS ?= 900' "$makefile" >/dev/null \
+  || ! grep -F 'SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS="$(SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS)"' "$makefile" >/dev/null; then
+  echo "parent/child recovery must preserve and propagate its cold-build timeout" >&2
+  exit 1
+fi
 
 require_absent() {
   path=$1

@@ -14,6 +14,25 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-15: Bilateral parent/child restart-replay gate
+
+Status at the time of this entry: the Docker-free protocol contract passes.
+The real Temporal/PostgreSQL controller is implemented and wired into CI, but
+its live result is not yet recorded.
+
+The dedicated gate starts a fixed parent execution from an independent OCaml
+client process and runs both parent and child definitions in a separate OCaml
+worker. The child parks on a durable 120-second Temporal timer. After the
+controller captures exact parent/child run identities and strict initial
+histories, it stops and removes generation one before starting a fresh worker.
+Generation two must publish replay checkpoints for both roles and complete the
+same exact child and parent runs. Checked JSON schemas, canonical history
+normalization, relationship validation, strict controller chronology, and
+positive bounded replay diagnostics make the evidence fail closed. The
+checkpoint file is private to the acceptance worker and is atomically replaced;
+the runtime validates UTF-8 identifier bytes, canonical decimal history
+lengths, record order, and the full document size before publishing it.
+
 ## 2026-07-15: Live old/new-history workflow patch replay (#348)
 
 Status: the complete [PR #348 CI

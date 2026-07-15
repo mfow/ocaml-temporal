@@ -6,6 +6,12 @@
  (name restart_driver)
  (libraries temporal-sdk temporal_two_binary_smoke_common unix))
 
+;; This client-only assertion process owns the parent workflow handle while
+;; the external controller replaces its dedicated worker between generations.
+(executable
+ (name parent_child_restart_driver)
+ (libraries temporal-sdk temporal_two_binary_smoke_common unix))
+
 (executable
  (name cache_eviction_driver)
  (libraries temporal-sdk temporal_two_binary_smoke_common unix))

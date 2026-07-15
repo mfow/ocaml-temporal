@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/acceptance/parent-child-restart-replay-history.schema.json",
+  "title": "Normalized parent-child restart-replay history",
+  "description": "Payload-free projection of one parent or child Temporal history. The projection retains exact execution identities and only the child lifecycle references needed to prove that a restarted worker replayed the same parent-child relationship. The executable validator enforces role-specific ordering, cross-history linkage, and exact initial-prefix preservation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["role", "workflow_id", "run_id", "events"],
+  "properties": {
+    "role": {"enum": ["parent", "child"]},
+    "workflow_id": {"$ref": "#/$defs/identifier"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000000,
+      "items": {"$ref": "#/$defs/event"}
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+      "description": "The schema limit is JSON character count. The executable normalizer and validators additionally cap the UTF-8 encoding at 4096 bytes before an identifier crosses the native boundary."
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[01][0-9]{17}|92[01][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[01][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$",
+      "description": "Canonical positive signed-64-bit decimal text. JSON numbers are excluded because they cannot exactly retain every Temporal event identifier."
+    },
+    "plain_event_type": {
+      "type": "string",
+      "enum": [
+        "WorkflowTaskScheduled",
+        "WorkflowTaskStarted",
+        "WorkflowTaskCompleted",
+        "WorkflowTaskFailed",
+        "WorkflowTaskTimedOut",
+        "TimerStarted",
+        "TimerFired",
+        "TimerCanceled",
+        "WorkflowExecutionCompleted",
+        "WorkflowExecutionFailed",
+        "WorkflowExecutionCanceled",
+        "WorkflowExecutionTerminated",
+        "WorkflowExecutionTimedOut"
+      ]
+    },
+    "plain_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "type"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/event_id"},
+        "type": {"$ref": "#/$defs/plain_event_type"}
+      }
+    },
+    "parent_workflow_started": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "type"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/event_id"},
+        "type": {"const": "WorkflowExecutionStarted"}
+      }
+    },
+    "child_workflow_started": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "type",
+        "workflow_type",
+        "parent_workflow_id",
+        "parent_run_id",
+        "parent_initiated_event_id"
+      ],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/event_id"},
+        "type": {"const": "WorkflowExecutionStarted"},
+        "workflow_type": {"$ref": "#/$defs/identifier"},
+        "parent_workflow_id": {"$ref": "#/$defs/identifier"},
+        "parent_run_id": {"$ref": "#/$defs/identifier"},
+        "parent_initiated_event_id": {"$ref": "#/$defs/event_id"}
+      }
+    },
+    "child_start_initiated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "type", "child_workflow_id", "child_workflow_type"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/event_id"},
+        "type": {"const": "StartChildWorkflowExecutionInitiated"},
+        "child_workflow_id": {"$ref": "#/$defs/identifier"},
+        "child_workflow_type": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "child_start_failed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "type",
+        "child_workflow_id",
+        "child_workflow_type",
+        "initiated_event_id"
+      ],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/event_id"},
+        "type": {"const": "StartChildWorkflowExecutionFailed"},
+        "child_workflow_id": {"$ref": "#/$defs/identifier"},
+        "child_workflow_type": {"$ref": "#/$defs/identifier"},
+        "initiated_event_id": {"$ref": "#/$defs/event_id"}
+      }
+    },
+    "child_started": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "type",
+        "child_workflow_id",
+        "child_run_id",
+        "child_workflow_type",
+        "initiated_event_id"
+      ],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/event_id"},
+        "type": {"const": "ChildWorkflowExecutionStarted"},
+        "child_workflow_id": {"$ref": "#/$defs/identifier"},
+        "child_run_id": {"$ref": "#/$defs/identifier"},
+        "child_workflow_type": {"$ref": "#/$defs/identifier"},
+        "initiated_event_id": {"$ref": "#/$defs/event_id"}
+      }
+    },
+    "child_terminal_type": {
+      "enum": [
+        "ChildWorkflowExecutionCompleted",
+        "ChildWorkflowExecutionFailed",
+        "ChildWorkflowExecutionCanceled",
+        "ChildWorkflowExecutionTimedOut",
+        "ChildWorkflowExecutionTerminated"
+      ]
+    },
+    "child_terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "type",
+        "child_workflow_id",
+        "child_run_id",
+        "child_workflow_type",
+        "initiated_event_id",
+        "started_event_id"
+      ],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/event_id"},
+        "type": {"$ref": "#/$defs/child_terminal_type"},
+        "child_workflow_id": {"$ref": "#/$defs/identifier"},
+        "child_run_id": {"$ref": "#/$defs/identifier"},
+        "child_workflow_type": {"$ref": "#/$defs/identifier"},
+        "initiated_event_id": {"$ref": "#/$defs/event_id"},
+        "started_event_id": {"$ref": "#/$defs/event_id"}
+      }
+    },
+    "event": {
+      "oneOf": [
+        {"$ref": "#/$defs/plain_event"},
+        {"$ref": "#/$defs/parent_workflow_started"},
+        {"$ref": "#/$defs/child_workflow_started"},
+        {"$ref": "#/$defs/child_start_initiated"},
+        {"$ref": "#/$defs/child_start_failed"},
+        {"$ref": "#/$defs/child_started"},
+        {"$ref": "#/$defs/child_terminal"}
+      ]
+    }
+  }
+}

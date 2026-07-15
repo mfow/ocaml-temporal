@@ -142,10 +142,14 @@ pr_smoke=$(printf '%s\n' "$pr_workflow_text" |
 printf '%s\n' "$pr_smoke" | grep -Fqx "    if: needs.changes.outputs.smoke == 'true'"
 printf '%s\n' "$pr_smoke" |
   grep -Fqx '    name: Temporal/PostgreSQL integration smoke (OCaml 5.5)'
+printf '%s\n' "$pr_smoke" | grep -Fqx '    timeout-minutes: 45'
 printf '%s\n' "$pr_smoke" | grep -Fqx '      OCAML_VERSION: "5.5"'
 printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-integration'
 printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-worker-restart'
+printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-worker-crash-recovery'
 printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-worker-cache-eviction'
+printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-workflow-patching'
+printf '%s\n' "$pr_smoke" | grep -Fqx '          make test-temporal-parent-child-restart'
 
 # The JSON schemas are protocol fixtures rather than prose. Preserve their
 # code classification while keeping ordinary Markdown-only changes inexpensive.

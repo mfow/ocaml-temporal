@@ -36,7 +36,8 @@ for those rules.
   convenience composition of `start` and `Future.await`. Keep the handle from
   `start_handle` when the workflow may need to cancel one exact activity or
   inspect its future separately; `Retry_policy` and the cancellation policy
-  control the durable command options. Activity callbacks are the boundary for
+  control the durable command options described in the [operation policy
+  reference](durable-operation-policies.md). Activity callbacks are the boundary for
   external I/O, and their context/heartbeat rules are described in the
   [activity reference](native-activity-execution.md). An asynchronous callback
   returns `Completed`, `Failed`, or `Will_complete_async`; after the handoff,
@@ -47,7 +48,9 @@ for those rules.
   during dispatch.
 - `Temporal.Child_workflow` schedules a child workflow and exposes its typed
   future. Use its operation handle when the parent must cancel one exact child;
-  child retry and cancellation policies are passed to the durable command.
+  child retry and cancellation policies are passed to the durable command; see
+  the [operation policy reference](durable-operation-policies.md) for their
+  parent-side behavior.
   Child scheduling and completion are durable workflow operations, not ordinary
   function calls; the [workflow guide](../guides/workflows.md) marks the
   authoring/native-support boundary.

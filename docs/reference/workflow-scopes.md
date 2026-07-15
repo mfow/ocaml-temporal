@@ -91,4 +91,5 @@ idempotence, and no-command regression cases live in
 
 For a complete public-module index, see the [public API map](public-api-map.md).
 For server-facing activity and child cancellation behavior, see the
-[workflow guide](../guides/workflows.md) and the relevant protocol references.
+[durable operation policy reference](durable-operation-policies.md), the
+[workflow guide](../guides/workflows.md), and the relevant protocol references.

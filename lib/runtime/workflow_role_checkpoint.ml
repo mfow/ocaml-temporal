@@ -377,9 +377,11 @@ let classify (state : t) (activation : activation) =
           Ok (Matches Child)
       | _ -> Ok Unrelated)
 
-(** Validates the replay bit and history length for the current generation. A
-    positive replay history is required because a replay marker with no history
-    would not prove that the replacement worker replayed work. *)
+(** Validates the replay bit and history length for a role's first observation
+    in the current generation. A positive replay history is required because a
+    replay marker with no history would not prove that the replacement worker
+    replayed work. Later activations for an observed exact run are duplicates
+    and deliberately bypass this phase check. *)
 let validate_activation_phase (state : t) (activation : activation) =
   if activation.history_length <= 0L then
     error "invalid_history_length"
@@ -411,9 +413,10 @@ let observe_progress (state : t) (progress : role_progress)
   else { progress with replay_history_length = Some activation.history_length }
 
 (** Returns whether the current generation already has a checkpoint for one
-    role. Repeated delivery is normal around worker replacement, so the state
-    machine treats a matching repeated checkpoint as a no-op rather than
-    allowing it to rewrite or reorder published evidence. *)
+    role. Repeated delivery is normal around worker replacement, and live
+    activations resume after replay finishes. Once the exact role has supplied
+    its evidence, both cases are no-ops rather than opportunities to revalidate
+    or rewrite the published checkpoint. *)
 let already_observed (state : t) (progress : role_progress) =
   if state.generation = 1 then Option.is_some progress.initial_history_length
   else Option.is_some progress.replay_history_length
@@ -435,21 +438,22 @@ let observe (state : t) (activation : activation) =
   match classification with
   | Unrelated -> Ok Ignored
   | Matches role -> (
-      let* () = validate_activation_phase state activation in
       let progress = progress_for state role in
       if already_observed state progress then Ok Duplicate
-      else if
-        state.generation = 1 && role = Child
-        && Option.is_none state.parent.initial_history_length
-      then
-        error "child_before_parent"
-          "parent initial checkpoint must be observed before the child \
-           checkpoint"
       else
-        let next =
-          replace_progress state role
-            (observe_progress state progress activation)
-        in
-        match document_if_complete next with
-        | Some document -> Ok (Checkpoint { state = next; document })
-        | None -> Ok (Accepted next))
+        let* () = validate_activation_phase state activation in
+        if
+          state.generation = 1 && role = Child
+          && Option.is_none state.parent.initial_history_length
+        then
+          error "child_before_parent"
+            "parent initial checkpoint must be observed before the child \
+             checkpoint"
+        else
+          let next =
+            replace_progress state role
+              (observe_progress state progress activation)
+          in
+          match document_if_complete next with
+          | Some document -> Ok (Checkpoint { state = next; document })
+          | None -> Ok (Accepted next))

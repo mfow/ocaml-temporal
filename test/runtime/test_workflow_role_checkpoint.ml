@@ -211,6 +211,46 @@ let test_generation_two_replay_checkpoint () =
       failwith "a replay without initialization metadata was not deduplicated"
   | Error error -> failwith ("repeated replay failed: " ^ error.code)
 
+(** Once generation two has published its complete replay checkpoint, later
+    live activations for either exact execution are outside this diagnostic's
+    remit. In particular, a durable timer may fire with [is_replaying = false];
+    treating that as a duplicate keeps the observer from failing an otherwise
+    valid workflow task. *)
+let test_generation_two_ignores_post_checkpoint_live_activations () =
+  let _generation_one_state, previous = complete_generation_one () in
+  let generation_two =
+    Checkpoint.create ~generation:2
+      ~parent:(generation_two_configuration parent_workflow_id parent_run_id)
+      ~child:(generation_two_configuration child_workflow_id child_run_id)
+      ~previous:(Some previous)
+    |> require_state "generation two post-checkpoint activation"
+  in
+  let after_child_replay =
+    match
+      Checkpoint.observe generation_two
+        (activation ~workflow_id:child_workflow_id ~run_id:child_run_id
+           ~is_replaying:true ~history_length:11L ())
+    with
+    | Ok (Checkpoint.Accepted state) -> state
+    | Ok _ -> failwith "child replay did not retain its partial checkpoint"
+    | Error error -> failwith ("child replay failed: " ^ error.code)
+  in
+  let complete_state, _document =
+    Checkpoint.observe after_child_replay
+      (activation ~workflow_id:parent_workflow_id ~run_id:parent_run_id
+         ~is_replaying:true ~history_length:13L ())
+    |> require_checkpoint "parent replay before live activation"
+  in
+  match
+    Checkpoint.observe complete_state
+      (activation ~workflow_id:child_workflow_id ~run_id:child_run_id
+         ~is_replaying:false ~history_length:15L ())
+  with
+  | Ok Checkpoint.Duplicate -> ()
+  | Ok _ -> failwith "post-checkpoint live activation was not deduplicated"
+  | Error error ->
+      failwith ("post-checkpoint live activation failed: " ^ error.code)
+
 (** Tests the fail-closed identity and phase checks that prevent one wrong run
     or non-replay task from being mistaken for parent/child recovery evidence.
 *)
@@ -326,6 +366,7 @@ let () =
   test_generation_one_atomic_checkpoint ();
   test_generation_one_rejects_child_before_parent ();
   test_generation_two_replay_checkpoint ();
+  test_generation_two_ignores_post_checkpoint_live_activations ();
   test_generation_two_rejects_mixed_identity_and_phase ();
   test_rejects_non_positive_activation_history ();
   test_configuration_and_prior_document_rejections ();

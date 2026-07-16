@@ -11,6 +11,11 @@ type payload = Workflow.payload
 type failure = Workflow.failure
 type execution = { namespace : string; workflow_id : string; run_id : string }
 
+(** One named payload attached to a workflow start.  Arrays are used on the
+    wire instead of JSON objects so duplicate keys can be rejected before a
+    map is constructed and encoding remains deterministic after sorting. *)
+type metadata_field = { key : string; value : payload }
+
 type start_request = {
   request_id : string;
   namespace : string;
@@ -18,6 +23,8 @@ type start_request = {
   workflow_type : string;
   task_queue : string;
   input : payload list;
+  memo : metadata_field list;
+  search_attributes : metadata_field list;
 }
 
 type start_response = { execution : execution }
@@ -236,6 +243,24 @@ let encode_start_request (value : start_request) =
   let* () = validate_identifier "$.workflow_type" value.workflow_type in
   let* () = validate_identifier "$.task_queue" value.task_queue in
   let* input = payloads_json value.input in
+  let encode_metadata path fields =
+    let sorted = List.sort (fun left right -> String.compare left.key right.key) fields in
+    let rec loop seen reversed = function
+      | [] -> Ok (`List (List.rev reversed))
+      | field :: rest ->
+          let* () = validate_identifier (path ^ "[key]") field.key in
+          if List.mem field.key seen then
+            Error (invalid ~path ("duplicate metadata key " ^ field.key))
+          else
+            let* payload = payload_json field.value in
+            loop (field.key :: seen)
+              (`Assoc [ ("key", json_string field.key); ("value", payload) ] :: reversed)
+              rest
+    in
+    loop [] [] sorted
+  in
+  let* memo = encode_metadata "$.memo" value.memo in
+  let* search_attributes = encode_metadata "$.search_attributes" value.search_attributes in
   encode_object
       (`Assoc
       [
@@ -245,6 +270,8 @@ let encode_start_request (value : start_request) =
         ("workflow_type", json_string value.workflow_type);
         ("task_queue", json_string value.task_queue);
         ("input", input);
+        ("memo", memo);
+        ("search_attributes", search_attributes);
       ])
 
 (** Serializes the opaque native capability used by asynchronous start polls.

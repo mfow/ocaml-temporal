@@ -24,6 +24,8 @@ type start_request = {
   workflow_id : string;
   task_queue : string;
   input : Payload.t;
+  memo : (string * Payload.t) list;
+  search_attributes : (string * Payload.t) list;
 }
 
 (** The server-issued identity returned by a successful start. *)

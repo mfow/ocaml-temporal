@@ -65,6 +65,8 @@ fn request() -> Arc<client_protocol::StartWorkflowRequest> {
         workflow_type: "Workflow".to_owned(),
         task_queue: "queue".to_owned(),
         input: Vec::new(),
+        memo: Vec::new(),
+        search_attributes: Vec::new(),
     })
 }
 

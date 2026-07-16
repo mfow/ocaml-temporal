@@ -15,6 +15,18 @@
     "input": {
       "type": "array",
       "items": {"$ref": "temporal-payload.schema.json"}
+    },
+    "memo": {
+      "type": "array",
+      "description": "Named payloads copied to Temporal memo fields.",
+      "items": {"$ref": "metadata-field.schema.json"},
+      "uniqueItems": true
+    },
+    "search_attributes": {
+      "type": "array",
+      "description": "Named payloads copied to Temporal indexed search attributes.",
+      "items": {"$ref": "metadata-field.schema.json"},
+      "uniqueItems": true
     }
   }
 }

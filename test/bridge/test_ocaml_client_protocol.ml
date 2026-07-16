@@ -67,6 +67,8 @@ let start_request : Protocol.start_request =
     workflow_type = "Smoke";
     task_queue = "queue";
     input = [];
+    memo = [];
+    search_attributes = [];
   }
 
 (** The canonical payload wrapper for the bytes [ok]. *)

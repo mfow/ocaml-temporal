@@ -14,6 +14,9 @@ type failure = Workflow_protocol.failure
 type execution = { namespace : string; workflow_id : string; run_id : string }
 (** The exact Temporal execution identified by namespace, workflow ID, and run. *)
 
+type metadata_field = { key : string; value : payload }
+(** One named payload attached to a workflow start memo or search attribute. *)
+
 type start_request = {
   request_id : string;
   namespace : string;
@@ -21,6 +24,8 @@ type start_request = {
   workflow_type : string;
   task_queue : string;
   input : payload list;
+  memo : metadata_field list;
+  search_attributes : metadata_field list;
 }
 (** Dynamic workflow-start request sent to the Rust client adapter. [request_id]
     is stable across retries and is passed unchanged to Temporal, so a caller

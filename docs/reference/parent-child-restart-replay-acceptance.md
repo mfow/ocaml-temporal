@@ -92,6 +92,10 @@ The complete [PR #351 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013) passed all
 nine jobs and live-verified this scenario against Temporal Server and
 PostgreSQL. Local state-machine tests and contract fixtures remain supporting
-validation evidence rather than substitutes for that run. Do not generalize
-one parent/child recovery run to arbitrary cache pressure, crashes, child
+validation evidence rather than substitutes for that run. The separate
+[child-failure-after-replay acceptance](child-failure-replay-acceptance.md) is
+live-verified by the complete [PR #361 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29475615866); it covers
+typed child failure after both replacement-worker replay observations. Do not
+generalize either acceptance run to arbitrary cache pressure, crashes, child
 failure recovery, or a replay corpus.

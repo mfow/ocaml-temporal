@@ -81,8 +81,10 @@ Consequently:
   Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247):
   the driver signals an exact run only after its worker-visible readiness
   marker, and the handler wakes a deterministic condition before returning its
-  terminal value. The complete current seventeen-result path is also covered
-  by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
+  terminal value. The recorded seventeen-result baseline is also covered by
+  the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
+  That historical run predates the long-backoff workflow now present in the
+  fixture, whose first live run remains pending.
   Neither run establishes live query or update delivery; the focused scheduler
   and bridge tests remain the evidence for those paths.
 

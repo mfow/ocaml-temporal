@@ -86,6 +86,11 @@ directory rather than against the repository source tree:
 make test-install
 ```
 
+The public signature and module-export policy enforced by that consumer is
+described in [Public API compatibility](api-stability.md). The package-boundary
+checks below protect installation layout and privacy; the typed witness in
+that reference protects the source contract visible to downstream OCaml code.
+
 `test/bridge/test_install.sh` checks both sides of the boundary:
 
 1. it verifies that every implementation archive is below

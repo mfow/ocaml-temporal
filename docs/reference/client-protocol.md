@@ -202,7 +202,9 @@ bridge, and Rust protocol tests. The live driver contains the same scenario,
 and the complete [PR #289 run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368)
 verified exact-run cancellation, the eventual typed cancelled result, and
 graceful shutdown with outstanding work against a real Temporal Server as part
-of the current seventeen-result gate. The earlier [PR #277 run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069)
+of the recorded seventeen-result baseline. That historical run predates the
+long-backoff workflow now present in the fixture, whose first live run remains
+pending. The earlier [PR #277 run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069)
 remains evidence for the prior fifteen-result slice, [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 for the prior twelve-result slice, and [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 for the original nine-workflow slice. See the [live acceptance coverage](live-acceptance-coverage.md)
@@ -284,8 +286,8 @@ and
 The first focused [PR #266 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
 live-verified the signal path against Temporal Server: the driver waited for
 the worker-visible readiness marker before sending the typed signal, then
-observed the handler's value after the condition resumed. The complete current
-seventeen-result acceptance is covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368),
+observed the handler's value after the condition resumed. The recorded
+seventeen-result baseline is covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368),
 which includes the same signal/condition path. The acknowledgement therefore
 remains distinct from handler execution, while the two runs together preserve
 the focused and complete live evidence for this client operation.
@@ -527,11 +529,11 @@ live-verified native client starts and exact-run waits alongside the current
 heartbeat-detail retry and exact-run cancellation assertions against a public
 worker and real Temporal Server. The signal-specific readiness and handler
 assertion is documented above with the focused [PR #266](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247)
-run; the complete current seventeen-result signal evidence is in [PR #289](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
+run; the complete recorded seventeen-result signal evidence is in [PR #289](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
 The later complete [PR #279 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
 re-verified the client start, exact-run wait, cancellation, and graceful
 shutdown paths in the prior sixteen-result gate. The complete [PR #289 Actions
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) is the
-current seventeen-result evidence for those paths.
+recorded seventeen-result baseline evidence for those paths.
 The boundary and remaining cases are tracked in the
 [`two-OCaml-binary acceptance design`](two-ocaml-binary-e2e-acceptance.md).

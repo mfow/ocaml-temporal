@@ -37,7 +37,7 @@ The remaining reference documents are useful when changing one subsystem:
   safety contract.
 - [Workflow patching](reference/workflow-patching.md) documents public patch-in
   and deprecation, durable patch IDs, per-execution decisions and mode safety,
-  and the initial live patch-in target verified by PR #348.
+  and the initial plus lifecycle live gates verified by PR #348 and PR #356.
 - [Interactive workflows](reference/interactive-workflows.md) documents the
   experimental typed signal, query, and update definitions, deterministic
   handler dispatcher, and the remaining native-delivery boundary.
@@ -78,6 +78,8 @@ The remaining reference documents are useful when changing one subsystem:
 - [Installed package boundary](reference/package-boundary.md) documents which
   libraries are package-private and the installed-consumer regression that
   protects the public `Temporal` surface.
+- [Public API compatibility](reference/api-stability.md) documents the
+  pre-`0.1.0` compatibility policy and the installed-consumer type witness.
 - [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
   records the long-term design. APIs described there may be future work.
 
@@ -134,10 +136,11 @@ updates, full versioning, local activities, Nexus, and the remaining SDK parity
 work are tracked as later milestones. `Workflow.patched` and the unit-returning
 `Workflow.deprecate_patch` lifecycle operation are focused-tested. The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) also
-live-verifies the original patch-in histories. The expanded target adds
-active-to-deprecated and deprecated-to-removed replay and awaits its first
-complete CI run; deployment versioning and arbitrary-history compatibility
-remain pending. The typed definitions and
+live-verifies the original patch-in histories. The complete [PR #356 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271)
+live-verifies the expanded active-to-deprecated and deprecated-to-removed
+replay cases. Deployment versioning and arbitrary-history compatibility remain
+pending. The typed definitions and
 deterministic local dispatcher are documented in the [interactive workflow
 reference](reference/interactive-workflows.md).
 
@@ -214,7 +217,9 @@ fixtures plus fail-closed normalization and validation cases. The umbrella
 two-scenario Compose controller. A green contract-only run is not evidence of
 Temporal Server replay. The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) is the
-corresponding real-server evidence.
+corresponding real-server evidence for the original patch-in cases; the
+complete [PR #356 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271)
+verifies the expanded lifecycle cases.
 
 ## Terms used in this project
 

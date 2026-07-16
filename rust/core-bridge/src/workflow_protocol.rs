@@ -2884,7 +2884,6 @@ fn command_to_core(
                 .transpose()?,
             local_retry_threshold: local_retry_threshold.map(duration_to_core),
             cancellation_type: cancellation_to_core(*cancellation_type),
-            ..Default::default()
         }),
         CompletionCommand::RequestCancelActivity { seq } => {
             Variant::RequestCancelActivity(core_commands::RequestCancelActivity { seq: *seq })

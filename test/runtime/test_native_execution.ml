@@ -383,6 +383,31 @@ let test_child_resolution_translation () =
               { seq = 8L; result = Protocol.Child_completed None };
           ]))
 
+(** Converts Core's local-activity backoff result into the dedicated runtime
+    job and rounds a sub-millisecond fraction upward so the retry timer cannot
+    fire earlier than the requested delay. *)
+let test_local_activity_backoff_translation () =
+  let translated =
+    unwrap "local activity backoff translation"
+      (Native_execution.translate_activation
+         (activation
+            [ Protocol.Resolve_activity
+                {
+                  seq = 9L;
+                  result =
+                    Protocol.Backoff
+                      {
+                        attempt = 2L;
+                        backoff_duration = { seconds = 1L; nanoseconds = 1 };
+                        original_schedule_time = Some default_timestamp;
+                      };
+                } ]))
+  in
+  match translated.jobs with
+  | [ Activation.Resolve_local_activity_backoff
+        { seq = 9L; attempt = 2L; backoff_milliseconds = 1_001L; _ } ] -> ()
+  | _ -> failwith "local activity backoff did not become a retry job"
+
 (** Confirms that a Core signal keeps its complete payload envelope while it
     crosses the semantic bridge. An execution without a matching registration
     fails closed instead of silently acknowledging an event that workflow code
@@ -1386,6 +1411,7 @@ let () =
   test_retained_payloads_are_copied ();
   test_activity_failure_details_are_preserved ();
   test_child_resolution_translation ();
+  test_local_activity_backoff_translation ();
   test_signal_workflow_translation_and_activation ();
   test_query_workflow_translation_and_activation ();
   test_update_workflow_translation_and_activation ();

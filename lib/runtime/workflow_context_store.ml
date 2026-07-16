@@ -4,6 +4,27 @@
 type activity_resolution =
   (Temporal_base.Codec.payload, Temporal_base.Error.t) result -> unit
 
+(** Retains the immutable request fields needed to re-emit one local activity
+    after Core asks the language layer to back off. The resolver remains in the
+    ordinary activity table so terminal completions use the same lifecycle;
+    [backoff_timer_seq] is set while the retry timer is outstanding and makes
+    duplicate Core backoff jobs fail closed. *)
+type local_activity_state = {
+  activity_id : string;
+  activity_type : string;
+  arguments : Temporal_base.Codec.payload list;
+  schedule_to_close_timeout : int64 option;
+  schedule_to_start_timeout : int64 option;
+  start_to_close_timeout : int64 option;
+  retry_policy : Activation.retry_policy option;
+  local_retry_threshold : int64 option;
+  cancellation_type : Activation.activity_cancellation_type;
+  mutable attempt : int64;
+  mutable original_schedule_time :
+    Temporal_protocol.Workflow_protocol.timestamp option;
+  mutable backoff_timer_seq : int64 option;
+}
+
 (** Function saved for each pending child workflow. Child and activity
     resolutions have the same wire payload shape but remain in separate tables,
     preventing one job kind from resolving an operation of the other kind. *)
@@ -63,6 +84,7 @@ type t = {
   patches : (string, patch_state) Hashtbl.t;
   mutable next_sequence : int64;
   activities : (int64, activity_resolution) Hashtbl.t;
+  local_activities : (int64, local_activity_state) Hashtbl.t;
   child_workflows : (int64, child_workflow_state) Hashtbl.t;
   timers : (int64, unit -> unit) Hashtbl.t;
   (* Values keyed here belong only to this execution context. The [Obj]
@@ -115,6 +137,7 @@ let create ?(task_queue = "default") scheduler =
         patches = Hashtbl.create 8;
         next_sequence = 0L;
         activities = Hashtbl.create 16;
+        local_activities = Hashtbl.create 16;
         child_workflows = Hashtbl.create 16;
         timers = Hashtbl.create 16;
         locals = Hashtbl.create 8;
@@ -320,7 +343,7 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
     ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
     ?heartbeat_timeout ?retry_policy ?priority
     ?(cancellation_type = Activation.Try_cancel)
-    ?(do_not_eagerly_execute = false) ~decode () =
+    ?(do_not_eagerly_execute = false) ?(local = false) ~decode () =
   let seq = allocate_sequence context in
   (* These flags belong to the handle, not the pending table. Core removes an
      activity entry before delivering its result, so the closure must retain
@@ -359,23 +382,59 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
     | None, None -> Some 60_000L
     | _, value -> value
   in
-  emit context
-    (Activation.Schedule_activity
-       {
-         seq;
-         activity_id;
-         activity_type = name;
-         task_queue;
-         arguments = [ input ];
-         schedule_to_close_timeout;
-         schedule_to_start_timeout;
-         start_to_close_timeout;
-         heartbeat_timeout;
-         retry_policy;
-         priority;
-         cancellation_type;
-         do_not_eagerly_execute;
-       });
+  if local then begin
+    let local_state =
+      {
+        activity_id;
+        activity_type = name;
+        arguments = [ input ];
+        schedule_to_close_timeout;
+        schedule_to_start_timeout;
+        start_to_close_timeout;
+        retry_policy;
+        local_retry_threshold = None;
+        cancellation_type;
+        attempt = 1L;
+        original_schedule_time = None;
+        backoff_timer_seq = None;
+      }
+    in
+    Hashtbl.add context.local_activities seq local_state;
+    emit context
+      (Activation.Schedule_local_activity
+         {
+           seq;
+           activity_id;
+           activity_type = name;
+           attempt = 1L;
+           original_schedule_time = None;
+           arguments = [ input ];
+           schedule_to_close_timeout;
+           schedule_to_start_timeout;
+           start_to_close_timeout;
+           retry_policy;
+           local_retry_threshold = None;
+           cancellation_type;
+         })
+  end
+  else
+    emit context
+      (Activation.Schedule_activity
+         {
+           seq;
+           activity_id;
+           activity_type = name;
+           task_queue;
+           arguments = [ input ];
+           schedule_to_close_timeout;
+           schedule_to_start_timeout;
+           start_to_close_timeout;
+           heartbeat_timeout;
+           retry_policy;
+           priority;
+           cancellation_type;
+           do_not_eagerly_execute;
+         });
   let cancel () =
     match current () with
     | Some current when current == context -> (
@@ -390,7 +449,10 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
         | Some _ ->
             (* Core's request-cancel command identifies the activity by sequence
                only, so the handle exposes no ignored reason argument. *)
-            emit context (Activation.Request_cancel_activity { seq });
+            emit context
+              (if local then
+                 Activation.Request_cancel_local_activity { seq }
+               else Activation.Request_cancel_activity { seq });
             cancellation_requested := true;
             Ok ())
     | _ ->
@@ -399,6 +461,19 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
              ~message:"activity cancellation used outside its workflow")
   in
   (future, cancel)
+
+(** Schedules a local activity through Core's local activity manager. The
+    callback still runs through the worker's typed activity registry, while
+    Core owns retry timers and records the eventual result as a history marker.
+    Local activities intentionally ignore remote-only task queue, heartbeat,
+    priority, and eager-execution controls. *)
+let schedule_local_activity context ~name ~input ?activity_id
+    ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
+    ?retry_policy ?(cancellation_type = Activation.Wait_cancellation_completed)
+    ~decode () =
+  schedule_activity context ~name ~input ?activity_id
+    ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
+    ?retry_policy ~cancellation_type ~local:true ~decode ()
 
 (** Saves a child resolver before emitting its command. The explicit [id] is
     application-owned durable identity; an optional retry policy is copied
@@ -499,8 +574,76 @@ let resolve_activity context ~seq result =
            (Printf.sprintf "unknown or duplicate activity sequence %Ld" seq))
   | Some resolve ->
       Hashtbl.remove context.activities seq;
+      Hashtbl.remove context.local_activities seq;
       resolve result;
       Ok ()
+
+(** Starts the language-owned timer requested by Core for a local retry. The
+    original activity sequence stays pending while the timer uses its own
+    sequence; when it fires, the callback updates the attempt metadata and
+    emits the same local activity command with Core's supplied provenance. *)
+let resolve_local_activity_backoff context ~seq ~attempt ~backoff_milliseconds
+    ~original_schedule_time =
+  match Hashtbl.find_opt context.local_activities seq with
+  | None ->
+      Error
+        (bridge_error
+           (Printf.sprintf
+              "local activity backoff references unknown sequence %Ld" seq))
+  | Some state -> (
+      match state.backoff_timer_seq with
+      | Some _ ->
+          Error
+            (bridge_error
+               (Printf.sprintf
+                  "duplicate local activity backoff sequence %Ld" seq))
+      | None when attempt <= 0L ->
+          Error
+            (bridge_error
+               (Printf.sprintf
+                  "local activity backoff attempt %Ld must be positive" attempt))
+      | None when backoff_milliseconds < 0L ->
+          Error
+            (bridge_error
+               (Printf.sprintf
+                  "local activity backoff duration %Ld must be non-negative"
+                  backoff_milliseconds))
+      | None when Int64.compare attempt state.attempt <= 0 ->
+          Error
+            (bridge_error
+               (Printf.sprintf
+                  "local activity backoff attempt %Ld does not advance sequence %Ld"
+                  attempt seq))
+      | None ->
+          let timer_seq = allocate_sequence context in
+          state.backoff_timer_seq <- Some timer_seq;
+          Hashtbl.add context.timers timer_seq (fun () ->
+              match Hashtbl.find_opt context.local_activities seq with
+              | None -> ()
+              | Some state ->
+                  state.backoff_timer_seq <- None;
+                  state.attempt <- attempt;
+                  state.original_schedule_time <- original_schedule_time;
+                  emit context
+                    (Activation.Schedule_local_activity
+                       {
+                         seq;
+                         activity_id = state.activity_id;
+                         activity_type = state.activity_type;
+                         attempt = state.attempt;
+                         original_schedule_time = state.original_schedule_time;
+                         arguments = state.arguments;
+                         schedule_to_close_timeout = state.schedule_to_close_timeout;
+                         schedule_to_start_timeout = state.schedule_to_start_timeout;
+                         start_to_close_timeout = state.start_to_close_timeout;
+                         retry_policy = state.retry_policy;
+                         local_retry_threshold = state.local_retry_threshold;
+                         cancellation_type = state.cancellation_type;
+                       }));
+          emit context
+            (Activation.Start_timer
+               { seq = timer_seq; milliseconds = backoff_milliseconds });
+          Ok ())
 
 (** Records the start acknowledgment or removes the child resolver on a start
     failure. Once a run ID is recorded, every later start result is rejected so
@@ -591,6 +734,7 @@ let shutdown context =
   Condition_store.shutdown context.conditions;
   Scheduler.shutdown context.scheduler;
   Hashtbl.clear context.activities;
+  Hashtbl.clear context.local_activities;
   Hashtbl.clear context.child_workflows;
   Hashtbl.clear context.timers;
   Hashtbl.clear context.patches

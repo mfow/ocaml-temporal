@@ -260,7 +260,8 @@ let emit_terminal execution command =
         report ~src:Observability.Source.workflow Logs.Info ~tags
           "workflow completed"
     | Fail_workflow _ | Cancel_workflow_execution
-    | Schedule_activity _ | Start_child_workflow _ | Request_cancel_activity _
+    | Schedule_activity _ | Schedule_local_activity _ | Start_child_workflow _ | Request_cancel_activity _
+    | Request_cancel_local_activity _
     | Cancel_child_workflow _ | Start_timer _ | Cancel_timer _
     | Query_result _ | Update_response _ | Set_patch_marker _
     | Continue_as_new _ -> ())
@@ -340,6 +341,14 @@ let process_job execution = function
   | Activation.Start_workflow -> start_workflow execution
   | Resolve_activity { seq; result } -> (
       match Workflow_context_store.resolve_activity execution.context ~seq result with
+      | Ok () -> ()
+      | Error error -> fail execution error)
+  | Resolve_local_activity_backoff
+      { seq; attempt; backoff_milliseconds; original_schedule_time } -> (
+      match
+        Workflow_context_store.resolve_local_activity_backoff execution.context
+          ~seq ~attempt ~backoff_milliseconds ~original_schedule_time
+      with
       | Ok () -> ()
       | Error error -> fail execution error)
   | Resolve_child_workflow_start { seq; result } -> (

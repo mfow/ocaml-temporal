@@ -326,3 +326,31 @@ val execute :
   ?cancellation_type:cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   ('input, 'output) t -> 'input -> ('output, Error.t) result
+
+(** Schedules the activity on Temporal Core's local activity lane. The
+    callback executes in this worker process and Core records the result as a
+    history marker. Local activities support activity IDs, retry policies, and
+    local timeout controls, but do not accept a remote task queue, heartbeat,
+    priority, or eager-execution option. *)
+val start_local :
+  ?activity_id:string ->
+  ?schedule_to_close_timeout:Duration.t ->
+  ?schedule_to_start_timeout:Duration.t ->
+  ?start_to_close_timeout:Duration.t ->
+  ?retry_policy:Retry_policy.t ->
+  ?cancellation_type:cancellation_type ->
+  ('input, 'output) t ->
+  'input ->
+  ('output, Error.t) Future.t
+
+(** Schedules a local activity and waits for its result. *)
+val execute_local :
+  ?activity_id:string ->
+  ?schedule_to_close_timeout:Duration.t ->
+  ?schedule_to_start_timeout:Duration.t ->
+  ?start_to_close_timeout:Duration.t ->
+  ?retry_policy:Retry_policy.t ->
+  ?cancellation_type:cancellation_type ->
+  ('input, 'output) t ->
+  'input ->
+  ('output, Error.t) result

@@ -158,6 +158,13 @@ type activity_resolution =
   | Completed of payload option
   | Failed of failure
   | Cancelled of failure
+  (** Core uses this nonterminal result when a local activity retry should be
+      delayed by a workflow timer before the next attempt is scheduled. *)
+  | Backoff of {
+      attempt : int64;
+      backoff_duration : duration;
+      original_schedule_time : timestamp option;
+    }
 
 type child_workflow_start_failure_cause =
   | Child_start_unspecified
@@ -295,6 +302,24 @@ type completion_command =
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
+  (** Schedules a local activity on the worker's local-activity lane. Local
+      activities are still resolved through the normal activity sequence, but
+      never create a server activity task; Core records their result in a
+      marker so replay observes the same payload. *)
+  | Schedule_local_activity of {
+      seq : int64;
+      activity_id : string;
+      activity_type : string;
+      attempt : int64;
+      original_schedule_time : timestamp option;
+      arguments : payload list;
+      schedule_to_close_timeout : duration option;
+      schedule_to_start_timeout : duration option;
+      start_to_close_timeout : duration option;
+      retry_policy : retry_policy option;
+      local_retry_threshold : duration option;
+      cancellation_type : activity_cancellation_type;
+    }
   | Start_child_workflow of {
       seq : int64;
       workflow_id : string;
@@ -305,6 +330,10 @@ type completion_command =
     }
   | Cancel_child_workflow of { seq : int64; reason : string }
   | Request_cancel_activity of { seq : int64 }
+  (** Requests cancellation of a scheduled local activity.  Core keeps this
+      separate from remote activity cancellation because local work has no
+      server task token. *)
+  | Request_cancel_local_activity of { seq : int64 }
   | Start_timer of { seq : int64; start_to_fire_timeout : duration }
   | Cancel_timer of { seq : int64 }
   (** Answers a query request identified by Core. The [query_id] is retained
@@ -970,6 +999,24 @@ let activity_resolution path json =
       let* failure_json = field path "failure" entries in
       let* value = failure (path ^ ".failure") failure_json in
       if String.equal kind "failed" then Ok (Failed value) else Ok (Cancelled value)
+  | "backoff" ->
+      let* entries =
+        exact_object path
+          [ "kind"; "attempt"; "backoff_duration"; "original_schedule_time" ]
+          json
+      in
+      let* attempt_json = field path "attempt" entries in
+      let* attempt = uint32 (path ^ ".attempt") attempt_json in
+      if Int64.equal attempt 0L then
+        Error (invalid (path ^ ".attempt") "local activity backoff attempt must be positive")
+      else
+        let* duration_json = field path "backoff_duration" entries in
+        let* backoff_duration = duration (path ^ ".backoff_duration") duration_json in
+        let* original_json = field path "original_schedule_time" entries in
+        let* original_schedule_time =
+          nullable (path ^ ".original_schedule_time") timestamp original_json
+        in
+        Ok (Backoff { attempt; backoff_duration; original_schedule_time })
   | _ -> Error (invalid (path ^ ".kind") "unknown activity resolution kind")
 
 (** Encodes the activity-resolution oneof. *)
@@ -985,6 +1032,16 @@ let activity_resolution_json = function
   | Cancelled value ->
       let* failure = failure_json value in
       Ok (`Assoc [ ("kind", `String "cancelled"); ("failure", failure) ])
+  | Backoff { attempt; backoff_duration; original_schedule_time } ->
+      Ok
+        (`Assoc
+          [ ("kind", `String "backoff");
+            ("attempt", `Intlit (Int64.to_string attempt));
+            ("backoff_duration", time_json backoff_duration.seconds backoff_duration.nanoseconds);
+            ( "original_schedule_time",
+              match original_schedule_time with
+              | None -> `Null
+              | Some value -> time_json value.seconds value.nanoseconds ) ])
 
 (** Decodes the closed query-answer union. Query success requires one payload;
     query failure retains Core's structured failure for exact error delivery. *)
@@ -2133,7 +2190,75 @@ let completion_command path json =
                retry_policy;
                priority;
                cancellation_type;
-               do_not_eagerly_execute;
+            do_not_eagerly_execute;
+          })
+  | "schedule_local_activity" ->
+      let* entries =
+        exact_object path
+          [
+            "kind";
+            "seq";
+            "activity_id";
+            "activity_type";
+            "attempt";
+            "original_schedule_time";
+            "arguments";
+            "schedule_to_close_timeout";
+            "schedule_to_start_timeout";
+            "start_to_close_timeout";
+            "retry_policy";
+            "local_retry_threshold";
+            "cancellation_type";
+          ]
+          json
+      in
+      let* seq = uint32 (path ^ ".seq") (Option.get (List.assoc_opt "seq" entries)) in
+      let* activity_id = identifier (path ^ ".activity_id") (Option.get (List.assoc_opt "activity_id" entries)) in
+      let* activity_type = identifier (path ^ ".activity_type") (Option.get (List.assoc_opt "activity_type" entries)) in
+      let* attempt = uint32 (path ^ ".attempt") (Option.get (List.assoc_opt "attempt" entries)) in
+      let* original_schedule_time =
+        nullable (path ^ ".original_schedule_time")
+          (fun path json -> timestamp path json)
+          (Option.get (List.assoc_opt "original_schedule_time" entries))
+      in
+      let* arguments = list (path ^ ".arguments") payload (Option.get (List.assoc_opt "arguments" entries)) in
+      let decode_timeout name =
+        nullable (path ^ "." ^ name) duration
+          (Option.get (List.assoc_opt name entries))
+      in
+      let* schedule_to_close_timeout = decode_timeout "schedule_to_close_timeout" in
+      let* schedule_to_start_timeout = decode_timeout "schedule_to_start_timeout" in
+      let* start_to_close_timeout = decode_timeout "start_to_close_timeout" in
+      let* retry_policy =
+        nullable (path ^ ".retry_policy") retry_policy
+          (Option.get (List.assoc_opt "retry_policy" entries))
+      in
+      let* local_retry_threshold = decode_timeout "local_retry_threshold" in
+      let* cancellation_name =
+        string (path ^ ".cancellation_type")
+          (Option.get (List.assoc_opt "cancellation_type" entries))
+      in
+      let* cancellation_type = cancellation_type (path ^ ".cancellation_type") cancellation_name in
+      if Int64.compare attempt 0L <= 0 then
+        Error (invalid (path ^ ".attempt") "local activity attempt must be positive")
+      else if Option.is_none schedule_to_close_timeout && Option.is_none start_to_close_timeout then
+        Error (invalid path "local activity requires schedule-to-close or start-to-close timeout")
+      else
+        Ok
+          (Schedule_local_activity
+             {
+               seq;
+               activity_id;
+               activity_type;
+               attempt;
+               original_schedule_time;
+               arguments;
+               schedule_to_close_timeout;
+               schedule_to_start_timeout;
+               start_to_close_timeout;
+               retry_policy;
+               local_retry_threshold;
+               cancellation_type;
              })
   | "start_child_workflow" ->
       let* entries =
@@ -2195,6 +2320,11 @@ let completion_command path json =
       let* seq_json = field path "seq" entries in
       let* seq = uint32 (path ^ ".seq") seq_json in
       Ok (Request_cancel_activity { seq })
+  | "request_cancel_local_activity" ->
+      let* entries = exact_object path [ "kind"; "seq" ] json in
+      let* seq_json = field path "seq" entries in
+      let* seq = uint32 (path ^ ".seq") seq_json in
+      Ok (Request_cancel_local_activity { seq })
   | "start_timer" ->
       let* entries = exact_object path [ "kind"; "seq"; "start_to_fire_timeout" ] json in
       let* seq_json = field path "seq" entries in
@@ -2286,11 +2416,45 @@ let completion_command_json = function
             ("cancellation_type", `String (cancellation_type_string value.cancellation_type));
             ("do_not_eagerly_execute", `Bool value.do_not_eagerly_execute);
           ])
+  | Schedule_local_activity value ->
+      let* arguments = payloads_json value.arguments in
+      let* retry_policy =
+        match value.retry_policy with
+        | None -> Ok `Null
+        | Some value -> retry_policy_json value
+      in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "schedule_local_activity");
+            ("seq", `Intlit (Int64.to_string value.seq));
+            ("activity_id", `String value.activity_id);
+            ("activity_type", `String value.activity_type);
+            ("attempt", `Intlit (Int64.to_string value.attempt));
+            ( "original_schedule_time",
+              match value.original_schedule_time with
+              | None -> `Null
+              | Some value -> time_json value.seconds value.nanoseconds );
+            ("arguments", arguments);
+            ("schedule_to_close_timeout", optional_duration_json value.schedule_to_close_timeout);
+            ("schedule_to_start_timeout", optional_duration_json value.schedule_to_start_timeout);
+            ("start_to_close_timeout", optional_duration_json value.start_to_close_timeout);
+            ("retry_policy", retry_policy);
+            ("local_retry_threshold", optional_duration_json value.local_retry_threshold);
+            ("cancellation_type", `String (cancellation_type_string value.cancellation_type));
+          ])
   | Request_cancel_activity { seq } ->
       Ok
         (`Assoc
           [
             ("kind", `String "request_cancel_activity");
+            ("seq", `Intlit (Int64.to_string seq));
+          ])
+  | Request_cancel_local_activity { seq } ->
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "request_cancel_local_activity");
             ("seq", `Intlit (Int64.to_string seq));
           ])
   | Start_child_workflow

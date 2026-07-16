@@ -1,4 +1,4 @@
-//! Closed semantic JSON protocol for remote activity tasks and completions.
+//! Closed semantic JSON protocol for activity tasks and completions.
 //!
 //! Task tokens remain opaque canonical base64. Rust alone converts the pinned
 //! Core protobufs; OCaml receives ordinary records and variants with every
@@ -15,7 +15,10 @@ use crate::workflow_protocol::{
     WorkflowPriority,
 };
 
-/// One remote activity task delivered by Core.
+/// One activity task delivered by Core. The same representation is used for
+/// remote server activities and the local-activity lane; Core's internal
+/// `is_local` bit does not change how the registered OCaml implementation is
+/// invoked or how its result is completed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActivityTask {
@@ -25,7 +28,7 @@ pub struct ActivityTask {
     pub variant: ActivityTaskVariant,
 }
 
-/// Closed set of remote activity task variants enabled by this worker.
+/// Closed set of activity task variants enabled by this worker.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityTaskVariant {
@@ -35,7 +38,7 @@ pub enum ActivityTaskVariant {
     Cancel(ActivityCancel),
 }
 
-/// Complete execution context for a remote activity attempt.
+/// Complete execution context for one activity attempt.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActivityStart {
@@ -450,11 +453,6 @@ pub fn task_from_core(
         .ok_or_else(|| workflow_protocol::invalid_core("Core activity variant is absent"))?
     {
         Variant::Start(start) => {
-            if start.is_local {
-                return Err(workflow_protocol::unsupported(
-                    "local activity task is not enabled",
-                ));
-            }
             let execution = start.workflow_execution.as_ref().ok_or_else(|| {
                 workflow_protocol::invalid_core("activity workflow execution is absent")
             })?;

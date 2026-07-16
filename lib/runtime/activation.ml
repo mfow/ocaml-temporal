@@ -8,6 +8,15 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  (** Core asks the language runtime to wait before retrying a local activity.
+      This job deliberately does not resolve the activity future; the context
+      retains its original request and re-emits it after the timer fires. *)
+  | Resolve_local_activity_backoff of {
+      seq : int64;
+      attempt : int64;
+      backoff_milliseconds : int64;
+      original_schedule_time : Temporal_protocol.Workflow_protocol.timestamp option;
+    }
   | Resolve_child_workflow_start of {
       seq : int64;
       result : (string, Temporal_base.Error.t) result;
@@ -111,6 +120,21 @@ type command =
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
+  (** Schedules a local activity on Core's local execution lane. *)
+  | Schedule_local_activity of {
+      seq : int64;
+      activity_id : string;
+      activity_type : string;
+      attempt : int64;
+      original_schedule_time : Temporal_protocol.Workflow_protocol.timestamp option;
+      arguments : Temporal_base.Codec.payload list;
+      schedule_to_close_timeout : int64 option;
+      schedule_to_start_timeout : int64 option;
+      start_to_close_timeout : int64 option;
+      retry_policy : retry_policy option;
+      local_retry_threshold : int64 option;
+      cancellation_type : activity_cancellation_type;
+    }
   | Start_child_workflow of {
       seq : int64;
       id : string;
@@ -124,6 +148,8 @@ type command =
       acknowledgment; the OCaml runtime only emits it once per pending child. *)
   | Cancel_child_workflow of { seq : int64; reason : string }
   | Request_cancel_activity of { seq : int64 }
+  (** Cancels a local activity through Core's local activity manager. *)
+  | Request_cancel_local_activity of { seq : int64 }
   | Start_timer of { seq : int64; milliseconds : int64 }
   | Cancel_timer of { seq : int64 }
   (** Answers a synchronous query without entering the workflow scheduler. *)

@@ -262,8 +262,8 @@ native worker adapter and are not part of the public workflow-authoring API:
 | `worker_wait_workflow` | Wait for workflow readiness without consuming a task | `unit` wake signal |
 | `worker_complete_workflow_json` | Validate and complete one leased workflow activation | `unit` |
 | `worker_reject_workflow_json` | Retire the lease when OCaml cannot decode the exact Rust-produced activation document | `unit` |
-| `worker_try_poll_activity` | Drain one already-ready remote activity task without waiting | semantic activity JSON bytes |
-| `worker_wait_activity` | Wait for remote-activity readiness without consuming a task | `unit` wake signal |
+| `worker_try_poll_activity` | Drain one already-ready remote or local activity task without waiting | semantic activity JSON bytes |
+| `worker_wait_activity` | Wait for activity readiness without consuming a task | `unit` wake signal |
 | `worker_record_activity_heartbeat_json` | Validate and record progress for an outstanding activity lease without completing it; Core reports cancellation, pause, and reset asynchronously in a later `Cancel` task | `unit` acknowledgement |
 | `worker_complete_activity_json` | Validate and complete one leased activity task | `unit` |
 | `worker_reject_activity_json` | Retire the lease when OCaml cannot decode the exact Rust-produced activity document | `unit` |
@@ -418,7 +418,9 @@ validation gracefully finalizes the temporary worker and leaves the client
 available for a corrected retry.
 
 The worker owns two Tokio poll lanes: exactly one calls Core's workflow poll and
-exactly one calls its remote-activity poll. Local activities and Nexus remain
+exactly one calls its activity poll. The activity lane admits both remote and
+local activity tokens; Core marks local tokens and records their results as
+workflow markers rather than sending them to the service. Nexus remains
 disabled. Each lane writes without waiting to its own ready queue. Core's
 configured outstanding-task permits bound the number of queued tasks; using a
 second bounded send would deadlock shutdown if the supervisor joined a lane

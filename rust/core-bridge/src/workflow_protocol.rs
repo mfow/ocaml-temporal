@@ -403,6 +403,15 @@ pub enum ActivityResolution {
     Cancelled {
         failure: Failure,
     },
+    /// Core asks the language runtime to wait before issuing the next local
+    /// activity attempt. This is deliberately not exposed for remote
+    /// activities: only Core's local-activity state machine emits it.
+    Backoff {
+        attempt: u32,
+        backoff_duration: Duration,
+        #[serde(deserialize_with = "required_nullable")]
+        original_schedule_time: Option<Timestamp>,
+    },
 }
 
 /// Why Core could not start a child workflow execution.
@@ -626,6 +635,30 @@ pub enum CompletionCommand {
         cancellation_type: ActivityCancellationType,
         do_not_eagerly_execute: bool,
     },
+    /// Schedules a worker-local activity. Core executes this on its local
+    /// activity lane and records the resolution in workflow history; the
+    /// bridge still transports the command as strict semantic JSON so the
+    /// OCaml scheduler can replay it without protobuf types.
+    ScheduleLocalActivity {
+        seq: u32,
+        activity_id: String,
+        activity_type: String,
+        attempt: u32,
+        #[serde(deserialize_with = "required_nullable")]
+        original_schedule_time: Option<Timestamp>,
+        arguments: Vec<Payload>,
+        #[serde(deserialize_with = "required_nullable")]
+        schedule_to_close_timeout: Option<Duration>,
+        #[serde(deserialize_with = "required_nullable")]
+        schedule_to_start_timeout: Option<Duration>,
+        #[serde(deserialize_with = "required_nullable")]
+        start_to_close_timeout: Option<Duration>,
+        #[serde(deserialize_with = "required_nullable")]
+        retry_policy: Option<RetryPolicy>,
+        #[serde(deserialize_with = "required_nullable")]
+        local_retry_threshold: Option<Duration>,
+        cancellation_type: ActivityCancellationType,
+    },
     /// Starts a child workflow and records the policy used for an explicit
     /// later cancellation command.  Core owns retries, so an optional policy
     /// is carried with the command rather than reimplemented in replayed OCaml
@@ -645,6 +678,10 @@ pub enum CompletionCommand {
         reason: String,
     },
     RequestCancelActivity {
+        seq: u32,
+    },
+    /// Requests cancellation of a local activity through Core's local lane.
+    RequestCancelLocalActivity {
         seq: u32,
     },
     StartTimer {
@@ -1246,6 +1283,32 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                 | ActivityResolution::Cancelled { failure } => {
                     validate_failure(failure, "$.jobs.result.failure")?
                 }
+                ActivityResolution::Backoff {
+                    attempt,
+                    backoff_duration,
+                    original_schedule_time,
+                } => {
+                    if *attempt == 0 {
+                        return Err(ProtocolError::invalid(
+                            "$.jobs.result.attempt",
+                            "local activity backoff attempt must be positive",
+                        ));
+                    }
+                    validate_time(
+                        backoff_duration.seconds,
+                        backoff_duration.nanoseconds,
+                        true,
+                        "$.jobs.result.backoff_duration",
+                    )?;
+                    if let Some(timestamp) = original_schedule_time {
+                        validate_time(
+                            timestamp.seconds,
+                            timestamp.nanoseconds,
+                            false,
+                            "$.jobs.result.original_schedule_time",
+                        )?;
+                    }
+                }
             },
             ActivationJob::ResolveChildWorkflowStart { result, .. } => match result {
                 ChildWorkflowStartResolution::Succeeded { run_id } => {
@@ -1427,6 +1490,60 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                     validate_priority(priority, "$.commands.priority")?;
                 }
             }
+            CompletionCommand::ScheduleLocalActivity {
+                activity_id,
+                activity_type,
+                attempt,
+                original_schedule_time,
+                schedule_to_close_timeout,
+                schedule_to_start_timeout,
+                start_to_close_timeout,
+                retry_policy,
+                local_retry_threshold,
+                ..
+            } => {
+                identifier(activity_id, "$.commands.activity_id")?;
+                identifier(activity_type, "$.commands.activity_type")?;
+                if *attempt == 0 {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.attempt",
+                        "local activity attempt must be positive",
+                    ));
+                }
+                if schedule_to_close_timeout.is_none() && start_to_close_timeout.is_none() {
+                    return Err(ProtocolError::invalid(
+                        "$.commands",
+                        "local activity requires schedule-to-close or start-to-close timeout",
+                    ));
+                }
+                for duration in [
+                    schedule_to_close_timeout,
+                    schedule_to_start_timeout,
+                    start_to_close_timeout,
+                    local_retry_threshold,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    validate_time(
+                        duration.seconds,
+                        duration.nanoseconds,
+                        true,
+                        "$.commands.timeout",
+                    )?;
+                }
+                if let Some(timestamp) = original_schedule_time {
+                    validate_time(
+                        timestamp.seconds,
+                        timestamp.nanoseconds,
+                        false,
+                        "$.commands.original_schedule_time",
+                    )?;
+                }
+                if let Some(retry_policy) = retry_policy {
+                    validate_retry_policy(retry_policy, "$.commands.retry_policy")?;
+                }
+            }
             CompletionCommand::StartChildWorkflow {
                 workflow_id,
                 workflow_type,
@@ -1460,6 +1577,8 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                     ));
                 }
             }
+            CompletionCommand::RequestCancelActivity { .. }
+            | CompletionCommand::RequestCancelLocalActivity { .. } => {}
             CompletionCommand::ContinueAsNew { workflow_type, .. } => {
                 identifier(workflow_type, "$.commands.workflow_type")?;
             }
@@ -2092,6 +2211,7 @@ fn continuation_from_core(
 /// Converts one supported Core activity resolution.
 fn activity_resolution_from_core(
     value: &core_activity::ActivityResolution,
+    is_local: bool,
 ) -> Result<ActivityResolution, CoreConversionError> {
     use core_activity::activity_resolution::Status;
     match value
@@ -2118,7 +2238,37 @@ fn activity_resolution_from_core(
                     .ok_or_else(|| invalid_core("Core cancelled activity has no failure"))?,
             )?,
         }),
-        Status::Backoff(_) => Err(unsupported("local activity backoff is not supported")),
+        Status::Backoff(value) => {
+            if !is_local {
+                return Err(unsupported("remote activity backoff is not supported"));
+            }
+            if value.attempt == 0 {
+                return Err(invalid_core("Core local activity backoff attempt is zero"));
+            }
+            let backoff_duration = value
+                .backoff_duration
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core local activity backoff duration is absent"))
+                .and_then(duration_from_core)?;
+            let original_schedule_time = value
+                .original_schedule_time
+                .as_ref()
+                .map(|timestamp| {
+                    validate_time(timestamp.seconds, timestamp.nanos, false, "$").map_err(
+                        |_| invalid_core("Core local activity schedule timestamp is invalid"),
+                    )?;
+                    Ok(Timestamp {
+                        seconds: timestamp.seconds,
+                        nanoseconds: timestamp.nanos,
+                    })
+                })
+                .transpose()?;
+            Ok(ActivityResolution::Backoff {
+                attempt: value.attempt,
+                backoff_duration,
+                original_schedule_time,
+            })
+        }
     }
 }
 
@@ -2371,6 +2521,7 @@ pub fn activation_from_core(
                                 .result
                                 .as_ref()
                                 .ok_or_else(|| invalid_core("Core activity result is absent"))?,
+                            value.is_local,
                         )?,
                     })
                 }
@@ -2695,8 +2846,52 @@ fn command_to_core(
             versioning_intent: 0,
             priority: priority.as_ref().map(priority_to_core).transpose()?,
         }),
+        CompletionCommand::ScheduleLocalActivity {
+            seq,
+            activity_id,
+            activity_type,
+            attempt,
+            original_schedule_time,
+            arguments,
+            schedule_to_close_timeout,
+            schedule_to_start_timeout,
+            start_to_close_timeout,
+            retry_policy,
+            local_retry_threshold,
+            cancellation_type,
+        } => Variant::ScheduleLocalActivity(core_commands::ScheduleLocalActivity {
+            seq: *seq,
+            activity_id: activity_id.clone(),
+            activity_type: activity_type.clone(),
+            attempt: *attempt,
+            original_schedule_time: original_schedule_time.map(|value| {
+                prost_wkt_types::Timestamp {
+                    seconds: value.seconds,
+                    nanos: value.nanoseconds,
+                }
+            }),
+            headers: Default::default(),
+            arguments: arguments
+                .iter()
+                .map(payload_to_core)
+                .collect::<Result<_, _>>()?,
+            schedule_to_close_timeout: schedule_to_close_timeout.map(duration_to_core),
+            schedule_to_start_timeout: schedule_to_start_timeout.map(duration_to_core),
+            start_to_close_timeout: start_to_close_timeout.map(duration_to_core),
+            retry_policy: retry_policy
+                .as_ref()
+                .map(retry_policy_to_core)
+                .transpose()?,
+            local_retry_threshold: local_retry_threshold.map(duration_to_core),
+            cancellation_type: cancellation_to_core(*cancellation_type),
+        }),
         CompletionCommand::RequestCancelActivity { seq } => {
             Variant::RequestCancelActivity(core_commands::RequestCancelActivity { seq: *seq })
+        }
+        CompletionCommand::RequestCancelLocalActivity { seq } => {
+            Variant::RequestCancelLocalActivity(core_commands::RequestCancelLocalActivity {
+                seq: *seq,
+            })
         }
         CompletionCommand::StartChildWorkflow {
             seq,
@@ -2883,6 +3078,56 @@ fn command_from_core(
                 do_not_eagerly_execute: value.do_not_eagerly_execute,
             })
         }
+        Variant::ScheduleLocalActivity(value) => {
+            if !value.headers.is_empty() {
+                return Err(unsupported(
+                    "Core local activity headers or user metadata are not represented by this protocol",
+                ));
+            }
+            Ok(CompletionCommand::ScheduleLocalActivity {
+                seq: value.seq,
+                activity_id: value.activity_id.clone(),
+                activity_type: value.activity_type.clone(),
+                attempt: value.attempt,
+                original_schedule_time: value.original_schedule_time.as_ref().map(|timestamp| {
+                    Timestamp {
+                        seconds: timestamp.seconds,
+                        nanoseconds: timestamp.nanos,
+                    }
+                }),
+                arguments: value
+                    .arguments
+                    .iter()
+                    .map(payload_from_core)
+                    .collect::<Result<_, _>>()?,
+                schedule_to_close_timeout: value
+                    .schedule_to_close_timeout
+                    .as_ref()
+                    .map(duration_from_core)
+                    .transpose()?,
+                schedule_to_start_timeout: value
+                    .schedule_to_start_timeout
+                    .as_ref()
+                    .map(duration_from_core)
+                    .transpose()?,
+                start_to_close_timeout: value
+                    .start_to_close_timeout
+                    .as_ref()
+                    .map(duration_from_core)
+                    .transpose()?,
+                retry_policy: value
+                    .retry_policy
+                    .as_ref()
+                    .map(retry_policy_from_core)
+                    .transpose()?,
+                local_retry_threshold: value
+                    .local_retry_threshold
+                    .as_ref()
+                    .map(duration_from_core)
+                    .transpose()?,
+                cancellation_type: cancellation_from_core(value.cancellation_type)?,
+            })
+        }
         Variant::StartChildWorkflowExecution(value) => {
             if !value.namespace.is_empty()
                 || !value.task_queue.is_empty()
@@ -2932,6 +3177,9 @@ fn command_from_core(
         }
         Variant::RequestCancelActivity(value) => {
             Ok(CompletionCommand::RequestCancelActivity { seq: value.seq })
+        }
+        Variant::RequestCancelLocalActivity(value) => {
+            Ok(CompletionCommand::RequestCancelLocalActivity { seq: value.seq })
         }
         Variant::StartTimer(value) => Ok(CompletionCommand::StartTimer {
             seq: value.seq,

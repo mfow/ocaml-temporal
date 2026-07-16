@@ -417,6 +417,71 @@ fn converts_start_child_workflow_command() {
     );
 }
 
+/// Proves the local-activity command and its distinct cancellation command are
+/// preserved through the strict semantic JSON protocol and Core protobuf
+/// conversion. Local activities intentionally omit remote task-queue fields,
+/// but retain retry, timeout, attempt, and replay timestamp metadata.
+#[test]
+fn converts_local_activity_and_cancellation_commands() {
+    let input = workflow_protocol::Payload {
+        metadata: [("encoding".to_owned(), b"binary/null".to_vec())].into(),
+        data: Vec::new(),
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "local-run".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::ScheduleLocalActivity {
+                seq: 3,
+                activity_id: "local-1".to_owned(),
+                activity_type: "local".to_owned(),
+                attempt: 1,
+                original_schedule_time: Some(workflow_protocol::Timestamp {
+                    seconds: 10,
+                    nanoseconds: 20,
+                }),
+                arguments: vec![input],
+                schedule_to_close_timeout: None,
+                schedule_to_start_timeout: None,
+                start_to_close_timeout: Some(workflow_protocol::Duration {
+                    seconds: 30,
+                    nanoseconds: 0,
+                }),
+                retry_policy: None,
+                local_retry_threshold: None,
+                cancellation_type:
+                    workflow_protocol::ActivityCancellationType::WaitCancellationCompleted,
+            },
+            workflow_protocol::CompletionCommand::RequestCancelLocalActivity { seq: 3 },
+        ],
+    };
+    let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+    assert!(encoded.contains("schedule_local_activity"));
+    assert!(encoded.contains("request_cancel_local_activity"));
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        completion
+    );
+
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("local completion must be successful");
+    };
+    assert!(matches!(
+        success.commands[0].variant,
+        Some(core_commands::workflow_command::Variant::ScheduleLocalActivity(_))
+    ));
+    assert!(matches!(
+        success.commands[1].variant,
+        Some(core_commands::workflow_command::Variant::RequestCancelLocalActivity(_))
+    ));
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+}
+
 /// Ensures a live worker supplies its configured namespace to Core even
 /// though namespace is intentionally absent from the workflow-level command.
 /// Core copies this field into child failure metadata, including the
@@ -2217,6 +2282,79 @@ fn converts_timeout_failure_info_losslessly() {
             .unwrap_err()
             .code,
         workflow_protocol::CoreConversionErrorCode::InvalidCore
+    );
+}
+
+/// Converts Core's local-activity DoBackoff result and rejects the same result
+/// when Core marks the activity as remote. This keeps the nonterminal retry
+/// signal on the only lane where the language runtime can re-schedule it.
+#[test]
+fn converts_local_activity_backoff_losslessly() {
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::coresdk::{activity_result, workflow_activation};
+
+    let activation = core_activation::WorkflowActivation {
+        run_id: "local-run".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::ResolveActivity(
+                workflow_activation::ResolveActivity {
+                    seq: 7,
+                    result: Some(activity_result::ActivityResolution {
+                        status: Some(activity_result::activity_resolution::Status::Backoff(
+                            activity_result::DoBackoff {
+                                attempt: 2,
+                                backoff_duration: Some(prost_wkt_types::Duration {
+                                    seconds: 3,
+                                    nanos: 400_000_000,
+                                }),
+                                original_schedule_time: Some(prost_wkt_types::Timestamp {
+                                    seconds: 10,
+                                    nanos: 20,
+                                }),
+                            },
+                        )),
+                    }),
+                    is_local: true,
+                },
+            )),
+        }],
+        ..Default::default()
+    };
+    let semantic = workflow_protocol::activation_from_core(&activation).unwrap();
+    assert_eq!(
+        semantic.jobs[0],
+        workflow_protocol::ActivationJob::ResolveActivity {
+            seq: 7,
+            result: workflow_protocol::ActivityResolution::Backoff {
+                attempt: 2,
+                backoff_duration: workflow_protocol::Duration {
+                    seconds: 3,
+                    nanoseconds: 400_000_000,
+                },
+                original_schedule_time: Some(workflow_protocol::Timestamp {
+                    seconds: 10,
+                    nanoseconds: 20,
+                }),
+            },
+        }
+    );
+    let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
+
+    let mut remote = activation;
+    let Some(Variant::ResolveActivity(job)) = remote.jobs[0].variant.as_mut() else {
+        panic!("backoff test job must be ResolveActivity");
+    };
+    job.is_local = false;
+    assert_eq!(
+        workflow_protocol::activation_from_core(&remote)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::Unsupported
     );
 }
 

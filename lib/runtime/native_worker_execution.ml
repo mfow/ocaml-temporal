@@ -357,9 +357,11 @@ let is_terminal completion =
       | Protocol.Continue_as_new _
       | Protocol.Cancel_workflow_execution -> true
       | Protocol.Schedule_activity _
+      | Protocol.Schedule_local_activity _
       | Protocol.Start_child_workflow _
       | Protocol.Cancel_child_workflow _
       | Protocol.Request_cancel_activity _
+      | Protocol.Request_cancel_local_activity _
       | Protocol.Start_timer _
       | Protocol.Cancel_timer _
       | Protocol.Query_result _
@@ -589,6 +591,12 @@ module Make (Supervisor : SUPERVISOR) = struct
               command with
               arguments = List.map copy_payload command.arguments;
             }
+      | Protocol.Schedule_local_activity command ->
+          Protocol.Schedule_local_activity
+            {
+              command with
+              arguments = List.map copy_payload command.arguments;
+            }
       | Protocol.Complete_workflow { result } ->
           Protocol.Complete_workflow { result = Option.map copy_payload result }
       | Protocol.Fail_workflow { failure } ->
@@ -619,6 +627,7 @@ module Make (Supervisor : SUPERVISOR) = struct
           Protocol.Update_response { protocol_instance_id; response }
       | Protocol.Cancel_child_workflow _ as command -> command
       | Protocol.Request_cancel_activity _ as command -> command
+      | Protocol.Request_cancel_local_activity _ as command -> command
       | Protocol.Start_timer _ as command -> command
       | Protocol.Cancel_timer _ as command -> command
       | Protocol.Set_patch_marker _ as command -> command

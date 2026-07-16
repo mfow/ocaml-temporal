@@ -303,6 +303,28 @@ let runtime_activity_result path result =
           failure
       in
       Ok (Error error)
+  | Protocol.Backoff _ ->
+      Error (invalid path "local activity backoff must be handled as a retry job")
+
+(** Converts a Core retry delay to the runtime's millisecond timer unit. Core
+    currently reports retry delays at millisecond precision, but rounding any
+    future sub-millisecond value upward avoids firing the retry before Core's
+    requested deadline. *)
+let milliseconds_of_duration path (duration : Protocol.duration) =
+  if Int64.compare duration.seconds 0L < 0 then
+    Error (invalid path "duration must not be negative")
+  else if duration.nanoseconds < 0 || duration.nanoseconds >= 1_000_000_000 then
+    Error (invalid path "duration nanoseconds are outside protobuf range")
+  else if Int64.compare duration.seconds (Int64.div Int64.max_int 1_000L) > 0 then
+    Error (invalid path "duration exceeds runtime timer range")
+  else
+    let seconds_ms = Int64.mul duration.seconds 1_000L in
+    let fractional_ms =
+      Int64.of_int ((duration.nanoseconds + 999_999) / 1_000_000)
+    in
+    if Int64.compare seconds_ms (Int64.sub Int64.max_int fractional_ms) > 0 then
+      Error (invalid path "duration exceeds runtime timer range")
+    else Ok (Int64.add seconds_ms fractional_ms)
 
 (** Converts the child-start acknowledgment. A successful run ID advances the
     per-sequence lifecycle without completing the child future; start failures
@@ -396,10 +418,24 @@ let runtime_job path = function
             None )
   | Protocol.Resolve_activity { seq; result } ->
       let* () = validate_sequence (path ^ ".seq") seq in
-      let* result = runtime_activity_result (path ^ ".result") result in
-      Ok
-        ( Activation.Resolve_activity { seq; result }, None, None, None,
-          Some (Activity, seq) )
+      begin match result with
+      | Protocol.Backoff { attempt; backoff_duration; original_schedule_time } ->
+          if Int64.compare attempt 0L <= 0 then
+            Error (invalid (path ^ ".result.attempt") "local activity backoff attempt must be positive")
+          else
+            let* backoff_milliseconds =
+              milliseconds_of_duration (path ^ ".result.backoff_duration") backoff_duration
+            in
+            Ok
+              ( Activation.Resolve_local_activity_backoff
+                  { seq; attempt; backoff_milliseconds; original_schedule_time },
+                None, None, None, Some (Activity, seq) )
+      | (Protocol.Completed _ | Protocol.Failed _ | Protocol.Cancelled _) as result ->
+          let* result = runtime_activity_result (path ^ ".result") result in
+          Ok
+            ( Activation.Resolve_activity { seq; result }, None, None, None,
+              Some (Activity, seq) )
+      end
   | Protocol.Resolve_child_workflow_start { seq; result } ->
       let* () = validate_sequence (path ^ ".seq") seq in
       let* result =
@@ -821,6 +857,111 @@ let command_to_protocol command =
                cancellation_type = protocol_cancellation_type cancellation_type;
                do_not_eagerly_execute;
              })
+  | Activation.Schedule_local_activity
+      {
+        seq;
+        activity_id;
+        activity_type;
+        attempt;
+        original_schedule_time;
+        arguments;
+        schedule_to_close_timeout;
+        schedule_to_start_timeout;
+        start_to_close_timeout;
+        retry_policy;
+        local_retry_threshold;
+        cancellation_type;
+      } ->
+      let* () = validate_sequence "$.command.seq" seq in
+      let* () = validate_identifier "$.command.activity_id" activity_id in
+      let* () = validate_identifier "$.command.activity_type" activity_type in
+      let* arguments =
+        let rec loop index reversed = function
+          | [] -> Ok (List.rev reversed)
+          | payload :: rest ->
+              let* payload =
+                protocol_payload
+                  (Printf.sprintf "$.command.arguments[%d]" index)
+                  payload
+              in
+              loop (index + 1) (payload :: reversed) rest
+        in
+        loop 0 [] arguments
+      in
+      let* schedule_to_close_timeout =
+        optional_duration_of_milliseconds
+          "$.command.schedule_to_close_timeout" schedule_to_close_timeout
+      in
+      let* schedule_to_start_timeout =
+        optional_duration_of_milliseconds
+          "$.command.schedule_to_start_timeout" schedule_to_start_timeout
+      in
+      let* start_to_close_timeout =
+        optional_duration_of_milliseconds
+          "$.command.start_to_close_timeout" start_to_close_timeout
+      in
+      let* local_retry_threshold =
+        optional_duration_of_milliseconds
+          "$.command.local_retry_threshold" local_retry_threshold
+      in
+      let* retry_policy =
+        match retry_policy with
+        | None -> Ok None
+        | Some value ->
+            let* initial_interval =
+              duration_of_milliseconds
+                "$.command.retry_policy.initial_interval" value.initial_interval
+            in
+            let* maximum_interval =
+              duration_of_milliseconds
+                "$.command.retry_policy.maximum_interval" value.maximum_interval
+            in
+            let policy =
+              Protocol.
+                {
+                  initial_interval;
+                  backoff_coefficient_bits = value.backoff_coefficient_bits;
+                  maximum_interval;
+                  maximum_attempts = value.maximum_attempts;
+                  non_retryable_error_types = List.map Fun.id value.non_retryable_error_types;
+                }
+            in
+            let* () = Protocol.validate_retry_policy policy |> Result.map_error protocol_error in
+            Ok (Some policy)
+      in
+      let original_schedule_time =
+        match original_schedule_time with
+        | None -> None
+        | Some value ->
+            Some
+              ({ Protocol.seconds = value.seconds; nanoseconds = value.nanoseconds }
+                : Protocol.timestamp)
+      in
+      if Int64.compare attempt 0L <= 0 then
+        Error (invalid "$.command.attempt" "local activity attempt must be positive")
+      else if Option.is_none schedule_to_close_timeout
+              && Option.is_none start_to_close_timeout
+      then
+        Error
+          (invalid "$.command"
+             "local activity requires schedule-to-close or start-to-close timeout")
+      else
+        Ok
+          (Protocol.Schedule_local_activity
+             {
+               seq;
+               activity_id;
+               activity_type;
+               attempt;
+               original_schedule_time;
+               arguments;
+               schedule_to_close_timeout;
+               schedule_to_start_timeout;
+               start_to_close_timeout;
+               retry_policy;
+               local_retry_threshold;
+               cancellation_type = protocol_cancellation_type cancellation_type;
+             })
   | Activation.Start_child_workflow
       { seq; id; name; input; retry_policy; cancellation_type } ->
       let* () = validate_sequence "$.command.seq" seq in
@@ -875,6 +1016,9 @@ let command_to_protocol command =
   | Activation.Request_cancel_activity { seq } ->
       let* () = validate_sequence "$.command.seq" seq in
       Ok (Protocol.Request_cancel_activity { seq })
+  | Activation.Request_cancel_local_activity { seq } ->
+      let* () = validate_sequence "$.command.seq" seq in
+      Ok (Protocol.Request_cancel_local_activity { seq })
   | Activation.Start_timer { seq; milliseconds } ->
       let* () = validate_sequence "$.command.seq" seq in
       let* start_to_fire_timeout =

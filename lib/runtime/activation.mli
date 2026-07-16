@@ -8,6 +8,14 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  (** Core requests a timer before a local activity retry. The activity future
+      remains pending until the retried command resolves it. *)
+  | Resolve_local_activity_backoff of {
+      seq : int64;
+      attempt : int64;
+      backoff_milliseconds : int64;
+      original_schedule_time : Temporal_protocol.Workflow_protocol.timestamp option;
+    }
   (** Acknowledges that a child start was accepted. [Ok run_id] records the
       concrete execution while keeping the child result future pending. *)
   | Resolve_child_workflow_start of {
@@ -105,6 +113,22 @@ type command =
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
+  (** A local activity command executed by Core and resolved through the same
+      activity sequence as a remote activity. *)
+  | Schedule_local_activity of {
+      seq : int64;
+      activity_id : string;
+      activity_type : string;
+      attempt : int64;
+      original_schedule_time : Temporal_protocol.Workflow_protocol.timestamp option;
+      arguments : Temporal_base.Codec.payload list;
+      schedule_to_close_timeout : int64 option;
+      schedule_to_start_timeout : int64 option;
+      start_to_close_timeout : int64 option;
+      retry_policy : retry_policy option;
+      local_retry_threshold : int64 option;
+      cancellation_type : activity_cancellation_type;
+    }
   | Start_child_workflow of {
       seq : int64;
       id : string;
@@ -116,6 +140,8 @@ type command =
   (** Requests cancellation of a pending child workflow. *)
   | Cancel_child_workflow of { seq : int64; reason : string }
   | Request_cancel_activity of { seq : int64 }
+  (** Cancels a local activity through Core's local activity manager. *)
+  | Request_cancel_local_activity of { seq : int64 }
   | Start_timer of { seq : int64; milliseconds : int64 }
   | Cancel_timer of { seq : int64 }
   (** A query answer. A failed result is returned to the query caller and does

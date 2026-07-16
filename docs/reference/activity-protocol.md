@@ -1,15 +1,17 @@
-# OCaml remote activity protocol adapter
+# OCaml activity protocol adapter
 
 `Temporal_protocol.Activity_protocol` is the private OCaml representation of
-the remote activity task and completion JSON exchanged with the Rust Temporal
-Core bridge. It is an internal worker building block, not an API that workflow
-or activity authors construct directly. Rust remains the only protobuf
-boundary; this module sees ordinary OCaml records, variants, byte strings, and
-typed validation failures.
+activity-task and completion JSON exchanged with the Rust Temporal Core bridge.
+The same document shape carries remote server activities and local-activity
+lane tasks; Core's internal local bit does not alter callback or completion
+semantics. It is an internal worker building block, not an API that workflow or
+activity authors construct directly. Rust remains the only protobuf boundary;
+this module sees ordinary OCaml records, variants, byte strings, and typed
+validation failures.
 
 ## Direction and ownership
 
-Rust sends one `task` after Core has leased a remote activity attempt. The task
+Rust sends one `task` after Core has leased an activity attempt. The task
 contains an opaque binary `task_token` and either a complete start context or a
 cancellation update. The native OCaml activity adapter retains the token and
 copies it unchanged into a terminal completion obligation. If native transport

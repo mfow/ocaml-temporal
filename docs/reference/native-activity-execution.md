@@ -233,6 +233,32 @@ An implementation exception is caught at this boundary and becomes a typed
 non-retryable failure.  Exceptions are therefore a last-resort defect guard,
 not the normal way an activity reports an expected failure.
 
+## Local activities
+
+`Temporal.Activity.start_local` and `execute_local` use the same typed activity
+definition and callback registry as remote activities, but emit Core's
+`ScheduleLocalActivity` command. Core runs the callback on its local-activity
+lane in the worker process and records the result in a history marker; no
+activity task is sent to a Temporal task queue. The bridge enables that lane,
+accepts the local token (`is_local = true`), and routes its completion through
+the existing copied-token ledger. A local resolution therefore reaches the
+workflow as the ordinary `ResolveActivity` job and resumes the same typed
+future used by remote activities.
+
+Local commands carry attempt, optional original schedule time, the three local
+timeouts, retry policy, local retry threshold, and cancellation policy. The
+public API deliberately omits remote-only queue, heartbeat, priority, and
+eager-execution controls. Core remains the authority for whether an attempt is
+retried and for the retry policy; it may either retry immediately or return a
+`DoBackoff` resolution when the retry should be delayed. For `DoBackoff`, the
+Rust bridge validates Core's attempt, duration, and original schedule time, and
+the OCaml supervisor starts a deterministic workflow timer. When that timer
+fires it re-emits `ScheduleLocalActivity` with the same activity sequence and
+the attempt/schedule metadata supplied by Core. OCaml therefore never chooses
+retry policy or invents attempt numbers, and a local completion is never
+treated as a remote RPC. Local activities are experimental while live Compose
+coverage and interceptors remain future work.
+
 ## Cancellation
 
 A `Cancel` task has no activity type or input.  The adapter returns a

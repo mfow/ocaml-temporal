@@ -36,6 +36,14 @@ type client_config
     not perform network access; the supervisor sends it to Rust at start. *)
 type worker_config
 
+(** Selects how Temporal routes workflow tasks to this worker. [No_versioning]
+    preserves the existing unversioned behavior while retaining the build ID as
+    worker metadata. [Legacy_build_id] enables Temporal's whole-worker legacy
+    build-ID versioning and routes tasks only when that build ID is eligible. *)
+type worker_versioning =
+  | No_versioning
+  | Legacy_build_id of string
+
 (** Version of the C-compatible interface expected by this OCaml code. *)
 val abi_version : int32
 
@@ -63,10 +71,12 @@ val worker_config :
   namespace:string ->
   task_queue:string ->
   build_id:string ->
+  ?versioning:worker_versioning ->
   max_cached_workflows:int ->
   max_outstanding_workflow_tasks:int ->
   max_concurrent_workflow_task_polls:int ->
   graceful_shutdown_timeout_ms:int64 ->
+  unit ->
   (worker_config, error) result
 
 (** Creates a native runtime after checking that the statically linked bridge

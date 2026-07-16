@@ -18,7 +18,7 @@ let replay_worker_config () =
        ~task_queue:"ocaml-temporal-lifetime" ~build_id:"lifetime-build"
        ~max_cached_workflows:0 ~max_outstanding_workflow_tasks:1
        ~max_concurrent_workflow_task_polls:1
-       ~graceful_shutdown_timeout_ms:1_000L)
+       ~graceful_shutdown_timeout_ms:1_000L ())
 
 (** Waits until a spawned Domain has crossed its OCaml-side launch barrier.
     [Domain.cpu_relax] avoids blocking the main Domain while retaining a

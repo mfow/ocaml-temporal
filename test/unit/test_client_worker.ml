@@ -643,6 +643,31 @@ let test_native_worker_configuration_boundary () =
        ~namespace:"unit-test" ~task_queue:"unit-test" ~workflows:[]
        ~activities:[] ())
 
+(** Public worker options validate legacy routing metadata before any native
+    graph is allocated, retain an immutable cache override, and expose the
+    selected mode through an explicit variant. *)
+let test_worker_options_versioning () =
+  let options =
+    match
+      Temporal.Worker.Options.make
+        ~versioning:(Temporal.Worker.Options.Legacy_build_id "build-v2")
+        ~max_cached_workflows:0 ()
+    with
+    | Ok options -> options
+    | Error _ -> failwith "valid legacy worker options were rejected"
+  in
+  (match Temporal.Worker.Options.versioning options with
+  | Temporal.Worker.Options.Legacy_build_id build_id ->
+      assert (build_id = "build-v2")
+  | Temporal.Worker.Options.No_versioning ->
+      failwith "legacy options were changed to unversioned mode");
+  assert (Temporal.Worker.Options.max_cached_workflows options = Some 0);
+  expect_error "defect"
+    (Temporal.Worker.Options.make
+       ~versioning:(Temporal.Worker.Options.Legacy_build_id "") ());
+  expect_error "defect"
+    (Temporal.Worker.Options.make ~max_cached_workflows:(-1) ())
+
 (** Runs all public worker and client regression assertions. *)
 let () =
   test_duplicate_workflows ();
@@ -667,4 +692,5 @@ let () =
   test_client_identifier_size_validation ();
   test_native_client_configuration_boundary ();
   test_worker_validation_errors ();
-  test_native_worker_configuration_boundary ()
+  test_native_worker_configuration_boundary ();
+  test_worker_options_versioning ()

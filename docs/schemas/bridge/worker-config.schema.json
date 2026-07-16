@@ -9,6 +9,7 @@
     "namespace",
     "task_queue",
     "build_id",
+    "versioning",
     "max_cached_workflows",
     "max_outstanding_workflow_tasks",
     "max_concurrent_workflow_task_polls",
@@ -18,6 +19,26 @@
     "namespace": { "type": "string", "minLength": 1, "description": "Runtime validators enforce the 65536-byte transport ceiling; Core and Server enforce semantic limits." },
     "task_queue": { "type": "string", "minLength": 1, "description": "Runtime validators enforce the 65536-byte transport ceiling; Core and Server enforce semantic limits." },
     "build_id": { "type": "string", "minLength": 1, "description": "Runtime validators enforce the 65536-byte transport ceiling; Core and Server enforce semantic limits." },
+    "versioning": {
+      "description": "Closed worker-routing mode. In legacy mode, build_id must exactly match the top-level build_id; the OCaml and Rust validators enforce that cross-field invariant.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "none" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "build_id"],
+          "properties": {
+            "kind": { "const": "legacy_build_id" },
+            "build_id": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
     "max_cached_workflows": { "type": "integer", "minimum": 0, "maximum": 1000000 },
     "max_outstanding_workflow_tasks": { "type": "integer", "minimum": 1, "maximum": 1000000 },
     "max_concurrent_workflow_task_polls": { "type": "integer", "minimum": 1, "maximum": 1000000 },

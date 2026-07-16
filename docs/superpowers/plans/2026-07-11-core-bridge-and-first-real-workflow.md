@@ -129,7 +129,7 @@ harness under `test/bridge/`.
   owned success/error buffers, zero-length buffers, double-free prevention by
   contract, invalid pointers, and a deliberately caught Rust panic.
 - [x] Define opaque runtime/client/worker handles and a single owned result
-  shape. Keep exported symbols prefixed `ocaml_temporal_core_v1_`.
+  shape. Keep exported symbols prefixed `ocaml_temporal_core_v2_`.
 - [x] Contain every exported function with `catch_unwind`; never unwind across
   C and never expose a Rust layout other than documented `repr(C)` values.
 - [x] Add compile-time header/layout checks and a C executable that links the

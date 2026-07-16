@@ -33,7 +33,7 @@ module Observability = Temporal_base.Observability
 module Control_protocol = Temporal_protocol.Control_protocol
 
 (** Version requested by this binding layer. *)
-let abi_version = 1l
+let abi_version = 2l
 
 (** Private OCaml value implemented in C. It owns a Rust result allocation until
     [decode] frees it or the OCaml garbage collector runs its finalizer. *)
@@ -50,12 +50,20 @@ type client_config = {
   identity : string;
 }
 
+(** Selects whether Core should use no worker versioning or its legacy build-ID
+    routing. The top-level [build_id] remains present in both modes because it
+    is also the worker identity sent in Core metadata. *)
+type worker_versioning =
+  | No_versioning
+  | Legacy_build_id of string
+
 (** Validated workflow-only worker settings retained as ordinary OCaml data
     until the supervisor serializes worker construction. *)
 type worker_config = {
   namespace : string;
   task_queue : string;
   build_id : string;
+  versioning : worker_versioning;
   max_cached_workflows : int;
   max_outstanding_workflow_tasks : int;
   max_concurrent_workflow_task_polls : int;
@@ -292,14 +300,23 @@ let client_config ~target_url ~identity =
         (validate_identifier "identity" identity)
 
 (** Creates workflow-only worker settings after validating every field. *)
-let worker_config ~namespace ~task_queue ~build_id ~max_cached_workflows
+let worker_config ~namespace ~task_queue ~build_id ?(versioning = No_versioning)
+    ~max_cached_workflows
     ~max_outstanding_workflow_tasks ~max_concurrent_workflow_task_polls
-    ~graceful_shutdown_timeout_ms =
+    ~graceful_shutdown_timeout_ms () =
   let validations =
     [
       validate_identifier "namespace" namespace;
       validate_identifier "task_queue" task_queue;
       validate_identifier "build_id" build_id;
+      (match versioning with
+      | No_versioning -> Ok ()
+      | Legacy_build_id versioning_build_id ->
+          (match validate_identifier "versioning.build_id" versioning_build_id with
+          | Error _ as error -> error
+          | Ok () ->
+              if String.equal build_id versioning_build_id then Ok ()
+              else configuration_error "versioning.build_id must match build_id"));
       validate_count ~allow_zero:true "max_cached_workflows"
         max_cached_workflows;
       validate_count ~allow_zero:false "max_outstanding_workflow_tasks"
@@ -333,6 +350,7 @@ let worker_config ~namespace ~task_queue ~build_id ~max_cached_workflows
           namespace;
           task_queue;
           build_id;
+          versioning;
           max_cached_workflows;
           max_outstanding_workflow_tasks;
           max_concurrent_workflow_task_polls;
@@ -355,6 +373,13 @@ let encode_worker_config config =
       ("namespace", `String config.namespace);
       ("task_queue", `String config.task_queue);
       ("build_id", `String config.build_id);
+      ( "versioning",
+        match config.versioning with
+        | No_versioning -> `Assoc [ ("kind", `String "none") ]
+        | Legacy_build_id build_id ->
+            `Assoc
+              [ ("kind", `String "legacy_build_id");
+                ("build_id", `String build_id) ] );
       ("max_cached_workflows", `Int config.max_cached_workflows);
       ( "max_outstanding_workflow_tasks",
         `Int config.max_outstanding_workflow_tasks );

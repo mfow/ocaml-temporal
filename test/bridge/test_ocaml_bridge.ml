@@ -11,7 +11,7 @@ let () =
     (Temporal.Runtime_info.native_bridge_abi_version ()
     = Ok Bridge.abi_version);
   unwrap (Bridge.check_abi_version Bridge.abi_version);
-  (match Bridge.check_abi_version 2l with
+  (match Bridge.check_abi_version 1l with
   | Error { status = Abi_mismatch; message } -> assert (String.length message > 0)
   | _ -> failwith "ABI mismatch was not returned as a typed error");
   let input = Bytes.init 256 Char.chr in
@@ -41,6 +41,7 @@ let () =
        ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
        ~max_cached_workflows:100 ~max_outstanding_workflow_tasks:100
        ~max_concurrent_workflow_task_polls:1 ~graceful_shutdown_timeout_ms:1_000L
+       ()
    with
   | Error { status = Configuration; message } ->
       assert
@@ -53,6 +54,7 @@ let () =
        ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
        ~max_cached_workflows:0 ~max_outstanding_workflow_tasks:100
        ~max_concurrent_workflow_task_polls:1 ~graceful_shutdown_timeout_ms:1_000L
+       ()
    with
   | Error { status = Configuration; message } ->
       assert (String.starts_with ~prefix:"namespace must not contain NUL" message)
@@ -63,7 +65,7 @@ let () =
          ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
          ~max_cached_workflows:100 ~max_outstanding_workflow_tasks:100
          ~max_concurrent_workflow_task_polls:5
-         ~graceful_shutdown_timeout_ms:1_000L)
+         ~graceful_shutdown_timeout_ms:1_000L ())
   in
   (match Bridge.worker_start runtime worker_config with
   | Error { status = Invalid_state; message } ->

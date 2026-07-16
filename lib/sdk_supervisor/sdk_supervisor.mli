@@ -380,10 +380,12 @@ module Native : sig
     namespace:string ->
     task_queue:string ->
     build_id:string ->
+    ?versioning:Temporal_core_bridge.Native_bridge.worker_versioning ->
     max_cached_workflows:int ->
     max_outstanding_workflow_tasks:int ->
     max_concurrent_workflow_task_polls:int ->
     graceful_shutdown_timeout_ms:int64 ->
+    unit ->
     (worker_config, Temporal_core_bridge.Native_bridge.error) result
 
   (** Starts a dedicated owner Domain and creates the real Rust runtime. *)

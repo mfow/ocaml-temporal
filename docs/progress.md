@@ -29,6 +29,17 @@ expanded cases against Temporal Server and PostgreSQL. It covers all three
 transitions with separately compiled workers, exact normalized history and
 marker assertions, worker handoff evidence, and cleanup.
 
+## 2026-07-16: Legacy build-ID worker routing boundary
+
+`Temporal.Worker.Options` now provides an immutable, typed construction
+surface for selecting `No_versioning` or legacy whole-worker build-ID routing.
+The OCaml bridge emits a closed `versioning` JSON object, and Rust rejects
+unknown modes, malformed nested fields, and mismatched repeated build IDs
+before constructing Temporal Core's `LegacyBuildIdBased` strategy. The bridge
+schema, raw ABI fixtures, OCaml option tests, and Rust mapping tests cover both
+the default and legacy paths. A dedicated live routing/compatibility gate and
+modern deployment-based versioning remain separate follow-up work.
+
 ## 2026-07-15: Workflow patch deprecation surface
 
 `Temporal.Workflow.deprecate_patch ~id` now records the lifecycle phase after
@@ -2014,7 +2025,7 @@ for OCaml 5.3 through 5.5 and native amd64/arm64.
 
 Status: verified.
 
-The Rust bridge now exports a version-1 C ABI with explicitly numbered status
+The Rust bridge now exports a version-2 C ABI with explicitly numbered status
 codes and one documented `repr(C)` result shape. Success and error bytes are
 Rust-owned, empty buffers have the canonical null/zero representation, and one
 idempotent disposal function clears both allocations. The C header reserves
@@ -2045,13 +2056,18 @@ Core client handle is an internal connection component; worker polling,
 deterministic workflow execution, replay, and workflow command production are
 first-class SDK responsibilities alongside start/result client operations.
 
+The worker-versioning contract subsequently bumped this bridge to ABI v2. The
+v2 header, Rust symbols, OCaml negotiation constant, and bilateral tests now
+reject both the previous ABI and future unsupported numbers before any worker
+JSON is accepted.
+
 ## 2026-07-11: OCaml-owned native static link
 
 Status: verified locally and across the complete Linux and native desktop CI
 matrix.
 
 The public OCaml package now links the project Rust bridge through private C
-stubs. `Temporal.Runtime_info.native_bridge_abi_version` negotiates ABI v1 from
+stubs. `Temporal.Runtime_info.native_bridge_abi_version` negotiates ABI v2 from
 an OCaml-built executable, while binary echo and bounded-wait conformance
 operations exercise owned buffers and blocking calls in the internal test
 surface.

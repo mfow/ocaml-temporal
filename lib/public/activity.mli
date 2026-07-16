@@ -47,7 +47,8 @@ module Priority : sig
 
   (** Validates and constructs priority metadata.  At least one field must be
       supplied.  [priority_key] is a positive integer; [fairness_key] is at
-      most 64 UTF-8 bytes; and [fairness_weight] is finite in [0.001, 1000.0]. *)
+      most 64 UTF-8 bytes; and [fairness_weight] is zero (the server default)
+      or finite in [0.001, 1000.0]. *)
   val make :
     ?priority_key:int ->
     ?fairness_key:string ->

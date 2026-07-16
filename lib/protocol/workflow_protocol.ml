@@ -1264,7 +1264,7 @@ let workflow_priority path json =
   if String.length fairness_key > 64 then Error (invalid (path ^ ".fairness_key") "fairness key exceeds Core's 64-byte limit")
   else if String.contains fairness_key '\000' then
     Error (invalid (path ^ ".fairness_key") "fairness key contains a NUL byte")
-  else if not (Control.valid_utf_8 fairness_key) then
+  else if not (valid_utf_8 fairness_key) then
     Error (invalid (path ^ ".fairness_key") "fairness key is not valid UTF-8")
   else
     let* bits_json = field path "fairness_weight_bits" entries in

@@ -97,7 +97,7 @@
         "fairness_key": {"type": "string", "maxLength": 64, "pattern": "^[^\\u0000]*$"},
         "fairness_weight_bits": {"type": "integer", "minimum": 0, "maximum": 4294967295}
       },
-      "description": "Optional Temporal activity scheduling metadata. Zero or empty members request the server defaults; a positive key is ordered before larger keys."
+      "description": "Optional Temporal activity scheduling metadata. Zero or empty members request the server defaults; a positive key is ordered before larger keys, and a zero fairness weight requests the default weighting."
     },
     "command": {
       "oneOf": [

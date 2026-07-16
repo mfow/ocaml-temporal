@@ -88,8 +88,8 @@ module Priority = struct
   let validate_weight = function
     | None -> Ok ()
     | Some value
-      when Float.is_nan value || Float.is_infinite value || value < 0.001
-           || value > 1000.0 ->
+      when Float.is_nan value || Float.is_infinite value
+           || (value <> 0.0 && value < 0.001) || value > 1000.0 ->
         Error
           (Error.defect
              ~message:"priority fairness weight must be finite and in [0.001, 1000]")
@@ -143,7 +143,7 @@ module Priority = struct
                         Temporal_base.Priority.make ~priority_key
                           ~fairness_key:(Option.value fairness_key ~default:"")
                           ~fairness_weight_bits;
-                    })))
+                    }))
 
   (** Alias for callers who prefer constructor terminology. *)
   let create = make

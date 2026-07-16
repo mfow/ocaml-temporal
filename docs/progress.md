@@ -2025,7 +2025,7 @@ for OCaml 5.3 through 5.5 and native amd64/arm64.
 
 Status: verified.
 
-The Rust bridge now exports a version-1 C ABI with explicitly numbered status
+The Rust bridge now exports a version-2 C ABI with explicitly numbered status
 codes and one documented `repr(C)` result shape. Success and error bytes are
 Rust-owned, empty buffers have the canonical null/zero representation, and one
 idempotent disposal function clears both allocations. The C header reserves
@@ -2056,13 +2056,18 @@ Core client handle is an internal connection component; worker polling,
 deterministic workflow execution, replay, and workflow command production are
 first-class SDK responsibilities alongside start/result client operations.
 
+The worker-versioning contract subsequently bumped this bridge to ABI v2. The
+v2 header, Rust symbols, OCaml negotiation constant, and bilateral tests now
+reject both the previous ABI and future unsupported numbers before any worker
+JSON is accepted.
+
 ## 2026-07-11: OCaml-owned native static link
 
 Status: verified locally and across the complete Linux and native desktop CI
 matrix.
 
 The public OCaml package now links the project Rust bridge through private C
-stubs. `Temporal.Runtime_info.native_bridge_abi_version` negotiates ABI v1 from
+stubs. `Temporal.Runtime_info.native_bridge_abi_version` negotiates ABI v2 from
 an OCaml-built executable, while binary echo and bounded-wait conformance
 operations exercise owned buffers and blocking calls in the internal test
 surface.

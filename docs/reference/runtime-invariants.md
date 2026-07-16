@@ -167,7 +167,7 @@ and bridge, read the [documentation guide](../README.md) first.
   remains the primary result. A retained Cancel is different: it is only an
   update to the Start's shared token, so rejecting that document removes the
   one semantic update without retiring the Start's native completion debt.
-- Native `Not_ready` is represented as `Ok None`. ABI version 1 also exposes
+- Native `Not_ready` is represented as `Ok None`. ABI version 2 also exposes
   bounded `Wait_workflow` and `Wait_activity` readiness operations. Only the
   owner-Domain supervisor may invoke them; the C boundary releases the OCaml
   runtime lock while Rust waits, and no workflow fiber or effect scheduler

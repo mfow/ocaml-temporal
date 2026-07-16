@@ -11,7 +11,7 @@ let () =
     (Temporal.Runtime_info.native_bridge_abi_version ()
     = Ok Bridge.abi_version);
   unwrap (Bridge.check_abi_version Bridge.abi_version);
-  (match Bridge.check_abi_version 2l with
+  (match Bridge.check_abi_version 1l with
   | Error { status = Abi_mismatch; message } -> assert (String.length message > 0)
   | _ -> failwith "ABI mismatch was not returned as a typed error");
   let input = Bytes.init 256 Char.chr in

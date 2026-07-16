@@ -1,17 +1,16 @@
 #!/bin/sh
 set -eu
 
-# Validates one normalized history snapshot from the old/new workflow-patch
-# acceptance.  The contract proves an actual Temporal history transition, not
-# a worker log: a legacy execution has no marker and schedules the legacy
-# activity after replay, while a new execution keeps one Core marker and
-# schedules the patched activity.
+# Validates one normalized history snapshot from the workflow-patch lifecycle
+# acceptance. The contract proves actual Temporal history transitions rather
+# than worker logs: patch-in keeps a false marker, deprecation replay preserves
+# that marker, and removal replay preserves a true deprecated marker.
 
 # Prints the command-line contract and exits with the conventional usage code.
 usage() {
   cat >&2 <<'EOF'
 usage: validate-patch-replay.sh \
-       --mode legacy-initial|legacy-terminal|new-initial|new-terminal \
+       --mode legacy-initial|legacy-terminal|new-initial|new-terminal|removal-initial|removal-terminal \
        --history FILE --workflow-id ID --run-id ID --patch-id ID \
        --diagnostics FILE [--initial-history FILE]
 EOF
@@ -105,11 +104,27 @@ case "$mode" in
     stage=initial
     expected_marker_count=1
     expected_activity=smoke.patch_replay_history.patched_activity
+    expected_marker_deprecated=false
     ;;
   new-terminal)
     scenario=new
     stage=terminal
     expected_marker_count=1
+    expected_activity=smoke.patch_replay_history.patched_activity
+    expected_marker_deprecated=false
+    ;;
+  removal-initial)
+    scenario=removal
+    stage=initial
+    expected_marker_count=1
+    expected_marker_deprecated=true
+    expected_activity=smoke.patch_replay_history.patched_activity
+    ;;
+  removal-terminal)
+    scenario=removal
+    stage=terminal
+    expected_marker_count=1
+    expected_marker_deprecated=true
     expected_activity=smoke.patch_replay_history.patched_activity
     ;;
   *)
@@ -169,6 +184,7 @@ validate_history_shape() {
     --arg expected_run "$run_id" \
     --arg expected_patch "$patch_id" \
     --argjson event_types "$event_types" \
+    --argjson expected_marker_deprecated "${expected_marker_deprecated:-null}" \
     '
       def identifier:
         type == "string" and length > 0 and length <= 65536
@@ -188,7 +204,7 @@ validate_history_shape() {
                and .marker_name == "core_patch"
                and .patch_id == $expected_patch
                and (.patch_id | identifier)
-               and .deprecated == false
+               and .deprecated == $expected_marker_deprecated
              else
                (keys | sort) == ["event_id", "type"]
              end);

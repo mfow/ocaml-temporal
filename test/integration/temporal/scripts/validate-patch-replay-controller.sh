@@ -2,7 +2,7 @@
 set -eu
 
 # Validates the ordered, payload-free lifecycle record produced by the live
-# old/new patch replay controller.  It intentionally records only observable
+# patch lifecycle replay controller. It intentionally records only observable
 # facts: distinct containers, exact run identities, normalized-history marker
 # counts, and the branch selected by the durable activity type.  It does not
 # claim internal SDK decisions or commands that the controller cannot observe.
@@ -13,7 +13,8 @@ usage() {
 usage: validate-patch-replay-controller.sh \
        --controller FILE \
        --legacy-workflow-id ID --legacy-run-id ID \
-       --new-workflow-id ID --new-run-id ID
+       --new-workflow-id ID --new-run-id ID \
+       --removal-workflow-id ID --removal-run-id ID
 EOF
   exit 2
 }
@@ -30,6 +31,8 @@ legacy_workflow_id=''
 legacy_run_id=''
 new_workflow_id=''
 new_run_id=''
+removal_workflow_id=''
+removal_run_id=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --controller)
@@ -57,6 +60,16 @@ while [ "$#" -gt 0 ]; do
       new_run_id=$2
       shift 2
       ;;
+    --removal-workflow-id)
+      [ "$#" -ge 2 ] || usage
+      removal_workflow_id=$2
+      shift 2
+      ;;
+    --removal-run-id)
+      [ "$#" -ge 2 ] || usage
+      removal_run_id=$2
+      shift 2
+      ;;
     --help|-h)
       usage
       ;;
@@ -71,12 +84,14 @@ done
 [ -n "$legacy_run_id" ] || usage
 [ -n "$new_workflow_id" ] || usage
 [ -n "$new_run_id" ] || usage
+[ -n "$removal_workflow_id" ] || usage
+[ -n "$removal_run_id" ] || usage
 [ -r "$controller" ] || fail "controller file is not readable: $controller"
 
 jq_bin=${JQ_BIN:-jq}
 command -v "$jq_bin" >/dev/null 2>&1 || fail "jq is required (set JQ_BIN to its path)"
 
-# The document has a fixed cardinality because the controller executes two
+# The document has a fixed cardinality because the controller executes three
 # complete source-replacement scenarios in one Compose stack.  Position-based
 # checking makes temporal order explicit: a terminal history or cleanup record
 # cannot be accepted before the corresponding generation has been replaced.
@@ -85,6 +100,8 @@ if ! "$jq_bin" -e \
   --arg legacy_run "$legacy_run_id" \
   --arg new_workflow "$new_workflow_id" \
   --arg new_run "$new_run_id" \
+  --arg removal_workflow "$removal_workflow_id" \
+  --arg removal_run "$removal_run_id" \
   '
     def identifier:
       type == "string" and length > 0 and length <= 65536
@@ -141,13 +158,14 @@ if ! "$jq_bin" -e \
       and (.container_id | container_id)
       and .worker_version == $worker_version
       and .readiness_generation == 2 and .fresh_container == true;
-    def replay_observed($scenario; $branch; $marker_count):
+    def replay_observed($scenario; $branch; $marker_count; $marker_deprecated):
       type == "object"
-      and (keys | sort) == ["branch", "generation", "history_length", "is_replaying", "marker_count", "scenario", "status", "step"]
+      and (keys | sort) == ["branch", "generation", "history_length", "is_replaying", "marker_count", "marker_deprecated", "scenario", "status", "step"]
       and .step == "replay_observed" and .status == "ok"
       and .scenario == $scenario and .generation == 2
       and .is_replaying == true and (.history_length | positive_signed_64)
-      and .branch == $branch and .marker_count == $marker_count;
+      and .branch == $branch and .marker_count == $marker_count
+      and .marker_deprecated == $marker_deprecated;
     def driver_completed($scenario):
       type == "object"
       and (keys | sort) == ["outcome", "scenario", "status", "step"]
@@ -159,19 +177,21 @@ if ! "$jq_bin" -e \
       and .step == "postgres_volume_removed" and .status == "ok"
       and .remaining_project_volumes == 0;
     type == "object"
-    and (keys | sort) == ["events", "legacy_run_id", "legacy_workflow_id", "new_run_id", "new_workflow_id"]
+    and (keys | sort) == ["events", "legacy_run_id", "legacy_workflow_id", "new_run_id", "new_workflow_id", "removal_run_id", "removal_workflow_id"]
     and .legacy_workflow_id == $legacy_workflow and (.legacy_workflow_id | identifier)
     and .legacy_run_id == $legacy_run and (.legacy_run_id | identifier)
     and .new_workflow_id == $new_workflow and (.new_workflow_id | identifier)
     and .new_run_id == $new_run and (.new_run_id | identifier)
-    and (.events | type == "array" and length == 22)
+    and .removal_workflow_id == $removal_workflow and (.removal_workflow_id | identifier)
+    and .removal_run_id == $removal_run and (.removal_run_id | identifier)
+    and (.events | type == "array" and length == 32)
     and (.events[0] | stack_ready)
     and (.events[1] | driver_accepted("legacy"; $legacy_workflow; $legacy_run))
     and (.events[2] | history_checked("legacy"; "initial"))
     and (.events[3] | worker_stopped("legacy"; 1; "legacy"))
     and (.events[4] | worker_removed("legacy"; 1))
     and (.events[5] | worker_ready("legacy"; "patched"))
-    and (.events[6] | replay_observed("legacy"; "old"; 0))
+    and (.events[6] | replay_observed("legacy"; "old"; 0; null))
     # The runner joins the client driver before it asks Temporal for the
     # terminal snapshot.  The evidence order must mirror that real operation:
     # a terminal history check is not claimed before driver completion.
@@ -183,13 +203,23 @@ if ! "$jq_bin" -e \
     and (.events[12] | history_checked("new"; "initial"))
     and (.events[13] | worker_stopped("new"; 1; "patched"))
     and (.events[14] | worker_removed("new"; 1))
-    and (.events[15] | worker_ready("new"; "patched"))
-    and (.events[16] | replay_observed("new"; "new"; 1))
+    and (.events[15] | worker_ready("new"; "deprecated"))
+    and (.events[16] | replay_observed("new"; "new"; 1; false))
     and (.events[17] | driver_completed("new"))
     and (.events[18] | history_checked("new"; "terminal"))
-    and (.events[19] | worker_stopped("new"; 2; "patched"))
+    and (.events[19] | worker_stopped("new"; 2; "deprecated"))
     and (.events[20] | worker_removed("new"; 2))
-    and (.events[21] | volume_removed)
+    and (.events[21] | driver_accepted("removal"; $removal_workflow; $removal_run))
+    and (.events[22] | history_checked("removal"; "initial"))
+    and (.events[23] | worker_stopped("removal"; 1; "deprecated"))
+    and (.events[24] | worker_removed("removal"; 1))
+    and (.events[25] | worker_ready("removal"; "removed"))
+    and (.events[26] | replay_observed("removal"; "new"; 1; true))
+    and (.events[27] | driver_completed("removal"))
+    and (.events[28] | history_checked("removal"; "terminal"))
+    and (.events[29] | worker_stopped("removal"; 2; "removed"))
+    and (.events[30] | worker_removed("removal"; 2))
+    and (.events[31] | volume_removed)
     # Each replaced worker must be gone before a fresh generation-two
     # container is trusted, and generation two must be stopped and removed
     # after the exact terminal-history check.
@@ -201,12 +231,18 @@ if ! "$jq_bin" -e \
     and (.events[13].container_id != .events[15].container_id)
     and (.events[15].container_id == .events[19].container_id)
     and (.events[19].container_id == .events[20].container_id)
+    and (.events[23].container_id == .events[24].container_id)
+    and (.events[23].container_id != .events[25].container_id)
+    and (.events[25].container_id == .events[29].container_id)
+    and (.events[29].container_id == .events[30].container_id)
     and ([.events[3].container_id, .events[5].container_id,
-          .events[13].container_id, .events[15].container_id]
-         | unique | length == 4)
+          .events[13].container_id, .events[15].container_id,
+          .events[23].container_id, .events[25].container_id]
+         | unique | length == 6)
   ' "$controller" >/dev/null; then
-  fail "controller document does not match the strict two-scenario lifecycle contract"
+  fail "controller document does not match the strict three-scenario lifecycle contract"
 fi
 
-printf 'patch_replay_controller legacy_workflow_id=%s legacy_run_id=%s new_workflow_id=%s new_run_id=%s steps=22 volume_removed=true\n' \
-  "$legacy_workflow_id" "$legacy_run_id" "$new_workflow_id" "$new_run_id"
+printf 'patch_replay_controller legacy_workflow_id=%s legacy_run_id=%s new_workflow_id=%s new_run_id=%s removal_workflow_id=%s removal_run_id=%s steps=32 volume_removed=true\n' \
+  "$legacy_workflow_id" "$legacy_run_id" "$new_workflow_id" "$new_run_id" \
+  "$removal_workflow_id" "$removal_run_id"

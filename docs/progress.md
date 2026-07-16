@@ -14,6 +14,21 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-16: Live workflow patch lifecycle gate verified
+
+The dedicated real-Temporal patch target now adds active-to-deprecated and
+deprecated-to-removed replay to its marker-free patch-in case. Four separately
+compiled OCaml worker sources make the transition observable: active code is
+replaced by deprecation-only code, and a fresh deprecated-marker history is
+then replaced by code containing no patch API. Strict normalized histories
+preserve the exact initial prefix and observed marker deprecation state, while
+controller evidence requires distinct containers and generation-two replay.
+
+The Docker-free contract passes, and the complete [PR #356 GitHub Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271) verifies the
+expanded cases against Temporal Server and PostgreSQL. It covers all three
+transitions with separately compiled workers, exact normalized history and
+marker assertions, worker handoff evidence, and cleanup.
+
 ## 2026-07-15: Workflow patch deprecation surface
 
 `Temporal.Workflow.deprecate_patch ~id` now records the lifecycle phase after

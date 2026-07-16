@@ -3,8 +3,8 @@ set -eu
 
 # Exercises the complete offline patch-replay acceptance protocol.  This is a
 # fast, Docker-free gate for the exact scripts that the live Compose controller
-# invokes: both source histories, Native_worker diagnostics, strict Core marker
-# decoding, controller ordering, and representative tampering attempts.
+# invokes: all three source transitions, Native_worker diagnostics, strict Core
+# marker decoding, controller ordering, and representative tampering attempts.
 
 root=$(CDPATH='' cd -- "$(dirname "$0")/../../../.." && pwd)
 fixture="$root/test/integration/temporal/fixtures/patch-replay"
@@ -16,6 +16,8 @@ legacy_workflow_id=two-binary-patch-replay-legacy
 legacy_run_id=11111111-1111-4111-8111-111111111111
 new_workflow_id=two-binary-patch-replay-new
 new_run_id=22222222-2222-4222-8222-222222222222
+removal_workflow_id=two-binary-patch-replay-removal
+removal_run_id=33333333-3333-4333-8333-333333333333
 patch_id=smoke.patch_replay_history.activity.v1
 # This is inside the signed-64 range section that was previously easy to omit
 # from hand-written decimal regular expressions.  The second value is exactly
@@ -36,6 +38,10 @@ for file in \
   "$fixture/new.history.terminal.json" \
   "$fixture/new.diagnostics.initial.json" \
   "$fixture/new.diagnostics.json" \
+  "$fixture/removal.history.initial.json" \
+  "$fixture/removal.history.terminal.json" \
+  "$fixture/removal.diagnostics.initial.json" \
+  "$fixture/removal.diagnostics.json" \
   "$fixture/controller.json" \
   "$root/docs/schemas/acceptance/patch-replay-history.schema.json" \
   "$root/docs/schemas/acceptance/patch-replay-diagnostics.schema.json" \
@@ -52,6 +58,16 @@ expect_failure() {
     echo "expected command to fail: $*" >&2
     exit 1
   fi
+}
+
+# Applies the complete three-scenario identity contract consistently in every
+# positive and tamper case below. Keeping these arguments in one helper avoids
+# accidentally testing a reduced controller surface after adding a scenario.
+validate_controller() {
+  sh "$controller_validator" --controller "$1" \
+    --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
+    --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id" \
+    --removal-workflow-id "$removal_workflow_id" --removal-run-id "$removal_run_id"
 }
 
 # Tests a JSON Schema regex directly as well as exercising the shell
@@ -131,13 +147,23 @@ sh "$validator" \
   --workflow-id "$new_workflow_id" \
   --run-id "$new_run_id" \
   --patch-id "$patch_id" >/dev/null
+sh "$validator" \
+  --mode removal-initial \
+  --history "$fixture/removal.history.initial.json" \
+  --diagnostics "$fixture/removal.diagnostics.initial.json" \
+  --workflow-id "$removal_workflow_id" \
+  --run-id "$removal_run_id" \
+  --patch-id "$patch_id" >/dev/null
+sh "$validator" \
+  --mode removal-terminal \
+  --history "$fixture/removal.history.terminal.json" \
+  --initial-history "$fixture/removal.history.initial.json" \
+  --diagnostics "$fixture/removal.diagnostics.json" \
+  --workflow-id "$removal_workflow_id" \
+  --run-id "$removal_run_id" \
+  --patch-id "$patch_id" >/dev/null
 
-sh "$controller_validator" \
-  --controller "$fixture/controller.json" \
-  --legacy-workflow-id "$legacy_workflow_id" \
-  --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" \
-  --new-run-id "$new_run_id" >/dev/null
+validate_controller "$fixture/controller.json" >/dev/null
 
 # Recreate the protobuf-JSON shape emitted by the Temporal CLI for a fresh
 # patched initial history.  The normalizer must recover only the closed marker
@@ -177,6 +203,34 @@ sh "$normalizer" \
   <"$tmp/cli-new-initial.json"
 jq -e --slurpfile expected "$fixture/new.history.initial.json" \
   '. == $expected[0]' "$tmp/normalized-new-initial.json" >/dev/null
+
+# The same Core payload shape carries the deprecation state used by the
+# removal scenario. Prove the normalizer retains true rather than merely
+# accepting the hand-written normalized fixture.
+jq --arg workflow_id "$removal_workflow_id" --arg run_id "$removal_run_id" '
+  .workflowExecution = {workflowId: $workflow_id, runId: $run_id}
+  | .history.events[0].workflowExecutionStartedEventAttributes.workflowId = $workflow_id
+  | .history.events[4].markerRecordedEventAttributes.details["patch-data"].payloads[0].data =
+      ({id: "smoke.patch_replay_history.activity.v1", deprecated: true} | tojson | @base64)
+' "$tmp/cli-new-initial.json" >"$tmp/cli-removal-initial.json"
+sh "$normalizer" \
+  --workflow-id "$removal_workflow_id" \
+  --run-id "$removal_run_id" \
+  --output "$tmp/normalized-removal-initial.json" \
+  <"$tmp/cli-removal-initial.json"
+jq -e --slurpfile expected "$fixture/removal.history.initial.json" \
+  '. == $expected[0]' "$tmp/normalized-removal-initial.json" >/dev/null
+
+# The marker payload must carry a JSON boolean, not a truthy string. The
+# normalizer rejects this at the raw Core-payload boundary before a normalized
+# history can misrepresent the marker lifecycle.
+jq '.history.events[4].markerRecordedEventAttributes.details["patch-data"].payloads[0].data =
+      ({id: "smoke.patch_replay_history.activity.v1", deprecated: "true"} | tojson | @base64)' \
+  "$tmp/cli-removal-initial.json" >"$tmp/cli-removal-string-deprecated.json"
+expect_failure sh "$normalizer" \
+  --workflow-id "$removal_workflow_id" --run-id "$removal_run_id" \
+  --output "$tmp/normalized-removal-string-deprecated.json" \
+  <"$tmp/cli-removal-string-deprecated.json"
 
 # `workflow show` may return a top-level HistoryEvent response with no
 # enclosing run identity.  The normalizer may label that event list with its
@@ -350,18 +404,12 @@ expect_failure sh "$validator" \
 jq --arg history_length "$high_valid_signed_64" \
   '.events[6].history_length = $history_length' "$fixture/controller.json" \
   >"$tmp/controller-large-history-length.json"
-sh "$controller_validator" \
-  --controller "$tmp/controller-large-history-length.json" \
-  --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id" >/dev/null
+validate_controller "$tmp/controller-large-history-length.json" >/dev/null
 
 jq --arg history_length "$outside_signed_64" \
   '.events[6].history_length = $history_length' "$fixture/controller.json" \
   >"$tmp/controller-outside-history-length.json"
-expect_failure sh "$controller_validator" \
-  --controller "$tmp/controller-outside-history-length.json" \
-  --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id"
+expect_failure validate_controller "$tmp/controller-outside-history-length.json"
 
 # A legacy history must stay marker-free, including its terminal snapshot.
 jq '.events[4:4] += [{
@@ -384,6 +432,15 @@ expect_failure sh "$validator" \
   --diagnostics "$fixture/new.diagnostics.initial.json" \
   --workflow-id "$new_workflow_id" --run-id "$new_run_id" --patch-id "$patch_id"
 
+# The removal generation is safe only after a true deprecated marker. A
+# structurally valid active marker must not be accepted as removal evidence.
+jq '.events[4].deprecated = false' \
+  "$fixture/removal.history.initial.json" >"$tmp/removal-initial-active-marker.json"
+expect_failure sh "$validator" \
+  --mode removal-initial --history "$tmp/removal-initial-active-marker.json" \
+  --diagnostics "$fixture/removal.diagnostics.initial.json" \
+  --workflow-id "$removal_workflow_id" --run-id "$removal_run_id" --patch-id "$patch_id"
+
 jq '.events[5:5] += [{
   event_id: "6", type: "MarkerRecorded", marker_name: "core_patch",
   patch_id: "smoke.patch_replay_history.activity.v1", deprecated: false
@@ -398,6 +455,15 @@ jq '.events[4].patch_id = "different.patch"' \
   "$fixture/new.history.initial.json" >"$tmp/new-initial-wrong-patch.json"
 expect_failure sh "$validator" \
   --mode new-initial --history "$tmp/new-initial-wrong-patch.json" \
+  --diagnostics "$fixture/new.diagnostics.initial.json" \
+  --workflow-id "$new_workflow_id" --run-id "$new_run_id" --patch-id "$patch_id"
+
+# Active-to-deprecated replay must retain the original false marker; a true
+# marker here would describe a different lifecycle history.
+jq '.events[4].deprecated = true' \
+  "$fixture/new.history.initial.json" >"$tmp/new-initial-deprecated-marker.json"
+expect_failure sh "$validator" \
+  --mode new-initial --history "$tmp/new-initial-deprecated-marker.json" \
   --diagnostics "$fixture/new.diagnostics.initial.json" \
   --workflow-id "$new_workflow_id" --run-id "$new_run_id" --patch-id "$patch_id"
 
@@ -440,51 +506,41 @@ expect_failure sh "$validator" \
   --diagnostics "$fixture/legacy.diagnostics.json" \
   --workflow-id "$legacy_workflow_id" --run-id "$legacy_run_id" --patch-id "$patch_id"
 
-# The controller must preserve the observable old/new branch and marker-count
-# facts, source topology, and final PostgreSQL volume cleanup in order.
+# The controller must preserve every observable branch, marker count and
+# deprecation state, source topology, and final PostgreSQL cleanup in order.
 jq '.events[6].marker_count = 1' "$fixture/controller.json" \
   >"$tmp/controller-legacy-marker.json"
-expect_failure sh "$controller_validator" \
-  --controller "$tmp/controller-legacy-marker.json" \
-  --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id"
+expect_failure validate_controller "$tmp/controller-legacy-marker.json"
 
 jq '.events[3].worker_version = "patched"' "$fixture/controller.json" \
   >"$tmp/controller-missing-legacy-source.json"
-expect_failure sh "$controller_validator" \
-  --controller "$tmp/controller-missing-legacy-source.json" \
-  --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id"
+expect_failure validate_controller "$tmp/controller-missing-legacy-source.json"
 
 jq '.events[5].container_id = .events[3].container_id' "$fixture/controller.json" \
   >"$tmp/controller-reused-container.json"
-expect_failure sh "$controller_validator" \
-  --controller "$tmp/controller-reused-container.json" \
-  --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id"
+expect_failure validate_controller "$tmp/controller-reused-container.json"
 
 # The terminal history is captured only after the driver has been joined.  A
 # controller record must not claim that post-completion history before the
-# completion it depends on, for either source-replacement scenario.
+# completion it depends on, for any source-replacement scenario.
 jq '.events[7:9] |= [.[1], .[0]]' "$fixture/controller.json" \
   >"$tmp/controller-legacy-terminal-before-driver.json"
-expect_failure sh "$controller_validator" \
-  --controller "$tmp/controller-legacy-terminal-before-driver.json" \
-  --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id"
+expect_failure validate_controller "$tmp/controller-legacy-terminal-before-driver.json"
 
 jq '.events[17:19] |= [.[1], .[0]]' "$fixture/controller.json" \
   >"$tmp/controller-new-terminal-before-driver.json"
-expect_failure sh "$controller_validator" \
-  --controller "$tmp/controller-new-terminal-before-driver.json" \
-  --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id"
+expect_failure validate_controller "$tmp/controller-new-terminal-before-driver.json"
 
-jq '.events[21].remaining_project_volumes = 1' "$fixture/controller.json" \
+jq '.events[27:29] |= [.[1], .[0]]' "$fixture/controller.json" \
+  >"$tmp/controller-removal-terminal-before-driver.json"
+expect_failure validate_controller "$tmp/controller-removal-terminal-before-driver.json"
+
+jq '.events[26].marker_deprecated = false' "$fixture/controller.json" \
+  >"$tmp/controller-removal-active-marker.json"
+expect_failure validate_controller "$tmp/controller-removal-active-marker.json"
+
+jq '.events[31].remaining_project_volumes = 1' "$fixture/controller.json" \
   >"$tmp/controller-retained-volume.json"
-expect_failure sh "$controller_validator" \
-  --controller "$tmp/controller-retained-volume.json" \
-  --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id"
+expect_failure validate_controller "$tmp/controller-retained-volume.json"
 
 echo 'patch-replay contract: ok'

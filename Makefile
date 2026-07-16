@@ -332,10 +332,9 @@ test-temporal-worker-cache-eviction:
 test-temporal-worker-cache-eviction-contract:
 	sh test/smoke/test_temporal_worker_cache_eviction_contract.sh
 
-# Proves patch-in compatibility with two genuine server histories. The legacy
-# run begins under a binary that contains no patch call and is completed by the
-# patched binary through the old branch. A second run begins under patched code
-# and is replayed by a fresh patched process through the new branch.
+# Proves the patch lifecycle with three genuine server histories: marker-free
+# legacy replay under active code, active-marker replay under deprecation-only
+# code, and deprecated-marker replay after all patch calls are removed.
 test-temporal-workflow-patching:
 	$(MAKE) test-temporal-workflow-patching-contract
 	$(MAKE) test-temporal-workflow-patching-live

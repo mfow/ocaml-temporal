@@ -5,9 +5,10 @@ the first two workflow-patching lifecycle steps in the public OCaml API. A
 workflow can retain its legacy branch for histories created before a behavior
 change, then mark the patch as deprecated while incompatible histories drain.
 
-This is not a general deployment-versioning system. Patch removal, worker
-deployment/build-ID routing, side effects, arbitrary historic compatibility,
-and migration tooling remain separate work.
+This is not a general deployment-versioning system. Removing a deprecated
+patch call is supported for histories that passed the documented lifecycle
+gates; worker deployment/build-ID routing, side effects, arbitrary historic
+compatibility, and migration tooling remain separate work.
 
 ## Authoring contract
 
@@ -98,7 +99,7 @@ has seen the patch. Core gives query jobs their own activation. A query
 activation mixed with a patch notification is rejected bilaterally rather than
 accepted as a new bridge convention.
 
-## Intended live replay acceptance
+## Live replay acceptance
 
 `make test-temporal-workflow-patching` is the dedicated real-server acceptance
 target. It first runs the Docker-free
@@ -107,13 +108,14 @@ Temporal Server containers with separate public OCaml processes: a long-lived
 worker executes workflow code, while a one-shot client driver starts exact runs
 and checks their terminal results.
 
-The controller executes two source-replacement scenarios for the same stable
+The controller executes three source-replacement scenarios for the same stable
 test patch ID:
 
 | Scenario | Required observations | What the result establishes |
 | --- | --- | --- |
 | Legacy history | A legacy worker runs a definition with no `patched` call and reaches a durable timer. The normalized initial and terminal histories contain zero patch markers. A fresh patch-aware worker receives that exact run with `is_replaying=true`, takes the legacy activity branch, and the driver receives the fixed legacy result. | A history created before the change retains its legacy behavior after worker replacement. |
-| New history | A patch-aware worker starts a new run whose normalized initial and terminal histories contain exactly one non-deprecated patch marker. A fresh patch-aware worker receives that exact run with `is_replaying=true`, takes the new activity branch, and the driver receives the fixed new result. | A history created with the marker retains the new behavior after worker replacement. |
+| Active to deprecated | A patch-aware worker starts a run whose history contains exactly one non-deprecated marker. Generation two contains only `deprecate_patch`, receives the exact run with `is_replaying=true`, runs the new behavior unconditionally, and leaves the false marker and initial history prefix unchanged. | An active-marker history remains deterministic when the branch decision is replaced by the lifecycle-only deprecation call. |
+| Deprecated to removed | A deprecation worker starts a run whose history contains exactly one marker with `deprecated=true`. Generation two is a separately compiled definition containing no patch API, receives the exact run with `is_replaying=true`, runs the same behavior, and leaves the true marker and initial prefix unchanged. | A deprecated-marker history remains deterministic after the patch call is removed from source. |
 
 The initial and terminal history checks are both intentional. The controller
 uses the server's normalized history and branch-specific activity/result
@@ -130,7 +132,9 @@ workers, start containers, contact Temporal Server, or establish that a replay
 occurred.
 The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) records the
-successful real-server invocation of both scenarios.
+successful real-server invocation of the two original patch-in scenarios. The
+complete [PR #356 run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271)
+also verifies the active-to-deprecated and deprecated-to-removed transitions.
 
 ## Focused evidence and remaining boundary
 
@@ -139,12 +143,11 @@ emission, replay with and without a notification, repeated same-mode calls,
 mixed-mode rejection, execution isolation, native completion translation, and
 copying mutable source strings before they enter durable state. Shared fixtures
 and Rust tests cover strict JSON validation, duplicate command preservation,
-and round trips through the pinned Core protobuf types. These are local semantic
-and bridge evidence, not a substitute for live deprecation/removal acceptance.
+and round trips through the pinned Core protobuf types. The expanded live target
+adds exact server-history and worker-replacement evidence for lifecycle
+transitions once its complete CI run succeeds.
 
-The live target currently proves only the non-deprecated patch-in scenarios in
-the table above. Live active-to-deprecated compatibility, fresh deprecated
-history, and eventual call removal remain unverified. Worker deployment/build-ID
-versioning, side effects, arbitrary historical compatibility, and migration
-tooling also remain separate roadmap work. For the overall evidence boundary,
+Worker deployment/build-ID versioning, side effects, arbitrary historical
+compatibility, automated migration safety analysis, and histories that have not
+passed both documented gates remain separate roadmap work. For the overall evidence boundary,
 read [live acceptance coverage](live-acceptance-coverage.md).

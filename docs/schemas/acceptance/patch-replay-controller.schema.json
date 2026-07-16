@@ -2,21 +2,33 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/acceptance/patch-replay-controller.schema.json",
   "title": "Workflow-patch replay controller evidence",
-  "description": "A payload-free, ordered account of the two live source-replacement scenarios. The legacy scenario proves that a marker-free history replays to the old activity branch; the new scenario proves one Core marker and the new activity branch. The shell validator also compares every root identity and exact cross-event relationship that JSON Schema cannot express alone.",
+  "description": "A payload-free, ordered account of three live source-replacement scenarios. They prove marker-free patch-in replay, active-marker deprecation replay, and deprecated-marker replay after all patch calls are removed. The shell validator also compares every root identity, exact marker state, and cross-event relationship that JSON Schema cannot express alone.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["legacy_workflow_id", "legacy_run_id", "new_workflow_id", "new_run_id", "events"],
+  "required": ["legacy_workflow_id", "legacy_run_id", "new_workflow_id", "new_run_id", "removal_workflow_id", "removal_run_id", "events"],
   "properties": {
     "legacy_workflow_id": {"$ref": "#/$defs/identifier"},
     "legacy_run_id": {"$ref": "#/$defs/identifier"},
     "new_workflow_id": {"$ref": "#/$defs/identifier"},
     "new_run_id": {"$ref": "#/$defs/identifier"},
+    "removal_workflow_id": {"$ref": "#/$defs/identifier"},
+    "removal_run_id": {"$ref": "#/$defs/identifier"},
     "events": {
       "type": "array",
-      "minItems": 22,
-      "maxItems": 22,
+      "minItems": 32,
+      "maxItems": 32,
       "prefixItems": [
         {"$ref": "#/$defs/stack_ready"},
+        {"$ref": "#/$defs/driver_accepted"},
+        {"$ref": "#/$defs/history_checked"},
+        {"$ref": "#/$defs/worker_stopped"},
+        {"$ref": "#/$defs/worker_removed"},
+        {"$ref": "#/$defs/worker_ready"},
+        {"$ref": "#/$defs/replay_observed"},
+        {"$ref": "#/$defs/driver_completed"},
+        {"$ref": "#/$defs/history_checked"},
+        {"$ref": "#/$defs/worker_stopped"},
+        {"$ref": "#/$defs/worker_removed"},
         {"$ref": "#/$defs/driver_accepted"},
         {"$ref": "#/$defs/history_checked"},
         {"$ref": "#/$defs/worker_stopped"},
@@ -70,7 +82,7 @@
       "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[01][0-9]{17}|92[01][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[01][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$"
     },
     "status": {"const": "ok"},
-    "scenario": {"enum": ["legacy", "new"]},
+    "scenario": {"enum": ["legacy", "new", "removal"]},
     "stack_ready": {
       "type": "object",
       "additionalProperties": false,
@@ -117,7 +129,7 @@
         "scenario": {"$ref": "#/$defs/scenario"},
         "generation": {"enum": [1, 2]},
         "container_id": {"$ref": "#/$defs/container_id"},
-        "worker_version": {"enum": ["legacy", "patched"]},
+        "worker_version": {"enum": ["legacy", "patched", "deprecated", "removed"]},
         "exit_code": {"const": 0},
         "shutdown_marker": {"const": true}
       }
@@ -145,7 +157,7 @@
         "scenario": {"$ref": "#/$defs/scenario"},
         "generation": {"const": 2},
         "container_id": {"$ref": "#/$defs/container_id"},
-        "worker_version": {"const": "patched"},
+        "worker_version": {"enum": ["patched", "deprecated", "removed"]},
         "readiness_generation": {"const": 2},
         "fresh_container": {"const": true}
       }
@@ -153,7 +165,7 @@
     "replay_observed": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["step", "status", "scenario", "generation", "is_replaying", "history_length", "branch", "marker_count"],
+      "required": ["step", "status", "scenario", "generation", "is_replaying", "history_length", "branch", "marker_count", "marker_deprecated"],
       "properties": {
         "step": {"const": "replay_observed"},
         "status": {"$ref": "#/$defs/status"},
@@ -162,7 +174,8 @@
         "is_replaying": {"const": true},
         "history_length": {"$ref": "#/$defs/positive_signed_64"},
         "branch": {"enum": ["old", "new"]},
-        "marker_count": {"enum": [0, 1]}
+        "marker_count": {"enum": [0, 1]},
+        "marker_deprecated": {"type": ["boolean", "null"]}
       }
     },
     "driver_completed": {

@@ -1,0 +1,18 @@
+{
+  "workflow_id": "two-binary-patch-replay-removal",
+  "run_id": "33333333-3333-4333-8333-333333333333",
+  "events": [
+    {"event_id": "1", "type": "WorkflowExecutionStarted"},
+    {"event_id": "2", "type": "WorkflowTaskScheduled"},
+    {"event_id": "3", "type": "WorkflowTaskStarted"},
+    {"event_id": "4", "type": "WorkflowTaskCompleted"},
+    {
+      "event_id": "5",
+      "type": "MarkerRecorded",
+      "marker_name": "core_patch",
+      "patch_id": "smoke.patch_replay_history.activity.v1",
+      "deprecated": true
+    },
+    {"event_id": "6", "type": "TimerStarted"}
+  ]
+}

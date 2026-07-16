@@ -327,6 +327,36 @@ services:
     stop_grace_period: 30s
     init: true
 
+  # This source generation makes the patched behavior unconditional while
+  # retaining the lifecycle marker through the public deprecation API.
+  patch-replay-deprecated-worker:
+    profiles: [temporal]
+    extends:
+      service: patch-replay-patched-worker
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/patch-replay-deprecated-worker
+      - test/integration/temporal/patch_replay/deprecated_worker.exe
+
+  # This final source generation contains no patch API. It is started only
+  # after a deprecated marker has been written by the preceding executable.
+  patch-replay-removed-worker:
+    profiles: [temporal]
+    extends:
+      service: patch-replay-patched-worker
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/patch-replay-removed-worker
+      - test/integration/temporal/patch_replay/removed_worker.exe
+
   # This client-only OCaml executable starts an exact run and waits for its
   # typed result. The host controller changes only IDs and expected results;
   # it never selects the workflow implementation used by either worker.

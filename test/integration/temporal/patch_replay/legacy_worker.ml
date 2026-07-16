@@ -1,7 +1,7 @@
-(** Generation-one executable for the live old/new workflow-patch acceptance.
+(** Pre-patch executable for the live workflow-patch lifecycle acceptance.
 
     Its only workflow implementation comes from [Legacy_definition], a module
-    compiled and linked separately from [Patched_definition]. A later
+    compiled and linked separately from every patch-aware definition. A later
     controller replacement therefore tests a genuine history created before
     the patch gate rather than a runtime flag hidden in one binary. *)
 

@@ -223,5 +223,8 @@ without a graceful-stop marker before generation two is allowed to replay and
 complete. That run verifies worker-process recovery; it does not establish
 broader child-workflow recovery coverage. Exact bilateral parent/child replacement
 recovery is separately live-verified in the complete [PR #351
-run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013); broader
-child-failure and cache-recovery scenarios remain deferred.
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013). The
+[child-failure-after-replay acceptance](child-failure-replay-acceptance.md) is
+also live-verified by the complete [PR #361 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29475615866),
+which requires replay before the typed child failure and the recovered parent
+result. Additional child-failure and cache-recovery scenarios remain deferred.

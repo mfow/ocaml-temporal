@@ -88,7 +88,7 @@ val create :
 
     [memo] attaches named payloads visible when describing the execution.
     [search_attributes] attaches named indexed payloads used by visibility
-    queries. Keys are non-empty, NUL-free, and unique within each collection;
+    queries. Keys are non-empty, NUL-free, at most 65,536 bytes, and unique within each collection;
     payload values are encoded before the native bridge is called. *)
 val start :
   t ->

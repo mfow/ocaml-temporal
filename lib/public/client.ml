@@ -163,6 +163,10 @@ let validate_metadata_fields label fields =
           Error
             (Error.make ~category:`Validation
                ~message:(Printf.sprintf "invalid %s key" label) ())
+        else if String.length key > 65_536 then
+          Error
+            (Error.make ~category:`Validation
+               ~message:(Printf.sprintf "%s key exceeds protocol limit" label) ())
         else loop (key :: seen) rest
   in
   loop [] fields

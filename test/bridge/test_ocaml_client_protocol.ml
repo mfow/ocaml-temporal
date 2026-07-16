@@ -204,6 +204,24 @@ let test_cancellation_protocol () =
       {|{"acknowledged":"true"}|};
     ]
 
+(** Checks the exact-run termination request and its positive acknowledgement.
+    The operation intentionally has no cancellation request ID because
+    Temporal's terminate RPC does not expose one. *)
+let test_termination_protocol () =
+  let request : Protocol.terminate_request =
+    { execution; reason = "operator test" }
+  in
+  let encoded = unwrap (Protocol.encode_terminate_request request) in
+  require_fragment "terminate reason" "operator test" encoded;
+  let acknowledged =
+    unwrap (Protocol.decode_terminate_response {|{"acknowledged":true}|})
+  in
+  if not acknowledged.acknowledged then
+    failwith "positive termination acknowledgement changed shape";
+  List.iter
+    (fun document -> require_error (Protocol.decode_terminate_response document))
+    [ {|{"acknowledged":false}|}; {|{"acknowledged":true,"extra":1}|} ]
+
 (** Checks that signal acknowledgement and operation-specific error decoding
     fail closed in the same way as cancellation. *)
 let test_signal_protocol () =
@@ -451,6 +469,7 @@ let () =
   run "client successor identity" test_successor_identity_validation;
   run "client request validation" test_request_validation;
   run "client cancellation protocol" test_cancellation_protocol;
+  run "client termination protocol" test_termination_protocol;
   run "client signal protocol" test_signal_protocol;
   run "client query protocol" test_query_protocol;
   run "client visibility protocol" test_visibility_protocol;

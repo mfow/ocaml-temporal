@@ -53,6 +53,13 @@ type cancel_request = {
   reason : string;
 }
 
+(** Exact workflow/run pair and operator metadata for immediate termination. *)
+type terminate_request = {
+  workflow_id : string;
+  run_id : string;
+  reason : string;
+}
+
 (** Exact workflow/run pair and typed payload for one signal operation. *)
 type signal_request = {
   workflow_id : string;
@@ -152,7 +159,7 @@ type activity_completion =
 (** Terminal state for one mock execution. The state is monotone: once a wait
     observes completion, a later cancellation cannot rewrite that terminal
     result, which mirrors Temporal's immutable execution history. *)
-type mock_terminal = Mock_pending | Mock_completed | Mock_cancelled
+type mock_terminal = Mock_pending | Mock_completed | Mock_cancelled | Mock_terminated
 
 (** A mock signal delivery records the request identity and payload. Retaining
     this small value lets the deterministic transport model Temporal's
@@ -715,7 +722,12 @@ let mock_client_wait (client : mock_client) (request : wait_request) =
                 Ok
                   (Cancelled
                      (Error.make ~category:`Cancelled
-                        ~message:"workflow execution was cancelled" ()))))
+                        ~message:"workflow execution was cancelled" ()))
+            | Mock_terminated ->
+                Ok
+                  (Terminated
+                     (Error.make ~non_retryable:true ~category:`Terminated
+                        ~message:"workflow execution was terminated" ()))))
 
 (** Waits for a terminal result on the selected private transport. *)
 let client_wait client (request : wait_request) =
@@ -750,6 +762,27 @@ let native_client_cancel (client : native_client) (request : cancel_request) :
       Native.perform client.supervisor
         (Native.Client_cancel_workflow (native_cancel_request client request))
     with
+    | Error error -> Error (native_supervisor_error error)
+    | Ok (Error error) -> Error (native_client_error error)
+    | Ok (Ok ()) -> Ok ()
+
+(** Sends one exact-run termination through the serialized native supervisor. *)
+let native_client_terminate (client : native_client)
+    (request : terminate_request) : (unit, Error.t) result =
+  if Atomic.get client.closed then Error (bridge_error "client is shut down")
+  else
+    let request : Client_protocol.terminate_request =
+      {
+        execution =
+          {
+            namespace = client.namespace;
+            workflow_id = request.workflow_id;
+            run_id = request.run_id;
+          };
+        reason = request.reason;
+      }
+    in
+    match Native.perform client.supervisor (Native.Client_terminate_workflow request) with
     | Error error -> Error (native_supervisor_error error)
     | Ok (Error error) -> Error (native_client_error error)
     | Ok (Ok ()) -> Ok ()
@@ -847,7 +880,7 @@ let mock_client_cancel (client : mock_client) (request : cancel_request) =
         | Some execution ->
             (match execution.terminal with
             | Mock_pending -> execution.terminal <- Mock_cancelled
-            | Mock_completed | Mock_cancelled -> ());
+            | Mock_completed | Mock_cancelled | Mock_terminated -> ());
             Ok ())
 
 (** Requests cancellation on the selected private transport. *)
@@ -855,6 +888,33 @@ let client_cancel client request =
   match client with
   | Mock_client client -> mock_client_cancel client request
   | Native_client client -> native_client_cancel client request
+
+(** Marks one pending mock execution as terminated; completed terminal history
+    remains immutable and repeated termination is idempotent. *)
+let mock_client_terminate (client : mock_client) (request : terminate_request) =
+  let service = client.service in
+  Mutex.lock service.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock service.mutex)
+    (fun () ->
+      if client.closed then Error (bridge_error "client is shut down")
+      else
+        match Hashtbl.find_opt service.executions request.workflow_id with
+        | None -> Error (bridge_error "workflow execution was not started")
+        | Some execution
+          when not (String.equal execution.run_id request.run_id) ->
+            Error (bridge_error "workflow run id does not match the started run")
+        | Some execution ->
+            (match execution.terminal with
+            | Mock_pending -> execution.terminal <- Mock_terminated
+            | Mock_completed | Mock_cancelled | Mock_terminated -> ());
+            Ok ())
+
+(** Requests immediate termination on the selected private transport. *)
+let client_terminate client request =
+  match client with
+  | Mock_client client -> mock_client_terminate client request
+  | Native_client client -> native_client_terminate client request
 
 (** Accepts a signal for a pending mock run. The deterministic mock does not
     execute workflow code, but it records each request ID and its signal data
@@ -1006,6 +1066,7 @@ let mock_client_list_visibility (client : mock_client)
                   | Mock_pending -> "running"
                   | Mock_completed -> "completed"
                   | Mock_cancelled -> "canceled"
+                  | Mock_terminated -> "terminated"
                 in
                 {
                   workflow_id;

@@ -128,6 +128,15 @@ val cancel :
   ('input, 'output) handle ->
   (unit, Error.t) result
 
+(** Terminates the exact run retained by [handle] immediately. Success means
+    Temporal acknowledged the termination RPC; call [wait handle] to observe
+    the immutable [Terminated] terminal result. [reason] is bounded operator
+    context and may be empty. *)
+val terminate :
+  ?reason:string ->
+  ('input, 'output) handle ->
+  (unit, Error.t) result
+
 (** Sends one typed signal to the exact run retained by [handle]. A successful
     call acknowledges Temporal's signal RPC; it does not wait for workflow code
     to process the message. [request_id] is optional: when omitted, the SDK

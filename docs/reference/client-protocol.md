@@ -208,6 +208,27 @@ pending. The earlier [PR #277 run](https://github.com/mfow/ocaml-temporal/action
 remains evidence for the prior fifteen-result slice, [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 for the prior twelve-result slice, and [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 for the original nine-workflow slice. See the [live acceptance coverage](live-acceptance-coverage.md)
+
+## Terminate one exact run
+
+`Temporal.Client.terminate` requests immediate termination of the exact run
+held by a typed client handle:
+
+```ocaml
+Temporal.Client.terminate ~reason:"operator requested termination" handle
+```
+
+The call returns after Temporal acknowledges `TerminateWorkflowExecution`; it
+does not wait for workflow code. A later `Temporal.Client.wait handle` returns
+`Terminated` with a non-retryable typed error. The request carries namespace,
+workflow ID, run ID, and bounded reason text. It deliberately has no
+`request_id`: Temporal's terminate RPC has no idempotency-key field. The
+deterministic mock preserves this exact-run and terminal-history contract.
+
+The closed documents are specified by
+[`client-terminate-request.schema.json`](../schemas/bridge/client-terminate-request.schema.json)
+and
+[`client-terminate-response.schema.json`](../schemas/bridge/client-terminate-response.schema.json).
 for the remaining evidence boundary.
 
 ## Send one signal to an exact run

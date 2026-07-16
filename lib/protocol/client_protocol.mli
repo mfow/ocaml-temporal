@@ -48,6 +48,12 @@ type cancel_request = {
 type cancel_response = { acknowledged : bool }
 (** Positive acknowledgement returned after Temporal accepts the cancellation RPC. *)
 
+type terminate_request = { execution : execution; reason : string }
+(** Exact-run termination request. [reason] is bounded operator context. *)
+
+type terminate_response = { acknowledged : bool }
+(** Positive acknowledgement returned after Temporal accepts termination. *)
+
 type signal_request = {
   execution : execution;
   signal_name : string;
@@ -169,6 +175,12 @@ val encode_cancel_request : cancel_request -> (string, error) result
 
 val decode_cancel_response : string -> (cancel_response, error) result
 (** Strictly decodes the positive native cancellation acknowledgement. *)
+
+val encode_terminate_request : terminate_request -> (string, error) result
+(** Validates and serializes one exact-run termination request. *)
+
+val decode_terminate_response : string -> (terminate_response, error) result
+(** Strictly decodes the positive native termination acknowledgement. *)
 
 val encode_signal_request : signal_request -> (string, error) result
 (** Validates and serializes one exact-run signal request. *)

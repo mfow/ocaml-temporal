@@ -484,6 +484,14 @@ CAMLprim value ocaml_temporal_client_cancel_workflow_json(value runtime,
       runtime, input, ocaml_temporal_core_v2_client_cancel_workflow_json);
 }
 
+/* Terminate one exact workflow run. The input is copied before releasing the
+ * OCaml runtime lock and the acknowledgement is owned by the bridge result. */
+CAMLprim value ocaml_temporal_client_terminate_workflow_json(value runtime,
+                                                             value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v2_client_terminate_workflow_json);
+}
+
 /* Send one signal to one exact workflow run. The JSON input is copied before
  * the OCaml runtime lock is released; Rust owns no OCaml memory after this
  * call and the positive acknowledgement is decoded like cancellation. */

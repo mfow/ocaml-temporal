@@ -210,6 +210,19 @@ module Native : sig
     (** Decodes the cancellation acknowledgement and preserves structured
         server failures as an inner typed result. *)
 
+    val encode_client_terminate_request :
+      Temporal_protocol.Client_protocol.terminate_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one exact-run termination request. *)
+
+    val decode_client_terminate_result :
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( (unit, Temporal_protocol.Client_protocol.client_error) result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes the termination acknowledgement and preserves structured
+        server failures as an inner typed result. *)
+
     val decode_client_signal_result :
       (bytes, Temporal_core_bridge.Native_bridge.error) result ->
       ( (unit, Temporal_protocol.Client_protocol.client_error) result,
@@ -285,6 +298,10 @@ module Native : sig
         (unit, Temporal_protocol.Client_protocol.client_error) result operation
         (** Requests cancellation of one exact run. The acknowledgement does
             not itself prove that the run has reached its cancelled outcome. *)
+    | Client_terminate_workflow :
+        Temporal_protocol.Client_protocol.terminate_request ->
+        (unit, Temporal_protocol.Client_protocol.client_error) result operation
+        (** Terminates one exact run immediately. *)
     | Client_signal_workflow :
         Temporal_protocol.Client_protocol.signal_request ->
         (unit, Temporal_protocol.Client_protocol.client_error) result operation

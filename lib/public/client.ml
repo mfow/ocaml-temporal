@@ -148,9 +148,9 @@ let validate_start_fields ~request_id ~workflow_name ~id ~task_queue =
           | Error _ as error -> error
           | Ok () -> validate_name "task queue" task_queue))
 
-(** Starts a workflow after encoding its typed input and checking the backend's
-    response still refers to the request. The response check prevents an
-    adapter bug from creating a handle for a different execution. *)
+(** Checks metadata keys before they reach the protocol map representation.
+    Rejecting duplicates here keeps caller-visible behavior independent of
+    Rust's map implementation and avoids silently losing one value. *)
 let validate_metadata_fields label fields =
   let rec loop seen = function
     | [] -> Ok ()
@@ -167,6 +167,9 @@ let validate_metadata_fields label fields =
   in
   loop [] fields
 
+(** Starts a workflow after encoding its typed input and checking the backend's
+    response still refers to the request. The response check prevents an
+    adapter bug from creating a handle for a different execution. *)
 let start client ?request_id ?(memo = []) ?(search_attributes = []) ~workflow
     ~task_queue ~id ~input () =
   if Atomic.get client.closed then

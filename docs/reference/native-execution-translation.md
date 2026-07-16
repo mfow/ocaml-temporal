@@ -221,4 +221,7 @@ even though several of their local worker paths are already tested. The later
 adds a separate forced-crash proof: generation one must exit with code 137 and
 without a graceful-stop marker before generation two is allowed to replay and
 complete. That run verifies worker-process recovery; it does not establish
-child-workflow recovery coverage.
+broader child-workflow recovery coverage. Exact bilateral parent/child replacement
+recovery is separately live-verified in the complete [PR #351
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013); broader
+child-failure and cache-recovery scenarios remain deferred.

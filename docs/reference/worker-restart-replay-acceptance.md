@@ -19,6 +19,14 @@ live-verified in the complete [PR #351 Actions
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013); it is not
 part of the single-workflow restart evidence described here.
 
+The separate
+[child-failure-after-replay acceptance](child-failure-replay-acceptance.md)
+also requires both replacement-worker replay observations before the child
+returns its typed failure and the parent records recovery. It is live-verified
+by the complete [PR #361 CI
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29475615866), not by
+the single-workflow restart gate described here.
+
 `make test-temporal-worker-restart-contract` is the fast Docker-free contract
 gate. `make test-temporal-worker-restart-live` runs the real PostgreSQL,
 Temporal Server, two-generation OCaml worker, and OCaml driver sequence, while

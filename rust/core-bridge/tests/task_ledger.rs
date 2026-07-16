@@ -551,14 +551,15 @@ fn restore_after_rejection_does_not_clobber_a_legitimately_readmitted_run() {
     );
 }
 
-/// The acceptance worker polls only workflows and remote activities; enabling
-/// local activities or Nexus would create unimplemented completion paths.
+/// The acceptance worker polls workflows, remote activities, and the local
+/// activity lane now that local-task completion and Core-directed retry
+/// backoff are implemented; Nexus remains outside this bridge's scope.
 #[test]
 fn bridge_enables_only_supported_core_task_types() {
     let task_types = bridge_task_types();
 
     assert!(task_types.enable_workflows);
     assert!(task_types.enable_remote_activities);
-    assert!(!task_types.enable_local_activities);
+    assert!(task_types.enable_local_activities);
     assert!(!task_types.enable_nexus);
 }

@@ -96,10 +96,11 @@ let update_job ~id ~protocol_instance_id ~name ~input ~run_validator :
     Core worker. *)
 let public_update_handler (handler : Temporal.Update.Handler.t) =
   let name = Temporal.Update.Handler.name handler in
-  Raw_adapter.make_update_handler ~name ~dispatch:(fun ~run_validator update ->
+  Raw_adapter.make_update_handler ~name
+    ~dispatch:(fun ~run_validator ~on_validated update ->
       match Raw_adapter.update_input update with
       | [ payload ] ->
-          Temporal.Update.Handler.dispatch ~run_validator handler
+          Temporal.Update.Handler.dispatch ~run_validator ~on_validated handler
             (public_payload payload)
           |> Result.map base_payload |> Result.map_error base_error
       | _ ->

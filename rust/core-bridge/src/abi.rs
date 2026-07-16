@@ -3881,9 +3881,10 @@ mod worker_config_tests {
         worker.versioning = super::WorkerVersioningInput::LegacyBuildId {
             build_id: "different-build".to_owned(),
         };
-        let failure = worker
-            .into_core()
-            .expect_err("mismatched legacy build IDs must fail closed");
+        let failure = match worker.into_core() {
+            Err(failure) => failure,
+            Ok(_) => panic!("mismatched legacy build IDs must fail closed"),
+        };
         assert_eq!(failure.status, STATUS_CONFIGURATION);
         assert_eq!(failure.message, "versioning.build_id must match build_id");
     }

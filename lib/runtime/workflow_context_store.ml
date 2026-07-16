@@ -320,7 +320,7 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
     ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
     ?heartbeat_timeout ?retry_policy ?priority
     ?(cancellation_type = Activation.Try_cancel)
-    ?(do_not_eagerly_execute = false) ~decode () =
+    ?(do_not_eagerly_execute = false) ?(local = false) ~decode () =
   let seq = allocate_sequence context in
   (* These flags belong to the handle, not the pending table. Core removes an
      activity entry before delivering its result, so the closure must retain
@@ -359,23 +359,41 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
     | None, None -> Some 60_000L
     | _, value -> value
   in
-  emit context
-    (Activation.Schedule_activity
-       {
-         seq;
-         activity_id;
-         activity_type = name;
-         task_queue;
-         arguments = [ input ];
-         schedule_to_close_timeout;
-         schedule_to_start_timeout;
-         start_to_close_timeout;
-         heartbeat_timeout;
-         retry_policy;
-         priority;
-         cancellation_type;
-         do_not_eagerly_execute;
-       });
+  if local then
+    emit context
+      (Activation.Schedule_local_activity
+         {
+           seq;
+           activity_id;
+           activity_type = name;
+           attempt = 1L;
+           original_schedule_time = None;
+           arguments = [ input ];
+           schedule_to_close_timeout;
+           schedule_to_start_timeout;
+           start_to_close_timeout;
+           retry_policy;
+           local_retry_threshold = None;
+           cancellation_type;
+         })
+  else
+    emit context
+      (Activation.Schedule_activity
+         {
+           seq;
+           activity_id;
+           activity_type = name;
+           task_queue;
+           arguments = [ input ];
+           schedule_to_close_timeout;
+           schedule_to_start_timeout;
+           start_to_close_timeout;
+           heartbeat_timeout;
+           retry_policy;
+           priority;
+           cancellation_type;
+           do_not_eagerly_execute;
+         });
   let cancel () =
     match current () with
     | Some current when current == context -> (
@@ -390,7 +408,10 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
         | Some _ ->
             (* Core's request-cancel command identifies the activity by sequence
                only, so the handle exposes no ignored reason argument. *)
-            emit context (Activation.Request_cancel_activity { seq });
+            emit context
+              (if local then
+                 Activation.Request_cancel_local_activity { seq }
+               else Activation.Request_cancel_activity { seq });
             cancellation_requested := true;
             Ok ())
     | _ ->
@@ -399,6 +420,19 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
              ~message:"activity cancellation used outside its workflow")
   in
   (future, cancel)
+
+(** Schedules a local activity through Core's local activity manager. The
+    callback still runs through the worker's typed activity registry, while
+    Core owns retry timers and records the eventual result as a history marker.
+    Local activities intentionally ignore remote-only task queue, heartbeat,
+    priority, and eager-execution controls. *)
+let schedule_local_activity context ~name ~input ?activity_id
+    ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
+    ?retry_policy ?(cancellation_type = Activation.Wait_cancellation_completed)
+    ~decode () =
+  schedule_activity context ~name ~input ?activity_id
+    ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
+    ?retry_policy ~cancellation_type ~local:true ~decode ()
 
 (** Saves a child resolver before emitting its command. The explicit [id] is
     application-owned durable identity; an optional retry policy is copied

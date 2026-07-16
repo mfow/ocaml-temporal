@@ -417,6 +417,71 @@ fn converts_start_child_workflow_command() {
     );
 }
 
+/// Proves the local-activity command and its distinct cancellation command are
+/// preserved through the strict semantic JSON protocol and Core protobuf
+/// conversion. Local activities intentionally omit remote task-queue fields,
+/// but retain retry, timeout, attempt, and replay timestamp metadata.
+#[test]
+fn converts_local_activity_and_cancellation_commands() {
+    let input = workflow_protocol::Payload {
+        metadata: [("encoding".to_owned(), b"binary/null".to_vec())].into(),
+        data: Vec::new(),
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "local-run".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::ScheduleLocalActivity {
+                seq: 3,
+                activity_id: "local-1".to_owned(),
+                activity_type: "local".to_owned(),
+                attempt: 1,
+                original_schedule_time: Some(workflow_protocol::Timestamp {
+                    seconds: 10,
+                    nanoseconds: 20,
+                }),
+                arguments: vec![input],
+                schedule_to_close_timeout: None,
+                schedule_to_start_timeout: None,
+                start_to_close_timeout: Some(workflow_protocol::Duration {
+                    seconds: 30,
+                    nanoseconds: 0,
+                }),
+                retry_policy: None,
+                local_retry_threshold: None,
+                cancellation_type:
+                    workflow_protocol::ActivityCancellationType::WaitCancellationCompleted,
+            },
+            workflow_protocol::CompletionCommand::RequestCancelLocalActivity { seq: 3 },
+        ],
+    };
+    let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+    assert!(encoded.contains("schedule_local_activity"));
+    assert!(encoded.contains("request_cancel_local_activity"));
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        completion
+    );
+
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("local completion must be successful");
+    };
+    assert!(matches!(
+        success.commands[0].variant,
+        Some(core_commands::workflow_command::Variant::ScheduleLocalActivity(_))
+    ));
+    assert!(matches!(
+        success.commands[1].variant,
+        Some(core_commands::workflow_command::Variant::RequestCancelLocalActivity(_))
+    ));
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+}
+
 /// Ensures a live worker supplies its configured namespace to Core even
 /// though namespace is intentionally absent from the workflow-level command.
 /// Core copies this field into child failure metadata, including the

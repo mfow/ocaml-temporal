@@ -333,6 +333,22 @@ type completion_command =
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
+  (** Schedules a local activity. Core executes it on the local activity lane
+      and returns the result as a normal [Resolve_activity] activation job. *)
+  | Schedule_local_activity of {
+      seq : int64;
+      activity_id : string;
+      activity_type : string;
+      attempt : int64;
+      original_schedule_time : timestamp option;
+      arguments : payload list;
+      schedule_to_close_timeout : duration option;
+      schedule_to_start_timeout : duration option;
+      start_to_close_timeout : duration option;
+      retry_policy : retry_policy option;
+      local_retry_threshold : duration option;
+      cancellation_type : activity_cancellation_type;
+    }
   (** Starts a child workflow. The ordered payload list mirrors Temporal Core's
       repeated input field; the current activation runtime emits one payload.
       [retry_policy] is optional because Core's default policy remains valid
@@ -349,6 +365,9 @@ type completion_command =
       is retained in history and is therefore part of deterministic replay. *)
   | Cancel_child_workflow of { seq : int64; reason : string }
   | Request_cancel_activity of { seq : int64 }
+  (** Requests cancellation of a local activity attempt through Core's local
+      activity manager. *)
+  | Request_cancel_local_activity of { seq : int64 }
   | Start_timer of { seq : int64; start_to_fire_timeout : duration }
   | Cancel_timer of { seq : int64 }
   (** Answers a Core query request. The exact query ID is required for modern

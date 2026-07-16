@@ -279,8 +279,8 @@ fn conversion_failure_classifies_cancel_without_start_completion_debt() {
         )),
     };
     assert!(
-        activity_protocol::task_from_core(&unrepresentable_start).is_err(),
-        "local activity tasks must fail semantic conversion"
+        activity_protocol::task_from_core(&unrepresentable_start).is_ok(),
+        "local activity tasks must be admitted by semantic conversion"
     );
     assert!(activity_task_owns_completion_debt(&unrepresentable_start));
 

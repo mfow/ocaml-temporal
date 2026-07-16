@@ -260,7 +260,8 @@ let emit_terminal execution command =
         report ~src:Observability.Source.workflow Logs.Info ~tags
           "workflow completed"
     | Fail_workflow _ | Cancel_workflow_execution
-    | Schedule_activity _ | Start_child_workflow _ | Request_cancel_activity _
+    | Schedule_activity _ | Schedule_local_activity _ | Start_child_workflow _ | Request_cancel_activity _
+    | Request_cancel_local_activity _
     | Cancel_child_workflow _ | Start_timer _ | Cancel_timer _
     | Query_result _ | Update_response _ | Set_patch_marker _
     | Continue_as_new _ -> ())

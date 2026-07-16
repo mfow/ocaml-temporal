@@ -115,7 +115,7 @@ val detached_error :
     [activity_id] and [task_queue] default deterministically; when all timeout
     options are absent, a 60-second start-to-close timeout is used because
     Temporal requires at least one activity timeout. The cancellation operation
-    emits at most one [Request_cancel_activity] command for its sequence and
+    emits at most one activity-cancellation command for its sequence and
     remains a valid no-op after a terminal result or activity-start failure.
     Calls made without this context current are typed lifecycle defects. *)
 val schedule_activity :
@@ -132,6 +132,26 @@ val schedule_activity :
   ?priority:Activation.priority ->
   ?cancellation_type:Activation.activity_cancellation_type ->
   ?do_not_eagerly_execute:bool ->
+  ?local:bool ->
+  decode:(Temporal_base.Codec.payload -> ('output, Temporal_base.Error.t) result) ->
+  unit ->
+  ( ('output, Temporal_base.Error.t) Future_store.t
+  * (unit -> (unit, Temporal_base.Error.t) result) )
+
+(** Schedules one local activity through Temporal Core's local-activity lane.
+    Unlike [schedule_activity], this command has no remote task queue,
+    heartbeat timeout, priority, or eager-execution setting; Core retries it
+    locally and records the result in workflow history for replay. *)
+val schedule_local_activity :
+  t ->
+  name:string ->
+  input:Temporal_base.Codec.payload ->
+  ?activity_id:string ->
+  ?schedule_to_close_timeout:int64 ->
+  ?schedule_to_start_timeout:int64 ->
+  ?start_to_close_timeout:int64 ->
+  ?retry_policy:Activation.retry_policy ->
+  ?cancellation_type:Activation.activity_cancellation_type ->
   decode:(Temporal_base.Codec.payload -> ('output, Temporal_base.Error.t) result) ->
   unit ->
   ( ('output, Temporal_base.Error.t) Future_store.t

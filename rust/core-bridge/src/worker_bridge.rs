@@ -114,7 +114,10 @@ fn is_stale_activity_cancellation(task: &ActivityTask, error: CompleteError) -> 
 pub fn bridge_task_types() -> WorkerTaskTypes {
     WorkerTaskTypes {
         enable_workflows: true,
-        enable_local_activities: false,
+        // Local activities use the same Core activity-task handoff as remote
+        // activities, but Core marks their task token as local and records the
+        // result in workflow history instead of sending an RPC to the server.
+        enable_local_activities: true,
         enable_remote_activities: true,
         enable_nexus: false,
     }

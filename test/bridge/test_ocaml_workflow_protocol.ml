@@ -185,6 +185,45 @@ let test_valid_completion () =
   check_string "completion" expected (unwrap (Protocol.encode_completion value));
   ignore (unwrap (Protocol.decode_completion expected))
 
+(** Proves local-activity scheduling keeps attempt, original schedule time,
+    retry threshold, and cancellation policy across the strict JSON boundary. *)
+let test_local_activity_protocol_slice () =
+  let payload : Protocol.payload = { metadata = []; data = Bytes.of_string "input" } in
+  let command : Protocol.completion_command =
+    Protocol.Schedule_local_activity
+      {
+        seq = 4L;
+        activity_id = "local-activity-4";
+        activity_type = "normalize";
+        attempt = 1L;
+        original_schedule_time = Some { seconds = 10L; nanoseconds = 20 };
+        arguments = [ payload ];
+        schedule_to_close_timeout = Some { seconds = 30L; nanoseconds = 0 };
+        schedule_to_start_timeout = None;
+        start_to_close_timeout = Some { seconds = 5L; nanoseconds = 0 };
+        retry_policy = None;
+        local_retry_threshold = Some { seconds = 60L; nanoseconds = 0 };
+        cancellation_type = Wait_cancellation_completed;
+      }
+  in
+  let completion =
+    {
+      Protocol.run_id = "local-run";
+      commands = [ command; Protocol.Request_cancel_local_activity { seq = 4L } ];
+    }
+  in
+  let encoded = unwrap (Protocol.encode_completion completion) in
+  if unwrap (Protocol.decode_completion encoded) <> completion then
+    failwith "local activity command did not round-trip";
+  let bad_command =
+    match command with
+    | Protocol.Schedule_local_activity value ->
+        Protocol.Schedule_local_activity { value with attempt = 0L }
+    | _ -> assert false
+  in
+  require_error
+    (Protocol.encode_completion { completion with commands = [ bad_command ] })
+
 (** Proves the OCaml side normalizes the shared patch-marker fixtures and
     rejects an empty identifier, an unknown activation field, and a completion
     marker missing its required deprecation flag. Rust exercises these same
@@ -1205,6 +1244,7 @@ let () =
   run "workflow activations" test_valid_activations;
   run "continuation initialization metadata" test_continuation_initialize_metadata;
   run "workflow completion" test_valid_completion;
+  run "local activity protocol" test_local_activity_protocol_slice;
   run "workflow patch marker protocol" test_patch_marker_protocol_slice;
   run "query protocol slice" test_query_protocol_slice;
   run "update protocol slice" test_update_protocol_slice;

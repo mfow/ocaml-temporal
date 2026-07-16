@@ -31,6 +31,16 @@
       }
     },
     "nullable_duration": {"oneOf": [{"$ref": "#/$defs/duration"}, {"type": "null"}]},
+    "timestamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seconds", "nanoseconds"],
+      "properties": {
+        "seconds": {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+        "nanoseconds": {"type": "integer", "minimum": 0, "maximum": 999999999}
+      }
+    },
+    "nullable_timestamp": {"oneOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
     "nullable_payload": {"oneOf": [{"$ref": "#/$defs/payload"}, {"type": "null"}]},
     "query_result": {
       "oneOf": [
@@ -129,6 +139,36 @@
           "type": "object", "additionalProperties": false,
           "required": ["kind", "seq"],
           "properties": {"kind": {"const": "request_cancel_activity"}, "seq": {"$ref": "#/$defs/u32"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "activity_id", "activity_type", "attempt", "original_schedule_time", "arguments", "schedule_to_close_timeout", "schedule_to_start_timeout", "start_to_close_timeout", "retry_policy", "local_retry_threshold", "cancellation_type"],
+          "anyOf": [
+            {"properties": {"schedule_to_close_timeout": {"not": {"type": "null"}}}},
+            {"properties": {"start_to_close_timeout": {"not": {"type": "null"}}}}
+          ],
+          "description": "Schedules a worker-local activity. Core executes it without creating a server activity task and records the result in workflow history for replay.",
+          "properties": {
+            "kind": {"const": "schedule_local_activity"},
+            "seq": {"$ref": "#/$defs/u32"},
+            "activity_id": {"$ref": "#/$defs/identifier"},
+            "activity_type": {"$ref": "#/$defs/identifier"},
+            "attempt": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+            "original_schedule_time": {"$ref": "#/$defs/nullable_timestamp"},
+            "arguments": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}},
+            "schedule_to_close_timeout": {"$ref": "#/$defs/nullable_duration"},
+            "schedule_to_start_timeout": {"$ref": "#/$defs/nullable_duration"},
+            "start_to_close_timeout": {"$ref": "#/$defs/nullable_duration"},
+            "retry_policy": {"oneOf": [{"$ref": "#/$defs/retry_policy"}, {"type": "null"}]},
+            "local_retry_threshold": {"$ref": "#/$defs/nullable_duration"},
+            "cancellation_type": {"enum": ["try_cancel", "wait_cancellation_completed", "abandon"]}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq"],
+          "properties": {"kind": {"const": "request_cancel_local_activity"}, "seq": {"$ref": "#/$defs/u32"}},
+          "description": "Requests cancellation of a local activity through Core's local activity manager."
         },
         {
           "type": "object", "additionalProperties": false,

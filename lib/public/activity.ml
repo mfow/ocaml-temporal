@@ -571,10 +571,10 @@ let failed_handle error =
     or perform any user conversion before the request is rejected. The native
     runtime receives a base payload; its result decoder is converted back to
     public errors at the same boundary. *)
-let start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
+let start_handle_internal ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
     ?retry_policy ?priority ?(cancellation_type = Try_cancel)
-    ?(do_not_eagerly_execute = false)
+    ?(do_not_eagerly_execute = false) ?(local = false)
     definition input =
   match validate_optional_identifier "activity id" activity_id with
   | Error error -> failed_handle error
@@ -605,23 +605,55 @@ let start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
                   let retry_policy =
                     Option.map runtime_retry_policy retry_policy
                   in
-                  let future, cancel =
-                    Temporal_runtime.Workflow_context_store.schedule_activity
-                      context ~name:(name definition) ~input ?activity_id
-                      ?task_queue ?schedule_to_close_timeout
-                      ?schedule_to_start_timeout ?start_to_close_timeout
-                      ?heartbeat_timeout ?retry_policy
-                      ?priority:(Option.map Priority.to_base priority)
-                      ~cancellation_type:(runtime_cancellation_type cancellation_type)
-                      ~do_not_eagerly_execute
-                      ~decode:(Codec_private.decode_base definition.output)
-                      ()
+                  let schedule_result =
+                    if local then
+                      if Option.is_some task_queue || Option.is_some heartbeat_timeout
+                         || Option.is_some priority || do_not_eagerly_execute
+                      then
+                        Error
+                          (Error.defect
+                             ~message:
+                               "local activity does not support remote-only scheduling options")
+                      else
+                        Ok
+                          (Temporal_runtime.Workflow_context_store.schedule_local_activity
+                             context ~name:(name definition) ~input ?activity_id
+                             ?schedule_to_close_timeout ?schedule_to_start_timeout
+                             ?start_to_close_timeout ?retry_policy
+                             ~cancellation_type:(runtime_cancellation_type cancellation_type)
+                             ~decode:(Codec_private.decode_base definition.output)
+                             ())
+                    else
+                      Ok
+                        (Temporal_runtime.Workflow_context_store.schedule_activity
+                           context ~name:(name definition) ~input ?activity_id
+                           ?task_queue ?schedule_to_close_timeout
+                           ?schedule_to_start_timeout ?start_to_close_timeout
+                           ?heartbeat_timeout ?retry_policy
+                           ?priority:(Option.map Priority.to_base priority)
+                           ~cancellation_type:(runtime_cancellation_type cancellation_type)
+                           ~do_not_eagerly_execute
+                           ~decode:(Codec_private.decode_base definition.output)
+                           ())
                   in
-                  {
-                    future = Future_private.of_internal future;
-                    cancel = (fun () ->
-                      Result.map_error Error_private.of_base (cancel ()))
-                  })))
+                  match schedule_result with
+                  | Error error -> failed_handle error
+                  | Ok (future, cancel) ->
+                      {
+                        future = Future_private.of_internal future;
+                        cancel = (fun () ->
+                          Result.map_error Error_private.of_base (cancel ()))
+                      })))
+
+(* Public wrapper keeps the implementation-only [local] switch out of the
+   published signature; local callers use the dedicated [start_local] helper. *)
+let start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
+    ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
+    ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input =
+  start_handle_internal ?activity_id ?task_queue ?schedule_to_close_timeout
+    ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
+    ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute
+    ~local:false definition input
 
 (** Returns the typed future associated with an activity handle. *)
 let future handle = handle.future
@@ -650,3 +682,24 @@ let execute ?activity_id ?task_queue ?schedule_to_close_timeout
     (start ?activity_id ?task_queue ?schedule_to_close_timeout
        ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
        ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input)
+
+(** Schedules an activity on Temporal Core's local activity lane. Local
+    activities execute in this worker process and are recorded as history
+    markers, so they are useful for short deterministic helper calls that do
+    not need a remote task queue. *)
+let start_local ?activity_id ?schedule_to_close_timeout
+    ?schedule_to_start_timeout ?start_to_close_timeout ?retry_policy
+    ?(cancellation_type = Wait_cancellation_completed) definition input =
+  start_handle_internal ~local:true ?activity_id ?schedule_to_close_timeout
+    ?schedule_to_start_timeout ?start_to_close_timeout ?retry_policy
+    ~cancellation_type definition input
+  |> future
+
+(** Executes a local activity and waits for its typed result. *)
+let execute_local ?activity_id ?schedule_to_close_timeout
+    ?schedule_to_start_timeout ?start_to_close_timeout ?retry_policy
+    ?cancellation_type definition input =
+  Future.await
+    (start_local ?activity_id ?schedule_to_close_timeout
+       ?schedule_to_start_timeout ?start_to_close_timeout ?retry_policy
+       ?cancellation_type definition input)

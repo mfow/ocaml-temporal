@@ -821,6 +821,111 @@ let command_to_protocol command =
                cancellation_type = protocol_cancellation_type cancellation_type;
                do_not_eagerly_execute;
              })
+  | Activation.Schedule_local_activity
+      {
+        seq;
+        activity_id;
+        activity_type;
+        attempt;
+        original_schedule_time;
+        arguments;
+        schedule_to_close_timeout;
+        schedule_to_start_timeout;
+        start_to_close_timeout;
+        retry_policy;
+        local_retry_threshold;
+        cancellation_type;
+      } ->
+      let* () = validate_sequence "$.command.seq" seq in
+      let* () = validate_identifier "$.command.activity_id" activity_id in
+      let* () = validate_identifier "$.command.activity_type" activity_type in
+      let* arguments =
+        let rec loop index reversed = function
+          | [] -> Ok (List.rev reversed)
+          | payload :: rest ->
+              let* payload =
+                protocol_payload
+                  (Printf.sprintf "$.command.arguments[%d]" index)
+                  payload
+              in
+              loop (index + 1) (payload :: reversed) rest
+        in
+        loop 0 [] arguments
+      in
+      let* schedule_to_close_timeout =
+        optional_duration_of_milliseconds
+          "$.command.schedule_to_close_timeout" schedule_to_close_timeout
+      in
+      let* schedule_to_start_timeout =
+        optional_duration_of_milliseconds
+          "$.command.schedule_to_start_timeout" schedule_to_start_timeout
+      in
+      let* start_to_close_timeout =
+        optional_duration_of_milliseconds
+          "$.command.start_to_close_timeout" start_to_close_timeout
+      in
+      let* local_retry_threshold =
+        optional_duration_of_milliseconds
+          "$.command.local_retry_threshold" local_retry_threshold
+      in
+      let* retry_policy =
+        match retry_policy with
+        | None -> Ok None
+        | Some value ->
+            let* initial_interval =
+              duration_of_milliseconds
+                "$.command.retry_policy.initial_interval" value.initial_interval
+            in
+            let* maximum_interval =
+              duration_of_milliseconds
+                "$.command.retry_policy.maximum_interval" value.maximum_interval
+            in
+            let policy =
+              Protocol.
+                {
+                  initial_interval;
+                  backoff_coefficient_bits = value.backoff_coefficient_bits;
+                  maximum_interval;
+                  maximum_attempts = value.maximum_attempts;
+                  non_retryable_error_types = List.map Fun.id value.non_retryable_error_types;
+                }
+            in
+            let* () = Protocol.validate_retry_policy policy |> Result.map_error protocol_error in
+            Ok (Some policy)
+      in
+      let original_schedule_time =
+        match original_schedule_time with
+        | None -> None
+        | Some value ->
+            Some
+              ({ Protocol.seconds = value.seconds; nanoseconds = value.nanoseconds }
+                : Protocol.timestamp)
+      in
+      if Int64.compare attempt 0L <= 0 then
+        Error (invalid "$.command.attempt" "local activity attempt must be positive")
+      else if Option.is_none schedule_to_close_timeout
+              && Option.is_none start_to_close_timeout
+      then
+        Error
+          (invalid "$.command"
+             "local activity requires schedule-to-close or start-to-close timeout")
+      else
+        Ok
+          (Protocol.Schedule_local_activity
+             {
+               seq;
+               activity_id;
+               activity_type;
+               attempt;
+               original_schedule_time;
+               arguments;
+               schedule_to_close_timeout;
+               schedule_to_start_timeout;
+               start_to_close_timeout;
+               retry_policy;
+               local_retry_threshold;
+               cancellation_type = protocol_cancellation_type cancellation_type;
+             })
   | Activation.Start_child_workflow
       { seq; id; name; input; retry_policy; cancellation_type } ->
       let* () = validate_sequence "$.command.seq" seq in
@@ -875,6 +980,9 @@ let command_to_protocol command =
   | Activation.Request_cancel_activity { seq } ->
       let* () = validate_sequence "$.command.seq" seq in
       Ok (Protocol.Request_cancel_activity { seq })
+  | Activation.Request_cancel_local_activity { seq } ->
+      let* () = validate_sequence "$.command.seq" seq in
+      Ok (Protocol.Request_cancel_local_activity { seq })
   | Activation.Start_timer { seq; milliseconds } ->
       let* () = validate_sequence "$.command.seq" seq in
       let* start_to_fire_timeout =

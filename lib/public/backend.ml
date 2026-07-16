@@ -792,11 +792,11 @@ let native_client_query (client : native_client) (request : query_request) :
         | [ payload ] -> Ok (public_payload payload)
         | [] ->
             Error
-              (Error.make ~category:`Protocol
+              (Error.make ~category:`Bridge
                  ~message:"query response contained no result payload" ())
         | _ ->
             Error
-              (Error.make ~category:`Protocol
+              (Error.make ~category:`Bridge
                  ~message:"query response contained multiple result payloads" ()))
 
 (** Marks one exact mock execution cancelled. Repeated cancellation requests

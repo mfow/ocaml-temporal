@@ -2713,6 +2713,14 @@ pub unsafe extern "C" fn ocaml_temporal_core_v2_client_cancel_workflow_json(
 
 /// Terminate one exact workflow run. The successful value is a strict
 /// `{"acknowledged":true}` document; no server-owned memory crosses the ABI.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle. `input` must
+/// point to `input_len` readable bytes for the duration of this synchronous
+/// call, and `output` must point to writable result storage. The C shim copies
+/// the input before releasing the OCaml runtime lock and owns the returned
+/// allocation through the normal result-release function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ocaml_temporal_core_v2_client_terminate_workflow_json(
     runtime: *mut Runtime,

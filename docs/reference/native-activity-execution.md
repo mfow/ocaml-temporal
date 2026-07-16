@@ -248,10 +248,16 @@ future used by remote activities.
 Local commands carry attempt, optional original schedule time, the three local
 timeouts, retry policy, local retry threshold, and cancellation policy. The
 public API deliberately omits remote-only queue, heartbeat, priority, and
-eager-execution controls. Core owns local retry/backoff and replay marker
-semantics; OCaml never synthesizes a retry or treats a local completion as a
-remote RPC. Local activities are experimental while live Compose coverage and
-interceptors remain future work.
+eager-execution controls. Core remains the authority for whether an attempt is
+retried and for the retry policy; it may either retry immediately or return a
+`DoBackoff` resolution when the retry should be delayed. For `DoBackoff`, the
+Rust bridge validates Core's attempt, duration, and original schedule time, and
+the OCaml supervisor starts a deterministic workflow timer. When that timer
+fires it re-emits `ScheduleLocalActivity` with the same activity sequence and
+the attempt/schedule metadata supplied by Core. OCaml therefore never chooses
+retry policy or invents attempt numbers, and a local completion is never
+treated as a remote RPC. Local activities are experimental while live Compose
+coverage and interceptors remain future work.
 
 ## Cancellation
 

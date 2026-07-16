@@ -8,6 +8,14 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  (** Core requests a timer before a local activity retry. The activity future
+      remains pending until the retried command resolves it. *)
+  | Resolve_local_activity_backoff of {
+      seq : int64;
+      attempt : int64;
+      backoff_milliseconds : int64;
+      original_schedule_time : Temporal_protocol.Workflow_protocol.timestamp option;
+    }
   (** Acknowledges that a child start was accepted. [Ok run_id] records the
       concrete execution while keeping the child result future pending. *)
   | Resolve_child_workflow_start of {

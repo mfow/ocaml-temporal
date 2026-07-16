@@ -1,4 +1,5 @@
 module Activation = Temporal_runtime.Activation
+module Protocol = Temporal_protocol.Workflow_protocol
 module Raw_execution = Temporal_runtime.Execution
 module Future_store = Temporal_runtime.Future_store
 module Scheduler = Temporal_runtime.Scheduler
@@ -1100,6 +1101,73 @@ let test_activity_cancel_after_natural_completion_is_noop () =
     (Workflow_context_store.take_commands context);
   Workflow_context_store.shutdown context
 
+(** A Core backoff keeps the original local-activity future pending, creates a
+    separate workflow timer, and re-emits the same activity sequence with the
+    supplied retry attempt when that timer fires. *)
+let test_local_activity_backoff_reschedules_without_resolving () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let future, _cancel =
+    Workflow_context_store.schedule_local_activity context ~name:"local-greeting"
+      ~input:(payload "Ada") ~decode:(fun value -> Ok value) ()
+  in
+  expect "initial local activity command"
+    [ Activation.Schedule_local_activity
+        {
+          seq = 1L;
+          activity_id = "ocaml-activity-1";
+          activity_type = "local-greeting";
+          attempt = 1L;
+          original_schedule_time = None;
+          arguments = [ payload "Ada" ];
+          schedule_to_close_timeout = None;
+          schedule_to_start_timeout = None;
+          start_to_close_timeout = Some 60_000L;
+          retry_policy = None;
+          local_retry_threshold = None;
+          cancellation_type = Activation.Wait_cancellation_completed;
+        } ]
+    (Workflow_context_store.take_commands context);
+  let original_schedule_time : Protocol.timestamp =
+    { Protocol.seconds = 100L; nanoseconds = 7 }
+  in
+  (match
+     Workflow_context_store.resolve_local_activity_backoff context ~seq:1L
+       ~attempt:2L ~backoff_milliseconds:2_500L ~original_schedule_time:(Some original_schedule_time)
+   with
+  | Ok () -> ()
+  | Error error -> failwith ("local backoff was rejected: " ^ public_error_message error));
+  expect "local backoff starts timer"
+    [ Activation.Start_timer { seq = 2L; milliseconds = 2_500L } ]
+    (Workflow_context_store.take_commands context);
+  (match Future_store.peek future with
+  | None -> ()
+  | Some _ -> failwith "local backoff resolved the activity future");
+  (match Workflow_context_store.fire_timer context ~seq:2L with
+  | Ok () -> ()
+  | Error error -> failwith ("local backoff timer failed: " ^ public_error_message error));
+  expect "local backoff reschedules activity"
+    [ Activation.Schedule_local_activity
+        {
+          seq = 1L;
+          activity_id = "ocaml-activity-1";
+          activity_type = "local-greeting";
+          attempt = 2L;
+          original_schedule_time = Some original_schedule_time;
+          arguments = [ payload "Ada" ];
+          schedule_to_close_timeout = None;
+          schedule_to_start_timeout = None;
+          start_to_close_timeout = Some 60_000L;
+          retry_policy = None;
+          local_retry_threshold = None;
+          cancellation_type = Activation.Wait_cancellation_completed;
+        } ]
+    (Workflow_context_store.take_commands context);
+  (match Workflow_context_store.resolve_activity context ~seq:1L (Ok (payload "done")) with
+  | Ok () -> ()
+  | Error error -> failwith ("rescheduled local activity failed: " ^ public_error_message error));
+  Workflow_context_store.shutdown context
+
 (** A terminal activity failure closes the handle lifecycle just like a
     successful result. A later cancellation retry must therefore be idempotent
     and must not allocate a second command. *)
@@ -1816,6 +1884,7 @@ let () =
   test_child_workflow_failures_and_sequence_ownership ();
   test_child_start_conflicting_result_keeps_future_pending ();
   test_activity_cancel_after_natural_completion_is_noop ();
+  test_local_activity_backoff_reschedules_without_resolving ();
   test_activity_cancel_after_failure_is_noop ();
   test_activity_cancel_owner_check ();
   test_child_cancel_after_natural_completion_is_noop ();

@@ -224,6 +224,43 @@ let test_local_activity_protocol_slice () =
   require_error
     (Protocol.encode_completion { completion with commands = [ bad_command ] })
 
+(** Proves that Core's long local-activity retry delay is represented as a
+    nonterminal activation result without losing attempt or schedule-time
+    provenance. *)
+let test_local_activity_backoff_protocol_slice () =
+  let backoff : Protocol.activity_resolution =
+    Protocol.Backoff
+      {
+        attempt = 2L;
+        backoff_duration = { seconds = 3L; nanoseconds = 400_000_000 };
+        original_schedule_time = Some { seconds = 10L; nanoseconds = 20 };
+      }
+  in
+  let activation : Protocol.activation =
+    {
+      run_id = "local-run";
+      timestamp = Some { seconds = 20L; nanoseconds = 0 };
+      is_replaying = false;
+      history_length = 2L;
+      jobs = [ Protocol.Resolve_activity { seq = 4L; result = backoff } ];
+      metadata = None;
+    }
+  in
+  let encoded = unwrap (Protocol.encode_activation activation) in
+  if unwrap (Protocol.decode_activation encoded) <> activation then
+    failwith "local activity backoff did not round-trip";
+  let invalid =
+    Protocol.Backoff
+      {
+        attempt = 0L;
+        backoff_duration = { seconds = 3L; nanoseconds = 400_000_000 };
+        original_schedule_time = Some { seconds = 10L; nanoseconds = 20 };
+      }
+  in
+  require_error
+    (Protocol.encode_activation
+       { activation with jobs = [ Protocol.Resolve_activity { seq = 4L; result = invalid } ] })
+
 (** Proves the OCaml side normalizes the shared patch-marker fixtures and
     rejects an empty identifier, an unknown activation field, and a completion
     marker missing its required deprecation flag. Rust exercises these same
@@ -1245,6 +1282,7 @@ let () =
   run "continuation initialization metadata" test_continuation_initialize_metadata;
   run "workflow completion" test_valid_completion;
   run "local activity protocol" test_local_activity_protocol_slice;
+  run "local activity backoff protocol" test_local_activity_backoff_protocol_slice;
   run "workflow patch marker protocol" test_patch_marker_protocol_slice;
   run "query protocol slice" test_query_protocol_slice;
   run "update protocol slice" test_update_protocol_slice;

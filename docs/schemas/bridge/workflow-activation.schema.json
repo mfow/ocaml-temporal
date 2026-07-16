@@ -153,6 +153,17 @@
           "type": "object", "additionalProperties": false,
           "required": ["kind", "failure"],
           "properties": {"kind": {"const": "cancelled"}, "failure": {"$ref": "#/$defs/failure"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "attempt", "backoff_duration", "original_schedule_time"],
+          "properties": {
+            "kind": {"const": "backoff"},
+            "attempt": {"$ref": "#/$defs/u32", "minimum": 1},
+            "backoff_duration": {"$ref": "#/$defs/duration"},
+            "original_schedule_time": {"oneOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}
+          },
+          "description": "Core emits this only for a local activity whose retry delay should be represented by a language-owned workflow timer."
         }
       ]
     },

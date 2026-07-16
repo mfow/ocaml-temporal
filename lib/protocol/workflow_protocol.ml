@@ -158,6 +158,13 @@ type activity_resolution =
   | Completed of payload option
   | Failed of failure
   | Cancelled of failure
+  (** Core uses this nonterminal result when a local activity retry should be
+      delayed by a workflow timer before the next attempt is scheduled. *)
+  | Backoff of {
+      attempt : int64;
+      backoff_duration : duration;
+      original_schedule_time : timestamp option;
+    }
 
 type child_workflow_start_failure_cause =
   | Child_start_unspecified
@@ -992,6 +999,24 @@ let activity_resolution path json =
       let* failure_json = field path "failure" entries in
       let* value = failure (path ^ ".failure") failure_json in
       if String.equal kind "failed" then Ok (Failed value) else Ok (Cancelled value)
+  | "backoff" ->
+      let* entries =
+        exact_object path
+          [ "kind"; "attempt"; "backoff_duration"; "original_schedule_time" ]
+          json
+      in
+      let* attempt_json = field path "attempt" entries in
+      let* attempt = uint32 (path ^ ".attempt") attempt_json in
+      if Int64.equal attempt 0L then
+        Error (invalid (path ^ ".attempt") "local activity backoff attempt must be positive")
+      else
+        let* duration_json = field path "backoff_duration" entries in
+        let* backoff_duration = duration (path ^ ".backoff_duration") duration_json in
+        let* original_json = field path "original_schedule_time" entries in
+        let* original_schedule_time =
+          nullable (path ^ ".original_schedule_time") timestamp original_json
+        in
+        Ok (Backoff { attempt; backoff_duration; original_schedule_time })
   | _ -> Error (invalid (path ^ ".kind") "unknown activity resolution kind")
 
 (** Encodes the activity-resolution oneof. *)
@@ -1007,6 +1032,16 @@ let activity_resolution_json = function
   | Cancelled value ->
       let* failure = failure_json value in
       Ok (`Assoc [ ("kind", `String "cancelled"); ("failure", failure) ])
+  | Backoff { attempt; backoff_duration; original_schedule_time } ->
+      Ok
+        (`Assoc
+          [ ("kind", `String "backoff");
+            ("attempt", `Intlit (Int64.to_string attempt));
+            ("backoff_duration", time_json backoff_duration.seconds backoff_duration.nanoseconds);
+            ( "original_schedule_time",
+              match original_schedule_time with
+              | None -> `Null
+              | Some value -> time_json value.seconds value.nanoseconds ) ])
 
 (** Decodes the closed query-answer union. Query success requires one payload;
     query failure retains Core's structured failure for exact error delivery. *)

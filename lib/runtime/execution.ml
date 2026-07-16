@@ -343,6 +343,14 @@ let process_job execution = function
       match Workflow_context_store.resolve_activity execution.context ~seq result with
       | Ok () -> ()
       | Error error -> fail execution error)
+  | Resolve_local_activity_backoff
+      { seq; attempt; backoff_milliseconds; original_schedule_time } -> (
+      match
+        Workflow_context_store.resolve_local_activity_backoff execution.context
+          ~seq ~attempt ~backoff_milliseconds ~original_schedule_time
+      with
+      | Ok () -> ()
+      | Error error -> fail execution error)
   | Resolve_child_workflow_start { seq; result } -> (
       match
         Workflow_context_store.resolve_child_workflow_start execution.context

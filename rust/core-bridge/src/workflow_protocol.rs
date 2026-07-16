@@ -403,6 +403,15 @@ pub enum ActivityResolution {
     Cancelled {
         failure: Failure,
     },
+    /// Core asks the language runtime to wait before issuing the next local
+    /// activity attempt. This is deliberately not exposed for remote
+    /// activities: only Core's local-activity state machine emits it.
+    Backoff {
+        attempt: u32,
+        backoff_duration: Duration,
+        #[serde(deserialize_with = "required_nullable")]
+        original_schedule_time: Option<Timestamp>,
+    },
 }
 
 /// Why Core could not start a child workflow execution.
@@ -1273,6 +1282,32 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                 ActivityResolution::Failed { failure }
                 | ActivityResolution::Cancelled { failure } => {
                     validate_failure(failure, "$.jobs.result.failure")?
+                }
+                ActivityResolution::Backoff {
+                    attempt,
+                    backoff_duration,
+                    original_schedule_time,
+                } => {
+                    if *attempt == 0 {
+                        return Err(ProtocolError::invalid(
+                            "$.jobs.result.attempt",
+                            "local activity backoff attempt must be positive",
+                        ));
+                    }
+                    validate_time(
+                        backoff_duration.seconds,
+                        backoff_duration.nanoseconds,
+                        true,
+                        "$.jobs.result.backoff_duration",
+                    )?;
+                    if let Some(timestamp) = original_schedule_time {
+                        validate_time(
+                            timestamp.seconds,
+                            timestamp.nanoseconds,
+                            false,
+                            "$.jobs.result.original_schedule_time",
+                        )?;
+                    }
                 }
             },
             ActivationJob::ResolveChildWorkflowStart { result, .. } => match result {
@@ -2176,6 +2211,7 @@ fn continuation_from_core(
 /// Converts one supported Core activity resolution.
 fn activity_resolution_from_core(
     value: &core_activity::ActivityResolution,
+    is_local: bool,
 ) -> Result<ActivityResolution, CoreConversionError> {
     use core_activity::activity_resolution::Status;
     match value
@@ -2202,7 +2238,37 @@ fn activity_resolution_from_core(
                     .ok_or_else(|| invalid_core("Core cancelled activity has no failure"))?,
             )?,
         }),
-        Status::Backoff(_) => Err(unsupported("local activity backoff is not supported")),
+        Status::Backoff(value) => {
+            if !is_local {
+                return Err(unsupported("remote activity backoff is not supported"));
+            }
+            if value.attempt == 0 {
+                return Err(invalid_core("Core local activity backoff attempt is zero"));
+            }
+            let backoff_duration = value
+                .backoff_duration
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core local activity backoff duration is absent"))
+                .and_then(duration_from_core)?;
+            let original_schedule_time = value
+                .original_schedule_time
+                .as_ref()
+                .map(|timestamp| {
+                    validate_time(timestamp.seconds, timestamp.nanos, false, "$").map_err(
+                        |_| invalid_core("Core local activity schedule timestamp is invalid"),
+                    )?;
+                    Ok(Timestamp {
+                        seconds: timestamp.seconds,
+                        nanoseconds: timestamp.nanos,
+                    })
+                })
+                .transpose()?;
+            Ok(ActivityResolution::Backoff {
+                attempt: value.attempt,
+                backoff_duration,
+                original_schedule_time,
+            })
+        }
     }
 }
 
@@ -2455,6 +2521,7 @@ pub fn activation_from_core(
                                 .result
                                 .as_ref()
                                 .ok_or_else(|| invalid_core("Core activity result is absent"))?,
+                            value.is_local,
                         )?,
                     })
                 }

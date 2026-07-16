@@ -192,6 +192,19 @@ val resolve_activity :
   (Temporal_base.Codec.payload, Temporal_base.Error.t) result ->
   (unit, Temporal_base.Error.t) result
 
+(** Retains a pending local activity while scheduling the workflow timer Core
+    requested for a long retry backoff. The next timer activation re-emits the
+    same activity sequence with the supplied attempt and original schedule
+    timestamp; terminal resolution remains responsible for completing the
+    activity future. *)
+val resolve_local_activity_backoff :
+  t ->
+  seq:int64 ->
+  attempt:int64 ->
+  backoff_milliseconds:int64 ->
+  original_schedule_time:Temporal_protocol.Workflow_protocol.timestamp option ->
+  (unit, Temporal_base.Error.t) result
+
 (** Completes and removes the pending child workflow with this private
     correlation sequence. Unknown and repeated numbers are bridge defects. *)
 val resolve_child_workflow :

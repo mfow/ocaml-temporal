@@ -181,6 +181,13 @@ type activity_resolution =
   | Completed of payload option
   | Failed of failure
   | Cancelled of failure
+  (** Core requests a workflow timer before the next attempt of a local
+      activity is scheduled. Remote activities never produce this result. *)
+  | Backoff of {
+      attempt : int64;
+      backoff_duration : duration;
+      original_schedule_time : timestamp option;
+    }
 
 (** The start acknowledgment is separate from terminal child completion. A
     successful start carries a run ID and leaves the child future pending. *)

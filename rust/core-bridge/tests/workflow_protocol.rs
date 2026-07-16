@@ -2285,6 +2285,79 @@ fn converts_timeout_failure_info_losslessly() {
     );
 }
 
+/// Converts Core's local-activity DoBackoff result and rejects the same result
+/// when Core marks the activity as remote. This keeps the nonterminal retry
+/// signal on the only lane where the language runtime can re-schedule it.
+#[test]
+fn converts_local_activity_backoff_losslessly() {
+    use core_activation::workflow_activation_job::Variant;
+    use temporalio_protos::coresdk::{activity_result, workflow_activation};
+
+    let activation = core_activation::WorkflowActivation {
+        run_id: "local-run".to_owned(),
+        timestamp: Some(prost_wkt_types::Timestamp::default()),
+        jobs: vec![core_activation::WorkflowActivationJob {
+            variant: Some(Variant::ResolveActivity(
+                workflow_activation::ResolveActivity {
+                    seq: 7,
+                    result: Some(activity_result::ActivityResolution {
+                        status: Some(activity_result::activity_resolution::Status::Backoff(
+                            activity_result::DoBackoff {
+                                attempt: 2,
+                                backoff_duration: Some(prost_wkt_types::Duration {
+                                    seconds: 3,
+                                    nanos: 400_000_000,
+                                }),
+                                original_schedule_time: Some(prost_wkt_types::Timestamp {
+                                    seconds: 10,
+                                    nanos: 20,
+                                }),
+                            },
+                        )),
+                    }),
+                    is_local: true,
+                },
+            )),
+        }],
+        ..Default::default()
+    };
+    let semantic = workflow_protocol::activation_from_core(&activation).unwrap();
+    assert_eq!(
+        semantic.jobs[0],
+        workflow_protocol::ActivationJob::ResolveActivity {
+            seq: 7,
+            result: workflow_protocol::ActivityResolution::Backoff {
+                attempt: 2,
+                backoff_duration: workflow_protocol::Duration {
+                    seconds: 3,
+                    nanoseconds: 400_000_000,
+                },
+                original_schedule_time: Some(workflow_protocol::Timestamp {
+                    seconds: 10,
+                    nanoseconds: 20,
+                }),
+            },
+        }
+    );
+    let encoded = workflow_protocol::encode_activation(&semantic).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_activation(&encoded).unwrap(),
+        semantic
+    );
+
+    let mut remote = activation;
+    let Some(Variant::ResolveActivity(job)) = remote.jobs[0].variant.as_mut() else {
+        panic!("backoff test job must be ResolveActivity");
+    };
+    job.is_local = false;
+    assert_eq!(
+        workflow_protocol::activation_from_core(&remote)
+            .unwrap_err()
+            .code,
+        workflow_protocol::CoreConversionErrorCode::Unsupported
+    );
+}
+
 /// Proves the pinned Core cancellation-before-start activation retains the
 /// empty child run ID that Core emits before it has a
 /// `ChildWorkflowExecutionStarted` event.  This exercises the protobuf

@@ -303,6 +303,28 @@ let runtime_activity_result path result =
           failure
       in
       Ok (Error error)
+  | Protocol.Backoff _ ->
+      Error (invalid path "local activity backoff must be handled as a retry job")
+
+(** Converts a Core retry delay to the runtime's millisecond timer unit. Core
+    currently reports retry delays at millisecond precision, but rounding any
+    future sub-millisecond value upward avoids firing the retry before Core's
+    requested deadline. *)
+let milliseconds_of_duration path (duration : Protocol.duration) =
+  if Int64.compare duration.seconds 0L < 0 then
+    Error (invalid path "duration must not be negative")
+  else if duration.nanoseconds < 0 || duration.nanoseconds >= 1_000_000_000 then
+    Error (invalid path "duration nanoseconds are outside protobuf range")
+  else if Int64.compare duration.seconds (Int64.div Int64.max_int 1_000L) > 0 then
+    Error (invalid path "duration exceeds runtime timer range")
+  else
+    let seconds_ms = Int64.mul duration.seconds 1_000L in
+    let fractional_ms =
+      Int64.of_int ((duration.nanoseconds + 999_999) / 1_000_000)
+    in
+    if Int64.compare seconds_ms (Int64.sub Int64.max_int fractional_ms) > 0 then
+      Error (invalid path "duration exceeds runtime timer range")
+    else Ok (Int64.add seconds_ms fractional_ms)
 
 (** Converts the child-start acknowledgment. A successful run ID advances the
     per-sequence lifecycle without completing the child future; start failures
@@ -396,10 +418,24 @@ let runtime_job path = function
             None )
   | Protocol.Resolve_activity { seq; result } ->
       let* () = validate_sequence (path ^ ".seq") seq in
-      let* result = runtime_activity_result (path ^ ".result") result in
-      Ok
-        ( Activation.Resolve_activity { seq; result }, None, None, None,
-          Some (Activity, seq) )
+      begin match result with
+      | Protocol.Backoff { attempt; backoff_duration; original_schedule_time } ->
+          if Int64.compare attempt 0L <= 0 then
+            Error (invalid (path ^ ".result.attempt") "local activity backoff attempt must be positive")
+          else
+            let* backoff_milliseconds =
+              milliseconds_of_duration (path ^ ".result.backoff_duration") backoff_duration
+            in
+            Ok
+              ( Activation.Resolve_local_activity_backoff
+                  { seq; attempt; backoff_milliseconds; original_schedule_time },
+                None, None, None, Some (Activity, seq) )
+      | (Protocol.Completed _ | Protocol.Failed _ | Protocol.Cancelled _) as result ->
+          let* result = runtime_activity_result (path ^ ".result") result in
+          Ok
+            ( Activation.Resolve_activity { seq; result }, None, None, None,
+              Some (Activity, seq) )
+      end
   | Protocol.Resolve_child_workflow_start { seq; result } ->
       let* () = validate_sequence (path ^ ".seq") seq in
       let* result =

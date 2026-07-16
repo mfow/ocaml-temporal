@@ -8,6 +8,15 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  (** Core asks the language runtime to wait before retrying a local activity.
+      This job deliberately does not resolve the activity future; the context
+      retains its original request and re-emits it after the timer fires. *)
+  | Resolve_local_activity_backoff of {
+      seq : int64;
+      attempt : int64;
+      backoff_milliseconds : int64;
+      original_schedule_time : Temporal_protocol.Workflow_protocol.timestamp option;
+    }
   | Resolve_child_workflow_start of {
       seq : int64;
       result : (string, Temporal_base.Error.t) result;

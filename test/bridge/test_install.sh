@@ -22,6 +22,22 @@ esac
 
 opam exec -- dune build @install
 
+# The wrapped [Temporal] root is the installed package's explicit public
+# module allow-list. Keep this check next to the consumer compilation so a
+# newly exposed implementation module or an accidentally removed public
+# module fails the package-boundary gate before publication. The comparison is
+# intentionally source-based: the installed tree contains generated aliases,
+# while the checked-in root is the maintainer-owned list.
+expected_public_modules='Activity Child_workflow Client Codec Condition Duration Error Future Interaction Payload Query Result_syntax Runtime_info Scope Time Signal Update Worker Workflow Workflow_context'
+actual_public_modules=$(sed -n 's/^module \([A-Za-z0-9_]*\) = .*/\1/p' \
+  "$root/lib/public/temporal.ml" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+if [ "$actual_public_modules" != "$expected_public_modules" ]; then
+  echo "public Temporal module allow-list changed unexpectedly" >&2
+  printf 'expected: %s\nactual:   %s\n' \
+    "$expected_public_modules" "$actual_public_modules" >&2
+  exit 1
+fi
+
 # Dune's `(package temporal-sdk)` mechanism installs implementation libraries
 # only below `temporal-sdk/__private__/`. This is package-private linkage, not a
 # top-level findlib package or a module in the public `Temporal` signature.
@@ -64,6 +80,7 @@ mkdir -p "$output_dir"
 cp "$root/test/fixtures/install-consumer/dune-project" "$output_dir/"
 cp "$root/test/fixtures/install-consumer/dune" "$output_dir/"
 cp "$root/test/fixtures/install-consumer/main.ml" "$output_dir/"
+cp "$root/test/fixtures/install-consumer/public_api.ml" "$output_dir/"
 cp "$root/test/fixtures/install-consumer/negative-dune" "$output_dir/dune-negative"
 cp "$root/test/fixtures/install-consumer/negative/forbidden_"*.ml "$output_dir/"
 consumer_ocamlpath=$dune_install_root

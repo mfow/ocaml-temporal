@@ -2703,7 +2703,7 @@ pub unsafe extern "C" fn ocaml_temporal_core_v2_client_signal_workflow_json(
 /// is borrowed only for this synchronous call and `output` follows the normal
 /// initialized-result contract.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ocaml_temporal_core_v1_client_query_workflow_json(
+pub unsafe extern "C" fn ocaml_temporal_core_v2_client_query_workflow_json(
     runtime: *mut Runtime,
     input: *const u8,
     input_len: usize,

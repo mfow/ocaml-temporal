@@ -362,17 +362,17 @@ fn client_query_validates_json_before_state_use() {
     let mut runtime = ptr::null_mut();
     let mut result = empty_result();
     assert_eq!(
-        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        unsafe { ocaml_temporal_core_v2_runtime_new(&mut runtime, &mut result) },
         STATUS_OK
     );
     assert_eq!(
-        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        unsafe { ocaml_temporal_core_v2_result_free(&mut result) },
         STATUS_OK
     );
 
     assert_eq!(
         unsafe {
-            ocaml_temporal_core_v1_client_query_workflow_json(
+            ocaml_temporal_core_v2_client_query_workflow_json(
                 runtime,
                 br#"{}"#.as_ptr(),
                 2,
@@ -382,13 +382,13 @@ fn client_query_validates_json_before_state_use() {
         STATUS_PROTOCOL
     );
     assert_eq!(
-        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        unsafe { ocaml_temporal_core_v2_result_free(&mut result) },
         STATUS_OK
     );
 
     assert_eq!(
         unsafe {
-            ocaml_temporal_core_v1_client_query_workflow_json(
+            ocaml_temporal_core_v2_client_query_workflow_json(
                 runtime,
                 QUERY_REQUEST.as_ptr(),
                 QUERY_REQUEST.len(),
@@ -398,11 +398,11 @@ fn client_query_validates_json_before_state_use() {
         STATUS_INVALID_STATE
     );
     assert_eq!(
-        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        unsafe { ocaml_temporal_core_v2_result_free(&mut result) },
         STATUS_OK
     );
     assert_eq!(
-        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        unsafe { ocaml_temporal_core_v2_runtime_free(&mut runtime) },
         STATUS_OK
     );
 }

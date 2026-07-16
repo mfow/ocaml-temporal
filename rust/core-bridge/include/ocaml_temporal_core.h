@@ -115,7 +115,7 @@ ocaml_temporal_core_status ocaml_temporal_core_v2_client_signal_workflow_json(
  * successful value is a strict {"result": [...]} document; query rejection
  * and RPC failures use the same structured JSON error body as other client
  * control operations. */
-ocaml_temporal_core_status ocaml_temporal_core_v1_client_query_workflow_json(
+ocaml_temporal_core_status ocaml_temporal_core_v2_client_query_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 

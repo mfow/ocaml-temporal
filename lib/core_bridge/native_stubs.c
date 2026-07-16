@@ -499,7 +499,7 @@ CAMLprim value ocaml_temporal_client_signal_workflow_json(value runtime,
 CAMLprim value ocaml_temporal_client_query_workflow_json(value runtime,
                                                          value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_client_query_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_client_query_workflow_json);
 }
 
 /* Admit one workflow start and return its opaque ticket. The input is copied

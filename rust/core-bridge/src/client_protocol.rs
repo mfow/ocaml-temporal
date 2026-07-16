@@ -1232,7 +1232,7 @@ pub async fn poll_workflow_update(
     request: PollWorkflowUpdateRequest,
 ) -> Result<PollWorkflowUpdateResponse, ClientOperationError> {
     let mut service = connection.workflow_service();
-    let response = tokio::time::timeout(
+    let response = match tokio::time::timeout(
         Duration::from_secs(30),
         service.poll_workflow_execution_update(
             PollWorkflowExecutionUpdateRequest {
@@ -1253,11 +1253,16 @@ pub async fn poll_workflow_update(
         ),
     )
     .await
-    .map_err(|_| ClientOperationError::Rpc {
-        code: "deadline_exceeded".to_owned(),
-    })?
-    .map_err(map_rpc_status)?
-    .into_inner();
+    {
+        Ok(result) => result.map_err(map_rpc_status)?.into_inner(),
+        Err(_) => {
+            // A long-running update is still admitted and may complete after
+            // this bounded poll window.  Returning a pending JSON response
+            // lets the OCaml caller retry without turning a healthy update
+            // into a terminal transport error.
+            return Ok(PollWorkflowUpdateResponse { outcome: None });
+        }
+    };
     Ok(PollWorkflowUpdateResponse {
         outcome: response
             .outcome

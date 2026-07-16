@@ -577,7 +577,7 @@ let native_start_request client (request : start_request) : Client_protocol.star
   let metadata fields =
     List.map
       (fun (key, value) ->
-        { Client_protocol.key; value = protocol_payload value })
+        { Client_protocol.key = key; value = protocol_payload value })
       fields
   in
   {

@@ -341,9 +341,10 @@ live-verifies that a public `Activity` error named by
 The later complete [PR #279 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29331237061)
 re-verified these activity paths together in the prior sixteen-result gate.
 The complete [PR #289 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368)
-is the current seventeen-result evidence, including the child-retry and
+records the seventeen-result baseline, including the child-retry and
 duplicate-ID child-start-failure scenarios that share the same worker and
-activity adapter.
+activity adapter. It predates the long-backoff workflow now present in the
+fixture, whose first live run remains pending.
 
 The worker handoff uses `Will_complete_async` only for `define_async` callbacks.
 The later client endpoint rejects that marker and accepts only completed,

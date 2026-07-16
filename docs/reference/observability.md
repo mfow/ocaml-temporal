@@ -140,8 +140,9 @@ emits `workflow_update_unhandled` at `Error` level and returns a rejected
 update response. Validator or implementation errors also return a rejection,
 but do not currently have separate named workflow log operations; absence of
 `workflow_update_unhandled` must therefore not be read as proof that an update
-was accepted. Suspended update continuations are outside this current native
-boundary.
+was accepted. Acceptance and completion remain protocol responses rather than
+separate log operations so callers can correlate them by
+`protocol_instance_id`.
 
 ### Native worker lifecycle and completion events
 

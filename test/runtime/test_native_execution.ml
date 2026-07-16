@@ -582,7 +582,8 @@ let test_update_workflow_translation_and_activation () =
   in
   let handler =
     Execution.make_update_handler ~name:"set_status"
-      ~dispatch:(fun ~run_validator update ->
+      ~dispatch:(fun ~run_validator ~on_validated update ->
+        on_validated ();
         validator_runs := (update.id, run_validator) :: !validator_runs;
         match update.input with
         | [ payload ] -> (
@@ -667,7 +668,8 @@ let test_update_dispatch_preserves_activation_order () =
   in
   let handler =
     Execution.make_update_handler ~name:"observe_order"
-      ~dispatch:(fun ~run_validator:_ _update ->
+      ~dispatch:(fun ~run_validator:_ ~on_validated _update ->
+        on_validated ();
         handler_saw_context := Temporal.Workflow_context.is_active ();
         Temporal_base.Codec.encode Temporal_base.Codec.string "handled")
   in
@@ -729,6 +731,117 @@ let test_update_dispatch_preserves_activation_order () =
         } ] ->
       ()
   | _ -> failwith "resolver and update commands were not emitted in order"
+  end
+
+(** Verifies the two-phase update lifecycle. Validation acknowledgement is
+    emitted in the activation that starts a handler, while the handler's
+    completion is held until a future it owns resolves in a later activation.
+    This is the regression test for the scheduler-owned pending-update map. *)
+let test_update_handler_can_suspend () =
+  let activity =
+    Temporal.Activity.remote ~name:"suspended_update_activity"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"suspended_update_workflow"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let open Temporal.Result_syntax in
+        let* () = Temporal.Future.await (Temporal.Activity.start activity ()) in
+        Ok ())
+  in
+  let handler =
+    Execution.make_update_handler ~name:"wait_for_activity"
+      ~dispatch:(fun ~run_validator:_ ~on_validated _update ->
+        on_validated ();
+        match Temporal.Future.await (Temporal.Activity.start activity ()) with
+        | Error error -> Error (base_error error)
+        | Ok () ->
+            Temporal_base.Codec.encode Temporal_base.Codec.string "finished")
+  in
+  let execution =
+    Execution.start ~update_handlers:[ handler ] (base_workflow workflow) ()
+  in
+  let initial =
+    unwrap "suspended update workflow start"
+      (Native_execution.activate execution
+         (activation
+            [ Protocol.Initialize_workflow
+                {
+                  workflow_id = "suspended-update-workflow";
+                  workflow_type = "suspended_update_workflow";
+                  arguments = [];
+                  randomness_seed = "1";
+                  attempt = 1;
+                  context = None;
+                } ]))
+  in
+  begin match initial.commands with
+  | [ Protocol.Schedule_activity { seq = 1L; _ } ] -> ()
+  | _ -> failwith "suspended update workflow did not schedule its first activity"
+  end;
+  let waiting =
+    unwrap "suspended update acknowledgement"
+      (Native_execution.activate execution
+         (activation
+            [ Protocol.Do_update
+                {
+                  id = "suspended-update";
+                  protocol_instance_id = "suspended-update-protocol";
+                  name = "wait_for_activity";
+                  input = [];
+                  headers = [];
+                  meta =
+                    { Protocol.identity = "client"; update_id = "suspended-update" };
+                  run_validator = true;
+                } ]))
+  in
+  begin match waiting.commands with
+  | [ Protocol.Update_response
+        { protocol_instance_id = "suspended-update-protocol";
+          response = Update_accepted };
+      Protocol.Schedule_activity { seq = 2L; _ } ] ->
+      ()
+  | _ ->
+      failwith
+        "suspended update did not emit activity and acceptance before parking"
+  end;
+  let duplicate =
+    unwrap "duplicate suspended update rejection"
+      (Native_execution.activate execution
+         (activation
+            [ Protocol.Do_update
+                {
+                  id = "suspended-update-duplicate";
+                  protocol_instance_id = "suspended-update-protocol";
+                  name = "wait_for_activity";
+                  input = [];
+                  headers = [];
+                  meta =
+                    { Protocol.identity = "client";
+                      update_id = "suspended-update-duplicate" };
+                  run_validator = true;
+                } ]))
+  in
+  begin match duplicate.commands with
+  | [ Protocol.Update_response
+        { protocol_instance_id = "suspended-update-protocol";
+          response = Update_rejected _ } ] ->
+      ()
+  | _ -> failwith "duplicate pending update protocol ID was not rejected"
+  end;
+  let resumed =
+    unwrap "suspended update completion"
+      (Native_execution.activate execution
+         (activation
+            [ Protocol.Resolve_activity { seq = 2L; result = Protocol.Completed None } ]))
+  in
+  begin match resumed.commands with
+  | [ Protocol.Update_response
+        { protocol_instance_id = "suspended-update-protocol";
+          response = Update_completed payload } ]
+    when payload = json_protocol_payload "finished" ->
+      ()
+  | _ -> failwith "suspended update did not complete after its future resolved"
   end
 
 (** Confirms that both malformed identity forms are rejected before a signal
@@ -1270,6 +1383,7 @@ let () =
   test_query_workflow_translation_and_activation ();
   test_update_workflow_translation_and_activation ();
   test_update_dispatch_preserves_activation_order ();
+  test_update_handler_can_suspend ();
   test_signal_identity_validation ();
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();

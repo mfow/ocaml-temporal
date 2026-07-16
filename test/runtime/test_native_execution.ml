@@ -582,7 +582,8 @@ let test_update_workflow_translation_and_activation () =
   in
   let handler =
     Execution.make_update_handler ~name:"set_status"
-      ~dispatch:(fun ~run_validator ~on_validated:_ update ->
+      ~dispatch:(fun ~run_validator ~on_validated update ->
+        on_validated ();
         validator_runs := (update.id, run_validator) :: !validator_runs;
         match update.input with
         | [ payload ] -> (
@@ -667,7 +668,8 @@ let test_update_dispatch_preserves_activation_order () =
   in
   let handler =
     Execution.make_update_handler ~name:"observe_order"
-      ~dispatch:(fun ~run_validator:_ ~on_validated:_ _update ->
+      ~dispatch:(fun ~run_validator:_ ~on_validated _update ->
+        on_validated ();
         handler_saw_context := Temporal.Workflow_context.is_active ();
         Temporal_base.Codec.encode Temporal_base.Codec.string "handled")
   in
@@ -749,7 +751,8 @@ let test_update_handler_can_suspend () =
   in
   let handler =
     Execution.make_update_handler ~name:"wait_for_activity"
-      ~dispatch:(fun ~run_validator:_ ~on_validated:_ _update ->
+      ~dispatch:(fun ~run_validator:_ ~on_validated _update ->
+        on_validated ();
         let open Temporal.Result_syntax in
         let* () = Temporal.Future.await (Temporal.Activity.start activity ()) in
         Temporal_base.Codec.encode Temporal_base.Codec.string "finished")

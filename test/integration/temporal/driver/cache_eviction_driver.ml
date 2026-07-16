@@ -1,9 +1,11 @@
 (** Driver for the live sticky-cache eviction acceptance.
 
     The client starts two exact runs while the worker is configured with one
-    Core cache slot. It waits for the first task to be acknowledged, admits
-    the second run, and then observes the worker's payload-free eviction
-    marker. It deliberately does not wait for a second-run completion marker:
+    Core cache slot. Each run schedules a long deterministic timer, so the
+    first task reaches a durable pending boundary. The driver waits for that
+    first task, admits the second run, and then observes the worker's
+    payload-free eviction marker. It deliberately does not wait for a
+    second-run completion marker:
     with one sticky-cache slot Core may evict the first run before the second
     task's completion callback is delivered, so that handshake can deadlock
     the very eviction it is intended to prove. It cancels both exact runs and

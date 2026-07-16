@@ -2751,6 +2751,14 @@ pub unsafe extern "C" fn ocaml_temporal_core_v2_client_query_workflow_json(
 
 /// List one explicitly bounded visibility page. The JSON input is borrowed
 /// only for this call and the output is an owned bridge result.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle. The input span
+/// must point to `input_len` readable bytes for the duration of this call, and
+/// `output` must point to writable storage for the initialized-result contract.
+/// The caller owns the returned result and must release it with the matching
+/// bridge free function, even when the status reports an error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ocaml_temporal_core_v1_client_list_visibility_json(
     runtime: *mut Runtime,

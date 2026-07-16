@@ -1470,7 +1470,7 @@ fn validate_identifier(value: &str, path: &str) -> Result<(), protocol::Protocol
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::engine::general_purpose::STANDARD;
     use temporalio_client::tonic::codegen::Bytes;
 
     #[test]

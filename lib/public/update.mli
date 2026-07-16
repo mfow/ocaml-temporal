@@ -4,9 +4,9 @@
     workflow state, and returns a typed result. Validation is run before the
     update callback and must not mutate state or emit commands. Native workers
     use the same dispatcher after the Rust/Core bridge decodes a [DoUpdate]
-    activation. The first native slice requires one input payload and a
-    non-suspending handler; suspended update continuations are reserved for a
-    later runtime milestone. *)
+    activation. When invoked by a native workflow worker, a handler may suspend
+    on a workflow [Future]; the runtime acknowledges it before parking and
+    completes it when resumed. *)
 
 (** A validated update name paired with input and output codecs. *)
 type ('input, 'output) definition
@@ -54,7 +54,12 @@ module Handler : sig
 
   (** Decodes input, optionally validates it, runs the update, and encodes the
       result. Native replay passes [~run_validator:false] because validation
-      is a live-request check and must not run against historical input. *)
+      is a live-request check and must not run against historical input. When
+      supplied, [on_validated] runs once after successful validation and before
+      the handler, allowing the native runtime to acknowledge a handler that
+      may suspend. Application code normally leaves this optional hook unset. *)
   val dispatch :
-    ?run_validator:bool -> t -> Payload.t -> (Payload.t, Error.t) result
+    ?run_validator:bool ->
+    ?on_validated:(unit -> unit) ->
+    t -> Payload.t -> (Payload.t, Error.t) result
 end

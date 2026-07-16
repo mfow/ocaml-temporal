@@ -248,10 +248,10 @@ let runtime_query_handler (handler : Query.Handler.t) =
 let runtime_update_handler (handler : Update.Handler.t) =
   let name = Update.Handler.name handler in
   Workflow_adapter.make_update_handler ~name
-    ~dispatch:(fun ~run_validator update ->
+    ~dispatch:(fun ~run_validator ~on_validated update ->
       match Workflow_adapter.update_input update with
       | [ payload ] ->
-          Update.Handler.dispatch ~run_validator handler
+          Update.Handler.dispatch ~run_validator ~on_validated handler
             (Payload_private.of_base payload)
           |> Result.map Payload_private.to_base
           |> Result.map_error Error_private.to_base

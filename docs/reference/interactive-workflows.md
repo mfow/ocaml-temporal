@@ -15,15 +15,14 @@ The definitions and handler types are available in `Temporal.Signal`,
 deterministic local routing path for tests. Native workflow signal delivery is
 now available when a handler is attached to `Temporal.Worker.workflow`. Native
 output-only query delivery is also implemented at the bridge boundary. Native
-updates have an experimental immediate slice: a registered one-input,
-non-suspending handler can run through the Rust/Core bridge and return a typed
-result. PR #266 provides the first focused live proof of the typed
+updates have an experimental typed slice: a registered one-input handler may
+ suspend on a workflow future; acceptance is emitted before it parks and
+ completion is emitted when it resumes. PR #266 provides the first focused live proof of the typed
 signal/condition path; the recorded seventeen-result Compose baseline is
 also covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
 That historical run predates the long-backoff workflow now present in the
 fixture, whose first live run remains pending.
-Live query/update delivery, suspended updates, and broader interaction
-coverage remain future work.
+Live query/update delivery and broader interaction coverage remain future work.
 
 `Temporal.Client.query` is a separate control-plane operation: it asks an
 already registered workflow for the same output-only query through an exact
@@ -58,16 +57,14 @@ dropping them. Query callbacks are synchronous and non-suspending; they do not
 enter the workflow scheduler.
 
 Native update activations are validated and copied in the same way, then routed
-by update name to a typed `Temporal.Update.Handler.t`. The current public
-adapter requires exactly one input payload and a handler that returns in the
-same activation. It runs the validator when Core requests it, skips validation
-on replay, and emits accepted followed by completed responses. Codec failures,
-missing handlers, unsupported input arity, and callback errors become typed
-rejections. The private bridge retains headers, requester identity, and both
-update identifiers even though the first callback API exposes only its typed
-input. Focused native tests prove this behavior but are not live-server
-evidence; suspended continuations and a Compose update round trip remain
-roadmap work.
+by update name to a typed `Temporal.Update.Handler.t`. The adapter requires
+exactly one input payload. It runs the validator when Core requests it, skips
+validation on replay, and emits accepted before invoking the handler. A handler
+that awaits a workflow future retains its continuation in the execution-owned
+pending map; a later activation emits completed or rejected and removes that
+entry. Codec failures, missing handlers, unsupported input arity, duplicate
+pending protocol IDs, and callback errors become typed rejections. Focused
+native tests prove this behavior but are not live-server evidence.
 
 ## The three-step model
 
@@ -75,8 +72,9 @@ An interaction is assembled in three steps:
 
 1. Define a stable name and the codec for each value that crosses the
    interaction boundary.
-2. Pair that definition with a typed OCaml callback to make a handler.
-3. Attach signal, output-only query, and/or immediate update handlers to a worker workflow, or
+2. Pair that definition with a typed OCaml callback to make a handler. Update
+   callbacks may use ordinary workflow helpers such as `Future.await`.
+3. Attach signal, output-only query, and/or update handlers to a worker workflow, or
    put handlers in an `Interaction` dispatcher when writing a local test.
 
 The definition and handler preserve the relationship between a Temporal name,
@@ -84,8 +82,8 @@ its codec, and its OCaml type. A caller cannot accidentally pass a string to a
 handler that was defined for bytes without receiving a typed codec error. The
 native transport and the remaining handler/response lifecycles are described
 in the [native interaction design](../design/native-interactions.md). Signal
-and output-only query activation delivery plus immediate update responses are
-implemented; suspended update continuations and typed query inputs are not.
+and output-only query activation delivery plus two-phase update responses are
+implemented; typed query inputs are not.
 
 ## Definitions
 
@@ -212,12 +210,11 @@ worker. The execution mode depends on the interaction kind:
   must be read-only and non-suspending; it cannot await a future, schedule an
   activity, or mutate durable workflow state. Its encoded result is returned
   as the query response rather than as a workflow-task command.
-- An update handler currently has one input and must finish in the activation
-  that delivered it. Its validator runs before the implementation for a live
-  request and is skipped when Core replays an already-validated update. A
-  handler that needs to suspend is not compatible with this first native
-  update slice; use a signal or an ordinary workflow operation until update
-  continuations are implemented.
+- An update handler currently has one input. Its validator runs before the
+  implementation for a live request and is skipped when Core replays an
+  already-validated update. The runtime emits acceptance before a handler can
+  suspend, then retains only the suspended continuation keyed by Core's
+  `protocol_instance_id` until a later activation completes it.
 
 The `ref` above is deliberately small synthetic-test state. It demonstrates
 that a handler can close over ordinary OCaml values; it is not a substitute
@@ -342,8 +339,8 @@ run synchronously on the owner Domain, and non-empty arguments produce a
 failed query result rather than being discarded. The remaining native
 interaction work is:
 
-- update-owned continuations for handlers that suspend, including
-  later-activation completion and shutdown/eviction cleanup;
+- live acceptance scenarios for handlers that suspend, including recovery and
+  shutdown/eviction cleanup;
 - typed query inputs; and
 - Docker Compose acceptance scenarios for queries and updates, including
   workflow-side assertions through Temporal Server.

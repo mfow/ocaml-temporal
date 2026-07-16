@@ -36,8 +36,10 @@ type update = {
   update_id : string;
 }
 
-(** A private synchronous update callback. [run_validator] is false during
-    replay and tells the public adapter to skip its validator. *)
+(** A private update callback. [run_validator] is false during replay and tells
+    the public adapter to skip its validator. [on_validated] is called before
+    the callback so a suspended update can be acknowledged in its first
+    activation. *)
 type update_handler
 
 (** Creates a handler for one validated signal name. The callback receives the
@@ -64,7 +66,7 @@ val query_handler_name : query_handler -> string
 val make_update_handler :
   name:string ->
   dispatch:
-    (run_validator:bool -> update ->
+    (run_validator:bool -> on_validated:(unit -> unit) -> update ->
      (Temporal_base.Codec.payload, Temporal_base.Error.t) result) ->
   update_handler
 

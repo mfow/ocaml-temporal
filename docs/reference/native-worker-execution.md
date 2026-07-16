@@ -230,11 +230,13 @@ input, and optional retry policy represented by the protocol. Core child options
 not yet exposed by the OCaml runtime remain explicit defaults, but the two child
 resolution activations are decoded and validated losslessly. Start and
 terminal events share one Core sequence; only that exact pair is accepted. The
-live Compose gate includes the initial workflow/activity success path, one
-parent awaiting a successful child result, one server-managed activity retry,
-and one typed non-retryable workflow-failure path. Exact-run cancellation,
-heartbeat and timeout behavior, child failure/cancellation, and the remaining
-terminal/recovery scenarios still require real-server evidence.
+complete [PR #289 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368)
+live-verifies the initial workflow/activity success path, exact-run
+cancellation, heartbeat and timeout behavior, one parent awaiting a successful
+child result, child failure/cancellation, one server-managed activity retry,
+and one typed non-retryable workflow-failure path. The remaining
+terminal/recovery scenarios still require their corresponding real-server
+evidence.
 Activity commands are accepted only when their required identifiers, payloads,
 timeout policies, and cancellation options are present; a missing field is
 rejected in the same typed way.
@@ -273,7 +275,10 @@ The fake tests do not by themselves claim live Temporal compatibility. The
 focused supervisor tests cover operation admission, bounded waits, and
 idempotent shutdown; bridge tests cover the C/Rust readiness and null/error
 paths; and the Rust task-ledger tests cover exact lease identity, conversion
-rejection, and retirement ordering. The Compose acceptance suite now verifies
-timer, remote-activity, and one parent/child success path against a real
-Temporal Server. It remains the gate for child failure/cancellation and the
-remaining activity, terminal, and recovery cases.
+rejection, and retirement ordering. The complete [PR #289 Compose
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) also
+verifies timer, remote-activity, parent/child success, propagated child
+failure, and child cancellation against a real Temporal Server. Dedicated
+restart/replay, cache-eviction, patching, and parent/child recovery gates add
+their own live evidence; the remaining activity, terminal, and recovery cases
+still require their corresponding real-server evidence.

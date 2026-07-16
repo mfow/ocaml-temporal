@@ -255,7 +255,7 @@ fn real_client_worker_lifecycle() {
         format!(r#"{{"target_url":"{address}","identity":"ocaml-temporal-lifecycle-test"}}"#);
     consume(connect(runtime, client.as_bytes()), STATUS_OK);
     let worker = format!(
-        r#"{{"namespace":"{namespace}","task_queue":"ocaml-temporal-lifecycle-test","build_id":"lifecycle-test-build","versioning":{"kind":"none"},"max_cached_workflows":100,"max_outstanding_workflow_tasks":100,"max_concurrent_workflow_task_polls":5,"graceful_shutdown_timeout_ms":1000}}"#
+        r#"{{"namespace":"{namespace}","task_queue":"ocaml-temporal-lifecycle-test","build_id":"lifecycle-test-build","versioning":{{"kind":"none"}},"max_cached_workflows":100,"max_outstanding_workflow_tasks":100,"max_concurrent_workflow_task_polls":5,"graceful_shutdown_timeout_ms":1000}}"#
     );
     consume(start_worker(runtime, worker.as_bytes()), STATUS_OK);
 

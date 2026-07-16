@@ -604,6 +604,7 @@ let client_error_code kind path value =
       "unknown";
       "invalid_argument";
       "deadline_exceeded";
+      "termination_outcome_uncertain";
       "not_found";
       "already_exists";
       "permission_denied";

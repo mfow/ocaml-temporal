@@ -812,7 +812,11 @@ pub async fn terminate_workflow(
         }
         Err(_) => {
             return Err(ClientOperationError::Rpc {
-                code: "deadline_exceeded".to_owned(),
+                // TerminateWorkflowExecution has no request ID. If the
+                // transport deadline expires after the server accepted the
+                // command, retrying cannot be correlated with this attempt;
+                // preserve that ambiguity explicitly for the OCaml caller.
+                code: "termination_outcome_uncertain".to_owned(),
             });
         }
     }
@@ -2189,6 +2193,19 @@ mod tests {
             }
         );
         assert!(!error.to_json().contains("server"));
+    }
+
+    #[test]
+    /// Keeps a timed-out termination distinguishable from an ordinary RPC
+    /// rejection because the server may have accepted the command already.
+    fn termination_timeout_error_is_explicitly_uncertain() {
+        let error = ClientOperationError::Rpc {
+            code: "termination_outcome_uncertain".to_owned(),
+        };
+        assert_eq!(
+            error.to_json(),
+            r#"{"kind":"rpc","code":"termination_outcome_uncertain"}"#
+        );
     }
 
     #[test]

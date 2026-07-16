@@ -225,11 +225,24 @@ workflow ID, run ID, and bounded reason text. It deliberately has no
 `request_id`: Temporal's terminate RPC has no idempotency-key field. The
 deterministic mock preserves this exact-run and terminal-history contract.
 
+The native call has a bounded control-plane deadline so a stalled server cannot
+hold the supervisor owner indefinitely. If that deadline expires, the server
+may already have accepted the command, so the bridge returns the explicit
+`rpc` code `termination_outcome_uncertain` rather than pretending that the
+termination was rejected or that a retry is safe. Reconcile this result by
+calling `wait handle` (or by checking visibility) before deciding what to do;
+there is no idempotency key that can make a blind retry equivalent to the first
+request.
+
 The closed documents are specified by
 [`client-terminate-request.schema.json`](../schemas/bridge/client-terminate-request.schema.json)
 and
 [`client-terminate-response.schema.json`](../schemas/bridge/client-terminate-response.schema.json).
-for the remaining evidence boundary.
+Both OCaml and Rust reject unknown or duplicate fields and validate the
+acknowledgement before it crosses the FFI boundary. Focused mock, supervisor,
+OCaml bridge, and Rust protocol tests cover the exact-run request, terminal
+mapping, and validation failures; live acceptance of this operator path remains
+the next evidence boundary.
 
 ## Send one signal to an exact run
 

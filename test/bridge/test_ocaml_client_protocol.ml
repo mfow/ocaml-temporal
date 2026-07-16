@@ -420,6 +420,13 @@ let test_client_errors () =
   (match
      unwrap
        (Protocol.decode_client_error
+          {|{"kind":"rpc","code":"termination_outcome_uncertain"}|})
+   with
+  | Protocol.Rpc { code = "termination_outcome_uncertain" } -> ()
+  | _ -> failwith "termination uncertainty code was not retained");
+  (match
+     unwrap
+       (Protocol.decode_client_error
           {|{"kind":"protocol","code":"core_invalid"}|})
    with
   | Protocol.Protocol { code = "core_invalid" } -> ()

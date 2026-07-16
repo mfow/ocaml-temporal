@@ -1,9 +1,9 @@
-(** Dedicated worker for the live parent/child restart acceptance.
+(** Dedicated worker for the live parent/child replay acceptances.
 
-    This binary registers only the parent and its long-timer child. Keeping the
-    registration set small makes the recovery proof attributable to those two
-    workflow definitions rather than to the broad smoke worker's unrelated
-    activities and workflow types. *)
+    This binary registers the success and failure-recovery parent/child pairs.
+    Keeping the set limited to these four definitions makes each recovery proof
+    attributable to the relevant workflow definitions rather than to the broad
+    smoke worker's unrelated activities and workflow types. *)
 
 module Worker = Temporal.Worker
 (** Public worker lifecycle and registration API. *)
@@ -241,6 +241,8 @@ let run () : (unit, Error.t) result =
             [
               Worker.workflow Definitions.parent_child_restart_child;
               Worker.workflow Definitions.parent_child_restart_parent;
+              Worker.workflow Definitions.parent_child_failure_replay_child;
+              Worker.workflow Definitions.parent_child_failure_replay_parent;
             ]
           ~activities:[] ()
       in

@@ -2364,3 +2364,14 @@ dune build --root . @install
 dune build --root . @runtest --force
 sh scripts/check-format.sh
 ```
+
+## 2026-07-16: Child failure after worker-replay acceptance slice
+
+The child-failure-after-replay slice adds a separate parent and child fixture,
+an environment-selected controller path, and a source-only contract derived
+from the existing successful parent/child snapshots. The history and
+controller validators now bind the expected child workflow type and terminal
+outcome, including `WorkflowExecutionFailed` in the child and
+`ChildWorkflowExecutionFailed` in the parent. The live Compose controller is
+intentionally marked pending until its complete CI run proves the real
+Temporal replay and typed failure propagation.

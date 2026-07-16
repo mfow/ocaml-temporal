@@ -1,9 +1,9 @@
-(** Client-only driver for the live parent/child worker-restart acceptance.
+(** Client-only driver for the live parent/child worker-restart acceptances.
 
     This process owns no worker and never executes workflow code. It starts one
-    fixed parent workflow through the public client API, publishes only durable
-    identifiers needed by the external controller, and waits on that exact
-    parent run while the controller replaces the dedicated worker. *)
+    selected parent workflow through the public client API, publishes only
+    durable identifiers needed by the external controller, and waits on that
+    exact parent run while the controller replaces the dedicated worker. *)
 
 module Client = Temporal.Client
 (** The public client interface used to start and wait for the parent run. *)
@@ -57,20 +57,51 @@ let publish_marker (path : string) (contents : string) : (unit, Error.t) result
               path
               (Printexc.to_string exception_)))
 
-(** Accepts only the exact parent completion promised by the fixture. All other
-    terminal variants are converted into typed defects so the controller cannot
-    mistake a failed child, cancellation, or successor run for a successful
-    post-restart parent resolution. *)
-let require_completed : string Client.terminal_result -> (unit, Error.t) result
-    = function
-  | Client.Completed value
-    when String.equal value Definitions.parent_child_restart_result ->
-      Ok ()
-  | Client.Completed _ ->
+(* Selects one of the two bounded parent/child fixtures. Both definitions use
+   string codecs, so the choice remains typed and no existential packaging is
+   needed in this client-only process. Invalid configuration is returned as a
+   typed error rather than raised during executable initialization. *)
+let fixture () :
+    ((string, string) Temporal.Workflow.t * string * string * string * string
+    * string,
+    Error.t)
+    result =
+  match Sys.getenv_opt "SMOKE_PARENT_CHILD_REPLAY_SCENARIO" with
+  | None | Some "success" ->
+      Ok
+        ( Definitions.parent_child_restart_parent,
+          Definitions.parent_child_restart_parent_id,
+          Definitions.parent_child_restart_input,
+          Definitions.parent_child_restart_child_id
+            Definitions.parent_child_restart_input,
+          Definitions.parent_child_restart_result,
+          "parent/child restart" )
+  | Some "failure" ->
+      Ok
+        ( Definitions.parent_child_failure_replay_parent,
+          Definitions.parent_child_failure_replay_parent_id,
+          Definitions.parent_child_failure_replay_input,
+          Definitions.parent_child_failure_replay_child_id
+            Definitions.parent_child_failure_replay_input,
+          Definitions.parent_child_failure_replay_result,
+          "parent/child failure replay" )
+  | Some value ->
       Error
         (Error.defect
-           ~message:
-             "parent/child restart workflow returned an unexpected result")
+           ~message:("unknown parent/child replay scenario: " ^ value))
+
+(** Accepts only the exact parent completion promised by the selected fixture.
+    All other terminal variants are converted into typed defects so the
+    controller cannot mistake an unhandled child failure, cancellation, or
+    successor run for the expected post-restart resolution. *)
+let require_completed expected_label expected_result :
+    string Client.terminal_result -> (unit, Error.t) result = function
+  | Client.Completed value when String.equal value expected_result ->
+      Ok ()
+  | Client.Completed _ ->
+    Error
+      (Error.defect
+           ~message:(expected_label ^ " workflow returned an unexpected result"))
   | Client.Failed error
   | Client.Cancelled error
   | Client.Terminated error
@@ -78,14 +109,14 @@ let require_completed : string Client.terminal_result -> (unit, Error.t) result
       Error
         (Error.defect
            ~message:
-             (Printf.sprintf "parent/child restart workflow ended with %s: %s"
+             (Printf.sprintf "%s workflow ended with %s: %s" expected_label
                 (Error.kind error) (Error.message error)))
   | Client.Continued_as_new execution ->
       Error
         (Error.defect
            ~message:
              (Printf.sprintf
-                "parent/child restart workflow continued as new at run %s"
+                "%s workflow continued as new at run %s" expected_label
                 execution.run_id))
 
 (** Runs [body] with [client] and always attempts public client shutdown after
@@ -118,10 +149,10 @@ let run_with_client (client : Client.t) (body : unit -> (unit, Error.t) result)
   | Ok (), Ok () -> Ok ()
   | Ok (), Error shutdown_error -> Error shutdown_error
 
-(** Starts the fixed parent workflow and waits on the exact run returned by
-    [Client.start]. The published child ID is derivable from the fixed input,
-    but recording it alongside the parent run keeps the external history
-    controller independent of a duplicate string literal. *)
+(** Starts the selected parent workflow and waits on the exact run returned by
+    [Client.start]. The published child ID is derived by the shared pure
+    fixture function, but recording it alongside the parent run keeps the
+    external history controller independent of a duplicate literal. *)
 let run () : (unit, Error.t) result =
   match Sys.getenv_opt "TEMPORAL_TWO_BINARY_LIVE" with
   | Some "1" ->
@@ -134,6 +165,9 @@ let run () : (unit, Error.t) result =
       let* result_file =
         required_env "SMOKE_PARENT_CHILD_RESTART_RESULT_FILE"
       in
+      let* workflow, parent_id, input, child_workflow_id, expected_result,
+          expected_label = fixture ()
+      in
       let* client =
         Client.create ~target_url ~namespace
           ~identity:"ocaml-temporal-parent-child-restart-driver" ()
@@ -141,14 +175,9 @@ let run () : (unit, Error.t) result =
       run_with_client client (fun () ->
           let* handle =
             Client.start client
-              ~workflow:Definitions.parent_child_restart_parent
+              ~workflow
               ~task_queue:Definitions.task_queue
-              ~id:Definitions.parent_child_restart_parent_id
-              ~input:Definitions.parent_child_restart_input ()
-          in
-          let child_workflow_id =
-            Definitions.parent_child_restart_child_id
-              Definitions.parent_child_restart_input
+              ~id:parent_id ~input ()
           in
           let* () =
             publish_marker accepted_file
@@ -158,8 +187,8 @@ let run () : (unit, Error.t) result =
                  (Client.run_id handle) child_workflow_id)
           in
           let* outcome = Client.wait handle in
-          let* () = require_completed outcome in
-          publish_marker result_file "completed\n")
+          let* () = require_completed expected_label expected_result outcome in
+          publish_marker result_file (expected_result ^ "\n"))
   | _ ->
       Error
         (Error.defect

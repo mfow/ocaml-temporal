@@ -217,8 +217,7 @@ require_source_text "$driver_dune" '(name parent_child_restart_driver)'
 require_source_text "$worker_dune" '(name parent_child_restart_worker)'
 require_source_text "$parent_child_driver" 'module Client = Temporal.Client'
 require_source_text "$parent_child_driver" 'Client.start client'
-require_source_text "$parent_child_driver" \
-  '~workflow:Definitions.parent_child_restart_parent'
+require_source_text "$parent_child_driver" 'let* workflow, parent_id, input'
 require_source_text "$parent_child_driver" 'Client.wait handle'
 require_source_absent "$parent_child_driver" 'Worker.create'
 require_source_absent "$parent_child_driver" 'Worker.run'
@@ -246,10 +245,20 @@ require_source_text "$parent_child_runner" \
 require_source_text "$parent_child_runner" 'compose stop --timeout 40 "$service"'
 require_source_text "$parent_child_contract" \
   "child_type='smoke.parent_child_restart_child'"
+failure_runner="$fixture/scripts/run-child-failure-replay-live.sh"
+failure_contract="$fixture/scripts/test-child-failure-replay-contract.sh"
+require_source_text "$failure_runner" 'parent_workflow_id=two-binary-parent-child-failure-replay'
+require_source_text "$failure_runner" 'child_workflow_type=smoke.parent_child_failure_replay_child'
+require_source_text "$failure_runner" '--expected-outcome child_failure_recovered'
+require_source_text "$failure_contract" 'child_failure_recovered'
+require_source_text "$definitions" \
+  'Temporal.Workflow.define ~name:parent_child_failure_replay_child_type'
+require_source_text "$definitions" \
+  'two-binary-parent-child-failure-replay'
 require_source_text "$compose_file" \
-  'SMOKE_PARENT_CHILD_REPLAY_PARENT_WORKFLOW_ID: two-binary-parent-child-restart'
+  'SMOKE_PARENT_CHILD_REPLAY_PARENT_WORKFLOW_ID: "${SMOKE_PARENT_CHILD_REPLAY_PARENT_WORKFLOW_ID:-two-binary-parent-child-restart}"'
 require_source_text "$compose_file" \
-  'SMOKE_PARENT_CHILD_REPLAY_CHILD_WORKFLOW_ID: two-binary-parent-child-restart-child-smoke'
+  'SMOKE_PARENT_CHILD_REPLAY_CHILD_WORKFLOW_ID: "${SMOKE_PARENT_CHILD_REPLAY_CHILD_WORKFLOW_ID:-two-binary-parent-child-restart-child-smoke}"'
 parent_child_stop_periods=$(awk '
   /^  parent-child-restart-worker-(one|two):$/ { in_service = 1; next }
   in_service && /^  [^ ]/ { in_service = 0 }
@@ -418,7 +427,7 @@ if ! grep -F '$(MAKE) temporal-clean;' "$makefile" >/dev/null \
   echo "integration setup and its failure trap must both invoke temporal-clean" >&2
   exit 1
 fi
-for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery-contract test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction-contract test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live test-temporal-parent-child-restart test-temporal-parent-child-restart-contract test-temporal-parent-child-restart-live; do
+for target in temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker temporal-health temporal-status temporal-logs temporal-stop temporal-clean test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery-contract test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction-contract test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live test-temporal-parent-child-restart test-temporal-parent-child-restart-contract test-temporal-parent-child-restart-live test-temporal-parent-child-failure-replay test-temporal-parent-child-failure-replay-contract test-temporal-parent-child-failure-replay-live; do
   if ! grep -E "^${target}:" "$makefile" >/dev/null; then
     echo "Makefile does not define required target: $target" >&2
     exit 1
@@ -459,6 +468,7 @@ require_master_smoke_text 'make test-temporal-worker-crash-recovery'
 require_master_smoke_text 'make test-temporal-worker-cache-eviction'
 require_master_smoke_text 'make test-temporal-workflow-patching'
 require_master_smoke_text 'make test-temporal-parent-child-restart'
+require_master_smoke_text 'make test-temporal-parent-child-failure-replay'
 require_workflow_text() {
   needle=$1
   if ! grep -F -- "$needle" "$workflow" >/dev/null; then

@@ -86,6 +86,7 @@ jobs:
           make test-temporal-worker-cache-eviction
           make test-temporal-workflow-patching
           make test-temporal-parent-child-restart
+          make test-temporal-parent-child-failure-replay
 
   verify:
     name: OCaml ${{ matrix.ocaml }} / ${{ matrix.runner }}

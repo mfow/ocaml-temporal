@@ -187,7 +187,10 @@
         "status": {"$ref": "#/$defs/status"},
         "workflow_id": {"$ref": "#/$defs/identifier"},
         "run_id": {"$ref": "#/$defs/identifier"},
-        "outcome": {"const": "completed"}
+        "outcome": {
+          "enum": ["completed", "child_failure_recovered"],
+          "description": "The controller scenario outcome; the executable validator binds this to the selected live fixture."
+        }
       }
     },
     "volume_removed": {

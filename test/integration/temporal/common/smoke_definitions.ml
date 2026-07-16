@@ -963,6 +963,79 @@ let parent_child_restart_parent : (string, string) Temporal.Workflow.t =
           (Temporal.Error.defect
              ~message:"parent/child restart child returned an unexpected result"))
 
+(** Fixed identity for the failure-recovery parent. It is deliberately
+    separate from the success fixture so a stale history or worker cannot make
+    one acceptance scenario satisfy the other. *)
+let parent_child_failure_replay_parent_id : string =
+  "two-binary-parent-child-failure-replay"
+
+(** The only input used by the child-failure replay driver. Keeping the seed
+    constant makes the child ID and all child-start commands deterministic
+    across the generation-one and generation-two workers. *)
+let parent_child_failure_replay_input : string = "smoke"
+
+(** Derives the exact child workflow ID from the parent input. This function is
+    pure because replay must reproduce the same child-start command. *)
+let parent_child_failure_replay_child_id (seed : string) : string =
+  "two-binary-parent-child-failure-replay-child-" ^ seed
+
+(** Stable output returned only after the parent has observed the child's
+    non-retryable failure following worker replacement. The driver checks this
+    marker instead of parsing Temporal's failure diagnostic text. *)
+let parent_child_failure_replay_result : string =
+  "SMOKE:PARENT:CHILD:FAILURE_RECOVERED"
+
+(** Stable child workflow type used by the failure-recovery history contract. *)
+let parent_child_failure_replay_child_type =
+  "smoke.parent_child_failure_replay_child"
+
+(** Stable parent workflow type used by the failure-recovery history contract. *)
+let parent_child_failure_replay_parent_type =
+  "smoke.parent_child_failure_replay_parent"
+
+(** The child remains on a durable timer while generation one is removed. The
+    timer is intentionally long enough for the controller to capture the
+    nonterminal prefix and replace the worker; generation two replays the
+    prefix, receives [TimerFired], and then emits the typed failure. *)
+let parent_child_failure_replay_child : (string, string) Temporal.Workflow.t =
+  Temporal.Workflow.define ~name:parent_child_failure_replay_child_type
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun _seed ->
+      let open Temporal.Result_syntax in
+      let* () = Temporal.Workflow.sleep (Temporal.Duration.of_ms 60_000L) in
+      Error
+        (Temporal.Error.make ~non_retryable:true ~category:`Workflow
+           ~message:"intentional child failure after replay" ()))
+
+(** Waits for the failing child and converts only the expected typed child
+    failure into a stable success marker. Returning a success value here makes
+    the parent history prove that the parent resumed, validated the child
+    failure metadata, and completed after replacement. Any unexpected success
+    or category/ retryability change remains a typed defect. *)
+let parent_child_failure_replay_parent : (string, string) Temporal.Workflow.t =
+  Temporal.Workflow.define ~name:parent_child_failure_replay_parent_type
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      match
+        Temporal.Child_workflow.execute
+          ~id:(parent_child_failure_replay_child_id seed)
+          parent_child_failure_replay_child seed
+      with
+      | Error error ->
+          let view = Temporal.Error.view error in
+          if view.category = `Child_workflow && view.non_retryable then
+            Ok parent_child_failure_replay_result
+          else
+            Error
+              (Temporal.Error.defect
+                 ~message:
+                   "child failure replay returned unexpected error metadata")
+      | Ok value ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "child failure replay unexpectedly succeeded with %S"
+                    value)))
+
 (** Attempts to start a child using [child_start_conflict_id], which is held by
     the live top-level cancellation workflow. A successful child result would
     prove that the duplicate-ID guard was lost, so the parent turns that path

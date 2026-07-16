@@ -1,35 +1,41 @@
 #!/bin/sh
 set -eu
 
-# Runs one real parent and its durable-timer child across a complete OCaml
-# worker replacement. Evidence is bound to both exact Temporal run IDs; the
-# child run is learned only from the parent's ChildWorkflowExecutionStarted
-# event, never from a latest-run lookup.
+# Runs one real parent and its timer-delayed failing child across a complete
+# OCaml worker replacement. Evidence is bound to both exact Temporal run IDs;
+# the child run is learned only from the parent's ChildWorkflowExecutionStarted
+# event, never from a latest-run lookup. Generation two must replay both runs,
+# propagate the child's non-retryable failure, and let the parent handle it.
 
 root=$(CDPATH='' cd -- "$(dirname "$0")/../../../.." && pwd)
 fixture="$root/test/integration/temporal"
 compose_file="$fixture/compose.yaml"
 project=${TEMPORAL_COMPOSE_PROJECT:-ocaml-temporal-integration}
-parent_workflow_id=two-binary-parent-child-restart
-child_workflow_id=two-binary-parent-child-restart-child-smoke
+parent_workflow_id=two-binary-parent-child-failure-replay
+child_workflow_id=two-binary-parent-child-failure-replay-child-smoke
+child_workflow_type=smoke.parent_child_failure_replay_child
 
-accepted="$fixture/.parent-child-restart-accepted"
-result="$fixture/.parent-child-restart-result"
-diagnostics="$fixture/.parent-child-restart-diagnostics.json"
-driver_log="$fixture/.parent-child-restart-driver.log"
-controller="$fixture/.parent-child-restart-controller.json"
-worker_one_stopped="$fixture/.parent-child-restart-worker-one-stopped"
-worker_two_stopped="$fixture/.parent-child-restart-worker-two-stopped"
-parent_raw="$fixture/.parent-child-restart-parent.raw.json"
-child_raw="$fixture/.parent-child-restart-child.raw.json"
-parent_describe="$fixture/.parent-child-restart-parent.describe.json"
-child_describe="$fixture/.parent-child-restart-child.describe.json"
-parent_initial="$fixture/.parent-child-restart-parent.initial.json"
-child_initial="$fixture/.parent-child-restart-child.initial.json"
-parent_post_removal="$fixture/.parent-child-restart-parent.post-removal.json"
-child_post_removal="$fixture/.parent-child-restart-child.post-removal.json"
-parent_terminal="$fixture/.parent-child-restart-parent.terminal.json"
-child_terminal="$fixture/.parent-child-restart-child.terminal.json"
+accepted="$fixture/.child-failure-replay-accepted"
+result="$fixture/.child-failure-replay-result"
+diagnostics="$fixture/.child-failure-replay-diagnostics.json"
+driver_log="$fixture/.child-failure-replay-driver.log"
+controller="$fixture/.child-failure-replay-controller.json"
+worker_one_stopped="$fixture/.child-failure-replay-worker-one-stopped"
+worker_two_stopped="$fixture/.child-failure-replay-worker-two-stopped"
+parent_raw="$fixture/.child-failure-replay-parent.raw.json"
+child_raw="$fixture/.child-failure-replay-child.raw.json"
+parent_describe="$fixture/.child-failure-replay-parent.describe.json"
+child_describe="$fixture/.child-failure-replay-child.describe.json"
+parent_initial="$fixture/.child-failure-replay-parent.initial.json"
+child_initial="$fixture/.child-failure-replay-child.initial.json"
+parent_post_removal="$fixture/.child-failure-replay-parent.post-removal.json"
+child_post_removal="$fixture/.child-failure-replay-child.post-removal.json"
+parent_terminal="$fixture/.child-failure-replay-parent.terminal.json"
+child_terminal="$fixture/.child-failure-replay-child.terminal.json"
+container_fixture=/workspace/test/integration/temporal
+diagnostics_container="$container_fixture/.child-failure-replay-diagnostics.json"
+accepted_container="$container_fixture/.child-failure-replay-accepted"
+result_container="$container_fixture/.child-failure-replay-result"
 
 normalizer="$fixture/scripts/normalize-parent-child-restart-replay-history.sh"
 validator="$fixture/scripts/validate-parent-child-restart-replay.sh"
@@ -50,6 +56,12 @@ compose() {
   OCAML_IMAGE=${OCAML_IMAGE:-ocaml/opam:debian-12-ocaml-5.2} \
     HOST_UID=${HOST_UID:-$(id -u)} HOST_GID=${HOST_GID:-$(id -g)} \
     SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS=${SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS:-900} \
+    SMOKE_PARENT_CHILD_REPLAY_SCENARIO=failure \
+    SMOKE_PARENT_CHILD_REPLAY_PARENT_WORKFLOW_ID="$parent_workflow_id" \
+    SMOKE_PARENT_CHILD_REPLAY_CHILD_WORKFLOW_ID="$child_workflow_id" \
+    SMOKE_PARENT_CHILD_REPLAY_DIAGNOSTICS_FILE="$diagnostics_container" \
+    SMOKE_PARENT_CHILD_RESTART_ACCEPTED_FILE="$accepted_container" \
+    SMOKE_PARENT_CHILD_RESTART_RESULT_FILE="$result_container" \
     SMOKE_PARENT_CHILD_REPLAY_PARENT_RUN_ID=${SMOKE_PARENT_CHILD_REPLAY_PARENT_RUN_ID:-not-configured} \
     SMOKE_PARENT_CHILD_REPLAY_CHILD_RUN_ID=${SMOKE_PARENT_CHILD_REPLAY_CHILD_RUN_ID:-not-configured} \
     docker compose --project-directory "$fixture" --file "$compose_file" \
@@ -121,7 +133,7 @@ cleanup() {
   if [ "$status" -ne 0 ]; then
     tail -n 200 "$driver_log" 2>/dev/null >&2 || true
     docker inspect --format \
-      'parent/child restart driver running={{.State.Running}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{json .State.Error}}' \
+      'child failure replay driver running={{.State.Running}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{json .State.Error}}' \
       "$driver_container" >&2 2>/dev/null || true
     report_history_timeline "$parent_workflow_id" "$parent_run_id" \
       "$parent_raw" parent >&2 || true
@@ -207,7 +219,7 @@ report_history_timeline() {
     events[]
     | (.workflowTaskFailedEventAttributes
        // .workflow_task_failed_event_attributes // {}) as $failed
-    | ["parent/child restart history", $role,
+    | ["child failure replay history", $role,
        (.eventId // .event_id // "unknown"),
        (.eventType // .event_type // "unknown"),
        ($failed.cause // "-")]
@@ -333,9 +345,9 @@ docker rm -f "$driver_container" >/dev/null 2>&1 || true
 compose run --build --name "$driver_container" --no-deps \
   parent-child-restart-driver >"$driver_log" 2>&1 &
 driver_pid=$!
-wait_for_marker "$accepted" "$driver_pid" "parent/child restart driver"
+wait_for_marker "$accepted" "$driver_pid" "child failure replay driver"
 read_accepted_marker
-# The child's timer is 120 seconds. Fail the scenario rather than allowing a
+# The child's timer is 60 seconds. Fail the scenario rather than allowing a
 # slow controller to leave generation one alive beyond 45 seconds after the
 # parent start was accepted; this preserves at least 75 seconds for graceful
 # stop/removal before the durable timer can make either execution terminal.
@@ -368,7 +380,8 @@ while [ "$(date +%s)" -lt "$initial_deadline_epoch" ]; do
       --parent-history "$parent_initial" --child-history "$child_initial" \
       --parent-workflow-id "$parent_workflow_id" --parent-run-id "$parent_run_id" \
       --child-workflow-id "$child_workflow_id" --child-run-id "$child_run_id" \
-      --diagnostics "$diagnostics" >/dev/null 2>&1; then
+      --diagnostics "$diagnostics" --outcome failure \
+      --child-workflow-type "$child_workflow_type" >/dev/null 2>&1; then
     initial_valid=true
     break
   fi
@@ -403,7 +416,8 @@ for _attempt in $(seq 1 30); do
       --parent-workflow-id "$parent_workflow_id" --parent-run-id "$parent_run_id" \
       --child-workflow-id "$child_workflow_id" --child-run-id "$child_run_id" \
       --diagnostics "$diagnostics" --parent-initial-history "$parent_initial" \
-      --child-initial-history "$child_initial" >/dev/null 2>&1; then
+      --child-initial-history "$child_initial" --outcome failure \
+      --child-workflow-type "$child_workflow_type" >/dev/null 2>&1; then
     post_removal_valid=true
     break
   fi
@@ -437,7 +451,7 @@ for _attempt in $(seq 1 180); do
   if ! kill -0 "$driver_pid" 2>/dev/null && [ ! -s "$result" ]; then
     reap_driver || true
     tail -n 200 "$driver_log" 2>/dev/null >&2 || true
-    echo "parent/child restart driver exited with status $producer_status before both replay checkpoints" >&2
+    echo "child failure replay driver exited with status $producer_status before both replay checkpoints" >&2
     exit 1
   fi
   sleep 1
@@ -447,9 +461,9 @@ done
   exit 1
 }
 
-wait_for_marker "$result" "$driver_pid" "parent/child restart result"
+wait_for_marker "$result" "$driver_pid" "child failure replay result"
 reap_driver
-[ "$(cat "$result")" = "SMOKE:PARENT:CHILD:RECOVERED" ]
+[ "$(cat "$result")" = "SMOKE:PARENT:CHILD:FAILURE_RECOVERED" ]
 docker rm "$driver_container" >/dev/null
 
 terminal_valid=false
@@ -462,7 +476,8 @@ for _attempt in $(seq 1 120); do
       --diagnostics "$diagnostics" --parent-initial-history "$parent_initial" \
       --child-initial-history "$child_initial" \
       --parent-post-removal-history "$parent_post_removal" \
-      --child-post-removal-history "$child_post_removal" >/dev/null 2>&1; then
+      --child-post-removal-history "$child_post_removal" --outcome failure \
+      --child-workflow-type "$child_workflow_type" >/dev/null 2>&1; then
     terminal_valid=true
     break
   fi
@@ -522,7 +537,7 @@ jq -n --arg parent_workflow_id "$parent_workflow_id" \
       {step:"worker_generation_ready",status:"ok",generation:2,container_id:$generation_two_container,readiness_generation:2,fresh_container:true},
       {step:"replay_observed",status:"ok",role:"parent",generation:2,is_replaying:true,history_length:$parent_replay_length},
       {step:"replay_observed",status:"ok",role:"child",generation:2,is_replaying:true,history_length:$child_replay_length},
-      {step:"parent_driver_completed",status:"ok",workflow_id:$parent_workflow_id,run_id:$parent_run_id,outcome:"completed"},
+      {step:"parent_driver_completed",status:"ok",workflow_id:$parent_workflow_id,run_id:$parent_run_id,outcome:"child_failure_recovered"},
       {step:"history_checked",status:"ok",role:"parent",stage:"terminal",event_count:$parent_terminal_count},
       {step:"history_checked",status:"ok",role:"child",stage:"terminal",event_count:$child_terminal_count},
       {step:"worker_generation_stopped",status:"ok",generation:2,container_id:$generation_two_container,exit_code:0,shutdown_marker:true},
@@ -534,7 +549,8 @@ jq -n --arg parent_workflow_id "$parent_workflow_id" \
 sh "$controller_validator" --controller "$controller" \
   --parent-workflow-id "$parent_workflow_id" --parent-run-id "$parent_run_id" \
   --child-workflow-id "$child_workflow_id" --child-run-id "$child_run_id" \
-  --initiated-event-id "$initiated_event_id"
+  --initiated-event-id "$initiated_event_id" \
+  --expected-outcome child_failure_recovered
 
 trap - EXIT HUP INT TERM
 remove_artifacts

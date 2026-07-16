@@ -318,7 +318,8 @@ let bridge_error message =
     state, so a late retry remains idempotent after the resolver is removed. *)
 let schedule_activity context ~name ~input ?activity_id ?task_queue
     ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
-    ?heartbeat_timeout ?retry_policy ?(cancellation_type = Activation.Try_cancel)
+    ?heartbeat_timeout ?retry_policy ?priority
+    ?(cancellation_type = Activation.Try_cancel)
     ?(do_not_eagerly_execute = false) ~decode () =
   let seq = allocate_sequence context in
   (* These flags belong to the handle, not the pending table. Core removes an
@@ -371,6 +372,7 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
          start_to_close_timeout;
          heartbeat_timeout;
          retry_policy;
+         priority;
          cancellation_type;
          do_not_eagerly_execute;
        });

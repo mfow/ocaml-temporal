@@ -79,6 +79,39 @@ let test_activity_option_validation_precedes_encoding () =
   | Error _ -> failwith "invalid activity handle returned the wrong error"
   | Ok () -> failwith "invalid activity handle cancellation unexpectedly succeeded"
 
+(** Checks that the public priority constructor rejects values which could be
+    ambiguous or unsafe on the wire, while retaining exact single-precision
+    fairness-weight bits for valid metadata. *)
+let test_activity_priority_validation () =
+  let expect_error label result =
+    match result with
+    | Error error when String.equal (Temporal.Error.kind error) "defect" -> ()
+    | Error _ -> failwith (label ^ " returned the wrong error category")
+    | Ok _ -> failwith (label ^ " was unexpectedly accepted")
+  in
+  let valid =
+    match
+      Temporal.Activity.Priority.make ~priority_key:10 ~fairness_key:"tenant-a"
+        ~fairness_weight:1.5 ()
+    with
+    | Ok value -> value
+    | Error _ -> failwith "valid activity priority was rejected"
+  in
+  if Temporal.Activity.Priority.priority_key valid <> Some 10 then
+    failwith "priority key was not retained";
+  if Temporal.Activity.Priority.fairness_key valid <> Some "tenant-a" then
+    failwith "fairness key was not retained";
+  expect_error "zero priority key"
+    (Temporal.Activity.Priority.make ~priority_key:0 ());
+  expect_error "empty priority"
+    (Temporal.Activity.Priority.make ());
+  expect_error "oversized fairness key"
+    (Temporal.Activity.Priority.make ~fairness_key:(String.make 65 'x') ());
+  expect_error "NaN fairness weight"
+    (Temporal.Activity.Priority.make ~fairness_weight:Float.nan ());
+  expect_error "out-of-range fairness weight"
+    (Temporal.Activity.Priority.make ~fairness_weight:1001. ())
+
 (** Compile-checks that partial application and higher-order wrappers retain
     normal OCaml function composition for all and heterogeneous race. *)
 let test_ordinary_helper_composition () =
@@ -134,4 +167,5 @@ let test_patch_api_misuse_and_identifier_validation () =
 let () =
   test_ordinary_helper_composition ();
   test_activity_option_validation_precedes_encoding ();
+  test_activity_priority_validation ();
   test_patch_api_misuse_and_identifier_validation ()

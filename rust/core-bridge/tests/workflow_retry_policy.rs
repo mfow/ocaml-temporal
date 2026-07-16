@@ -32,6 +32,7 @@ fn completion(policy: Option<RetryPolicy>) -> Completion {
             }),
             heartbeat_timeout: None,
             retry_policy: policy,
+            priority: None,
             cancellation_type: ActivityCancellationType::TryCancel,
             do_not_eagerly_execute: false,
         }],

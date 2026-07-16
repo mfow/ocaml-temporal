@@ -329,6 +329,7 @@ type completion_command =
       start_to_close_timeout : duration option;
       heartbeat_timeout : duration option;
       retry_policy : retry_policy option;
+      priority : workflow_priority option;
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }

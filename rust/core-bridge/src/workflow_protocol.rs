@@ -618,6 +618,11 @@ pub enum CompletionCommand {
         heartbeat_timeout: Option<Duration>,
         #[serde(deserialize_with = "required_nullable")]
         retry_policy: Option<RetryPolicy>,
+        /// Optional task priority and fairness metadata.  A present value
+        /// retains zero/empty defaults explicitly so replay cannot infer a
+        /// different server policy from an omitted JSON member.
+        #[serde(deserialize_with = "required_nullable")]
+        priority: Option<WorkflowPriority>,
         cancellation_type: ActivityCancellationType,
         do_not_eagerly_execute: bool,
     },
@@ -1215,13 +1220,8 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                         )?;
                         identifier(&root.run_id, "$.jobs.context.root_workflow.run_id")?;
                     }
-                    if let Some(priority) = &context.priority
-                        && priority.fairness_key.len() > 64
-                    {
-                        return Err(ProtocolError::invalid(
-                            "$.jobs.context.priority.fairness_key",
-                            "fairness key exceeds Core's 64-byte limit",
-                        ));
+                    if let Some(priority) = &context.priority {
+                        validate_priority(priority, "$.jobs.context.priority")?;
                     }
                     if let Some(retry_policy) = &context.retry_policy {
                         validate_retry_policy(retry_policy, "$.jobs.context.retry_policy")?;
@@ -1423,6 +1423,9 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                 if let Some(retry_policy) = retry_policy {
                     validate_retry_policy(retry_policy, "$.commands.retry_policy")?;
                 }
+                if let Some(priority) = command_priority(command) {
+                    validate_priority(priority, "$.commands.priority")?;
+                }
             }
             CompletionCommand::StartChildWorkflow {
                 workflow_id,
@@ -1574,6 +1577,46 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                 phases.1 = true;
             }
         }
+    }
+    Ok(())
+}
+
+/// Returns the priority attached to a command without widening the command
+/// match above.  Keeping this helper separate makes the validation rule easy
+/// to audit when more priority-bearing command kinds are added.
+fn command_priority(command: &CompletionCommand) -> Option<&WorkflowPriority> {
+    match command {
+        CompletionCommand::ScheduleActivity { priority, .. } => priority.as_ref(),
+        _ => None,
+    }
+}
+
+/// Validates the closed priority representation used by both OCaml and Rust.
+fn validate_priority(value: &WorkflowPriority, path: &str) -> Result<(), ProtocolError> {
+    if value.priority_key < 0 {
+        return Err(ProtocolError::invalid(
+            path,
+            "priority key cannot be negative",
+        ));
+    }
+    if value.fairness_key.len() > 64 {
+        return Err(ProtocolError::invalid(
+            path,
+            "fairness key exceeds Core's 64-byte limit",
+        ));
+    }
+    if value.fairness_key.as_bytes().contains(&0) {
+        return Err(ProtocolError::invalid(
+            path,
+            "fairness key must not contain NUL",
+        ));
+    }
+    let weight = f32::from_bits(value.fairness_weight_bits);
+    if !weight.is_finite() || (weight != 0.0 && !(0.001..=1000.0).contains(&weight)) {
+        return Err(ProtocolError::invalid(
+            path,
+            "fairness weight must be zero or finite in [0.001, 1000]",
+        ));
     }
     Ok(())
 }
@@ -2549,6 +2592,19 @@ fn cancellation_to_core(value: ActivityCancellationType) -> i32 {
     }) as i32
 }
 
+/// Converts a validated semantic priority to the protobuf value expected by
+/// Temporal Core.  The zero/empty defaults are explicit so omitted optional
+/// fields cannot accidentally inherit a stale value from a reused command.
+fn priority_to_core(value: &WorkflowPriority) -> Result<api_common::Priority, CoreConversionError> {
+    validate_priority(value, "$.commands.priority")
+        .map_err(|_| invalid_core("workflow priority violates semantic invariants"))?;
+    Ok(api_common::Priority {
+        priority_key: value.priority_key,
+        fairness_key: value.fairness_key.clone(),
+        fairness_weight: f32::from_bits(value.fairness_weight_bits),
+    })
+}
+
 /// Maps a pinned Core cancellation number without accepting unknown values.
 fn cancellation_from_core(value: i32) -> Result<ActivityCancellationType, CoreConversionError> {
     use core_commands::ActivityCancellationType as Core;
@@ -2613,6 +2669,7 @@ fn command_to_core(
             start_to_close_timeout,
             heartbeat_timeout,
             retry_policy,
+            priority,
             cancellation_type,
             do_not_eagerly_execute,
         } => Variant::ScheduleActivity(core_commands::ScheduleActivity {
@@ -2636,7 +2693,7 @@ fn command_to_core(
             cancellation_type: cancellation_to_core(*cancellation_type),
             do_not_eagerly_execute: *do_not_eagerly_execute,
             versioning_intent: 0,
-            priority: None,
+            priority: priority.as_ref().map(priority_to_core).transpose()?,
         }),
         CompletionCommand::RequestCancelActivity { seq } => {
             Variant::RequestCancelActivity(core_commands::RequestCancelActivity { seq: *seq })
@@ -2777,10 +2834,9 @@ fn command_from_core(
         .ok_or_else(|| invalid_core("Core command variant is absent"))?
     {
         Variant::ScheduleActivity(value) => {
-            if !value.headers.is_empty() || value.versioning_intent != 0 || value.priority.is_some()
-            {
+            if !value.headers.is_empty() || value.versioning_intent != 0 {
                 return Err(unsupported(
-                    "Core schedule activity options are not supported",
+                    "Core schedule activity headers or versioning intent are not supported",
                 ));
             }
             Ok(CompletionCommand::ScheduleActivity {
@@ -2818,6 +2874,11 @@ fn command_from_core(
                     .as_ref()
                     .map(retry_policy_from_core)
                     .transpose()?,
+                priority: value.priority.as_ref().map(|priority| WorkflowPriority {
+                    priority_key: priority.priority_key,
+                    fairness_key: priority.fairness_key.clone(),
+                    fairness_weight_bits: priority.fairness_weight.to_bits(),
+                }),
                 cancellation_type: cancellation_from_core(value.cancellation_type)?,
                 do_not_eagerly_execute: value.do_not_eagerly_execute,
             })

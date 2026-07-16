@@ -79,6 +79,11 @@ type retry_policy = {
   non_retryable_error_types : string list;
 }
 
+(** Scheduling metadata attached to an activity command.  The key and weight
+    use the same exact wire representation as Temporal Core: zero requests the
+    server default and the weight is an IEEE-754 single-precision bit pattern. *)
+type priority = Temporal_base.Priority.t
+
 (** An instruction produced by workflow code for Temporal Core. Commands are
     returned in the order they were created because Temporal records that order
     in workflow history and expects replay to reproduce it. Activity timeout
@@ -96,6 +101,7 @@ type command =
       start_to_close_timeout : int64 option;
       heartbeat_timeout : int64 option;
       retry_policy : retry_policy option;
+      priority : priority option;
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }

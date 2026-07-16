@@ -60,6 +60,107 @@ type ('input, 'output) t = {
   async_implementation : ('input, 'output) async_implementation option;
 }
 
+(** Validated scheduling controls are kept in the public module while the
+    runtime receives only the opaque exact wire representation. *)
+module Priority = struct
+  type t = {
+    priority_key : int option;
+    fairness_key : string option;
+    fairness_weight : float option;
+    base : Temporal_base.Priority.t;
+  }
+
+  (** Checks the protocol's short UTF-8 fairness-key contract. *)
+  let validate_fairness_key = function
+    | None -> Ok ()
+    | Some value when String.equal value "" ->
+        Error (Error.defect ~message:"priority fairness key must not be empty")
+    | Some value when String.contains value '\000' ->
+        Error (Error.defect ~message:"priority fairness key must not contain NUL")
+    | Some value when String.length value > 64 ->
+        Error (Error.defect ~message:"priority fairness key exceeds 64 bytes")
+    | Some value when not (Temporal_base.Codec.valid_utf_8 value) ->
+        Error (Error.defect ~message:"priority fairness key must be valid UTF-8")
+    | Some _ -> Ok ()
+
+  (** Checks the server-supported priority range without allowing NaN or
+      infinity to cross the OCaml/Rust boundary. *)
+  let validate_weight = function
+    | None -> Ok ()
+    | Some value
+      when Float.is_nan value || Float.is_infinite value
+           || (value <> 0.0 && value < 0.001) || value > 1000.0 ->
+        Error
+          (Error.defect
+             ~message:"priority fairness weight must be finite and in [0.001, 1000]")
+    | Some _ -> Ok ()
+
+  (** Constructs immutable priority metadata and stores the single-precision
+      weight bits used by Core, avoiding a later float-rounding ambiguity. *)
+  let make ?priority_key ?fairness_key ?fairness_weight () =
+    if Option.is_none priority_key && Option.is_none fairness_key
+       && Option.is_none fairness_weight
+    then Error (Error.defect ~message:"priority requires at least one field")
+    else
+      let key_result =
+        match priority_key with
+        | None -> Ok 0l
+        | Some value when value <= 0 ->
+            Error (Error.defect ~message:"priority key must be positive")
+        | Some value when Int64.of_int value > Int64.of_int32 Int32.max_int ->
+            Error (Error.defect ~message:"priority key exceeds the wire range")
+        | Some value -> Ok (Int32.of_int value)
+      in
+      match key_result with
+      | Error _ as error -> error
+      | Ok priority_key -> (
+          match validate_fairness_key fairness_key with
+          | Error _ as error -> error
+          | Ok () -> (
+              match validate_weight fairness_weight with
+              | Error _ as error -> error
+              | Ok () ->
+                  let priority_key_value =
+                    Option.map Int32.to_int
+                      (if priority_key = 0l then None else Some priority_key)
+                  in
+                  let fairness_key_value =
+                    if String.equal (Option.value fairness_key ~default:"") ""
+                    then None
+                    else fairness_key
+                  in
+                  let fairness_weight_bits =
+                    Option.fold ~none:0l ~some:Int32.bits_of_float fairness_weight
+                  in
+                  Ok
+                    {
+                      priority_key = priority_key_value;
+                      fairness_key = fairness_key_value;
+                      fairness_weight =
+                        Option.map (fun _ -> Int32.float_of_bits fairness_weight_bits)
+                          fairness_weight;
+                      base =
+                        Temporal_base.Priority.make ~priority_key
+                          ~fairness_key:(Option.value fairness_key ~default:"")
+                          ~fairness_weight_bits;
+                    }))
+
+  (** Alias for callers who prefer constructor terminology. *)
+  let create = make
+
+  (** Returns the optional positive priority key. *)
+  let priority_key value = value.priority_key
+
+  (** Returns the optional fairness key. *)
+  let fairness_key value = value.fairness_key
+
+  (** Returns the optional rounded single-precision fairness weight. *)
+  let fairness_weight value = value.fairness_weight
+
+  (** Private conversion used only by the workflow runtime. *)
+  let to_base value = value.base
+end
+
 (* Maximum byte length accepted by the closed JSON/native identifier contract. *)
 let max_name_bytes = 65_536
 
@@ -472,7 +573,7 @@ let failed_handle error =
     public errors at the same boundary. *)
 let start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-    ?retry_policy ?(cancellation_type = Try_cancel)
+    ?retry_policy ?priority ?(cancellation_type = Try_cancel)
     ?(do_not_eagerly_execute = false)
     definition input =
   match validate_optional_identifier "activity id" activity_id with
@@ -510,6 +611,7 @@ let start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
                       ?task_queue ?schedule_to_close_timeout
                       ?schedule_to_start_timeout ?start_to_close_timeout
                       ?heartbeat_timeout ?retry_policy
+                      ?priority:(Option.map Priority.to_base priority)
                       ~cancellation_type:(runtime_cancellation_type cancellation_type)
                       ~do_not_eagerly_execute
                       ~decode:(Codec_private.decode_base definition.output)
@@ -534,17 +636,17 @@ let cancel handle = handle.cancel ()
     cancel explicitly should retain the handle returned by [start_handle]. *)
 let start ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-    ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input =
+    ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input =
   future
     (start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
        ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-       ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input)
+       ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input)
 
 (** Direct-style convenience for scheduling and awaiting one activity. *)
 let execute ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-    ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input =
+    ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input =
   Future.await
     (start ?activity_id ?task_queue ?schedule_to_close_timeout
        ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-       ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input)
+       ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input)

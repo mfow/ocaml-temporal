@@ -88,11 +88,22 @@
       },
       "description": "An activity retry policy. The initial interval is positive and the maximum interval is at least as large; zero maximum attempts means unlimited attempts. The coefficient's decimal text is used instead of a JSON number so both language sides preserve its IEEE-754 bits."
     },
+    "priority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["priority_key", "fairness_key", "fairness_weight_bits"],
+      "properties": {
+        "priority_key": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "fairness_key": {"type": "string", "maxLength": 64, "pattern": "^[^\\u0000]*$"},
+        "fairness_weight_bits": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      },
+      "description": "Optional Temporal activity scheduling metadata. Zero or empty members request the server defaults; a positive key is ordered before larger keys, and a zero fairness weight requests the default weighting."
+    },
     "command": {
       "oneOf": [
         {
           "type": "object", "additionalProperties": false,
-          "required": ["kind", "seq", "activity_id", "activity_type", "task_queue", "arguments", "schedule_to_close_timeout", "schedule_to_start_timeout", "start_to_close_timeout", "heartbeat_timeout", "retry_policy", "cancellation_type", "do_not_eagerly_execute"],
+          "required": ["kind", "seq", "activity_id", "activity_type", "task_queue", "arguments", "schedule_to_close_timeout", "schedule_to_start_timeout", "start_to_close_timeout", "heartbeat_timeout", "retry_policy", "priority", "cancellation_type", "do_not_eagerly_execute"],
           "anyOf": [
             {"properties": {"schedule_to_close_timeout": {"not": {"type": "null"}}}},
             {"properties": {"start_to_close_timeout": {"not": {"type": "null"}}}}
@@ -109,6 +120,7 @@
             "start_to_close_timeout": {"$ref": "#/$defs/nullable_duration"},
             "heartbeat_timeout": {"$ref": "#/$defs/nullable_duration"},
             "retry_policy": {"oneOf": [{"$ref": "#/$defs/retry_policy"}, {"type": "null"}]},
+            "priority": {"oneOf": [{"$ref": "#/$defs/priority"}, {"type": "null"}]},
             "cancellation_type": {"enum": ["try_cancel", "wait_cancellation_completed", "abandon"]},
             "do_not_eagerly_execute": {"type": "boolean"}
           }

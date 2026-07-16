@@ -628,8 +628,12 @@ timer, and the driver asserts the parent's exact result. The complete [PR #289
 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) also
 live-verifies duplicate-ID child-start failure. The complete [PR #351
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013) verifies
-the exact parent and child replay path; broader child failure recovery remains
-separate acceptance work.
+the exact parent and child replay path. The separate
+[child-failure-after-replay acceptance](../reference/child-failure-replay-acceptance.md)
+is live-verified by the complete [PR #361 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29475615866):
+it requires both replay observations before the typed child failure and the
+parent's `SMOKE:PARENT:CHILD:FAILURE_RECOVERED` result. Additional child
+failure and recovery permutations remain separate acceptance work.
 
 ### Continue a run with fresh history
 

@@ -216,6 +216,13 @@ let test_client_protocol_adapter () =
       input = [];
     }
   in
+  let query_request : Client.query_request =
+    {
+      execution = wait_request;
+      query_type = "current_state";
+      input = [];
+    }
+  in
   let start_json =
     {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"}}|}
   in
@@ -246,6 +253,12 @@ let test_client_protocol_adapter () =
   in
   if not (contains_substring (Bytes.to_string signal_bytes) "signal-request-1")
   then failwith "typed signal request was not encoded";
+  let query_bytes =
+    require_bridge
+      (Supervisor.Protocol_adapter.encode_client_query_request query_request)
+  in
+  if not (contains_substring (Bytes.to_string query_bytes) "current_state") then
+    failwith "typed query request was not encoded";
   (match
      Supervisor.Protocol_adapter.decode_client_cancel_result
        (Ok (Bytes.of_string {|{"acknowledged":true}|}))
@@ -258,6 +271,12 @@ let test_client_protocol_adapter () =
    with
   | Ok (Ok ()) -> ()
   | _ -> failwith "positive signal acknowledgement was not typed");
+  (match
+     Supervisor.Protocol_adapter.decode_client_query_result
+       (Ok (Bytes.of_string {|{"result":[]}|}))
+   with
+  | Ok (Ok []) -> ()
+  | _ -> failwith "positive query response was not typed");
   (match
      Supervisor.Protocol_adapter.decode_client_start_result start_request
        (Ok (Bytes.of_string start_json))
@@ -323,6 +342,16 @@ let test_client_protocol_adapter () =
         message = {|{"kind":"rpc","code":"unavailable"}|};
       }
   in
+  (match
+     Supervisor.Protocol_adapter.decode_client_query_result
+       (Error
+          {
+            Bridge.status = Connection;
+            message = {|{"kind":"rpc","code":"failed_precondition"}|};
+          })
+   with
+  | Ok (Error (Client.Rpc { code = "failed_precondition" })) -> ()
+  | _ -> failwith "structured query RPC error was not typed");
   (match
      Supervisor.Protocol_adapter.decode_client_wait_result wait_request
        rpc_failure

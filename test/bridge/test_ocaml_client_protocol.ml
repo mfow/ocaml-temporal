@@ -53,6 +53,11 @@ let signal_request : Protocol.signal_request =
     input = [];
   }
 
+(** Output-only query request used to exercise exact-run and query-name
+    validation in the OCaml half of the closed bridge protocol. *)
+let query_request : Protocol.query_request =
+  { execution; query_type = "current_state"; input = [] }
+
 (** Start requests use the same workflow identity as the response fixtures. *)
 let start_request : Protocol.start_request =
   {
@@ -224,6 +229,32 @@ let test_signal_protocol () =
   | Protocol.Rpc { code = "unavailable" } -> ()
   | _ -> failwith "signal RPC error was not typed")
 
+(** Checks the output-only query request/response contract and rejects the
+    start-only error category before any native operation is attempted. *)
+let test_query_protocol () =
+  let encoded = unwrap (Protocol.encode_query_request query_request) in
+  require_fragment "query type" "current_state" encoded;
+  let response = unwrap (Protocol.decode_query_response {|{"result":[]}|}) in
+  if response.result <> [] then failwith "empty query result changed shape";
+  List.iter
+    (fun document -> require_error (Protocol.decode_query_response document))
+    [ {|{"result":[],"unexpected":true}|}; {|{"result":{}}|} ];
+  List.iter
+    (fun request -> require_error (Protocol.encode_query_request request))
+    [
+      { query_request with execution = { execution with namespace = "" } };
+      { query_request with execution = { execution with run_id = "" } };
+      { query_request with query_type = "" };
+    ];
+  require_error
+    (Protocol.decode_query_error
+       {|{"kind":"already_started","workflow_id":"workflow-1","existing_run_id":null}|});
+  match
+    unwrap (Protocol.decode_query_error {|{"kind":"rpc","code":"failed_precondition"}|})
+  with
+  | Protocol.Rpc { code = "failed_precondition" } -> ()
+  | _ -> failwith "query rejection was not typed as failed_precondition"
+
 (** Exercises the asynchronous-start capability and all three terminal outcome
     variants. The request-bound ticket is deliberately opaque: this test can
     recover the retained request only through the protocol accessor, never by
@@ -391,6 +422,7 @@ let () =
   run "client request validation" test_request_validation;
   run "client cancellation protocol" test_cancellation_protocol;
   run "client signal protocol" test_signal_protocol;
+  run "client query protocol" test_query_protocol;
   run "client asynchronous starts" test_async_start_protocol;
   run "client closed response shape" test_closed_response_shape;
   run "client response correlation" test_response_execution_correlation;

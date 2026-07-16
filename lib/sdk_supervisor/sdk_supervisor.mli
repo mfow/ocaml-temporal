@@ -143,6 +143,11 @@ module Native : sig
       (bytes, Temporal_core_bridge.Native_bridge.error) result
     (** Canonically serializes one typed exact-run signal request. *)
 
+    val encode_client_query_request :
+      Temporal_protocol.Client_protocol.query_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one typed exact-run output-only query request. *)
+
     val decode_client_start_ticket :
       Temporal_protocol.Client_protocol.start_request ->
       (bytes, Temporal_core_bridge.Native_bridge.error) result ->
@@ -212,6 +217,16 @@ module Native : sig
       result
     (** Decodes the signal acknowledgement and preserves structured server
         failures as an inner typed result. *)
+
+    val decode_client_query_result :
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( ( Temporal_protocol.Client_protocol.payload list,
+          Temporal_protocol.Client_protocol.client_error )
+        result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes query result payloads and preserves structured server failures
+        as an inner typed result. *)
   end
 
   (** Validated client settings whose representation remains bridge-private. *)
@@ -265,6 +280,12 @@ module Native : sig
         (unit, Temporal_protocol.Client_protocol.client_error) result operation
         (** Sends one signal to one exact run. The acknowledgement does not
             itself prove that workflow code has processed the signal. *)
+    | Client_query_workflow :
+        Temporal_protocol.Client_protocol.query_request ->
+        ( Temporal_protocol.Client_protocol.payload list,
+          Temporal_protocol.Client_protocol.client_error )
+        result operation
+        (** Executes one output-only query against one exact run. *)
     | Start_worker : worker_config -> unit operation
     | Start_replay_worker : worker_config -> unit operation
         (** Starts a workflow-only replay worker without a Temporal client. *)

@@ -62,6 +62,16 @@ type signal_request = {
   input : Payload.t;
 }
 
+(** Exact workflow/run identity and query definition name for one read-only
+    control-plane query. Query arguments are intentionally absent from the
+    public API's first slice; the protocol still carries an empty payload list
+    so the Rust adapter can preserve Temporal's normal request shape. *)
+type query_request = {
+  workflow_id : string;
+  run_id : string;
+  query_name : string;
+}
+
 (** Terminal workflow outcome represented independently from transport errors. *)
 type terminal_result =
   | Completed of Payload.t
@@ -748,6 +758,47 @@ let native_client_signal (client : native_client) (request : signal_request) :
     | Ok (Error error) -> Error (native_client_error error)
     | Ok (Ok ()) -> Ok ()
 
+(** Converts a public query request to the namespace-bound protocol document.
+    The connected client's namespace is authoritative; callers cannot route a
+    handle through another namespace by modifying an untyped request. *)
+let native_query_request client (request : query_request) :
+    Client_protocol.query_request =
+  {
+    execution =
+      {
+        namespace = client.namespace;
+        workflow_id = request.workflow_id;
+        run_id = request.run_id;
+      };
+    query_type = request.query_name;
+    input = [];
+  }
+
+(** Sends one output-only query through the serialized supervisor operation.
+    The returned payload is decoded by the public [Client.query] function so
+    the backend never needs to know the caller's result type. *)
+let native_client_query (client : native_client) (request : query_request) :
+    (Payload.t, Error.t) result =
+  if Atomic.get client.closed then Error (bridge_error "client is shut down")
+  else
+    match
+      Native.perform client.supervisor
+        (Native.Client_query_workflow (native_query_request client request))
+    with
+    | Error error -> Error (native_supervisor_error error)
+    | Ok (Error error) -> Error (native_client_error error)
+    | Ok (Ok response) -> (
+        match response with
+        | [ payload ] -> Ok (public_payload payload)
+        | [] ->
+            Error
+              (Error.make ~category:`Protocol
+                 ~message:"query response contained no result payload" ())
+        | _ ->
+            Error
+              (Error.make ~category:`Protocol
+                 ~message:"query response contained multiple result payloads" ()))
+
 (** Marks one exact mock execution cancelled. Repeated cancellation requests
     are idempotent, while a mismatched workflow/run pair is rejected so the
     deterministic seam exercises the same identity contract as native Core.
@@ -825,6 +876,36 @@ let client_signal client request =
   match client with
   | Mock_client client -> mock_client_signal client request
   | Native_client client -> native_client_signal client request
+
+(** The mock endpoint does not execute workflow code, so it cannot produce a
+    query handler result. It still validates the exact run identity before
+    returning a typed error, which keeps lifecycle behavior deterministic in
+    unit tests and avoids pretending an empty result is a real query answer. *)
+let mock_client_query (client : mock_client) (request : query_request) =
+  let service = client.service in
+  Mutex.lock service.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock service.mutex)
+    (fun () ->
+      if client.closed then Error (bridge_error "client is shut down")
+      else
+        match Hashtbl.find_opt service.executions request.workflow_id with
+        | None -> Error (bridge_error "workflow execution was not started")
+        | Some execution
+          when not (String.equal execution.run_id request.run_id) ->
+            Error (bridge_error "workflow run id does not match the started run")
+        | Some _ ->
+            Error
+              (Error.make ~category:`Workflow
+                 ~message:
+                   "the deterministic mock does not execute workflow queries"
+                 ()))
+
+(** Executes one query using the selected private transport. *)
+let client_query client request =
+  match client with
+  | Mock_client client -> mock_client_query client request
+  | Native_client client -> native_client_query client request
 
 (** Marks a client closed while preserving idempotent cleanup. Native shutdown
     runs the supervisor's reverse-order worker/client/runtime release path;

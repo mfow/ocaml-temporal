@@ -41,6 +41,14 @@ type signal_request = {
 
 type signal_response = { acknowledged : bool }
 
+type query_request = {
+  execution : execution;
+  query_type : string;
+  input : payload list;
+}
+
+type query_response = { result : payload list }
+
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -351,6 +359,36 @@ let decode_signal_response input : (signal_response, error) result =
   let* acknowledged = bool "$.acknowledged" acknowledged_json in
   if acknowledged then Ok ({ acknowledged } : signal_response)
   else Error (invalid ~path:"$.acknowledged" "signal was not acknowledged")
+
+(** Serializes one output-only query request. The [input] member remains an
+    ordered payload list even though this first public API sends an empty list;
+    retaining the list keeps the private contract ready for typed query
+    arguments without changing the execution identity or query name fields. *)
+let encode_query_request (value : query_request) =
+  let* () = validate_identifier "$.namespace" value.execution.namespace in
+  let* () = validate_identifier "$.workflow_id" value.execution.workflow_id in
+  let* () = validate_identifier "$.run_id" value.execution.run_id in
+  let* () = validate_identifier "$.query_type" value.query_type in
+  let* input = payloads_json value.input in
+  encode_object
+    (`Assoc
+      [
+        ("namespace", json_string value.execution.namespace);
+        ("workflow_id", json_string value.execution.workflow_id);
+        ("run_id", json_string value.execution.run_id);
+        ("query_type", json_string value.query_type);
+        ("input", input);
+      ])
+
+(** Decodes one successful output-only query response. The server may return
+    zero payloads for a unit-like query; the public codec layer decides whether
+    that cardinality is valid for the caller's result type. *)
+let decode_query_response input : (query_response, error) result =
+  let* json = decode_object input in
+  let* entries = exact_object "$" [ "result" ] json in
+  let* result_json = field "$" "result" entries in
+  let* result = payloads "$.result" result_json in
+  Ok { result }
 
 let decode_successor path entries =
   let* successor_json = field path "successor" entries in
@@ -685,4 +723,16 @@ let decode_signal_error input =
       Error
         (invalid ~path:"$.kind"
            "already_started is not a valid signal error")
+  | (Rpc _ | Protocol _) -> Ok error
+
+(** Decodes a query failure while rejecting the start-only conflict category.
+    Query rejection is reported as a stable RPC/protocol error; it cannot
+    carry an [Already_started] workflow identity. *)
+let decode_query_error input =
+  let* error = decode_client_error input in
+  match error with
+  | Already_started _ ->
+      Error
+        (invalid ~path:"$.kind"
+           "already_started is not a valid query error")
   | (Rpc _ | Protocol _) -> Ok error

@@ -127,6 +127,15 @@ val signal :
   input:'signal ->
   (unit, Error.t) result
 
+(** Executes an output-only query against the exact run retained by [handle].
+    The query handler receives no input in this first client slice. A
+    successful result is decoded with [query]'s output codec; routine Temporal
+    query failures and codec failures are returned as typed [Error.t] values. *)
+val query :
+  ('workflow_input, 'workflow_output) handle ->
+  query:'query Query.t ->
+  ('query, Error.t) result
+
 (** Returns the durable workflow ID supplied to [start]. *)
 val workflow_id : ('input, 'output) handle -> string
 

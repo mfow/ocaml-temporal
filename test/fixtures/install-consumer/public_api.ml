@@ -319,6 +319,12 @@ let _client_signal :
     (unit, T.Error.t) result =
   T.Client.signal
 
+let _client_query :
+    ('workflow_input, 'workflow_output) T.Client.handle ->
+    query:'query T.Query.t ->
+    ('query, T.Error.t) result =
+  T.Client.query
+
 let _client_workflow_id :
     ('input, 'output) T.Client.handle -> string =
   T.Client.workflow_id

@@ -673,7 +673,6 @@ pub async fn query_workflow(
         // local and documented so this bridge does not depend on generated
         // enum variant names that can change with protobuf regeneration.
         query_reject_condition: 1,
-        ..Default::default()
     };
     let response = match tokio::time::timeout(
         QUERY_RPC_TIMEOUT,

@@ -22,7 +22,8 @@ use temporalio_common::protos::temporal::api::{
     workflowservice::v1::{
         GetWorkflowExecutionHistoryRequest, ListWorkflowExecutionsRequest,
         QueryWorkflowRequest as QueryWorkflowExecutionRequest,
-        RequestCancelWorkflowExecutionRequest, SignalWorkflowExecutionRequest,
+        RequestCancelWorkflowExecutionRequest, ResetWorkflowExecutionRequest,
+        SignalWorkflowExecutionRequest,
         StartWorkflowExecutionRequest, TerminateWorkflowExecutionRequest,
     },
 };
@@ -186,6 +187,32 @@ pub struct TerminateWorkflowRequest {
 pub struct TerminateWorkflowResponse {
     /// Always true for a response emitted by this bridge.
     pub acknowledged: bool,
+}
+
+/// Request to reset one exact workflow run to a workflow-task boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetWorkflowRequest {
+    /// Namespace containing the execution.
+    pub namespace: String,
+    /// Stable workflow identifier.
+    pub workflow_id: String,
+    /// Run whose workflow-task history supplies the reset point.
+    pub run_id: String,
+    /// Caller-owned idempotency key for this reset operation.
+    pub request_id: String,
+    /// Operator-facing reason copied to Temporal; empty is permitted.
+    pub reason: String,
+    /// Workflow task finish/start event at which the new run should begin.
+    pub workflow_task_finish_event_id: i64,
+}
+
+/// New exact run identity returned by Temporal after a successful reset.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetWorkflowResponse {
+    /// New exact execution identity returned by Temporal.
+    pub execution: ExecutionRef,
 }
 
 /// Request to deliver one signal to one exact workflow run.
@@ -589,6 +616,25 @@ pub fn decode_terminate_request(
     Ok(request)
 }
 
+/// Strictly parses one exact-run reset request.
+pub fn decode_reset_request(input: &str) -> Result<ResetWorkflowRequest, protocol::ProtocolError> {
+    protocol::decode_object(input)?;
+    let request = serde_json::from_str(input)
+        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client reset request"))?;
+    validate_reset_request(&request)?;
+    Ok(request)
+}
+
+/// Encodes and reparses the new execution identity returned after reset.
+pub fn encode_reset_response(
+    response: &ResetWorkflowResponse,
+) -> Result<String, protocol::ProtocolError> {
+    validate_identifier(&response.execution.namespace, "$.execution.namespace")?;
+    validate_identifier(&response.execution.workflow_id, "$.execution.workflow_id")?;
+    validate_identifier(&response.execution.run_id, "$.execution.run_id")?;
+    encode_document(response)
+}
+
 /// Strictly parses one exact-run signal request.
 pub fn decode_signal_request(
     input: &str,
@@ -798,6 +844,69 @@ pub async fn cancel_workflow(
         }
     }
     Ok(CancelWorkflowResponse { acknowledged: true })
+}
+
+/// Resets one exact workflow run through Temporal's official workflow service.
+/// The event ID and request ID are copied into protobuf owned by this RPC; no
+/// OCaml memory is retained after the owner Domain call returns.
+pub async fn reset_workflow(
+    connection: Connection,
+    request: ResetWorkflowRequest,
+) -> Result<ResetWorkflowResponse, ClientOperationError> {
+    const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(1);
+    let mut service = connection.workflow_service();
+    let namespace = request.namespace.clone();
+    let workflow_id = request.workflow_id.clone();
+    let response = match tokio::time::timeout(
+        CONTROL_RPC_TIMEOUT,
+        service.reset_workflow_execution(
+            ResetWorkflowExecutionRequest {
+                namespace: request.namespace,
+                workflow_execution: Some(WorkflowExecution {
+                    workflow_id: request.workflow_id,
+                    run_id: request.run_id,
+                }),
+                reason: request.reason,
+                workflow_task_finish_event_id: request.workflow_task_finish_event_id,
+                request_id: request.request_id,
+                identity: connection.identity().to_owned(),
+                ..Default::default()
+            }
+            .into_request(),
+        ),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(map_rpc_status)?.into_inner(),
+        Err(_) => {
+            return Err(ClientOperationError::Rpc {
+                code: "deadline_exceeded".to_owned(),
+            });
+        }
+    };
+    if response.run_id.is_empty() {
+        return Err(ClientOperationError::Core(workflow_protocol::invalid_core(
+            "Temporal reset response omitted run ID",
+        )));
+    }
+    let response = ResetWorkflowResponse {
+        execution: ExecutionRef {
+            namespace,
+            workflow_id,
+            run_id: response.run_id,
+        },
+    };
+    validate_identifier(&response.execution.namespace, "$.execution.namespace")
+        .and_then(|_| {
+            validate_identifier(&response.execution.workflow_id, "$.execution.workflow_id")
+        })
+        .and_then(|_| validate_identifier(&response.execution.run_id, "$.execution.run_id"))
+        .map_err(|_| {
+            ClientOperationError::Core(workflow_protocol::invalid_core(
+                "Temporal reset response had invalid execution identity",
+            ))
+        })?;
+    Ok(response)
 }
 
 /// Terminates one exact workflow run through Temporal's official service.
@@ -1413,6 +1522,33 @@ fn validate_terminate_request(
     Ok(())
 }
 
+/// Validates one exact-run reset request and its non-negative event boundary.
+fn validate_reset_request(value: &ResetWorkflowRequest) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.namespace, "$.namespace")?;
+    validate_identifier(&value.workflow_id, "$.workflow_id")?;
+    validate_identifier(&value.run_id, "$.run_id")?;
+    validate_identifier(&value.request_id, "$.request_id")?;
+    if value.workflow_task_finish_event_id < 0 {
+        return Err(protocol::ProtocolError::invalid(
+            "$.workflow_task_finish_event_id",
+            "event ID must be non-negative",
+        ));
+    }
+    if value.reason.len() > protocol::MAX_STRING_BYTES {
+        return Err(protocol::ProtocolError::invalid(
+            "$.reason",
+            "reason exceeds the protocol string safety limit",
+        ));
+    }
+    if value.reason.contains('\0') {
+        return Err(protocol::ProtocolError::invalid(
+            "$.reason",
+            "reason contains a NUL byte",
+        ));
+    }
+    Ok(())
+}
+
 /// Validates one exact-run signal request and every payload conversion before
 /// it can reach the official Temporal service.
 fn validate_signal_request(value: &SignalWorkflowRequest) -> Result<(), protocol::ProtocolError> {
@@ -1703,6 +1839,21 @@ mod tests {
         .to_string()
     }
 
+    /// Builds an exact-run reset request whose event boundary is represented
+    /// as an integer literal so large Temporal event IDs cannot round through
+    /// a floating-point JSON representation.
+    fn reset_json() -> String {
+        serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "request_id":"reset-1",
+            "reason":"replay from workflow task",
+            "workflow_task_finish_event_id":4
+        })
+        .to_string()
+    }
+
     /// Builds a valid exact-run signal request used by strict protocol tests.
     fn signal_json() -> String {
         serde_json::json!({
@@ -1948,6 +2099,49 @@ mod tests {
         })
         .to_string();
         assert!(decode_cancel_request(&oversized_reason).is_err());
+    }
+
+    #[test]
+    /// Reset requests preserve the exact run and event boundary, reject
+    /// unknown members, and encode the new run identity under `execution`.
+    fn reset_request_and_response_are_strict() {
+        let request = decode_reset_request(&reset_json()).expect("reset request decodes");
+        assert_eq!(request.namespace, "default");
+        assert_eq!(request.workflow_id, "workflow-1");
+        assert_eq!(request.run_id, "run-1");
+        assert_eq!(request.workflow_task_finish_event_id, 4);
+
+        let response = ResetWorkflowResponse {
+            execution: ExecutionRef {
+                namespace: request.namespace.clone(),
+                workflow_id: request.workflow_id.clone(),
+                run_id: "run-2".to_owned(),
+            },
+        };
+        assert_eq!(
+            encode_reset_response(&response).expect("reset response encodes"),
+            r#"{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"}}"#
+        );
+
+        let mut unknown = reset_json();
+        unknown.insert_str(unknown.len() - 1, ",\"unexpected\":true");
+        assert!(decode_reset_request(&unknown).is_err());
+    }
+
+    #[test]
+    /// Negative event boundaries are rejected before any Temporal RPC can be
+    /// attempted, preventing an accidental reset to an invalid history point.
+    fn reset_request_rejects_negative_event_boundary() {
+        let json = serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "request_id":"reset-1",
+            "reason":"",
+            "workflow_task_finish_event_id":-1
+        })
+        .to_string();
+        assert!(decode_reset_request(&json).is_err());
     }
 
     #[test]

@@ -244,6 +244,60 @@ OCaml bridge, and Rust protocol tests cover the exact-run request, terminal
 mapping, and validation failures; live acceptance of this operator path remains
 the next evidence boundary.
 
+## Reset one exact run from a workflow-task boundary
+
+`Temporal.Client.reset` asks Temporal to create a new run by replaying the
+exact execution up to a supplied workflow-task finish event. It is an
+operator-facing recovery operation: it does not mutate the existing run and
+it never means “reset whichever run is latest”. The public function requires
+the original run handle and a non-negative `workflow_task_finish_event_id`,
+then returns a new exact-run handle on success.
+
+The private request is a closed object:
+
+```json
+{
+  "namespace": "default",
+  "workflow_id": "summarize-1",
+  "run_id": "server-assigned-run-id",
+  "request_id": "reset-summarize-1-4",
+  "reason": "replay after deploying a workflow fix",
+  "workflow_task_finish_event_id": 4
+}
+```
+
+The event ID is serialized as a JSON integer literal and remains a signed
+64-bit value in OCaml, Rust, and the Temporal protobuf request. This avoids
+loss of precision for histories whose event IDs exceed the exact integer range
+of a JavaScript number. `request_id` is the idempotency key for one logical
+reset; if the caller omits it, OCaml derives a deterministic value from the
+exact run and event boundary. Retrying an uncertain transport result with the
+same request ID is therefore safe.
+
+Temporal returns the new run ID. The bridge wraps it in the same execution
+object used by `start`, and OCaml verifies that namespace and workflow ID still
+match the original handle before exposing it:
+
+```json
+{
+  "execution": {
+    "namespace": "default",
+    "workflow_id": "summarize-1",
+    "run_id": "new-server-assigned-run-id"
+  }
+}
+```
+
+Both sides reject missing, duplicate, or unknown members; empty or NUL-
+containing identifiers; oversized reasons; negative event IDs; and responses
+whose identity does not correlate to the request. A successful response means
+Temporal accepted the reset and supplied a new run identity, not that the new
+run has completed. Call `Temporal.Client.wait` with the returned handle to
+observe it. The request and response schemas are
+[`client-reset-request.schema.json`](../schemas/bridge/client-reset-request.schema.json)
+and
+[`client-reset-response.schema.json`](../schemas/bridge/client-reset-response.schema.json).
+
 ## Send one signal to an exact run
 
 The public `Temporal.Client.signal` operation sends a typed, fire-and-forget

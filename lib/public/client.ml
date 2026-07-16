@@ -371,6 +371,74 @@ let terminate ?(reason = "") handle =
         in
         Backend.client_terminate handle.client.backend request
 
+(** Validates reset metadata before the request crosses the serialized
+    supervisor. Temporal event IDs are exact signed integers, never floats. *)
+let validate_reset_fields ~request_id ~reason ~workflow_task_finish_event_id =
+  let request_result =
+    match request_id with
+    | None -> Ok ()
+    | Some request_id -> validate_name "reset request id" request_id
+  in
+  match request_result with
+  | Error _ as error -> error
+  | Ok () when workflow_task_finish_event_id < 0L ->
+      Error
+        (Error.defect
+           ~message:"reset workflow-task finish event ID must be non-negative")
+  | Ok () when String.length reason > 65_536 ->
+      Error
+        (Error.defect ~message:"reset reason exceeds the protocol safety limit")
+  | Ok () when String.contains reason '\000' ->
+      Error (Error.defect ~message:"reset reason must not contain NUL")
+  | Ok () -> Ok ()
+
+(** Derives an idempotency key for an omitted reset request ID. The exact run
+    and event boundary are included so retries of one logical reset are stable,
+    while different reset points cannot alias one another. *)
+let generated_reset_request_id (handle : ('input, 'output) handle) event_id =
+  "ocaml-client-reset-"
+  ^ Digest.to_hex
+      (Digest.string
+         (handle.workflow_id ^ "\000" ^ handle.run_id ^ "\000"
+        ^ Int64.to_string event_id))
+
+(** Resets one exact run and returns the new execution identity. A successful
+    acknowledgement does not imply the new run has completed; use [follow] and
+    [wait] to observe it explicitly. *)
+let reset ?request_id ?(reason = "") ~workflow_task_finish_event_id handle =
+  if Atomic.get handle.client.closed then
+    Error
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else
+    match
+      validate_reset_fields ~request_id ~reason ~workflow_task_finish_event_id
+    with
+    | Error error -> Error error
+    | Ok () ->
+        let request_id =
+          match request_id with
+          | Some request_id -> request_id
+          | None -> generated_reset_request_id handle workflow_task_finish_event_id
+        in
+        let request : Backend.reset_request =
+          {
+            workflow_id = handle.workflow_id;
+            run_id = handle.run_id;
+            request_id;
+            reason;
+            workflow_task_finish_event_id;
+          }
+        in
+        (match Backend.client_reset handle.client.backend request with
+        | Error error -> Error error
+        | Ok (response : Backend.reset_response) ->
+            Ok
+              ({
+                 namespace = handle.client.namespace;
+                 workflow_id = response.workflow_id;
+                 run_id = response.run_id;
+               } : execution))
+
 (** Allocates a fresh request ID for a signal when the caller did not supply
     one. Unlike cancellation, separate signal calls are distinct messages by
     default, even when they target the same run and signal name. Supplying an

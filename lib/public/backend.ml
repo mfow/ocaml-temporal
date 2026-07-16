@@ -62,6 +62,15 @@ type terminate_request = {
   reason : string;
 }
 
+(** Exact workflow/run pair and event boundary for a reset request. *)
+type reset_request = {
+  workflow_id : string;
+  run_id : string;
+  request_id : string;
+  reason : string;
+  workflow_task_finish_event_id : int64;
+}
+
 (** Exact workflow/run pair and typed payload for one signal operation. *)
 type signal_request = {
   workflow_id : string;
@@ -115,6 +124,9 @@ type terminal_result =
       workflow_id : string;
       run_id : string;
     }
+
+(** New run identity returned by a successful reset. *)
+type reset_response = { workflow_id : string; run_id : string }
 
 (** Synthetic workflow task delivered by the deterministic unit-test seam. *)
 type workflow_task = {
@@ -185,6 +197,14 @@ type mock_execution = {
   signal_requests : (string, mock_signal) Hashtbl.t;
 }
 
+(** One accepted reset request and the successor identity it created. Keeping
+    the original request fields lets the mock enforce the same idempotency
+    contract as Temporal when a caller retries an uncertain reset response. *)
+type mock_reset = {
+  request : reset_request;
+  response : reset_response;
+}
+
 (** A deterministic mock endpoint is a process-local service ledger. Multiple
     public [Client.t] values for the same target URL and namespace share this
     ledger, which mirrors separate handles talking to one Temporal service and
@@ -195,6 +215,12 @@ type mock_service = {
   mutable next_run : int;
   mutex : Mutex.t;
   executions : (string, mock_execution) Hashtbl.t;
+  (** Every run, including runs retired by reset, remains addressable by its
+      exact workflow/run pair until the service is released. *)
+  history : ((string * string), mock_execution) Hashtbl.t;
+  (** Reset request IDs are retained with their input fingerprint so retries
+      return the original successor instead of creating another run. *)
+  reset_requests : (string, mock_reset) Hashtbl.t;
 }
 
 (** A client graph contributes one lifecycle bit to a shared mock service.
@@ -497,6 +523,8 @@ let acquire_mock_service ~target_url ~namespace =
               next_run = 0;
               mutex = Mutex.create ();
               executions = Hashtbl.create 16;
+              history = Hashtbl.create 32;
+              reset_requests = Hashtbl.create 16;
             }
           in
           Hashtbl.add mock_services key service;
@@ -657,7 +685,7 @@ let mock_client_start (client : mock_client) (request : start_request) =
           service.next_run <- service.next_run + 1;
           Printf.sprintf "mock-run-%d" service.next_run
         in
-        Hashtbl.add service.executions request.workflow_id
+        let execution =
           {
             run_id;
             workflow_type = request.workflow_name;
@@ -665,7 +693,10 @@ let mock_client_start (client : mock_client) (request : start_request) =
             input = copy_payload request.input;
             terminal = Mock_pending;
             signal_requests = Hashtbl.create 8;
-          };
+          }
+        in
+        Hashtbl.add service.executions request.workflow_id execution;
+        Hashtbl.add service.history (request.workflow_id, run_id) execution;
         let response : start_response =
           { workflow_id = request.workflow_id; run_id }
         in
@@ -714,11 +745,14 @@ let mock_client_wait (client : mock_client) (request : wait_request) =
     (fun () ->
       if client.closed then Error (bridge_error "client is shut down")
       else
-        match Hashtbl.find_opt service.executions request.workflow_id with
-        | None -> Error (bridge_error "workflow execution was not started")
-        | Some execution
-          when not (String.equal execution.run_id request.run_id) ->
-            Error (bridge_error "workflow run id does not match the started run")
+        let execution =
+          match Hashtbl.find_opt service.executions request.workflow_id with
+          | None -> Hashtbl.find_opt service.history (request.workflow_id, request.run_id)
+          | Some current when String.equal current.run_id request.run_id -> Some current
+          | Some _ -> Hashtbl.find_opt service.history (request.workflow_id, request.run_id)
+        in
+        match execution with
+        | None -> Error (bridge_error "workflow run id does not match the started run")
         | Some execution -> (
             match execution.terminal with
             | Mock_pending ->
@@ -796,6 +830,37 @@ let native_client_terminate (client : native_client)
     | Error error -> Error (native_supervisor_error error)
     | Ok (Error error) -> Error (native_client_error error)
     | Ok (Ok ()) -> Ok ()
+
+(** Converts a reset request to the namespace-bound protocol representation. *)
+let native_reset_request client (request : reset_request) :
+    Client_protocol.reset_request =
+  {
+    execution =
+      {
+        namespace = client.namespace;
+        workflow_id = request.workflow_id;
+        run_id = request.run_id;
+      };
+    request_id = request.request_id;
+    reason = request.reason;
+    workflow_task_finish_event_id = request.workflow_task_finish_event_id;
+  }
+
+(** Resets one exact run through the serialized supervisor operation. The
+    returned run identity is retained as a value; callers can explicitly
+    rebuild a typed handle and observe the new history. *)
+let native_client_reset (client : native_client) (request : reset_request) :
+    (reset_response, Error.t) result =
+  if Atomic.get client.closed then Error (bridge_error "client is shut down")
+  else
+    match
+      Native.perform client.supervisor
+        (Native.Client_reset_workflow (native_reset_request client request))
+    with
+    | Error error -> Error (native_supervisor_error error)
+    | Ok (Error error) -> Error (native_client_error error)
+    | Ok (Ok response) ->
+        Ok { workflow_id = response.execution.workflow_id; run_id = response.execution.run_id }
 
 (** Converts a public signal request to the namespace-bound protocol value.
     The exact run identity comes from the typed handle, while the connected
@@ -898,6 +963,72 @@ let client_cancel client request =
   match client with
   | Mock_client client -> mock_client_cancel client request
   | Native_client client -> native_client_cancel client request
+
+(** Compares all caller-visible fields that make a reset request idempotent.
+    Reusing a request ID for a different event boundary or run is rejected
+    rather than silently returning an unrelated successor. *)
+let equal_reset_request (left : reset_request) (right : reset_request) =
+  String.equal left.workflow_id right.workflow_id
+  && String.equal left.run_id right.run_id
+  && String.equal left.request_id right.request_id
+  && String.equal left.reason right.reason
+  && Int64.equal left.workflow_task_finish_event_id
+       right.workflow_task_finish_event_id
+
+(** Resets a mock execution while retaining the retired run in exact history.
+    The mock cannot replay history, so it preserves the original input and
+    marks that run terminated before creating a pending successor. Retaining
+    both the old run and the request fingerprint makes exact waits and retries
+    behave like the native Temporal operation. *)
+let mock_client_reset (client : mock_client) (request : reset_request) =
+  let service = client.service in
+  Mutex.lock service.mutex;
+  Fun.protect
+    ~finally:(fun () -> Mutex.unlock service.mutex)
+    (fun () ->
+      if client.closed then Error (bridge_error "client is shut down")
+      else
+        match Hashtbl.find_opt service.reset_requests request.request_id with
+        | Some previous when equal_reset_request previous.request request ->
+            Ok previous.response
+        | Some _ ->
+            Error
+              (Error.make ~category:`Workflow
+                 ~message:
+                   "reset request ID was already used for different reset data"
+                 ())
+        | None ->
+          match Hashtbl.find_opt service.executions request.workflow_id with
+        | None -> Error (bridge_error "workflow execution was not started")
+        | Some execution
+          when not (String.equal execution.run_id request.run_id) ->
+            Error (bridge_error "workflow run id does not match the started run")
+        | Some execution ->
+            execution.terminal <- Mock_terminated;
+            service.next_run <- service.next_run + 1;
+            let run_id = Printf.sprintf "mock-run-%d" service.next_run in
+            let successor =
+              {
+                run_id;
+                workflow_type = execution.workflow_type;
+                task_queue = execution.task_queue;
+                input = copy_payload execution.input;
+                terminal = Mock_pending;
+                signal_requests = Hashtbl.create 8;
+              }
+            in
+            Hashtbl.replace service.executions request.workflow_id successor;
+            Hashtbl.replace service.history (request.workflow_id, run_id) successor;
+            let response = { workflow_id = request.workflow_id; run_id } in
+            Hashtbl.add service.reset_requests request.request_id
+              { request; response };
+            Ok response)
+
+(** Resets one workflow using the selected private transport. *)
+let client_reset client request =
+  match client with
+  | Mock_client client -> mock_client_reset client request
+  | Native_client client -> native_client_reset client request
 
 (** Marks one pending mock execution as terminated; completed terminal history
     remains immutable and repeated termination is idempotent. *)
@@ -1068,29 +1199,30 @@ let mock_client_list_visibility (client : mock_client)
       (fun () ->
         if client.closed then Error (bridge_error "client is shut down")
         else
-          let executions =
-            Hashtbl.fold
-              (fun workflow_id execution acc ->
-                let status =
-                  match execution.terminal with
-                  | Mock_pending -> "running"
-                  | Mock_completed -> "completed"
-                  | Mock_cancelled -> "canceled"
-                  | Mock_terminated -> "terminated"
-                in
-                {
-                  workflow_id;
-                  run_id = execution.run_id;
-                  workflow_type = execution.workflow_type;
-                  task_queue = execution.task_queue;
-                  status;
-                }
-                :: acc)
-              service.executions []
-            |> List.sort (fun left right ->
+          let executions : visibility_execution list =
+            Hashtbl.to_seq service.executions
+            |> Seq.map (fun (workflow_id, (execution : mock_execution)) ->
+                   let status =
+                     match execution.terminal with
+                     | Mock_pending -> "running"
+                     | Mock_completed -> "completed"
+                     | Mock_cancelled -> "canceled"
+                     | Mock_terminated -> "terminated"
+                   in
+                   ({
+                      workflow_id;
+                      run_id = execution.run_id;
+                      workflow_type = execution.workflow_type;
+                      task_queue = execution.task_queue;
+                      status;
+                    }
+                     : visibility_execution))
+            |> List.of_seq
+            |> List.sort (fun (left : visibility_execution)
+                              (right : visibility_execution) ->
                    String.compare left.workflow_id right.workflow_id)
           in
-          Ok { executions; next_page_token = None })
+          Ok ({ executions; next_page_token = None } : visibility_page))
 
 (** Executes visibility through the selected private transport. *)
 let client_list_visibility client request =

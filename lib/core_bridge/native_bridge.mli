@@ -110,6 +110,9 @@ val client_start_workflow_json : runtime -> bytes -> (bytes, error) result
     operation to observe the eventual [Cancelled] terminal outcome. *)
 val client_cancel_workflow_json : runtime -> bytes -> (bytes, error) result
 
+(** Resets one exact workflow run and returns the newly assigned run identity. *)
+val client_reset_workflow_json : runtime -> bytes -> (bytes, error) result
+
 (** Requests immediate termination of one exact workflow run. *)
 val client_terminate_workflow_json : runtime -> bytes -> (bytes, error) result
 

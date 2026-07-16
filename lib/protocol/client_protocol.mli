@@ -53,6 +53,17 @@ type cancel_request = {
 type cancel_response = { acknowledged : bool }
 (** Positive acknowledgement returned after Temporal accepts the cancellation RPC. *)
 
+type reset_request = {
+  execution : execution;
+  request_id : string;
+  reason : string;
+  workflow_task_finish_event_id : int64;
+}
+(** Exact run and workflow-task event used as the reset point. *)
+
+type reset_response = { execution : execution }
+(** New run identity returned by Temporal after a successful reset. *)
+
 type terminate_request = { execution : execution; reason : string }
 (** Exact-run termination request. [reason] is bounded operator context. *)
 
@@ -181,6 +192,13 @@ val encode_cancel_request : cancel_request -> (string, error) result
 val decode_cancel_response : string -> (cancel_response, error) result
 (** Strictly decodes the positive native cancellation acknowledgement. *)
 
+val encode_reset_request : reset_request -> (string, error) result
+(** Validates and serializes one exact-run reset request and non-negative
+    workflow-task finish event ID. *)
+
+val decode_reset_response : request:reset_request -> string -> (reset_response, error) result
+(** Strictly decodes and correlates the new run returned after reset. *)
+
 val encode_terminate_request : terminate_request -> (string, error) result
 (** Validates and serializes one exact-run termination request. *)
 
@@ -225,6 +243,10 @@ val decode_wait_error :
 val decode_cancel_error : string -> (client_error, error) result
 (** Decodes a cancellation error and rejects the start-only
     [already_started] category. *)
+
+val decode_reset_error : string -> (client_error, error) result
+(** Decodes a reset error and rejects the start-only [already_started]
+    category. *)
 
 val decode_signal_error : string -> (client_error, error) result
 (** Decodes a signal error and rejects the start-only [already_started]

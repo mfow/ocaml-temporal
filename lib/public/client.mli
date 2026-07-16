@@ -147,6 +147,18 @@ val terminate :
   ('input, 'output) handle ->
   (unit, Error.t) result
 
+(** Resets the exact run at a workflow-task event boundary and returns the new
+    run identity. The old run is terminated by Temporal and a new run begins;
+    callers must explicitly use [follow] with the returned execution if they
+    want to wait for that new run. [workflow_task_finish_event_id] must be a
+    non-negative workflow-task event ID accepted by Temporal. *)
+val reset :
+  ?request_id:string ->
+  ?reason:string ->
+  workflow_task_finish_event_id:int64 ->
+  ('input, 'output) handle ->
+  (execution, Error.t) result
+
 (** Sends one typed signal to the exact run retained by [handle]. A successful
     call acknowledges Temporal's signal RPC; it does not wait for workflow code
     to process the message. [request_id] is optional: when omitted, the SDK

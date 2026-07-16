@@ -57,6 +57,18 @@ type terminate_request = {
   reason : string;
 }
 
+(** Exact workflow/run pair and event boundary for a reset request. *)
+type reset_request = {
+  workflow_id : string;
+  run_id : string;
+  request_id : string;
+  reason : string;
+  workflow_task_finish_event_id : int64;
+}
+
+(** New run identity returned by a successful reset. *)
+type reset_response = { workflow_id : string; run_id : string }
+
 (** Exact workflow/run pair and typed payload for one signal request. The
     connected client supplies the namespace to the native protocol so callers
     cannot redirect a handle to another namespace. *)
@@ -183,6 +195,9 @@ val client_wait : client -> wait_request -> (terminal_result, Error.t) result
 (** Requests cancellation of one exact workflow run. Success acknowledges the
     server RPC; a later [client_wait] observes the terminal cancellation. *)
 val client_cancel : client -> cancel_request -> (unit, Error.t) result
+
+(** Resets one exact workflow run and returns its new run identity. *)
+val client_reset : client -> reset_request -> (reset_response, Error.t) result
 
 (** Terminates one exact workflow run immediately. *)
 val client_terminate : client -> terminate_request -> (unit, Error.t) result

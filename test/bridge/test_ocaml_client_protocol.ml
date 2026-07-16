@@ -43,6 +43,17 @@ let execution : Protocol.execution =
 let cancel_request : Protocol.cancel_request =
   { execution; request_id = "cancel-1"; reason = "operator requested cancellation" }
 
+(** Reset requests identify the exact workflow-task boundary from which
+    Temporal should rebuild a new run. The event ID is intentionally kept as an
+    [int64] all the way to the JSON integer literal. *)
+let reset_request : Protocol.reset_request =
+  {
+    execution;
+    request_id = "reset-1";
+    reason = "replay from workflow task";
+    workflow_task_finish_event_id = 4L;
+  }
+
 (** Signal requests carry the exact run, stable operation ID, and ordered
     payloads that the Rust bridge forwards to Temporal's signal RPC. *)
 let signal_request : Protocol.signal_request =
@@ -204,6 +215,37 @@ let test_cancellation_protocol () =
       {|{"acknowledged":true,"unexpected":true}|};
       {|{"acknowledged":true,"acknowledged":false}|};
       {|{"acknowledged":"true"}|};
+    ]
+
+(** Checks exact-run reset encoding, response identity correlation, and the
+    fail-closed handling of invalid event boundaries or response shapes. *)
+let test_reset_protocol () =
+  let encoded = unwrap (Protocol.encode_reset_request reset_request) in
+  require_fragment "reset request ID" "reset-1" encoded;
+  require_fragment "reset event boundary" "workflow_task_finish_event_id" encoded;
+  require_fragment "reset event value" "4" encoded;
+  let response =
+    unwrap
+      (Protocol.decode_reset_response ~request:reset_request
+         {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"}}|})
+  in
+  if response.execution.run_id <> "run-2" then
+    failwith "reset response did not expose the new run identity";
+  List.iter
+    (fun request -> require_error (Protocol.encode_reset_request request))
+    [
+      { reset_request with workflow_task_finish_event_id = -1L };
+      { reset_request with request_id = "" };
+      { reset_request with reason = "contains\000nul" };
+    ];
+  List.iter
+    (fun document ->
+      require_error
+        (Protocol.decode_reset_response ~request:reset_request document))
+    [
+      {|{"execution":{"namespace":"other","workflow_id":"workflow-1","run_id":"run-2"}}|};
+      {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":"run-2"},"unexpected":true}|};
+      {|{"execution":{"namespace":"default","workflow_id":"workflow-1","run_id":""}}|};
     ]
 
 (** Checks the exact-run termination request and its positive acknowledgement.
@@ -478,6 +520,7 @@ let () =
   run "client successor identity" test_successor_identity_validation;
   run "client request validation" test_request_validation;
   run "client cancellation protocol" test_cancellation_protocol;
+  run "client reset protocol" test_reset_protocol;
   run "client termination protocol" test_termination_protocol;
   run "client signal protocol" test_signal_protocol;
   run "client query protocol" test_query_protocol;

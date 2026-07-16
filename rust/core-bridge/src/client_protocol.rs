@@ -1473,6 +1473,15 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use temporalio_client::tonic::codegen::Bytes;
 
+    #[test]
+    /// Unknown and omitted Temporal visibility enum values fail closed instead
+    /// of being converted into a valid-looking status string.
+    fn unknown_visibility_status_is_rejected() {
+        assert!(visibility_status(0).is_err());
+        assert!(visibility_status(99).is_err());
+        assert_eq!(visibility_status(1).unwrap(), "running");
+    }
+
     /// Builds the smallest valid start document used by strict-parser tests.
     fn start_json() -> String {
         serde_json::json!({

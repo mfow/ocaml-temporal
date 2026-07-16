@@ -291,6 +291,7 @@ type completion_command =
       start_to_close_timeout : duration option;
       heartbeat_timeout : duration option;
       retry_policy : retry_policy option;
+      priority : workflow_priority option;
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
@@ -300,6 +301,7 @@ type completion_command =
       workflow_type : string;
       input : payload list;
       retry_policy : retry_policy option;
+      priority : workflow_priority option;
       cancellation_type : child_workflow_cancellation_type;
     }
   | Cancel_child_workflow of { seq : int64; reason : string }
@@ -1263,6 +1265,15 @@ let workflow_priority path json =
     let* fairness_weight_bits = uint32 (path ^ ".fairness_weight_bits") bits_json in
     Ok { priority_key; fairness_key; fairness_weight_bits }
 
+(** Encodes a validated Core priority without converting its f32 bits through a
+    floating-point JSON number. *)
+let workflow_priority_json value =
+  Ok
+    (`Assoc
+      [ ("priority_key", `Int value.priority_key);
+        ("fairness_key", `String value.fairness_key);
+        ("fairness_weight_bits", `Intlit (Int64.to_string value.fairness_weight_bits)) ])
+
 (** Decodes the canonical unsigned decimal used for an IEEE-754 bit pattern.
     The two limbs keep every intermediate value below [2^64] while avoiding
     machine-sized integers and preserving patterns whose sign bit is set. *)
@@ -2062,6 +2073,7 @@ let completion_command path json =
             "start_to_close_timeout";
             "heartbeat_timeout";
             "retry_policy";
+            "priority";
             "cancellation_type";
             "do_not_eagerly_execute";
           ]
@@ -2089,6 +2101,8 @@ let completion_command path json =
       let* retry_policy =
         nullable (path ^ ".retry_policy") retry_policy retry_policy_json
       in
+      let* priority_json = field path "priority" entries in
+      let* priority = nullable (path ^ ".priority") workflow_priority priority_json in
       let* cancellation_json = field path "cancellation_type" entries in
       let* cancellation_name = string (path ^ ".cancellation_type") cancellation_json in
       let* cancellation_type = cancellation_type (path ^ ".cancellation_type") cancellation_name in
@@ -2112,6 +2126,7 @@ let completion_command path json =
                start_to_close_timeout;
                heartbeat_timeout;
                retry_policy;
+               priority;
                cancellation_type;
                do_not_eagerly_execute;
              })
@@ -2125,6 +2140,7 @@ let completion_command path json =
             "workflow_type";
             "input";
             "retry_policy";
+            "priority";
             "cancellation_type";
           ]
           json
@@ -2141,6 +2157,8 @@ let completion_command path json =
       let* retry_policy =
         nullable (path ^ ".retry_policy") retry_policy retry_policy_json
       in
+      let* priority_json = field path "priority" entries in
+      let* priority = nullable (path ^ ".priority") workflow_priority priority_json in
       let* cancellation_json = field path "cancellation_type" entries in
       let* cancellation_name =
         string (path ^ ".cancellation_type") cancellation_json
@@ -2150,7 +2168,7 @@ let completion_command path json =
       in
       Ok
         (Start_child_workflow
-           { seq; workflow_id; workflow_type; input; retry_policy;
+           { seq; workflow_id; workflow_type; input; retry_policy; priority;
              cancellation_type })
   | "cancel_child_workflow" ->
       let* entries = exact_object path [ "kind"; "seq"; "reason" ] json in
@@ -2236,6 +2254,11 @@ let completion_command_json = function
         | None -> Ok `Null
         | Some value -> retry_policy_json value
       in
+      let* priority =
+        match value.priority with
+        | None -> Ok `Null
+        | Some value -> workflow_priority_json value
+      in
       Ok
         (`Assoc
           [
@@ -2250,6 +2273,7 @@ let completion_command_json = function
             ("start_to_close_timeout", optional_duration_json value.start_to_close_timeout);
             ("heartbeat_timeout", optional_duration_json value.heartbeat_timeout);
             ("retry_policy", retry_policy);
+            ("priority", priority);
             ("cancellation_type", `String (cancellation_type_string value.cancellation_type));
             ("do_not_eagerly_execute", `Bool value.do_not_eagerly_execute);
           ])
@@ -2261,12 +2285,17 @@ let completion_command_json = function
             ("seq", `Intlit (Int64.to_string seq));
           ])
   | Start_child_workflow
-      { seq; workflow_id; workflow_type; input; retry_policy; cancellation_type } ->
+      { seq; workflow_id; workflow_type; input; retry_policy; priority; cancellation_type } ->
       let* input = payloads_json input in
       let* retry_policy =
         match retry_policy with
         | None -> Ok `Null
         | Some value -> retry_policy_json value
+      in
+      let* priority =
+        match priority with
+        | None -> Ok `Null
+        | Some value -> workflow_priority_json value
       in
       Ok
         (`Assoc
@@ -2277,6 +2306,7 @@ let completion_command_json = function
             ("workflow_type", `String workflow_type);
             ("input", input);
             ("retry_policy", retry_policy);
+            ("priority", priority);
             ( "cancellation_type",
               `String (child_cancellation_type_string cancellation_type) );
           ])

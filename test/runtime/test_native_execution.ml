@@ -1047,6 +1047,7 @@ let test_activity_command_translation_and_validation () =
         start_to_close_timeout = Some 10_000L;
         heartbeat_timeout = None;
         retry_policy = None;
+        priority = None;
         cancellation_type = Activation.Wait_cancellation_completed;
         do_not_eagerly_execute = true;
       }
@@ -1069,6 +1070,7 @@ let test_activity_command_translation_and_validation () =
         start_to_close_timeout = Some { seconds = 10L; nanoseconds = 0 };
         heartbeat_timeout = None;
         retry_policy = None;
+        priority = None;
         cancellation_type = Protocol.Wait_cancellation_completed;
         do_not_eagerly_execute = true;
       }
@@ -1094,6 +1096,7 @@ let test_activity_command_translation_and_validation () =
             start_to_close_timeout = None;
             heartbeat_timeout = None;
             retry_policy = None;
+            priority = None;
             cancellation_type = Activation.Try_cancel;
             do_not_eagerly_execute = false;
           }));

@@ -366,6 +366,7 @@ fn converts_start_child_workflow_command() {
             workflow_type: "child".to_owned(),
             input: vec![input.clone()],
             retry_policy: None,
+            priority: None,
             cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
         }],
     };
@@ -417,6 +418,50 @@ fn converts_start_child_workflow_command() {
     );
 }
 
+/// Verifies that a child priority survives semantic JSON, Core conversion,
+/// and reverse conversion without rounding its fairness weight.
+#[test]
+fn converts_child_priority_losslessly() {
+    let priority = workflow_protocol::WorkflowPriority {
+        priority_key: 11,
+        fairness_key: "agent-a".to_owned(),
+        fairness_weight_bits: 1.5f32.to_bits(),
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "parent-run".to_owned(),
+        commands: vec![workflow_protocol::CompletionCommand::StartChildWorkflow {
+            seq: 3,
+            workflow_id: "child/priority".to_owned(),
+            workflow_type: "child".to_owned(),
+            input: Vec::new(),
+            retry_policy: None,
+            priority: Some(priority),
+            cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
+        }],
+    };
+    let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+    assert!(encoded.contains("\"fairness_weight_bits\":1069547520"));
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("priority completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::StartChildWorkflowExecution(child)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("priority command must map to Core's start-child variant");
+    };
+    let core_priority = child.priority.as_ref().expect("priority must be present");
+    assert_eq!(core_priority.priority_key, 11);
+    assert_eq!(core_priority.fairness_key, "agent-a");
+    assert_eq!(core_priority.fairness_weight, 1.5);
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+}
+
 /// Ensures a live worker supplies its configured namespace to Core even
 /// though namespace is intentionally absent from the workflow-level command.
 /// Core copies this field into child failure metadata, including the
@@ -443,6 +488,7 @@ fn injects_worker_namespace_into_child_workflow_command() {
             workflow_type: "child".to_owned(),
             input: Vec::new(),
             retry_policy: None,
+            priority: None,
             cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
         }],
     };
@@ -518,6 +564,7 @@ fn converts_all_child_cancellation_policies() {
                 workflow_type: "child".to_owned(),
                 input: vec![input.clone()],
                 retry_policy: None,
+                priority: None,
                 cancellation_type: policy,
             }],
         };
@@ -624,6 +671,7 @@ fn rejects_invalid_child_cancellation_commands() {
                 "workflow_type": workflow_type,
                 "input": [],
                 "retry_policy": null,
+                "priority": null,
                 "cancellation_type": "try_cancel",
             }],
         });
@@ -640,6 +688,7 @@ fn rejects_invalid_child_cancellation_commands() {
             workflow_type: "child".to_owned(),
             input: Vec::new(),
             retry_policy: None,
+            priority: None,
             cancellation_type: workflow_protocol::ChildWorkflowCancellationType::TryCancel,
         }],
     };

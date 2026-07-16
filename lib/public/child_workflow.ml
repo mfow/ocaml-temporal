@@ -83,6 +83,15 @@ let runtime_cancellation_type = function
   | Wait_cancellation_requested ->
       Temporal_runtime.Activation.Child_wait_cancellation_requested
 
+(** Copies public priority fields into the runtime command record. *)
+let runtime_priority priority =
+  Temporal_runtime.Activation
+  .{
+    priority_key = Priority.priority_key priority;
+    fairness_key = Priority.fairness_key priority;
+    fairness_weight_bits = Priority.fairness_weight_bits priority;
+  }
+
 (** Builds a handle for a request that failed before a child command could be
     emitted. The future is ready and cancellation returns the same typed
     defect, so invalid lifecycle requests cannot leave hidden state. *)
@@ -92,7 +101,7 @@ let failed_handle error =
 (** Validates durable identity and encodes input before allocating a private
     sequence number. Consequently invalid requests cannot change command order
     or appear in replay history. *)
-let start_handle ?(cancellation_type = Try_cancel) ?retry_policy ~id definition
+let start_handle ?(cancellation_type = Try_cancel) ?retry_policy ?priority ~id definition
     input =
   match validate_id id with
   | Error error -> failed_handle error
@@ -107,6 +116,7 @@ let start_handle ?(cancellation_type = Try_cancel) ?retry_policy ~id definition
                 Temporal_runtime.Workflow_context_store.start_child_workflow
                   context ~id ~name:(Workflow.name definition) ~input
                   ?retry_policy:(Option.map Retry_policy_private.to_runtime retry_policy)
+                  ?priority:(Option.map runtime_priority priority)
                   ~cancellation_type:(runtime_cancellation_type cancellation_type)
                   ~decode:(Codec_private.decode_base (Workflow.output definition)) ()
               in
@@ -130,11 +140,11 @@ let cancel ?(reason = "cancelled by workflow") handle = handle.cancel ~reason
 
 (** Starts a child workflow and returns only its future. Callers that need to
     cancel explicitly should retain the handle returned by [start_handle]. *)
-let start ?cancellation_type ?retry_policy ~id definition input =
+let start ?cancellation_type ?retry_policy ?priority ~id definition input =
   future
-    (start_handle ?cancellation_type ?retry_policy ~id definition input)
+    (start_handle ?cancellation_type ?retry_policy ?priority ~id definition input)
 
 (** Implements the direct-style child call as start followed by an effect-backed
     wait. Expected child and codec failures remain explicit [result] values. *)
-let execute ?cancellation_type ?retry_policy ~id definition input =
-  Future.await (start ?cancellation_type ?retry_policy ~id definition input)
+let execute ?cancellation_type ?retry_policy ?priority ~id definition input =
+  Future.await (start ?cancellation_type ?retry_policy ?priority ~id definition input)

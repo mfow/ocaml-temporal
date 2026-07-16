@@ -15,6 +15,7 @@ module Error = Error
 module Future = Future
 module Interaction = Interaction
 module Payload = Payload
+module Priority = Priority
 module Query = Query
 module Result_syntax = Result_syntax
 module Runtime_info = Runtime_info

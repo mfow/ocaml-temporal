@@ -121,6 +121,7 @@ let test_direct_translation_validation () =
           start_to_close_timeout = Some 30_000L;
           heartbeat_timeout = None;
           retry_policy = Some policy;
+          priority = None;
           cancellation_type = Activation.Try_cancel;
           do_not_eagerly_execute = false;
         }
@@ -154,6 +155,7 @@ let test_subsecond_boundary_translation () =
         start_to_close_timeout = Some 2L;
         heartbeat_timeout = Some 3L;
         retry_policy = Some boundary_retry_policy;
+        priority = None;
         cancellation_type = Activation.Try_cancel;
         do_not_eagerly_execute = false;
       }

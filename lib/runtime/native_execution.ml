@@ -97,6 +97,31 @@ let validate_identifier path value : (unit, error) result =
     Error (invalid path "identifier must be valid UTF-8")
   else Ok ()
 
+(** Validates and copies a priority at the final OCaml-to-protocol boundary. *)
+let protocol_priority path (priority : Activation.workflow_priority option) =
+  match priority with
+  | None -> Ok None
+  | Some value ->
+      if String.length value.fairness_key > 64 then
+        Error (invalid (path ^ ".fairness_key") "fairness key exceeds 64 bytes")
+      else if String.contains value.fairness_key '\000' then
+        Error (invalid (path ^ ".fairness_key") "fairness key contains NUL")
+      else if not (Temporal_base.Codec.valid_utf_8 value.fairness_key) then
+        Error (invalid (path ^ ".fairness_key") "fairness key is not valid UTF-8")
+      else if value.priority_key < 0 || value.priority_key > Int32.to_int Int32.max_int then
+        Error (invalid (path ^ ".priority_key") "priority key is outside Core's range")
+      else if Int64.compare value.fairness_weight_bits 0L < 0
+              || Int64.compare value.fairness_weight_bits 0xffff_ffffL > 0 then
+        Error (invalid (path ^ ".fairness_weight_bits") "fairness weight bits are outside uint32")
+      else
+        Ok
+          (Some
+             Protocol.{
+               priority_key = value.priority_key;
+               fairness_key = String.sub value.fairness_key 0 (String.length value.fairness_key);
+               fairness_weight_bits = value.fairness_weight_bits;
+             })
+
 (** Validates a bounded text field whose empty value is meaningful.  Signal
     identities are supplied by Core as text but are not Temporal identifiers;
     keeping this check local to the runtime prevents malformed bytes assembled
@@ -718,6 +743,7 @@ let command_to_protocol command =
         start_to_close_timeout;
         heartbeat_timeout;
         retry_policy;
+        priority;
         cancellation_type;
         do_not_eagerly_execute;
       } ->
@@ -783,6 +809,7 @@ let command_to_protocol command =
             in
             Ok (Some policy)
       in
+      let* priority = protocol_priority "$.command.priority" priority in
       if Option.is_none schedule_to_close_timeout
          && Option.is_none start_to_close_timeout
       then
@@ -803,11 +830,12 @@ let command_to_protocol command =
                start_to_close_timeout;
                heartbeat_timeout;
                retry_policy;
+               priority;
                cancellation_type = protocol_cancellation_type cancellation_type;
                do_not_eagerly_execute;
              })
   | Activation.Start_child_workflow
-      { seq; id; name; input; retry_policy; cancellation_type } ->
+      { seq; id; name; input; retry_policy; priority; cancellation_type } ->
       let* () = validate_sequence "$.command.seq" seq in
       let* () = validate_identifier "$.command.id" id in
       let* () = validate_identifier "$.command.name" name in
@@ -843,6 +871,7 @@ let command_to_protocol command =
             in
             Ok (Some policy)
       in
+      let* priority = protocol_priority "$.command.priority" priority in
       Ok
         (Protocol.Start_child_workflow
            {
@@ -851,6 +880,7 @@ let command_to_protocol command =
              workflow_type = name;
              input = [ input ];
              retry_policy;
+             priority;
              cancellation_type = protocol_child_cancellation_type cancellation_type;
            })
   | Activation.Cancel_child_workflow { seq; reason } ->

@@ -79,6 +79,13 @@ type retry_policy = {
   non_retryable_error_types : string list;
 }
 
+(** Exact Core scheduling priority retained by a buffered command. *)
+type workflow_priority = {
+  priority_key : int;
+  fairness_key : string;
+  fairness_weight_bits : int64;
+}
+
 (** An instruction produced by workflow code for Temporal Core. Commands are
     returned in the order they were created because Temporal records that order
     in workflow history and expects replay to reproduce it. Activity timeout
@@ -96,6 +103,7 @@ type command =
       start_to_close_timeout : int64 option;
       heartbeat_timeout : int64 option;
       retry_policy : retry_policy option;
+      priority : workflow_priority option;
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
@@ -105,6 +113,7 @@ type command =
       name : string;
       input : Temporal_base.Codec.payload;
       retry_policy : retry_policy option;
+      priority : workflow_priority option;
       cancellation_type : child_workflow_cancellation_type;
     }
   (** Requests cancellation of a pending child workflow. *)

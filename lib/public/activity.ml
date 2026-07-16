@@ -426,6 +426,15 @@ let runtime_retry_policy policy =
     non_retryable_error_types = Retry_policy.non_retryable_error_types policy;
   }
 
+(** Copies the public priority into the compact runtime representation. *)
+let runtime_priority priority =
+  Temporal_runtime.Activation
+  .{
+    priority_key = Priority.priority_key priority;
+    fairness_key = Priority.fairness_key priority;
+    fairness_weight_bits = Priority.fairness_weight_bits priority;
+  }
+
 (** Validates optional identifiers before a deterministic command sequence is
     allocated. *)
 let validate_optional_identifier field = function
@@ -472,7 +481,7 @@ let failed_handle error =
     public errors at the same boundary. *)
 let start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-    ?retry_policy ?(cancellation_type = Try_cancel)
+    ?retry_policy ?priority ?(cancellation_type = Try_cancel)
     ?(do_not_eagerly_execute = false)
     definition input =
   match validate_optional_identifier "activity id" activity_id with
@@ -510,6 +519,7 @@ let start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
                       ?task_queue ?schedule_to_close_timeout
                       ?schedule_to_start_timeout ?start_to_close_timeout
                       ?heartbeat_timeout ?retry_policy
+                      ?priority:(Option.map runtime_priority priority)
                       ~cancellation_type:(runtime_cancellation_type cancellation_type)
                       ~do_not_eagerly_execute
                       ~decode:(Codec_private.decode_base definition.output)
@@ -534,17 +544,17 @@ let cancel handle = handle.cancel ()
     cancel explicitly should retain the handle returned by [start_handle]. *)
 let start ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-    ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input =
+    ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input =
   future
     (start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
        ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-       ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input)
+       ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input)
 
 (** Direct-style convenience for scheduling and awaiting one activity. *)
 let execute ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-    ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input =
+    ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input =
   Future.await
     (start ?activity_id ?task_queue ?schedule_to_close_timeout
        ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
-       ?retry_policy ?cancellation_type ?do_not_eagerly_execute definition input)
+       ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input)

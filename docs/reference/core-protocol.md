@@ -290,17 +290,21 @@ cover scheduling and requesting cancellation of remote activities, starting and
 cancelling a child workflow, starting and cancelling timers, and completing,
 failing, or cancelling the workflow. A child start includes an explicit
 cancellation policy, and a later cancel command carries a validated reason;
-Core applies that policy while preserving command order for replay. The child
-command deliberately omits namespace, task queue, timeout, retry, header,
-memo, search-attribute, versioning, and priority fields because the current
-OCaml runtime does not expose them. For a live or replay worker, Rust injects
-the worker's already-validated namespace into Core's child-start command before
-submission; this is worker configuration, not workflow input. The remaining
-omitted Core fields receive explicit defaults and non-default values are
-rejected on reverse conversion. Injecting the namespace is important because
-Core copies it into child failure metadata, including cancellation before the
-child has a run ID; leaving it at Core's empty protobuf default would make that
-otherwise valid activation fail the semantic protocol validator.
+Core applies that policy while preserving command order for replay. Activity
+and child-start commands may also carry a `Temporal.Priority.t`. OCaml stores
+the fairness weight as a `float` for ergonomic authoring, then snapshots its
+exact IEEE-754 single-precision bit pattern in JSON; Rust validates the range
+again and constructs Core's priority message. This avoids locale-dependent
+float formatting and makes replay comparisons exact. The child command still
+omits namespace, task queue, timeout, headers, memo, search-attribute, and
+versioning fields. For a live or replay worker, Rust injects the worker's
+already-validated namespace into Core's child-start command before submission;
+this is worker configuration, not workflow input. Other omitted Core fields
+receive explicit defaults and non-default values are rejected on reverse
+conversion. Injecting the namespace is important because Core copies it into
+child failure metadata, including cancellation before the child has a run ID;
+leaving it at Core's empty protobuf default would make that otherwise valid
+activation fail the semantic protocol validator.
 Scheduled activities require at least a schedule-to-close or start-to-close
 timeout. They may also carry a closed retry-policy object with positive initial
 and nondecreasing maximum intervals, a finite backoff coefficient at least 1.0,

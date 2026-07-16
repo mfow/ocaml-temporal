@@ -32,6 +32,7 @@ fn completion(policy: Option<RetryPolicy>) -> Completion {
             }),
             heartbeat_timeout: None,
             retry_policy: policy,
+            priority: None,
             cancellation_type: ActivityCancellationType::TryCancel,
             do_not_eagerly_execute: false,
         }],
@@ -53,6 +54,7 @@ fn child_completion(policy: Option<RetryPolicy>) -> Completion {
                 data: b"input".to_vec(),
             }],
             retry_policy: policy,
+            priority: None,
             cancellation_type: ChildWorkflowCancellationType::TryCancel,
         }],
     }

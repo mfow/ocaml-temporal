@@ -222,6 +222,7 @@ let test_child_workflow_cancellation () =
           name = "greeting_child";
           input = payload "Ada";
           retry_policy = None;
+          priority = None;
           cancellation_type = Activation.Child_wait_cancellation_requested;
         };
       Activation.Cancel_child_workflow { seq = 1L; reason = "no longer needed" };
@@ -261,6 +262,7 @@ let test_activity_cancellation () =
           start_to_close_timeout = Some 60_000L;
           heartbeat_timeout = None;
           retry_policy = None;
+          priority = None;
           cancellation_type = Activation.Wait_cancellation_completed;
           do_not_eagerly_execute = false;
         };

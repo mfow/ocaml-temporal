@@ -25,6 +25,7 @@ type 'output handle
 val start_handle :
   ?cancellation_type:cancellation_type ->
   ?retry_policy:Activity.Retry_policy.t ->
+  ?priority:Priority.t ->
   id:string ->
   ('input, 'output) Workflow.t ->
   'input ->
@@ -54,6 +55,7 @@ val cancel :
 val start :
   ?cancellation_type:cancellation_type ->
   ?retry_policy:Activity.Retry_policy.t ->
+  ?priority:Priority.t ->
   id:string ->
   ('input, 'output) Workflow.t ->
   'input ->
@@ -66,6 +68,7 @@ val start :
 val execute :
   ?cancellation_type:cancellation_type ->
   ?retry_policy:Activity.Retry_policy.t ->
+  ?priority:Priority.t ->
   id:string ->
   ('input, 'output) Workflow.t ->
   'input ->

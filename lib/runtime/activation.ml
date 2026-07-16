@@ -87,6 +87,15 @@ type retry_policy = {
   non_retryable_error_types : string list;
 }
 
+(** Validated workflow matching priority retained by a buffered command. The
+    fairness weight is kept as exact IEEE-754 bits so JSON serialization and
+    replay do not depend on a decimal float representation. *)
+type workflow_priority = {
+  priority_key : int;
+  fairness_key : string;
+  fairness_weight_bits : int64;
+}
+
 (** Commands contain only immutable data needed by the semantic JSON
     translator; they never expose the runtime's mutable execution state.  The
     activity record carries every field Core needs to schedule a task, rather
@@ -103,6 +112,7 @@ type command =
       start_to_close_timeout : int64 option;
       heartbeat_timeout : int64 option;
       retry_policy : retry_policy option;
+      priority : workflow_priority option;
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
@@ -112,6 +122,7 @@ type command =
       name : string;
       input : Temporal_base.Codec.payload;
       retry_policy : retry_policy option;
+      priority : workflow_priority option;
       cancellation_type : child_workflow_cancellation_type;
     }
   (** Requests cancellation of the child identified by the start command's

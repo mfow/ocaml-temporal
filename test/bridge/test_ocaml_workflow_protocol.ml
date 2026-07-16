@@ -462,6 +462,7 @@ let test_start_child_workflow_command () =
               workflow_type = "child";
               input = [ input ];
               retry_policy = None;
+              priority = None;
               cancellation_type = Child_try_cancel;
             };
         ];
@@ -469,7 +470,7 @@ let test_start_child_workflow_command () =
   in
   let encoded = unwrap (Protocol.encode_completion completion) in
   check_string "child command"
-    {|{"commands":[{"cancellation_type":"try_cancel","input":[{"data":{"data":"","encoding":"base64"},"metadata":{"encoding":{"data":"YmluYXJ5L251bGw=","encoding":"base64"}}}],"kind":"start_child_workflow","retry_policy":null,"seq":2,"workflow_id":"child/1","workflow_type":"child"}],"run_id":"parent-run"}|}
+    {|{"commands":[{"cancellation_type":"try_cancel","input":[{"data":{"data":"","encoding":"base64"},"metadata":{"encoding":{"data":"YmluYXJ5L251bGw=","encoding":"base64"}}}],"kind":"start_child_workflow","priority":null,"retry_policy":null,"seq":2,"workflow_id":"child/1","workflow_type":"child"}],"run_id":"parent-run"}|}
     encoded;
   if unwrap (Protocol.decode_completion encoded) <> completion then
     failwith "child command did not round-trip"
@@ -496,6 +497,7 @@ let test_all_child_cancellation_policies () =
                   workflow_type = "child";
                   input = [ input ];
                   retry_policy = None;
+                  priority = None;
                   cancellation_type;
                 };
             ];
@@ -587,6 +589,7 @@ let test_child_cancellation_validation () =
               workflow_type = "child";
               input = [];
               retry_policy = None;
+              priority = None;
               cancellation_type = Child_try_cancel;
             };
         ];
@@ -595,7 +598,7 @@ let test_child_cancellation_validation () =
   require_error (Protocol.encode_completion completion);
   require_error
     (Protocol.decode_completion
-       {|{"run_id":"parent-run","commands":[{"kind":"start_child_workflow","seq":7,"workflow_id":"child","workflow_type":"child","input":[],"retry_policy":null,"cancellation_type":"unknown"}]}|})
+       {|{"run_id":"parent-run","commands":[{"kind":"start_child_workflow","seq":7,"workflow_id":"child","workflow_type":"child","input":[],"retry_policy":null,"priority":null,"cancellation_type":"unknown"}]}|})
 
 (** Proves a continue-as-new command is terminal, retains the target workflow
     identity and carries its encoded input through the bilateral JSON shape. *)
@@ -1082,7 +1085,7 @@ let test_required_nullable_fields () =
        {|{"run_id":"run-required-null","commands":[{"kind":"complete_workflow"}]}|});
   require_error
     (Protocol.decode_completion
-       {|{"run_id":"run-required-null","commands":[{"kind":"schedule_activity","seq":0,"activity_id":"activity","activity_type":"activity","task_queue":"queue","arguments":[],"schedule_to_start_timeout":null,"start_to_close_timeout":null,"heartbeat_timeout":null,"cancellation_type":"try_cancel","do_not_eagerly_execute":false}]}|})
+       {|{"run_id":"run-required-null","commands":[{"kind":"schedule_activity","seq":0,"activity_id":"activity","activity_type":"activity","task_queue":"queue","arguments":[],"schedule_to_start_timeout":null,"start_to_close_timeout":null,"heartbeat_timeout":null,"priority":null,"cancellation_type":"try_cancel","do_not_eagerly_execute":false}]}|})
 
 (** Proves an explicit activity retry policy is represented with exact
     durations and coefficient bits, while [None] remains an explicit JSON
@@ -1110,6 +1113,7 @@ let test_activity_retry_policy () =
         start_to_close_timeout = Some { seconds = 30L; nanoseconds = 0 };
         heartbeat_timeout = None;
         retry_policy;
+        priority = None;
         cancellation_type = Try_cancel;
         do_not_eagerly_execute = false;
       }

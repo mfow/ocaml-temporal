@@ -618,6 +618,9 @@ pub enum CompletionCommand {
         heartbeat_timeout: Option<Duration>,
         #[serde(deserialize_with = "required_nullable")]
         retry_policy: Option<RetryPolicy>,
+        /// Optional matching priority and fairness controls.
+        #[serde(deserialize_with = "required_nullable")]
+        priority: Option<WorkflowPriority>,
         cancellation_type: ActivityCancellationType,
         do_not_eagerly_execute: bool,
     },
@@ -632,6 +635,9 @@ pub enum CompletionCommand {
         input: Vec<Payload>,
         #[serde(deserialize_with = "required_nullable")]
         retry_policy: Option<RetryPolicy>,
+        /// Optional matching priority and fairness controls.
+        #[serde(deserialize_with = "required_nullable")]
+        priority: Option<WorkflowPriority>,
         cancellation_type: ChildWorkflowCancellationType,
     },
     /// Requests cancellation of a previously started child workflow.
@@ -1393,6 +1399,7 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                 start_to_close_timeout,
                 heartbeat_timeout,
                 retry_policy,
+                priority,
                 ..
             } => {
                 identifier(activity_id, "$.commands.activity_id")?;
@@ -1423,17 +1430,24 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                 if let Some(retry_policy) = retry_policy {
                     validate_retry_policy(retry_policy, "$.commands.retry_policy")?;
                 }
+                if let Some(priority) = priority {
+                    validate_priority(priority, "$.commands.priority")?;
+                }
             }
             CompletionCommand::StartChildWorkflow {
                 workflow_id,
                 workflow_type,
                 retry_policy,
+                priority,
                 ..
             } => {
                 identifier(workflow_id, "$.commands.workflow_id")?;
                 identifier(workflow_type, "$.commands.workflow_type")?;
                 if let Some(retry_policy) = retry_policy {
                     validate_retry_policy(retry_policy, "$.commands.retry_policy")?;
+                }
+                if let Some(priority) = priority {
+                    validate_priority(priority, "$.commands.priority")?;
                 }
             }
             CompletionCommand::CancelChildWorkflow { reason, .. } => {
@@ -2595,6 +2609,75 @@ fn child_cancellation_from_core(
     )
 }
 
+/// Converts a validated semantic priority into Core's protobuf representation.
+/// The single-precision bit pattern is checked before conversion so malformed
+/// NaN, infinity, and out-of-range values cannot reach the server.
+fn priority_to_core(value: &WorkflowPriority) -> Result<api_common::Priority, CoreConversionError> {
+    if value.priority_key < 0 {
+        return Err(invalid_core("priority key must not be negative"));
+    }
+    if value.fairness_key.len() > 64 || value.fairness_key.as_bytes().contains(&0) {
+        return Err(invalid_core("priority fairness key is invalid"));
+    }
+    let fairness_weight = f32::from_bits(value.fairness_weight_bits);
+    if !fairness_weight.is_finite() || !(0.001..=1000.0).contains(&fairness_weight) {
+        return Err(invalid_core(
+            "priority fairness weight is outside Core's range",
+        ));
+    }
+    Ok(api_common::Priority {
+        priority_key: value.priority_key,
+        fairness_key: value.fairness_key.clone(),
+        fairness_weight,
+    })
+}
+
+/// Validates a semantic priority before it is serialized into a completion.
+fn validate_priority(value: &WorkflowPriority, path: &str) -> Result<(), ProtocolError> {
+    if value.priority_key < 0 {
+        return Err(ProtocolError::invalid(
+            path,
+            "priority key must not be negative",
+        ));
+    }
+    bounded_text(&value.fairness_key, &format!("{path}.fairness_key"))?;
+    if value.fairness_key.len() > 64 {
+        return Err(ProtocolError::invalid(
+            &format!("{path}.fairness_key"),
+            "fairness key exceeds 64 bytes",
+        ));
+    }
+    let weight = f32::from_bits(value.fairness_weight_bits);
+    if !weight.is_finite() || !(0.001..=1000.0).contains(&weight) {
+        return Err(ProtocolError::invalid(
+            &format!("{path}.fairness_weight_bits"),
+            "fairness weight is outside Core's range",
+        ));
+    }
+    Ok(())
+}
+
+/// Copies a Core priority into the semantic protocol while rejecting invalid
+/// values instead of silently normalizing them.
+fn priority_from_core(
+    value: &api_common::Priority,
+) -> Result<WorkflowPriority, CoreConversionError> {
+    if value.priority_key < 0 || value.fairness_key.len() > 64 || value.fairness_key.contains('\0')
+    {
+        return Err(invalid_core("Core priority is invalid"));
+    }
+    if !value.fairness_weight.is_finite()
+        || (value.fairness_weight != 0.0 && !(0.001..=1000.0).contains(&value.fairness_weight))
+    {
+        return Err(invalid_core("Core priority fairness weight is invalid"));
+    }
+    Ok(WorkflowPriority {
+        priority_key: value.priority_key,
+        fairness_key: value.fairness_key.clone(),
+        fairness_weight_bits: value.fairness_weight.to_bits(),
+    })
+}
+
 /// Builds one official Core command with unsupported optional fields defaulted explicitly.
 fn command_to_core(
     value: &CompletionCommand,
@@ -2613,6 +2696,7 @@ fn command_to_core(
             start_to_close_timeout,
             heartbeat_timeout,
             retry_policy,
+            priority,
             cancellation_type,
             do_not_eagerly_execute,
         } => Variant::ScheduleActivity(core_commands::ScheduleActivity {
@@ -2636,7 +2720,7 @@ fn command_to_core(
             cancellation_type: cancellation_to_core(*cancellation_type),
             do_not_eagerly_execute: *do_not_eagerly_execute,
             versioning_intent: 0,
-            priority: None,
+            priority: priority.as_ref().map(priority_to_core).transpose()?,
         }),
         CompletionCommand::RequestCancelActivity { seq } => {
             Variant::RequestCancelActivity(core_commands::RequestCancelActivity { seq: *seq })
@@ -2647,6 +2731,7 @@ fn command_to_core(
             workflow_type,
             input,
             retry_policy,
+            priority,
             cancellation_type,
         } => Variant::StartChildWorkflowExecution(core_commands::StartChildWorkflowExecution {
             seq: *seq,
@@ -2660,6 +2745,7 @@ fn command_to_core(
                 .as_ref()
                 .map(retry_policy_to_core)
                 .transpose()?,
+            priority: priority.as_ref().map(priority_to_core).transpose()?,
             cancellation_type: child_cancellation_to_core(*cancellation_type),
             // The worker namespace is injected by the namespace-aware
             // conversion used by live/replay workers. The legacy conversion
@@ -2777,8 +2863,7 @@ fn command_from_core(
         .ok_or_else(|| invalid_core("Core command variant is absent"))?
     {
         Variant::ScheduleActivity(value) => {
-            if !value.headers.is_empty() || value.versioning_intent != 0 || value.priority.is_some()
-            {
+            if !value.headers.is_empty() || value.versioning_intent != 0 {
                 return Err(unsupported(
                     "Core schedule activity options are not supported",
                 ));
@@ -2818,6 +2903,11 @@ fn command_from_core(
                     .as_ref()
                     .map(retry_policy_from_core)
                     .transpose()?,
+                priority: value
+                    .priority
+                    .as_ref()
+                    .map(priority_from_core)
+                    .transpose()?,
                 cancellation_type: cancellation_from_core(value.cancellation_type)?,
                 do_not_eagerly_execute: value.do_not_eagerly_execute,
             })
@@ -2835,7 +2925,6 @@ fn command_from_core(
                 || !value.memo.is_empty()
                 || value.search_attributes.is_some()
                 || value.versioning_intent != 0
-                || value.priority.is_some()
             {
                 return Err(unsupported(
                     "Core child workflow options are not represented by this protocol",
@@ -2854,6 +2943,11 @@ fn command_from_core(
                     .retry_policy
                     .as_ref()
                     .map(retry_policy_from_core)
+                    .transpose()?,
+                priority: value
+                    .priority
+                    .as_ref()
+                    .map(priority_from_core)
                     .transpose()?,
                 cancellation_type: child_cancellation_from_core(value.cancellation_type)?,
             })

@@ -233,6 +233,7 @@ val start_handle :
   ?start_to_close_timeout:Duration.t ->
   ?heartbeat_timeout:Duration.t ->
   ?retry_policy:Retry_policy.t ->
+  ?priority:Priority.t ->
   ?cancellation_type:cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   ('input, 'output) t ->
@@ -267,6 +268,7 @@ val start :
   ?start_to_close_timeout:Duration.t ->
   ?heartbeat_timeout:Duration.t ->
   ?retry_policy:Retry_policy.t ->
+  ?priority:Priority.t ->
   ?cancellation_type:cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   ('input, 'output) t ->
@@ -283,6 +285,7 @@ val execute :
   ?start_to_close_timeout:Duration.t ->
   ?heartbeat_timeout:Duration.t ->
   ?retry_policy:Retry_policy.t ->
+  ?priority:Priority.t ->
   ?cancellation_type:cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   ('input, 'output) t -> 'input -> ('output, Error.t) result

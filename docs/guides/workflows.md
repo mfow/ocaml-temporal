@@ -329,6 +329,33 @@ only when code explicitly calls `Child_workflow.start` or
 `Child_workflow.execute`; an activity exists only when code explicitly calls
 `Activity.start` or `Activity.execute`.
 
+### Scheduling priority and fairness
+
+Activities and child workflows can carry a validated priority. The integer key
+orders work in Temporal's matching queue (a lower key is stronger), while the
+fairness key groups work and the weight controls that group's relative share.
+The value is immutable and is checked before a command is emitted; invalid
+values return a typed error through the operation's future. The fairness weight
+is encoded as exact single-precision bits at the OCaml/Rust boundary, so replay
+does not depend on a platform's float printer.
+
+```ocaml
+let ai_priority =
+  match
+    Temporal.Priority.make ~priority_key:10 ~fairness_key:"agent-a"
+      ~fairness_weight:1.0
+  with
+  | Ok value -> value
+  | Error error -> failwith (Temporal.Error.message error)
+
+let answer =
+  Temporal.Activity.execute ~priority:ai_priority llm_activity prompt
+```
+
+Use priority as scheduling metadata, not as workflow business state. It is
+safe to construct a value once and pass it to helper functions that schedule
+several operations; the runtime snapshots its fields for each command.
+
 Define a local implementation when this worker should execute the operation:
 
 ```ocaml

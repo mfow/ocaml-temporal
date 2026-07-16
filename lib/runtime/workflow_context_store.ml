@@ -312,13 +312,22 @@ let continue_as_new context ~workflow_type ~input =
 let bridge_error message =
   Temporal_base.Error.make ~non_retryable:true ~category:`Bridge ~message ()
 
+(** Copies priority text before retaining it in the activation command. *)
+let snapshot_priority (priority : Activation.workflow_priority) =
+  {
+    Activation.priority_key = priority.priority_key;
+    fairness_key = String.sub priority.fairness_key 0 (String.length priority.fairness_key);
+    fairness_weight_bits = priority.fairness_weight_bits;
+  }
+
 (** Saves the future resolver before emitting the schedule command. This order
     ensures even an immediate synthetic result can find the pending activity.
     The returned cancellation operation closes over the activity's terminal
     state, so a late retry remains idempotent after the resolver is removed. *)
 let schedule_activity context ~name ~input ?activity_id ?task_queue
     ?schedule_to_close_timeout ?schedule_to_start_timeout ?start_to_close_timeout
-    ?heartbeat_timeout ?retry_policy ?(cancellation_type = Activation.Try_cancel)
+    ?heartbeat_timeout ?retry_policy ?priority
+    ?(cancellation_type = Activation.Try_cancel)
     ?(do_not_eagerly_execute = false) ~decode () =
   let seq = allocate_sequence context in
   (* These flags belong to the handle, not the pending table. Core removes an
@@ -371,6 +380,7 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
          start_to_close_timeout;
          heartbeat_timeout;
          retry_policy;
+         priority = Option.map snapshot_priority priority;
          cancellation_type;
          do_not_eagerly_execute;
        });
@@ -403,7 +413,7 @@ let schedule_activity context ~name ~input ?activity_id ?task_queue
     into the command for Core's durable retry state machine; the private [seq]
     only correlates Core completion jobs with this in-memory execution. *)
 let start_child_workflow context ~id ~name ~input
-    ?retry_policy ?(cancellation_type = Activation.Child_try_cancel) ~decode () =
+    ?retry_policy ?priority ?(cancellation_type = Activation.Child_try_cancel) ~decode () =
   let seq = allocate_sequence context in
   (* Keep this bit in the handle closure rather than in the pending table so a
     repeated cancel remains idempotent even after Core has removed the child
@@ -437,7 +447,15 @@ let start_child_workflow context ~id ~name ~input
     };
   emit context
     (Activation.Start_child_workflow
-       { seq; id; name; input; retry_policy; cancellation_type });
+       {
+         seq;
+         id;
+         name;
+         input;
+         retry_policy;
+         priority = Option.map snapshot_priority priority;
+         cancellation_type;
+       });
   let cancel ~reason =
     match current () with
     | Some current when current == context ->

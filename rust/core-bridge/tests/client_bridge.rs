@@ -37,6 +37,10 @@ const START_REQUEST: &[u8] = br#"{"request_id":"request-1","namespace":"default"
 /// Minimal valid exact-run wait document used when testing ABI state handling.
 const WAIT_REQUEST: &[u8] =
     br#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"}"#;
+/// Minimal valid exact-run termination document used when testing ABI state
+/// handling. Termination has its own required operator-reason field, so a wait
+/// request cannot be reused for this boundary test.
+const TERMINATE_REQUEST: &[u8] = br#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","reason":"operator test"}"#;
 /// Minimal valid exact-run signal document used for ABI state tests.
 const SIGNAL_REQUEST: &[u8] = br#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","signal_name":"add_document","request_id":"signal-1","input":[]}"#;
 /// Minimal valid output-only query document used when testing ABI state handling.
@@ -68,8 +72,8 @@ fn client_operations_reject_null_runtime() {
         unsafe {
             ocaml_temporal_core_v1_client_terminate_workflow_json(
                 ptr::null_mut(),
-                WAIT_REQUEST.as_ptr(),
-                WAIT_REQUEST.len(),
+                TERMINATE_REQUEST.as_ptr(),
+                TERMINATE_REQUEST.len(),
                 &mut result,
             )
         },
@@ -133,8 +137,8 @@ fn client_operations_require_connected_client() {
         unsafe {
             ocaml_temporal_core_v1_client_terminate_workflow_json(
                 runtime,
-                WAIT_REQUEST.as_ptr(),
-                WAIT_REQUEST.len(),
+                TERMINATE_REQUEST.as_ptr(),
+                TERMINATE_REQUEST.len(),
                 &mut result,
             )
         },

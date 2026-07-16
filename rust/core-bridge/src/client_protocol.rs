@@ -680,7 +680,7 @@ pub async fn list_visibility(
             run_id: execution.run_id,
             workflow_type: workflow_type.name,
             task_queue: info.task_queue,
-            status: visibility_status(info.status),
+            status: visibility_status(info.status)?,
         });
     }
     Ok(VisibilityPage {
@@ -1312,19 +1312,21 @@ fn validate_visibility_page(value: &VisibilityPage) -> Result<(), protocol::Prot
 }
 
 /// Converts Temporal's numeric visibility enum into a stable closed string.
-fn visibility_status(status: i32) -> String {
+fn visibility_status(status: i32) -> Result<String, ClientOperationError> {
     match status {
-        1 => "running",
-        2 => "completed",
-        3 => "failed",
-        4 => "canceled",
-        5 => "terminated",
-        6 => "continued_as_new",
-        7 => "timed_out",
-        8 => "paused",
-        _ => "unspecified",
+        1 => Ok("running"),
+        2 => Ok("completed"),
+        3 => Ok("failed"),
+        4 => Ok("canceled"),
+        5 => Ok("terminated"),
+        6 => Ok("continued_as_new"),
+        7 => Ok("timed_out"),
+        8 => Ok("paused"),
+        _ => Err(ClientOperationError::Core(workflow_protocol::invalid_core(
+            "visibility row has an unknown execution status",
+        ))),
     }
-    .to_owned()
+    .map(str::to_owned)
 }
 
 /// Validates one execution reference.

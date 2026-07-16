@@ -553,6 +553,32 @@ impl Runtime {
             .map_err(protocol_failure)
     }
 
+    /// Lists one bounded visibility page through Temporal's official client.
+    /// The Rust owner performs protobuf conversion and returns only the
+    /// validated JSON page; no server-owned bytes or handles cross the ABI.
+    fn list_visibility_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let request = client_protocol::decode_visibility_request(text).map_err(protocol_failure)?;
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+        let response = handle
+            .block_on(client_protocol::list_visibility(connection, request))
+            .map_err(client_operation_failure)?;
+        client_protocol::encode_visibility_response(&response)
+            .map(|encoded| encoded.into_bytes())
+            .map_err(protocol_failure)
+    }
+
     /// Begins one workflow start without waiting for the RPC response.
     ///
     /// The owner Domain performs only validation, ticket bookkeeping, and
@@ -2691,6 +2717,29 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_client_query_workflow_json(
                     message: "runtime pointer is null".to_owned(),
                 })?
                 .query_workflow_json(input)
+        })
+    }
+}
+
+/// List one explicitly bounded visibility page. The JSON input is borrowed
+/// only for this call and the output is an owned bridge result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_list_visibility_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .list_visibility_json(input)
         })
     }
 }

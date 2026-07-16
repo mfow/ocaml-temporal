@@ -68,6 +68,29 @@ type query_request = {
   query_name : string;
 }
 
+(** One bounded visibility query. The continuation token is opaque to callers
+    and must be supplied exactly as returned by the previous page. *)
+type visibility_request = {
+  query : string;
+  page_size : int;
+  next_page_token : string option;
+}
+
+(** Stable visibility metadata returned for one execution. *)
+type visibility_execution = {
+  workflow_id : string;
+  run_id : string;
+  workflow_type : string;
+  task_queue : string;
+  status : string;
+}
+
+(** One visibility page and its optional opaque continuation token. *)
+type visibility_page = {
+  executions : visibility_execution list;
+  next_page_token : string option;
+}
+
 (** Terminal outcomes are kept separate from bridge transport errors so a
     completed Temporal failure remains an ordinary typed value. *)
 type terminal_result =
@@ -160,6 +183,10 @@ val client_signal : client -> signal_request -> (unit, Error.t) result
     its encoded result payload. Query handler failures are typed errors; the
     deterministic mock reports that it does not execute handlers. *)
 val client_query : client -> query_request -> (Payload.t, Error.t) result
+
+(** Lists one bounded visibility page through Temporal's visibility service. *)
+val client_list_visibility :
+  client -> visibility_request -> (visibility_page, Error.t) result
 
 (** Closes a client backend. Native shutdown is serialized and terminal even
     when it returns an error; the public client caches that exact result so a

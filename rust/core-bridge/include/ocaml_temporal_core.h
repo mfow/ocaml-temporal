@@ -119,6 +119,13 @@ ocaml_temporal_core_status ocaml_temporal_core_v2_client_query_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* List one bounded visibility page. The page token is opaque base64 in the
+ * JSON boundary and protobuf visibility values remain owned by Rust. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_client_list_visibility_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
 /* Admit one workflow start without waiting for the RPC. The successful value
  * is an opaque JSON ticket. The caller must later poll or wait that ticket;
  * the Rust owner keeps its Core connection and Tokio task alive until one
@@ -329,21 +336,97 @@ ocaml_temporal_core_status ocaml_temporal_core_v2_result_free(
 #if defined(__cplusplus)
 static_assert(sizeof(ocaml_temporal_core_status) == 4,
               "bridge status must be exactly 32 bits");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_OK == 0,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_INVALID_ARGUMENT == 1,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_ABI_MISMATCH == 2,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_PANIC == 3,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_INTERNAL == 4,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE == 5,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_CONFIGURATION == 6,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_CONNECTION == 7,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_WORKER == 8,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_OUTSTANDING_TASKS == 9,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_NOT_READY == 10,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_PROTOCOL == 11,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_ALREADY_STARTED == 12,
+              "status numbering is part of the ABI");
+static_assert(OCAML_TEMPORAL_CORE_STATUS_RETRYABLE == 13,
+              "status numbering is part of the ABI");
 static_assert(offsetof(ocaml_temporal_core_buffer, ptr) == 0,
               "buffer pointer must be the first field");
 static_assert(offsetof(ocaml_temporal_core_buffer, len) == sizeof(void *),
               "buffer length layout mismatch");
+static_assert(sizeof(ocaml_temporal_core_buffer) ==
+                  sizeof(void *) + sizeof(size_t),
+              "buffer size/layout mismatch");
 static_assert(offsetof(ocaml_temporal_core_result, status) == 0,
               "result status must be the first field");
+static_assert(offsetof(ocaml_temporal_core_result, value) ==
+                  alignof(ocaml_temporal_core_buffer),
+              "result value alignment/layout mismatch");
+static_assert(offsetof(ocaml_temporal_core_result, error) ==
+                  offsetof(ocaml_temporal_core_result, value) +
+                      sizeof(ocaml_temporal_core_buffer),
+              "result error layout mismatch");
 #else
 _Static_assert(sizeof(ocaml_temporal_core_status) == 4,
                "bridge status must be exactly 32 bits");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_OK == 0,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_INVALID_ARGUMENT == 1,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_ABI_MISMATCH == 2,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_PANIC == 3,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_INTERNAL == 4,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_INVALID_STATE == 5,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_CONFIGURATION == 6,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_CONNECTION == 7,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_WORKER == 8,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_OUTSTANDING_TASKS == 9,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_NOT_READY == 10,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_PROTOCOL == 11,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_ALREADY_STARTED == 12,
+               "status numbering is part of the ABI");
+_Static_assert(OCAML_TEMPORAL_CORE_STATUS_RETRYABLE == 13,
+               "status numbering is part of the ABI");
 _Static_assert(offsetof(ocaml_temporal_core_buffer, ptr) == 0,
                "buffer pointer must be the first field");
 _Static_assert(offsetof(ocaml_temporal_core_buffer, len) == sizeof(void *),
                "buffer length layout mismatch");
+_Static_assert(sizeof(ocaml_temporal_core_buffer) ==
+                   sizeof(void *) + sizeof(size_t),
+               "buffer size/layout mismatch");
 _Static_assert(offsetof(ocaml_temporal_core_result, status) == 0,
                "result status must be the first field");
+_Static_assert(offsetof(ocaml_temporal_core_result, value) ==
+                   _Alignof(ocaml_temporal_core_buffer),
+               "result value alignment/layout mismatch");
+_Static_assert(offsetof(ocaml_temporal_core_result, error) ==
+                   offsetof(ocaml_temporal_core_result, value) +
+                       sizeof(ocaml_temporal_core_buffer),
+               "result error layout mismatch");
 #endif
 
 #endif /* OCAML_TEMPORAL_CORE_H */

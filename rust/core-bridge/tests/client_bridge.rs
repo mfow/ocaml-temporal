@@ -4,7 +4,8 @@ use std::ptr;
 
 use ocaml_temporal_core_bridge::{
     Buffer, Result as AbiResult, STATUS_INVALID_ARGUMENT, STATUS_INVALID_STATE, STATUS_OK,
-    STATUS_PROTOCOL, ocaml_temporal_core_v2_client_begin_start_workflow_json,
+    STATUS_PROTOCOL, ocaml_temporal_core_v1_client_list_visibility_json,
+    ocaml_temporal_core_v2_client_begin_start_workflow_json,
     ocaml_temporal_core_v2_client_cancel_workflow_json,
     ocaml_temporal_core_v2_client_poll_start_workflow_json,
     ocaml_temporal_core_v2_client_query_workflow_json,
@@ -42,6 +43,9 @@ const SIGNAL_REQUEST: &[u8] = br#"{"namespace":"default","workflow_id":"workflow
 const QUERY_REQUEST: &[u8] = br#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","query_type":"current_state","input":[]}"#;
 /// Syntactically valid opaque ticket used for unknown-ticket state tests.
 const START_TICKET: &[u8] = br#"{"ticket":"ticket-1"}"#;
+/// Minimal valid visibility request used for ABI state tests.
+const VISIBILITY_REQUEST: &[u8] =
+    br#"{"namespace":"default","query":"","page_size":10,"next_page_token":null}"#;
 
 #[test]
 /// Null runtime handles fail without dereferencing either client operation.
@@ -69,6 +73,22 @@ fn client_operations_reject_null_runtime() {
                 ptr::null_mut(),
                 WAIT_REQUEST.as_ptr(),
                 WAIT_REQUEST.len(),
+                &mut result,
+            )
+        },
+        STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v2_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_client_list_visibility_json(
+                ptr::null_mut(),
+                VISIBILITY_REQUEST.as_ptr(),
+                VISIBILITY_REQUEST.len(),
                 &mut result,
             )
         },

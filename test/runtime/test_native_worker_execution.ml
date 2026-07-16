@@ -1285,6 +1285,112 @@ let test_eviction_allows_fresh_replay_execution () =
   if Hashtbl.length supervisor.leased <> 0 then
     failwith "fresh replay execution left a native lease outstanding"
 
+(** A parent that is evicted while a child is pending must not retain the old
+    child future or sequence allocator. Temporal can later deliver a replayed
+    start for the same run ID; the new execution must issue the same child
+    start command from a fresh scheduler, then accept the two-stage child
+    resolution normally. This is the local recovery invariant behind the live
+    parent/child replacement gate: eviction retires one generation, while
+    replay reconstructs workflow state from history rather than reviving an
+    OCaml continuation that no longer belongs to Core. *)
+let test_child_replay_after_eviction_restarts_pending_child () =
+  let supervisor = fake_supervisor () in
+  let invocations = ref 0 in
+  let child =
+    Temporal.Workflow.remote ~name:"native_worker_replay_child"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_child_replay_parent"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        incr invocations;
+        let pending =
+          Temporal.Child_workflow.start ~id:"replayed-child" child ()
+        in
+        Temporal.Future.await pending)
+  in
+  let run_id = "run-child-replay-eviction" in
+  let workflow_type = "native_worker_child_replay_parent" in
+  let initial =
+    { (activation ~run_id
+        [ initialize ~run_id ~workflow_type ]) with
+      is_replaying = false }
+  in
+  enqueue supervisor initial;
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  if !invocations <> 1 then
+    failwith "initial parent execution was not invoked exactly once";
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_child_workflow { seq = 1L; workflow_id; _ } ]
+      when String.equal workflow_id "replayed-child" ->
+        ()
+    | _ -> failwith "initial parent did not issue the expected child start"
+  end;
+  enqueue supervisor
+    (eviction_activation ~run_id
+       [ Protocol.Remove_from_cache
+           {
+             message = "child replay recovery";
+             reason = Protocol.Cache_full;
+           } ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  if !invocations <> 1 then
+    failwith "eviction re-invoked the parent before replay";
+  begin
+    match (latest_completion supervisor).commands with
+    | [] -> ()
+    | _ -> failwith "child replay eviction emitted a workflow command"
+  end;
+  (* A replayed start has the same run ID but a later history position. The
+     replay flag is part of the activation contract and ensures the workflow
+     sees the generation as reconstructed state, not a second live start. *)
+  let replay =
+    { (activation ~run_id
+        [ initialize ~run_id ~workflow_type ]) with
+      history_length = 2L;
+      is_replaying = true }
+  in
+  enqueue supervisor replay;
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  if !invocations <> 2 then
+    failwith "replayed parent did not create a fresh execution";
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_child_workflow { seq = 1L; workflow_id; _ } ]
+      when String.equal workflow_id "replayed-child" ->
+        ()
+    | _ ->
+        failwith
+          "replayed parent reused stale child state or allocated a wrong sequence"
+  end;
+  enqueue supervisor
+    (activation ~run_id
+       [ Protocol.Resolve_child_workflow_start
+           {
+             seq = 1L;
+             result = Protocol.Child_start_succeeded "child-replay-run";
+           } ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin
+    match (latest_completion supervisor).commands with
+    | [] -> ()
+    | _ -> failwith "child start acknowledgement emitted an unexpected command"
+  end;
+  enqueue supervisor
+    (activation ~run_id
+       [ Protocol.Resolve_child_workflow
+           { seq = 1L; result = Protocol.Child_completed None } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker));
+  begin
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Complete_workflow { result = None } ] -> ()
+    | _ -> failwith "replayed child completion did not complete the parent"
+  end;
+  if Hashtbl.length supervisor.leased <> 0 then
+    failwith "replayed child parent left a native lease outstanding"
+
 (** A normal terminal completion removes its run before Core sends the later
     cache-eviction activation. The adapter must still acknowledge that leased
     eviction with Core's exact successful empty completion instead of trying
@@ -2296,6 +2402,7 @@ let () =
   test_unhandled_signal_fails_closed ();
   test_eviction ();
   test_eviction_allows_fresh_replay_execution ();
+  test_child_replay_after_eviction_restarts_pending_child ();
   test_eviction_after_terminal_completion ();
   test_unexpected_completion_exception_is_retried ();
   test_completion_rejection_is_drained_without_redo ();

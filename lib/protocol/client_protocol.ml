@@ -49,6 +49,26 @@ type query_request = {
 
 type query_response = { result : payload list }
 
+type visibility_request = {
+  namespace : string;
+  query : string;
+  page_size : int;
+  next_page_token : string option;
+}
+
+type visibility_execution = {
+  workflow_id : string;
+  run_id : string;
+  workflow_type : string;
+  task_queue : string;
+  status : string;
+}
+
+type visibility_page = {
+  executions : visibility_execution list;
+  next_page_token : string option;
+}
+
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -232,7 +252,7 @@ let encode_start_ticket (value : start_ticket) =
     Keeping this association private makes it impossible for a caller to pass
     a valid ticket alongside a different request and accidentally accept a
     response for the wrong workflow. *)
-let decode_start_ticket ~request input =
+let decode_start_ticket ~(request : start_request) input =
   let* json = decode_object input in
   let* entries = exact_object "$" [ "ticket" ] json in
   let* ticket_json = field "$" "ticket" entries in
@@ -269,7 +289,7 @@ let validate_execution_matches path ~namespace ~workflow_id ?run_id
 
 (** Parses a successful start document and correlates its execution with the
     request that produced it before exposing the server-assigned run. *)
-let decode_start_response ~request input =
+let decode_start_response ~(request : start_request) input =
   let* json = decode_object input in
   let* entries = exact_object "$" [ "execution" ] json in
   let* execution_json = field "$" "execution" entries in
@@ -389,6 +409,62 @@ let decode_query_response input : (query_response, error) result =
   let* result_json = field "$" "result" entries in
   let* result = payloads "$.result" result_json in
   Ok { result }
+
+let encode_visibility_request (value : visibility_request) =
+  let* () = validate_identifier "$.namespace" value.namespace in
+  if String.length value.query > 65_536 || String.contains value.query '\000' then
+    Error (invalid ~path:"$.query" "query exceeds the protocol string safety limit")
+  else if value.page_size < 1 || value.page_size > 1_000 then
+    Error (invalid ~path:"$.page_size" "page_size must be between 1 and 1000")
+  else
+    let token = match value.next_page_token with None -> `Null | Some v -> `String v in
+    encode_object
+      (`Assoc
+        [
+          ("namespace", json_string value.namespace);
+          ("query", json_string value.query);
+          ("page_size", `Int value.page_size);
+          ("next_page_token", token);
+        ])
+
+let decode_visibility_response input : (visibility_page, error) result =
+  let* json = decode_object input in
+  let* entries = exact_object "$" [ "executions"; "next_page_token" ] json in
+  let* executions_json = field "$" "executions" entries in
+  let* executions =
+    match executions_json with
+    | `List values ->
+        let rec loop index acc = function
+          | [] -> Ok (List.rev acc)
+          | value :: rest ->
+              let path = Printf.sprintf "$.executions[%d]" index in
+              let* row = exact_object path
+                  [ "workflow_id"; "run_id"; "workflow_type"; "task_queue"; "status" ] value in
+              let* workflow_id_json = field path "workflow_id" row in
+              let* workflow_id = identifier (path ^ ".workflow_id") workflow_id_json in
+              let* run_id_json = field path "run_id" row in
+              let* run_id = identifier (path ^ ".run_id") run_id_json in
+              let* workflow_type_json = field path "workflow_type" row in
+              let* workflow_type = identifier (path ^ ".workflow_type") workflow_type_json in
+              let* task_queue_json = field path "task_queue" row in
+              let* task_queue = identifier (path ^ ".task_queue") task_queue_json in
+              let* status_json = field path "status" row in
+              let* status = identifier (path ^ ".status") status_json in
+              let* status =
+                match status with
+                | "running" | "completed" | "failed" | "canceled"
+                | "terminated" | "continued_as_new" | "timed_out"
+                | "paused" | "unspecified" -> Ok status
+                | _ -> Error (invalid ~path:(path ^ ".status") "unknown visibility status")
+              in
+              loop (index + 1) ({ workflow_id; run_id; workflow_type; task_queue; status } :: acc) rest
+        in
+        loop 0 [] values
+    | _ -> Error (invalid ~path:"$.executions" "expected JSON array")
+  in
+  let* token_json = field "$" "next_page_token" entries in
+  let* next_page_token = nullable "$.next_page_token" (identifier "$.next_page_token") token_json in
+  Ok { executions; next_page_token }
 
 let decode_successor path entries =
   let* successor_json = field path "successor" entries in
@@ -633,7 +709,7 @@ let encode_start_outcome = function
     identity. Accepted and already-started responses must name the requested
     workflow, while unknown responses must repeat the stable logical request
     ID and workflow ID so they cannot be attributed to another ticket. *)
-let decode_start_outcome ~request input =
+let decode_start_outcome ~(request : start_request) input =
   let* json = decode_object input in
   let path = "$" in
   let* kind_json =
@@ -693,12 +769,12 @@ let validate_wait_error (_request : wait_request) = function
 
 (** Decodes a start failure and correlates any existing-run identity with the
     requested workflow ID. *)
-let decode_start_error ~request input =
+let decode_start_error ~(request : start_request) input =
   let* error = decode_client_error input in
   validate_start_error request error
 
 (** Decodes a wait failure while rejecting the start-only conflict category. *)
-let decode_wait_error ~request input =
+let decode_wait_error ~(request : wait_request) input =
   let* error = decode_client_error input in
   validate_wait_error request error
 

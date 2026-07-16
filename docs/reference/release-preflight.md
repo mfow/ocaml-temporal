@@ -39,3 +39,13 @@ This workflow does not publish packages, create tags, or claim that a release
 is ready. Those actions require a later, explicitly reviewed release process
 including live acceptance, replay evidence, API compatibility review, and
 artifact provenance.
+
+## Tag consistency gate
+
+Before creating a release tag, run `make release-tag-check RELEASE_TAG=vX.Y.Z`.
+The check accepts only a three-part numeric tag and verifies that its version
+matches `.release-version`, `temporal-sdk.opam`, and
+`temporal-sdk.opam.locked`. A development checkout using `~dev` therefore
+cannot accidentally be published under a release-looking tag. The same
+contract is exercised without Docker by
+`test/smoke/test_release_tag_contract.sh`.

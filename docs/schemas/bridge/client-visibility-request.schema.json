@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/schemas/bridge/client-visibility-request.schema.json",
+  "title": "OCaml Temporal visibility request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "query", "page_size", "next_page_token"],
+  "properties": {
+    "namespace": { "type": "string", "minLength": 1, "maxLength": 65536 },
+    "query": { "type": "string", "maxLength": 65536 },
+    "page_size": { "type": "integer", "minimum": 1, "maximum": 1000 },
+    "next_page_token": { "type": ["string", "null"], "maxLength": 65536 }
+  }
+}

@@ -72,6 +72,29 @@ type query_request = {
   query_name : string;
 }
 
+(** One bounded visibility query. The continuation token is opaque to callers
+    and remains encoded only at the native protocol boundary. *)
+type visibility_request = {
+  query : string;
+  page_size : int;
+  next_page_token : string option;
+}
+
+(** Stable visibility metadata returned for one execution. *)
+type visibility_execution = {
+  workflow_id : string;
+  run_id : string;
+  workflow_type : string;
+  task_queue : string;
+  status : string;
+}
+
+(** One visibility page and its optional opaque continuation token. *)
+type visibility_page = {
+  executions : visibility_execution list;
+  next_page_token : string option;
+}
+
 (** Terminal workflow outcome represented independently from transport errors. *)
 type terminal_result =
   | Completed of Payload.t
@@ -146,6 +169,8 @@ type mock_signal = {
     connected to the same mock endpoint observe one service ledger. *)
 type mock_execution = {
   run_id : string;
+  workflow_type : string;
+  task_queue : string;
   input : Payload.t;
   mutable terminal : mock_terminal;
   signal_requests : (string, mock_signal) Hashtbl.t;
@@ -618,6 +643,8 @@ let mock_client_start (client : mock_client) (request : start_request) =
         Hashtbl.add service.executions request.workflow_id
           {
             run_id;
+            workflow_type = request.workflow_name;
+            task_queue = request.task_queue;
             input = copy_payload request.input;
             terminal = Mock_pending;
             signal_requests = Hashtbl.create 8;
@@ -906,6 +933,99 @@ let client_query client request =
   match client with
   | Mock_client client -> mock_client_query client request
   | Native_client client -> native_client_query client request
+
+(** Converts one public visibility request to the namespace-bound protocol
+    representation. The server namespace is never caller-controlled. *)
+let native_visibility_request client (request : visibility_request) :
+    Client_protocol.visibility_request =
+  {
+    namespace = client.namespace;
+    query = request.query;
+    page_size = request.page_size;
+    next_page_token = request.next_page_token;
+  }
+
+(** Lists one visibility page through the serialized supervisor operation.
+    Rust validates the request again and owns the opaque protobuf pagination
+    token; OCaml only maps the stable row fields into the private backend type. *)
+let native_client_list_visibility (client : native_client)
+    (request : visibility_request) : (visibility_page, Error.t) result =
+  if Atomic.get client.closed then Error (bridge_error "client is shut down")
+  else
+    match
+      Native.perform client.supervisor
+        (Native.Client_list_visibility_workflows
+           (native_visibility_request client request))
+    with
+    | Error error -> Error (native_supervisor_error error)
+    | Ok page ->
+        Ok
+          {
+            executions =
+              List.map
+                (fun (execution : Client_protocol.visibility_execution) ->
+                  {
+                    workflow_id = execution.workflow_id;
+                    run_id = execution.run_id;
+                    workflow_type = execution.workflow_type;
+                    task_queue = execution.task_queue;
+                    status = execution.status;
+                  })
+                page.executions;
+            next_page_token = page.next_page_token;
+          }
+
+(** Lists deterministic mock executions. The mock intentionally accepts only
+    an empty query: it is a unit-test ledger, not a second visibility query
+    language. Native HTTP(S) clients send the caller's full Temporal query. *)
+let mock_client_list_visibility (client : mock_client)
+    (request : visibility_request) : (visibility_page, Error.t) result =
+  if request.page_size < 1 || request.page_size > 1_000 then
+    Error (defect "visibility page_size must be between 1 and 1000")
+  else if String.length request.query > 65_536 then
+    Error (defect "visibility query exceeds the protocol safety limit")
+  else if String.contains request.query '\000' then
+    Error (defect "visibility query must not contain NUL")
+  else if Option.is_some request.next_page_token then
+    Error (defect "the deterministic mock does not support visibility pagination")
+  else if not (String.equal request.query "") then
+    Error (defect "the deterministic mock only supports an empty visibility query")
+  else
+    let service = client.service in
+    Mutex.lock service.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock service.mutex)
+      (fun () ->
+        if client.closed then Error (bridge_error "client is shut down")
+        else
+          let executions =
+            Hashtbl.fold
+              (fun workflow_id execution acc ->
+                let status =
+                  match execution.terminal with
+                  | Mock_pending -> "running"
+                  | Mock_completed -> "completed"
+                  | Mock_cancelled -> "canceled"
+                in
+                {
+                  workflow_id;
+                  run_id = execution.run_id;
+                  workflow_type = execution.workflow_type;
+                  task_queue = execution.task_queue;
+                  status;
+                }
+                :: acc)
+              service.executions []
+            |> List.sort (fun left right ->
+                   String.compare left.workflow_id right.workflow_id)
+          in
+          Ok { executions; next_page_token = None })
+
+(** Executes visibility through the selected private transport. *)
+let client_list_visibility client request =
+  match client with
+  | Mock_client client -> mock_client_list_visibility client request
+  | Native_client client -> native_client_list_visibility client request
 
 (** Marks a client closed while preserving idempotent cleanup. Native shutdown
     runs the supervisor's reverse-order worker/client/runtime release path;

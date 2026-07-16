@@ -31,8 +31,12 @@ JSON semantics.
 
 The canonical header is
 `rust/core-bridge/include/ocaml_temporal_core.h`. Both Rust and C compile-time
-assertions protect the status width and field ordering of the documented
-`repr(C)` structures.
+assertions protect the status width, every numeric status value, and field
+ordering/size of the documented `repr(C)` structures. This is intentional:
+the C header is consumed by OCaml's private stubs and by downstream native
+executables, so a seemingly harmless enum renumbering or padding change must
+fail during compilation instead of becoming a delayed, cross-language memory
+or error-handling defect. C11 and C++11 consumers get equivalent checks.
 
 ## Semantic workflow adapter
 

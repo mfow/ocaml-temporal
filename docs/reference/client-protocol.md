@@ -210,6 +210,42 @@ for the prior twelve-result slice, and [PR #210](https://github.com/mfow/ocaml-t
 for the original nine-workflow slice. See the [live acceptance coverage](live-acceptance-coverage.md)
 for the remaining evidence boundary.
 
+## Terminate one exact run
+
+`Temporal.Client.terminate` is the destructive counterpart to cancellation. It
+targets only the workflow ID and run ID retained by the supplied handle and
+asks Temporal to record immediate termination; it does not send a cancellation
+request for workflow code to handle and it does not follow a continued-as-new
+successor. The optional reason is operator context and may be empty.
+
+The private request is a closed document:
+
+```json
+{
+  "namespace": "default",
+  "workflow_id": "summarize-1",
+  "run_id": "server-assigned-run-id",
+  "reason": "operator requested termination"
+}
+```
+
+Rust validates all identifiers and the bounded, NUL-free reason before calling
+Temporal's `TerminateWorkflowExecution` protobuf RPC. A successful call
+returns only `{"acknowledged":true}`. This acknowledgement means that the
+server accepted the control-plane request; the caller must call `wait` to
+observe the terminal `Terminated` value. The operation uses the same bounded
+native RPC deadline as cancellation and returns a typed error on timeout.
+
+The request and response shapes are defined by
+[`client-terminate-request.schema.json`](../schemas/bridge/client-terminate-request.schema.json)
+and
+[`client-terminate-response.schema.json`](../schemas/bridge/client-terminate-response.schema.json).
+Both OCaml and Rust reject unknown or duplicate members and validate the
+positive acknowledgement before crossing the C ABI. Local protocol and mock
+tests cover malformed documents, idempotent repeated requests, and exact-run
+terminal-state mapping. Live acceptance remains a CI-only concern because the
+repository's Compose Temporal Server is not run by native macOS/Windows jobs.
+
 ## Send one signal to an exact run
 
 The public `Temporal.Client.signal` operation sends a typed, fire-and-forget

@@ -48,6 +48,15 @@ type cancel_request = {
 type cancel_response = { acknowledged : bool }
 (** Positive acknowledgement returned after Temporal accepts the cancellation RPC. *)
 
+type terminate_request = {
+  execution : execution;
+  reason : string;
+}
+(** Exact workflow/run identity and operator reason for a termination request. *)
+
+type terminate_response = { acknowledged : bool }
+(** Positive acknowledgement returned after Temporal accepts termination. *)
+
 type signal_request = {
   execution : execution;
   signal_name : string;
@@ -147,6 +156,12 @@ val encode_cancel_request : cancel_request -> (string, error) result
 val decode_cancel_response : string -> (cancel_response, error) result
 (** Strictly decodes the positive native cancellation acknowledgement. *)
 
+val encode_terminate_request : terminate_request -> (string, error) result
+(** Validates and serializes one exact-run termination request. *)
+
+val decode_terminate_response : string -> (terminate_response, error) result
+(** Strictly decodes the positive native termination acknowledgement. *)
+
 val encode_signal_request : signal_request -> (string, error) result
 (** Validates and serializes one exact-run signal request. *)
 
@@ -178,6 +193,10 @@ val decode_wait_error :
 
 val decode_cancel_error : string -> (client_error, error) result
 (** Decodes a cancellation error and rejects the start-only
+    [already_started] category. *)
+
+val decode_terminate_error : string -> (client_error, error) result
+(** Decodes a termination error and rejects the start-only
     [already_started] category. *)
 
 val decode_signal_error : string -> (client_error, error) result

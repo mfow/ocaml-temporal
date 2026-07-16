@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-terminate-request.schema.json",
+  "title": "OCaml Temporal native client exact-run termination request",
+  "description": "Closed JSON document used only by the private Rust client bridge. The request names one exact run and carries optional operator context. Runtime validators also reject duplicate keys, NUL bytes, and strings over the 65,536-byte safety limit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "workflow_id", "run_id", "reason"],
+  "properties": {
+    "namespace": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+    "workflow_id": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+    "reason": {"type": "string", "maxLength": 65536, "pattern": "^[^\\u0000]*$"}
+  }
+}

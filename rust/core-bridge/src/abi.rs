@@ -500,6 +500,32 @@ impl Runtime {
             .map_err(protocol_failure)
     }
 
+    /// Terminates one exact workflow run through the official Temporal
+    /// workflow service. The request is decoded before any connection lookup;
+    /// the acknowledgement is strictly encoded before crossing the ABI.
+    fn terminate_workflow_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let request = client_protocol::decode_terminate_request(text).map_err(protocol_failure)?;
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+        let response = handle
+            .block_on(client_protocol::terminate_workflow(connection, request))
+            .map_err(client_operation_failure)?;
+        client_protocol::encode_terminate_response(&response)
+            .map(|encoded| encoded.into_bytes())
+            .map_err(protocol_failure)
+    }
+
     /// Sends one signal to one exact workflow run through the connected
     /// Temporal client. The request is validated before the connection lookup
     /// and the positive response is revalidated before crossing the ABI.
@@ -2627,6 +2653,38 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_client_cancel_workflow_json(
                     message: "runtime pointer is null".to_owned(),
                 })?
                 .cancel_workflow_json(input)
+        })
+    }
+}
+
+/// Request immediate termination of one exact workflow run.
+///
+/// The successful value is a strict `{"acknowledged":true}` document. The
+/// request is bounded to the synchronous owner-Domain call and never retains
+/// an OCaml pointer after return.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle. The input span
+/// is borrowed only for this synchronous call and `output` follows the normal
+/// initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_terminate_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .terminate_workflow_json(input)
         })
     }
 }

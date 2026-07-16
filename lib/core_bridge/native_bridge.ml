@@ -104,6 +104,9 @@ external client_start_workflow_json_raw : runtime -> bytes -> response
 external client_cancel_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_cancel_workflow_json"
 
+external client_terminate_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_terminate_workflow_json"
+
 external client_signal_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_signal_workflow_json"
 
@@ -476,6 +479,12 @@ let client_start_workflow_json runtime input =
 let client_cancel_workflow_json runtime input =
   bridge_call "client_cancel_workflow_json" (fun () ->
       decode (client_cancel_workflow_json_raw runtime input))
+
+(** Requests immediate termination of one exact workflow run through Rust's
+    official Temporal client. *)
+let client_terminate_workflow_json runtime input =
+  bridge_call "client_terminate_workflow_json" (fun () ->
+      decode (client_terminate_workflow_json_raw runtime input))
 
 (** Sends one signal to one exact workflow run through the Rust-owned client. *)
 let client_signal_workflow_json runtime input =

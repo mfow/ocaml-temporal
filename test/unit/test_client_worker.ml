@@ -399,11 +399,38 @@ let test_exact_run_cancellation () =
   (match Temporal.Client.wait handle with
   | Ok (Temporal.Client.Cancelled error) ->
       let view = Temporal.Error.view error in
-      assert (Temporal.Error.kind error = "cancelled");
-      assert (view.category = `Cancelled);
+      assert (Temporal.Error.kind error = "terminated");
+      assert (view.category = `Terminated);
+      assert view.non_retryable;
       assert (not view.non_retryable);
       assert (view.message = "workflow execution was cancelled")
   | Ok _ -> failwith "cancelled mock returned a non-cancelled terminal result"
+  | Error error -> failwith (Temporal.Error.message error));
+  unwrap (Temporal.Client.shutdown client)
+
+(** Immediate termination is acknowledged separately from waiting. Repeating
+    the exact request is idempotent in the mock ledger and exposes the typed
+    [Terminated] terminal result without rewriting the public handle. *)
+let test_exact_run_termination () =
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let handle =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"unit-terminate" ~input:"ignored" ())
+  in
+  unwrap (Temporal.Client.terminate ~reason:"unit test" handle);
+  unwrap (Temporal.Client.terminate ~reason:"unit test" handle);
+  (match Temporal.Client.wait handle with
+  | Ok (Temporal.Client.Terminated error) ->
+      let view = Temporal.Error.view error in
+      assert (Temporal.Error.kind error = "cancelled");
+      assert (view.category = `Cancelled);
+      assert (view.message = "workflow execution was terminated")
+  | Ok _ -> failwith "terminated mock returned a non-terminated terminal result"
   | Error error -> failwith (Temporal.Error.message error));
   unwrap (Temporal.Client.shutdown client)
 
@@ -585,6 +612,10 @@ let test_client_identifier_size_validation () =
   in
   expect_error "defect"
     (Temporal.Client.cancel ~request_id:oversized handle);
+  expect_error "defect"
+    (Temporal.Client.terminate ~reason:oversized handle);
+  expect_error "defect"
+    (Temporal.Client.terminate ~reason:"contains\000nul" handle);
   unwrap (Temporal.Client.shutdown client)
 
 (** An HTTP-shaped endpoint is deliberately handed to the native configuration
@@ -629,6 +660,7 @@ let () =
   test_follow_rejects_malformed_successor_identity ();
   test_follow_rejects_cross_namespace_execution ();
   test_exact_run_cancellation ();
+  test_exact_run_termination ();
   test_completed_mock_run_is_immutable ();
   test_exact_run_signal ();
   test_default_signal_request_ids_are_process_wide ();

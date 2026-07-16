@@ -113,6 +113,15 @@ val cancel :
   ('input, 'output) handle ->
   (unit, Error.t) result
 
+(** Requests immediate termination of the exact run retained by [handle]. A
+    successful call acknowledges Temporal's termination RPC; call [wait] to
+    observe [Terminated]. [reason] is optional operator context, limited to
+    65,536 bytes, and may not contain NUL. *)
+val terminate :
+  ?reason:string ->
+  ('input, 'output) handle ->
+  (unit, Error.t) result
+
 (** Sends one typed signal to the exact run retained by [handle]. A successful
     call acknowledges Temporal's signal RPC; it does not wait for workflow code
     to process the message. [request_id] is optional: when omitted, the SDK

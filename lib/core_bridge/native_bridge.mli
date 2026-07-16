@@ -88,6 +88,11 @@ val client_start_workflow_json : runtime -> bytes -> (bytes, error) result
     operation to observe the eventual [Cancelled] terminal outcome. *)
 val client_cancel_workflow_json : runtime -> bytes -> (bytes, error) result
 
+(** Requests immediate termination of one exact workflow run. A successful
+    response is only the server acknowledgement; [Client.wait] observes the
+    terminal [Terminated] outcome. *)
+val client_terminate_workflow_json : runtime -> bytes -> (bytes, error) result
+
 (** Sends one typed signal to one exact workflow run. A successful response is
     only the server acknowledgement; it does not wait for workflow code to
     process the signal. *)

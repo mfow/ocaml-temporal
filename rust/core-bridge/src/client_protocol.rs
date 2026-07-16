@@ -1,11 +1,11 @@
 //! Closed JSON protocol and Core adapter for the first native client slice.
 //!
 //! This module deliberately exposes neither `temporalio_client::Client` nor
-//! protobuf values to OCaml.  The bridge accepts small, lossless request
+//! protobuf values to OCaml.  The bridge accepts a small, lossless request
 //! documents for starting a workflow, observing one exact run, and requesting
-//! cancellation and output-only query operations against that same exact run.
-//! A wait never follows a continued-as-new successor: callers can inspect the
-//! successor metadata and decide what to do in OCaml.
+//! cancellation of that same exact run. A wait never follows a continued-as-
+//! new successor: callers can inspect the successor metadata and decide what
+//! to do in OCaml.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -15,12 +15,11 @@ use temporalio_common::protos::temporal::api::{
     common::v1::{Payloads, WorkflowExecution, WorkflowType},
     enums::v1::HistoryEventFilterType,
     history::v1::{HistoryEvent, history_event::Attributes},
-    query::v1::WorkflowQuery,
     taskqueue::v1::TaskQueue,
     workflowservice::v1::{
-        GetWorkflowExecutionHistoryRequest, QueryWorkflowRequest as QueryWorkflowExecutionRequest,
-        RequestCancelWorkflowExecutionRequest, SignalWorkflowExecutionRequest,
-        StartWorkflowExecutionRequest,
+        GetWorkflowExecutionHistoryRequest, RequestCancelWorkflowExecutionRequest,
+        SignalWorkflowExecutionRequest, StartWorkflowExecutionRequest,
+        TerminateWorkflowExecutionRequest,
     },
 };
 
@@ -145,6 +144,28 @@ pub struct CancelWorkflowResponse {
     pub acknowledged: bool,
 }
 
+/// Request to terminate one exact workflow run immediately.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminateWorkflowRequest {
+    /// Namespace containing the execution.
+    pub namespace: String,
+    /// Stable workflow identifier.
+    pub workflow_id: String,
+    /// Concrete run identifier; an empty run is never treated as "latest".
+    pub run_id: String,
+    /// Operator-facing reason copied to Temporal. Empty is permitted.
+    pub reason: String,
+}
+
+/// Positive acknowledgement returned after Temporal accepts termination.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminateWorkflowResponse {
+    /// Always true for a response emitted by this bridge.
+    pub acknowledged: bool,
+}
+
 /// Request to deliver one signal to one exact workflow run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -169,34 +190,6 @@ pub struct SignalWorkflowRequest {
 pub struct SignalWorkflowResponse {
     /// Always true for a response emitted by this bridge.
     pub acknowledged: bool,
-}
-
-/// Request to execute one output-only query against one exact workflow run.
-/// The input list is retained in the bridge protocol even though the public
-/// first slice sends no query arguments, matching Temporal's normal
-/// `WorkflowQuery.query_args` container and avoiding an ad-hoc wire shape.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QueryWorkflowRequest {
-    /// Namespace containing the execution.
-    pub namespace: String,
-    /// Stable workflow identifier.
-    pub workflow_id: String,
-    /// Concrete run identifier; an empty run is never treated as "latest".
-    pub run_id: String,
-    /// Registered workflow query name.
-    pub query_type: String,
-    /// Ordered query argument payloads; currently required to be empty by the
-    /// public OCaml API, but validated and forwarded losslessly if populated.
-    pub input: Vec<workflow_protocol::Payload>,
-}
-
-/// Successful output-only query result returned by Temporal.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QueryWorkflowResponse {
-    /// Ordered result payloads from the workflow query handler.
-    pub result: Vec<workflow_protocol::Payload>,
 }
 
 /// Metadata for a successor run created by continued-as-new.
@@ -490,6 +483,17 @@ pub fn decode_cancel_request(
     Ok(request)
 }
 
+/// Strictly parses one exact-run termination request.
+pub fn decode_terminate_request(
+    input: &str,
+) -> Result<TerminateWorkflowRequest, protocol::ProtocolError> {
+    protocol::decode_object(input)?;
+    let request = serde_json::from_str(input)
+        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client terminate request"))?;
+    validate_terminate_request(&request)?;
+    Ok(request)
+}
+
 /// Strictly parses one exact-run signal request.
 pub fn decode_signal_request(
     input: &str,
@@ -498,15 +502,6 @@ pub fn decode_signal_request(
     let request = serde_json::from_str(input)
         .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client signal request"))?;
     validate_signal_request(&request)?;
-    Ok(request)
-}
-
-/// Strictly parses one exact-run output-only query request.
-pub fn decode_query_request(input: &str) -> Result<QueryWorkflowRequest, protocol::ProtocolError> {
-    protocol::decode_object(input)?;
-    let request = serde_json::from_str(input)
-        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client query request"))?;
-    validate_query_request(&request)?;
     Ok(request)
 }
 
@@ -532,6 +527,20 @@ pub fn encode_cancel_response(
     encode_document(response)
 }
 
+/// Encodes and reparses a positive termination acknowledgement before it
+/// crosses the native boundary.
+pub fn encode_terminate_response(
+    response: &TerminateWorkflowResponse,
+) -> Result<String, protocol::ProtocolError> {
+    if !response.acknowledged {
+        return Err(protocol::ProtocolError::invalid(
+            "$.acknowledged",
+            "termination acknowledgement must be true",
+        ));
+    }
+    encode_document(response)
+}
+
 /// Encodes and reparses a positive signal acknowledgement before it crosses
 /// the native boundary.
 pub fn encode_signal_response(
@@ -543,14 +552,6 @@ pub fn encode_signal_response(
             "signal acknowledgement must be true",
         ));
     }
-    encode_document(response)
-}
-
-/// Encodes and reparses one query result before ownership leaves Rust.
-pub fn encode_query_response(
-    response: &QueryWorkflowResponse,
-) -> Result<String, protocol::ProtocolError> {
-    validate_query_response(response)?;
     encode_document(response)
 }
 
@@ -596,6 +597,45 @@ pub async fn cancel_workflow(
     Ok(CancelWorkflowResponse { acknowledged: true })
 }
 
+/// Terminates one exact run through Temporal's official workflow service.
+/// This is intentionally distinct from cancellation: Temporal records a
+/// termination command immediately and does not wait for workflow code to
+/// handle cancellation. The one-second bound keeps the owner Domain
+/// responsive when the control-plane RPC stalls.
+pub async fn terminate_workflow(
+    connection: Connection,
+    request: TerminateWorkflowRequest,
+) -> Result<TerminateWorkflowResponse, ClientOperationError> {
+    const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(1);
+    let mut service = connection.workflow_service();
+    let request = TerminateWorkflowExecutionRequest {
+        namespace: request.namespace,
+        workflow_execution: Some(WorkflowExecution {
+            workflow_id: request.workflow_id,
+            run_id: request.run_id,
+        }),
+        reason: request.reason,
+        identity: connection.identity().to_owned(),
+        ..Default::default()
+    };
+    match tokio::time::timeout(
+        CONTROL_RPC_TIMEOUT,
+        service.terminate_workflow_execution(request.into_request()),
+    )
+    .await
+    {
+        Ok(result) => {
+            result.map_err(map_rpc_status)?;
+        }
+        Err(_) => {
+            return Err(ClientOperationError::Rpc {
+                code: "deadline_exceeded".to_owned(),
+            });
+        }
+    }
+    Ok(TerminateWorkflowResponse { acknowledged: true })
+}
+
 /// Delivers one signal to one exact workflow run through Temporal's official
 /// workflow service. The request identity and payloads are copied into the
 /// protobuf message; no OCaml memory is retained by the asynchronous RPC.
@@ -638,64 +678,6 @@ pub async fn signal_workflow(
         }
     }
     Ok(SignalWorkflowResponse { acknowledged: true })
-}
-
-/// Executes one output-only query through Temporal's official workflow
-/// service. Query rejection is represented as a stable failed-precondition
-/// error rather than exposing server-controlled status text or protobuf
-/// details through the OCaml protocol. The request uses the non-rejecting
-/// condition (`QUERY_REJECT_CONDITION_NONE = 1`) so a closed workflow may still
-/// answer a read-only query, matching the default behavior of other SDKs.
-pub async fn query_workflow(
-    connection: Connection,
-    request: QueryWorkflowRequest,
-) -> Result<QueryWorkflowResponse, ClientOperationError> {
-    // Query evaluation may require a workflow task to be scheduled and
-    // replayed before Temporal can reply. A one-second control-plane bound
-    // incorrectly rejects healthy slow workers, so use the same bounded
-    // service budget as the rest of this client slice while the public API
-    // does not yet expose a caller-selected deadline.
-    const QUERY_RPC_TIMEOUT: Duration = Duration::from_secs(30);
-    let query_args = payloads_to_core(&request.input).map_err(ClientOperationError::Core)?;
-    let mut service = connection.workflow_service();
-    let request = QueryWorkflowExecutionRequest {
-        namespace: request.namespace,
-        execution: Some(WorkflowExecution {
-            workflow_id: request.workflow_id,
-            run_id: request.run_id,
-        }),
-        query: Some(WorkflowQuery {
-            query_type: request.query_type,
-            query_args: Some(query_args),
-            ..Default::default()
-        }),
-        // The generated prost field is an i32 enum. Keep the numeric value
-        // local and documented so this bridge does not depend on generated
-        // enum variant names that can change with protobuf regeneration.
-        query_reject_condition: 1,
-    };
-    let response = match tokio::time::timeout(
-        QUERY_RPC_TIMEOUT,
-        service.query_workflow(request.into_request()),
-    )
-    .await
-    {
-        Ok(result) => result.map_err(map_rpc_status)?.into_inner(),
-        Err(_) => {
-            return Err(ClientOperationError::Rpc {
-                code: "deadline_exceeded".to_owned(),
-            });
-        }
-    };
-    if response.query_rejected.is_some() {
-        return Err(ClientOperationError::Rpc {
-            code: "failed_precondition".to_owned(),
-        });
-    }
-    Ok(QueryWorkflowResponse {
-        result: payloads_from_core(response.query_result.as_ref())
-            .map_err(ClientOperationError::Core)?,
-    })
 }
 
 /// Encodes one terminal asynchronous-start outcome and reparses the bytes
@@ -1079,6 +1061,28 @@ fn validate_cancel_request(value: &CancelWorkflowRequest) -> Result<(), protocol
     Ok(())
 }
 
+/// Validates one exact-run termination request and keeps its reason bounded.
+fn validate_terminate_request(
+    value: &TerminateWorkflowRequest,
+) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.namespace, "$.namespace")?;
+    validate_identifier(&value.workflow_id, "$.workflow_id")?;
+    validate_identifier(&value.run_id, "$.run_id")?;
+    if value.reason.len() > protocol::MAX_STRING_BYTES {
+        return Err(protocol::ProtocolError::invalid(
+            "$.reason",
+            "reason exceeds the protocol string safety limit",
+        ));
+    }
+    if value.reason.contains('\0') {
+        return Err(protocol::ProtocolError::invalid(
+            "$.reason",
+            "reason contains a NUL byte",
+        ));
+    }
+    Ok(())
+}
+
 /// Validates one exact-run signal request and every payload conversion before
 /// it can reach the official Temporal service.
 fn validate_signal_request(value: &SignalWorkflowRequest) -> Result<(), protocol::ProtocolError> {
@@ -1090,33 +1094,6 @@ fn validate_signal_request(value: &SignalWorkflowRequest) -> Result<(), protocol
     for payload in &value.input {
         workflow_protocol::payload_to_core(payload)
             .map_err(|_| protocol::ProtocolError::invalid("$.input", "invalid Temporal payload"))?;
-    }
-    Ok(())
-}
-
-/// Validates one exact-run query request and every argument payload before it
-/// can reach Temporal's workflow service. The public API currently sends an
-/// empty argument list, but accepting and validating the closed list keeps
-/// protocol behavior explicit for the future typed-input extension.
-fn validate_query_request(value: &QueryWorkflowRequest) -> Result<(), protocol::ProtocolError> {
-    validate_identifier(&value.namespace, "$.namespace")?;
-    validate_identifier(&value.workflow_id, "$.workflow_id")?;
-    validate_identifier(&value.run_id, "$.run_id")?;
-    validate_identifier(&value.query_type, "$.query_type")?;
-    for payload in &value.input {
-        workflow_protocol::payload_to_core(payload)
-            .map_err(|_| protocol::ProtocolError::invalid("$.input", "invalid Temporal payload"))?;
-    }
-    Ok(())
-}
-
-/// Validates every payload in a successful query response before it leaves the
-/// Rust-owned connection and crosses the JSON ABI.
-fn validate_query_response(value: &QueryWorkflowResponse) -> Result<(), protocol::ProtocolError> {
-    for payload in &value.result {
-        workflow_protocol::payload_to_core(payload).map_err(|_| {
-            protocol::ProtocolError::invalid("$.result", "invalid Temporal payload")
-        })?;
     }
     Ok(())
 }
@@ -1291,6 +1268,18 @@ mod tests {
         .to_string()
     }
 
+    /// Builds a valid exact-run termination request used by strict protocol
+    /// tests.
+    fn terminate_json() -> String {
+        serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "reason":"operator requested termination"
+        })
+        .to_string()
+    }
+
     /// Builds a valid exact-run signal request used by strict protocol tests.
     fn signal_json() -> String {
         serde_json::json!({
@@ -1299,18 +1288,6 @@ mod tests {
             "run_id":"run-1",
             "signal_name":"add_document",
             "request_id":"signal-1",
-            "input":[]
-        })
-        .to_string()
-    }
-
-    /// Builds a valid output-only exact-run query request.
-    fn query_json() -> String {
-        serde_json::json!({
-            "namespace":"default",
-            "workflow_id":"workflow-1",
-            "run_id":"run-1",
-            "query_type":"current_state",
             "input":[]
         })
         .to_string()
@@ -1518,6 +1495,51 @@ mod tests {
     }
 
     #[test]
+    /// Termination has an exact-run request shape independent from
+    /// cancellation's request ID while retaining strict reason validation.
+    fn termination_request_and_acknowledgement_are_closed_and_bounded() {
+        let request =
+            decode_terminate_request(&terminate_json()).expect("terminate request decodes");
+        assert_eq!(request.namespace, "default");
+        assert_eq!(request.workflow_id, "workflow-1");
+        assert_eq!(request.run_id, "run-1");
+        assert_eq!(request.reason, "operator requested termination");
+        assert_eq!(
+            encode_terminate_response(&TerminateWorkflowResponse { acknowledged: true })
+                .expect("positive termination acknowledgement encodes"),
+            r#"{"acknowledged":true}"#
+        );
+
+        let mut unknown = terminate_json();
+        unknown.insert_str(unknown.len() - 1, ",\"unexpected\":true");
+        assert!(decode_terminate_request(&unknown).is_err());
+        let duplicate = r#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","run_id":"other","reason":""}"#;
+        assert!(decode_terminate_request(duplicate).is_err());
+        let nul_reason = serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "reason":"contains\0nul"
+        })
+        .to_string();
+        assert!(decode_terminate_request(&nul_reason).is_err());
+        let oversized_reason = serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "reason": "x".repeat(protocol::MAX_STRING_BYTES + 1)
+        })
+        .to_string();
+        assert!(decode_terminate_request(&oversized_reason).is_err());
+        assert!(
+            encode_terminate_response(&TerminateWorkflowResponse {
+                acknowledged: false
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
     /// Signals preserve exact-run identity, payload ordering, and positive
     /// acknowledgement semantics across the closed JSON boundary.
     fn signal_request_and_acknowledgement_round_trip() {
@@ -1583,51 +1605,6 @@ mod tests {
                 r#"{"acknowledged":true,"unexpected":true}"#
             )
             .is_err()
-        );
-    }
-
-    #[test]
-    /// Query requests preserve exact-run identity and reject unknown or
-    /// duplicate members before any Temporal connection is consulted.
-    fn query_request_is_closed_and_bounded() {
-        let request = decode_query_request(&query_json()).expect("query request decodes");
-        assert_eq!(request.query_type, "current_state");
-        assert!(request.input.is_empty());
-
-        let mut unknown = query_json();
-        unknown.insert_str(unknown.len() - 1, ",\"unexpected\":true");
-        assert!(decode_query_request(&unknown).is_err());
-
-        let duplicate = r#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","query_type":"current_state","query_type":"other","input":[]}"#;
-        assert!(decode_query_request(duplicate).is_err());
-
-        for field in ["namespace", "workflow_id", "run_id", "query_type"] {
-            let document = serde_json::json!({
-                "namespace":"default",
-                "workflow_id":"workflow-1",
-                "run_id":"run-1",
-                "query_type":"current_state",
-                "input":[]
-            });
-            let mut object = document.as_object().unwrap().clone();
-            object.insert(field.to_owned(), serde_json::Value::String(String::new()));
-            assert!(
-                decode_query_request(&serde_json::Value::Object(object).to_string()).is_err(),
-                "empty {field} must be rejected"
-            );
-        }
-    }
-
-    #[test]
-    /// Query responses round-trip an ordered payload list and remain closed to
-    /// unknown JSON members at the native boundary.
-    fn query_response_round_trip_is_closed() {
-        let response = QueryWorkflowResponse { result: Vec::new() };
-        let encoded = encode_query_response(&response).expect("query response encodes");
-        assert_eq!(encoded, r#"{"result":[]}"#);
-        assert!(
-            serde_json::from_str::<QueryWorkflowResponse>(r#"{"result":[],"unexpected":true}"#)
-                .is_err()
         );
     }
 

@@ -32,6 +32,13 @@ type cancel_request = {
 
 type cancel_response = { acknowledged : bool }
 
+type terminate_request = {
+  execution : execution;
+  reason : string;
+}
+
+type terminate_response = { acknowledged : bool }
+
 type signal_request = {
   execution : execution;
   signal_name : string;
@@ -327,6 +334,32 @@ let decode_cancel_response input : (cancel_response, error) result =
   let* acknowledged = bool "$.acknowledged" acknowledged_json in
   if acknowledged then Ok ({ acknowledged } : cancel_response)
   else Error (invalid ~path:"$.acknowledged" "cancellation was not acknowledged")
+
+let encode_terminate_request (value : terminate_request) =
+  let* () = validate_identifier "$.namespace" value.execution.namespace in
+  let* () = validate_identifier "$.workflow_id" value.execution.workflow_id in
+  let* () = validate_identifier "$.run_id" value.execution.run_id in
+  if String.length value.reason > 65_536 then
+    Error (invalid ~path:"$.reason" "reason exceeds the protocol string safety limit")
+  else if String.contains value.reason '\000' then
+    Error (invalid ~path:"$.reason" "reason contains a NUL byte")
+  else
+    encode_object
+      (`Assoc
+        [
+          ("namespace", json_string value.execution.namespace);
+          ("workflow_id", json_string value.execution.workflow_id);
+          ("run_id", json_string value.execution.run_id);
+          ("reason", json_string value.reason);
+        ])
+
+let decode_terminate_response input : (terminate_response, error) result =
+  let* json = decode_object input in
+  let* entries = exact_object "$" [ "acknowledged" ] json in
+  let* acknowledged_json = field "$" "acknowledged" entries in
+  let* acknowledged = bool "$.acknowledged" acknowledged_json in
+  if acknowledged then Ok ({ acknowledged } : terminate_response)
+  else Error (invalid ~path:"$.acknowledged" "termination was not acknowledged")
 
 (** Serializes one exact-run signal request. Signal input remains an ordered
     payload list so codecs that produce multiple Temporal payloads retain the
@@ -712,6 +745,19 @@ let decode_cancel_error input =
       Error
         (invalid ~path:"$.kind"
            "already_started is not a valid cancellation error")
+  | (Rpc _ | Protocol _) -> Ok error
+
+(** Decodes a termination failure while rejecting [Already_started], which is
+    meaningful only for workflow-start conflicts and cannot describe an exact
+    run termination RPC. Keeping this operation-specific entry point avoids
+    coupling the supervisor adapter to cancellation terminology. *)
+let decode_terminate_error input =
+  let* error = decode_client_error input in
+  match error with
+  | Already_started _ ->
+      Error
+        (invalid ~path:"$.kind"
+           "already_started is not a valid termination error")
   | (Rpc _ | Protocol _) -> Ok error
 
 (** Decodes a signal failure while rejecting [Already_started], which is a

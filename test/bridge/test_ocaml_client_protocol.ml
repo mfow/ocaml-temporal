@@ -43,6 +43,11 @@ let execution : Protocol.execution =
 let cancel_request : Protocol.cancel_request =
   { execution; request_id = "cancel-1"; reason = "operator requested cancellation" }
 
+(** Termination requests identify one exact run and carry only operator
+    context; the run identity itself supplies retry-safe idempotency. *)
+let terminate_request : Protocol.terminate_request =
+  { execution; reason = "operator requested termination" }
+
 (** Signal requests carry the exact run, stable operation ID, and ordered
     payloads that the Rust bridge forwards to Temporal's signal RPC. *)
 let signal_request : Protocol.signal_request =
@@ -202,6 +207,35 @@ let test_cancellation_protocol () =
       {|{"acknowledged":true,"unexpected":true}|};
       {|{"acknowledged":true,"acknowledged":false}|};
       {|{"acknowledged":"true"}|};
+    ]
+
+(** Checks that termination has the same strict acknowledgement shape as
+    cancellation while remaining a separate operation in the protocol. *)
+let test_termination_protocol () =
+  let encoded = unwrap (Protocol.encode_terminate_request terminate_request) in
+  require_fragment "terminate request workflow ID" "workflow-1" encoded;
+  require_fragment "terminate request reason" "operator requested termination"
+    encoded;
+  let acknowledged =
+    unwrap (Protocol.decode_terminate_response {|{"acknowledged":true}|})
+  in
+  if not acknowledged.acknowledged then
+    failwith "positive termination acknowledgement changed shape";
+  List.iter
+    (fun document -> require_error (Protocol.decode_terminate_response document))
+    [
+      {|{"acknowledged":false}|};
+      {|{"acknowledged":true,"unexpected":true}|};
+      {|{"acknowledged":true,"acknowledged":false}|};
+      {|{"acknowledged":"true"}|};
+    ];
+  List.iter
+    (fun request -> require_error (Protocol.encode_terminate_request request))
+    [
+      { terminate_request with execution = { execution with namespace = "" } };
+      { terminate_request with execution = { execution with run_id = "" } };
+      { terminate_request with reason = String.make 65_537 'x' };
+      { terminate_request with reason = "contains\000nul" };
     ]
 
 (** Checks that signal acknowledgement and operation-specific error decoding
@@ -421,6 +455,7 @@ let () =
   run "client successor identity" test_successor_identity_validation;
   run "client request validation" test_request_validation;
   run "client cancellation protocol" test_cancellation_protocol;
+  run "client termination protocol" test_termination_protocol;
   run "client signal protocol" test_signal_protocol;
   run "client query protocol" test_query_protocol;
   run "client asynchronous starts" test_async_start_protocol;

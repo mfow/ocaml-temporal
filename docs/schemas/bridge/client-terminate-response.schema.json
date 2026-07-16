@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-terminate-response.schema.json",
+  "title": "OCaml Temporal native client termination acknowledgement",
+  "description": "The Rust bridge emits this closed document only after Temporal accepts the exact-run termination RPC. It is an acknowledgement, not proof that the workflow result has been observed; callers must use the exact-run wait operation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["acknowledged"],
+  "properties": {
+    "acknowledged": {"const": true}
+  }
+}

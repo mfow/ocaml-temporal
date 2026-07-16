@@ -311,6 +311,12 @@ let _client_cancel :
     (unit, T.Error.t) result =
   T.Client.cancel
 
+let _client_terminate :
+    ?reason:string ->
+    ('input, 'output) T.Client.handle ->
+    (unit, T.Error.t) result =
+  T.Client.terminate
+
 let _client_signal :
     ?request_id:string ->
     ('workflow_input, 'workflow_output) T.Client.handle ->

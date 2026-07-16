@@ -431,6 +431,13 @@ module Protocol_adapter = struct
     | Ok output -> Ok (Bytes.of_string output)
     | Error error -> client_error "client cancellation request encoding" error
 
+  (** Canonically serializes a typed exact-run termination request before it
+      reaches the native bridge. *)
+  let encode_client_terminate_request request =
+    match Client.encode_terminate_request request with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> client_error "client termination request encoding" error
+
   (** Canonically serializes a typed exact-run signal request before it
       reaches the native bridge. Payloads are validated by the shared client
       codec, so malformed signal input cannot be mistaken for a server error. *)
@@ -566,6 +573,34 @@ module Protocol_adapter = struct
           }
     | _ -> Error native_error
 
+  (** Decodes and status-checks one structured termination failure. The
+      operation has the same closed error vocabulary as cancellation, but its
+      diagnostics name termination so logs and bridge failures remain
+      actionable. *)
+  let decode_client_terminate_failure native_error =
+    match native_error.Bridge.status with
+    | Connection | Protocol -> (
+        match Client.decode_terminate_error native_error.message with
+        | Error error -> malformed_client_error "client termination" error
+        | Ok client_error ->
+            if native_error.Bridge.status = client_error_status client_error then
+              Ok (Error client_error)
+            else
+              Error
+                {
+                  Bridge.status = Protocol;
+                  message =
+                    "client termination error status does not match its JSON kind";
+                })
+    | Already_started ->
+        Error
+          {
+            Bridge.status = Protocol;
+            message =
+              "client termination returned an impossible already-started status";
+          }
+    | _ -> Error native_error
+
   (** Decodes and status-checks one structured signal failure. Signals share
       the generic RPC/protocol error vocabulary with cancellation; a
       start-only [Already_started] status is rejected as an impossible native
@@ -640,6 +675,15 @@ module Protocol_adapter = struct
         | Error error -> client_error "client cancellation response decoding" error)
     | Error native_error -> decode_client_cancel_failure native_error
 
+  (** Decodes the positive termination acknowledgement or a structured server
+      failure. *)
+  let decode_client_terminate_result = function
+    | Ok input -> (
+        match Client.decode_terminate_response (Bytes.to_string input) with
+        | Ok _response -> Ok (Ok ())
+        | Error error -> client_error "client termination response decoding" error)
+    | Error native_error -> decode_client_terminate_failure native_error
+
   (** Decodes the positive signal acknowledgement or preserves a structured
       server failure as an inner typed client error. *)
   let decode_client_signal_result = function
@@ -710,6 +754,9 @@ module Native_backend = struct
         (Client.wait_response, Client.client_error) result operation
     | Client_cancel_workflow :
         Client.cancel_request ->
+        (unit, Client.client_error) result operation
+    | Client_terminate_workflow :
+        Client.terminate_request ->
         (unit, Client.client_error) result operation
     | Client_signal_workflow :
         Client.signal_request ->
@@ -795,6 +842,12 @@ module Native_backend = struct
         | Ok input ->
             Protocol_adapter.decode_client_cancel_result
               (Bridge.client_cancel_workflow_json runtime input))
+    | Client_terminate_workflow request -> (
+        match Protocol_adapter.encode_client_terminate_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_terminate_result
+              (Bridge.client_terminate_workflow_json runtime input))
     | Client_signal_workflow request -> (
         match Protocol_adapter.encode_client_signal_request request with
         | Error error -> Error error
@@ -907,6 +960,9 @@ module Native = struct
         (Client.wait_response, Client.client_error) result operation
     | Client_cancel_workflow :
         Client.cancel_request ->
+        (unit, Client.client_error) result operation
+    | Client_terminate_workflow :
+        Client.terminate_request ->
         (unit, Client.client_error) result operation
     | Client_signal_workflow :
         Client.signal_request ->

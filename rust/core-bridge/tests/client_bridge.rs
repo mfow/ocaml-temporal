@@ -10,6 +10,7 @@ use ocaml_temporal_core_bridge::{
     ocaml_temporal_core_v1_client_query_workflow_json,
     ocaml_temporal_core_v1_client_signal_workflow_json,
     ocaml_temporal_core_v1_client_start_workflow_json,
+    ocaml_temporal_core_v1_client_terminate_workflow_json,
     ocaml_temporal_core_v1_client_wait_start_workflow_json,
     ocaml_temporal_core_v1_client_wait_workflow_json, ocaml_temporal_core_v1_result_free,
     ocaml_temporal_core_v1_runtime_free, ocaml_temporal_core_v1_runtime_new,
@@ -65,6 +66,22 @@ fn client_operations_reject_null_runtime() {
 
     assert_eq!(
         unsafe {
+            ocaml_temporal_core_v1_client_terminate_workflow_json(
+                ptr::null_mut(),
+                WAIT_REQUEST.as_ptr(),
+                WAIT_REQUEST.len(),
+                &mut result,
+            )
+        },
+        STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    assert_eq!(
+        unsafe {
             ocaml_temporal_core_v1_client_wait_workflow_json(
                 ptr::null_mut(),
                 WAIT_REQUEST.as_ptr(),
@@ -81,8 +98,8 @@ fn client_operations_reject_null_runtime() {
 }
 
 #[test]
-/// A live runtime without a connection rejects start and wait as invalid
-/// state, while still returning owned diagnostics that can be freed.
+/// A live runtime without a connection rejects start, termination, and wait as
+/// invalid state, while still returning owned diagnostics that can be freed.
 fn client_operations_require_connected_client() {
     let mut runtime = ptr::null_mut();
     let mut result = empty_result();
@@ -101,6 +118,23 @@ fn client_operations_require_connected_client() {
                 runtime,
                 START_REQUEST.as_ptr(),
                 START_REQUEST.len(),
+                &mut result,
+            )
+        },
+        STATUS_INVALID_STATE
+    );
+    assert!(!error_bytes(&result).is_empty());
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_client_terminate_workflow_json(
+                runtime,
+                WAIT_REQUEST.as_ptr(),
+                WAIT_REQUEST.len(),
                 &mut result,
             )
         },
@@ -297,6 +331,41 @@ fn client_cancel_validates_json_before_state_use() {
         STATUS_OK
     );
     assert!(runtime.is_null());
+}
+
+#[test]
+/// Termination validates its closed JSON request before checking connection
+/// state, matching cancellation without sharing its request-id field.
+fn client_terminate_validates_json_before_state_use() {
+    let mut runtime = ptr::null_mut();
+    let mut result = empty_result();
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_client_terminate_workflow_json(
+                runtime,
+                br#"{}"#.as_ptr(),
+                2,
+                &mut result,
+            )
+        },
+        STATUS_PROTOCOL
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
 }
 
 #[test]

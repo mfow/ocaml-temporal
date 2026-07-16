@@ -294,6 +294,32 @@ let cancel ?request_id ?(reason = "") handle =
         in
         Backend.client_cancel handle.client.backend request
 
+(** Validates the operator reason before it crosses the JSON/C boundary. *)
+let validate_terminate_fields ~reason =
+  if String.length reason > 65_536 then
+    Error
+      (Error.defect
+         ~message:"termination reason exceeds the protocol safety limit")
+  else if String.contains reason '\000' then
+    Error (Error.defect ~message:"termination reason must not contain NUL")
+  else Ok ()
+
+(** Requests immediate termination for one exact workflow run. The backend
+    keeps the operation serialized with shutdown and maps the acknowledgement
+    to [unit], leaving terminal-state observation to [wait]. *)
+let terminate ?(reason = "") handle =
+  if Atomic.get handle.client.closed then
+    Error
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else
+    match validate_terminate_fields ~reason with
+    | Error error -> Error error
+    | Ok () ->
+        let request : Backend.terminate_request =
+          { workflow_id = handle.workflow_id; run_id = handle.run_id; reason }
+        in
+        Backend.client_terminate handle.client.backend request
+
 (** Allocates a fresh request ID for a signal when the caller did not supply
     one. Unlike cancellation, separate signal calls are distinct messages by
     default, even when they target the same run and signal name. Supplying an

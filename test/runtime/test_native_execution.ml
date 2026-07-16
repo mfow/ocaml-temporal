@@ -753,9 +753,10 @@ let test_update_handler_can_suspend () =
     Execution.make_update_handler ~name:"wait_for_activity"
       ~dispatch:(fun ~run_validator:_ ~on_validated _update ->
         on_validated ();
-        let open Temporal.Result_syntax in
-        let* () = Temporal.Future.await (Temporal.Activity.start activity ()) in
-        Temporal_base.Codec.encode Temporal_base.Codec.string "finished")
+        match Temporal.Future.await (Temporal.Activity.start activity ()) with
+        | Error error -> Error (base_error error)
+        | Ok () ->
+            Temporal_base.Codec.encode Temporal_base.Codec.string "finished")
   in
   let execution =
     Execution.start ~update_handlers:[ handler ] (base_workflow workflow) ()

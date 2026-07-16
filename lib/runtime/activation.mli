@@ -161,6 +161,11 @@ type command =
     }
   (** Records one active or deprecated replay-safe patch lifecycle operation. *)
   | Set_patch_marker of { patch_id : string; deprecated : bool }
+  (** Merges encoded values into the workflow's indexed search attributes.
+      Core applies the map atomically and retains the update in history. *)
+  | Upsert_search_attributes of {
+      search_attributes : (string * Temporal_base.Codec.payload) list;
+    }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t
   (** Replaces the current run with a new run of the same workflow type. The

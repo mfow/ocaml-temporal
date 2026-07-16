@@ -83,6 +83,12 @@ val random_int : t -> bound:int -> (int, Temporal_base.Error.t) result
     [random_int], return a typed defect while this callback is active. *)
 val with_randomness_disabled : t -> (unit -> 'value) -> 'value
 
+(** Emits one durable command that merges encoded values into the workflow's
+    indexed search attributes. Keys and payloads are validated by the strict
+    protocol encoder before Core receives the completion. *)
+val upsert_search_attributes :
+   t -> (string * Temporal_base.Codec.payload) list -> unit
+
 (** Runs [action] with [t] dynamically installed and restores the previous
     context even if [action] raises. Nested calls are supported. *)
 val with_context : t -> (unit -> 'value) -> 'value

@@ -729,6 +729,10 @@ pub enum CompletionCommand {
         patch_id: String,
         deprecated: bool,
     },
+    /// Merges encoded values into Core's indexed workflow search attributes.
+    UpsertSearchAttributes {
+        search_attributes: BTreeMap<String, Payload>,
+    },
 }
 
 /// Outcome of one synchronous read-only workflow query.
@@ -1641,6 +1645,22 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                         "$.commands.patch_id",
                         "one patch ID cannot use both active and deprecated marker modes",
                     ));
+                }
+            }
+            CompletionCommand::UpsertSearchAttributes { search_attributes } => {
+                for (key, payload) in search_attributes {
+                    identifier(key, "$.commands.search_attributes")?;
+                    if payload.data.len() > MAX_PAYLOAD_BYTES
+                        || payload
+                            .metadata
+                            .values()
+                            .any(|value| value.len() > MAX_PAYLOAD_BYTES)
+                    {
+                        return Err(ProtocolError::invalid(
+                            "$.commands.search_attributes",
+                            "payload exceeds the byte limit",
+                        ));
+                    }
                 }
             }
             _ => {}
@@ -3008,6 +3028,15 @@ fn command_to_core(
             patch_id: patch_id.clone(),
             deprecated: *deprecated,
         }),
+        CompletionCommand::UpsertSearchAttributes { search_attributes } => {
+            let indexed_fields = search_attributes
+                .iter()
+                .map(|(key, payload)| Ok((key.clone(), payload_to_core(payload)?)))
+                .collect::<Result<_, CoreConversionError>>()?;
+            Variant::UpsertWorkflowSearchAttributes(core_commands::UpsertWorkflowSearchAttributes {
+                search_attributes: Some(api_common::SearchAttributes { indexed_fields }),
+            })
+        }
     };
     Ok(core_commands::WorkflowCommand {
         variant: Some(variant),
@@ -3276,6 +3305,17 @@ fn command_from_core(
             patch_id: value.patch_id.clone(),
             deprecated: value.deprecated,
         }),
+        Variant::UpsertWorkflowSearchAttributes(value) => {
+            let search_attributes = value
+                .search_attributes
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core search-attribute command has no values"))?
+                .indexed_fields
+                .iter()
+                .map(|(key, payload)| Ok((key.clone(), payload_from_core(payload)?)))
+                .collect::<Result<_, CoreConversionError>>()?;
+            Ok(CompletionCommand::UpsertSearchAttributes { search_attributes })
+        }
         _ => Err(unsupported("Core workflow command kind is not supported")),
     }
 }

@@ -119,6 +119,13 @@ ocaml_temporal_core_status ocaml_temporal_core_v2_client_query_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* List one bounded visibility page. The page token is opaque base64 in the
+ * JSON boundary and protobuf visibility values remain owned by Rust. */
+ocaml_temporal_core_status
+ocaml_temporal_core_v1_client_list_visibility_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
 /* Admit one workflow start without waiting for the RPC. The successful value
  * is an opaque JSON ticket. The caller must later poll or wait that ticket;
  * the Rust owner keeps its Core connection and Tokio task alive until one

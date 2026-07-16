@@ -64,6 +64,21 @@ type 'output terminal_result =
   (* The run continued as a new execution; callers choose whether to follow it. *)
   | Continued_as_new of execution
 
+(** One execution row returned by the Temporal visibility service. *)
+type visibility_execution = {
+  workflow_id : string;
+  run_id : string;
+  workflow_type : string;
+  task_queue : string;
+  status : string;
+}
+
+(** A bounded visibility page and its opaque continuation token. *)
+type visibility_page = {
+  executions : visibility_execution list;
+  next_page_token : string option;
+}
+
 (** The default identity is stable and descriptive without using process-global
     randomness, which keeps client construction straightforward in tests. *)
 let default_identity = "ocaml-temporal-client"
@@ -351,6 +366,74 @@ let query handle ~(query : 'query Query.t) =
     in
     Result.bind (Backend.client_query handle.client.backend request) (fun payload ->
         Codec.decode (Query.output query) payload)
+
+(** Lists one bounded visibility page through the client's backend. The public
+    layer validates caller-controlled query metadata before the request enters
+    either the deterministic mock or the native supervisor. *)
+let list_visibility ?(page_size = 100) ?page_token client ~query () =
+  if Atomic.get client.closed then
+    Error (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else if page_size < 1 || page_size > 1_000 then
+    Error
+      (Error.defect
+         ~message:"visibility page_size must be between 1 and 1000")
+  else
+    if String.length query > 65_536 then
+      Error
+        (Error.defect
+           ~message:"visibility query exceeds the protocol safety limit")
+    else if String.contains query '\000' then
+      Error (Error.defect ~message:"visibility query must not contain NUL")
+    else (
+        match page_token with
+        | Some token when String.equal token "" ->
+            Error
+              (Error.defect ~message:"visibility page token must not be empty")
+        | Some token -> (
+            match validate_name "visibility page token" token with
+            | Error error -> Error error
+            | Ok () ->
+                let request : Backend.visibility_request =
+                  { query; page_size; next_page_token = Some token }
+                in
+                Result.map
+                  (fun (page : Backend.visibility_page) ->
+                    {
+                      executions =
+                        List.map
+                          (fun (execution : Backend.visibility_execution) ->
+                            {
+                              workflow_id = execution.workflow_id;
+                              run_id = execution.run_id;
+                              workflow_type = execution.workflow_type;
+                              task_queue = execution.task_queue;
+                              status = execution.status;
+                            })
+                          page.executions;
+                      next_page_token = page.next_page_token;
+                    })
+                  (Backend.client_list_visibility client.backend request))
+        | None ->
+            let request : Backend.visibility_request =
+              { query; page_size; next_page_token = None }
+            in
+            Result.map
+              (fun (page : Backend.visibility_page) ->
+                {
+                  executions =
+                    List.map
+                      (fun (execution : Backend.visibility_execution) ->
+                        {
+                          workflow_id = execution.workflow_id;
+                          run_id = execution.run_id;
+                          workflow_type = execution.workflow_type;
+                          task_queue = execution.task_queue;
+                          status = execution.status;
+                        })
+                      page.executions;
+                  next_page_token = page.next_page_token;
+                })
+              (Backend.client_list_visibility client.backend request))
 
 (** Returns the durable workflow identity retained by a handle. *)
 let workflow_id (handle : ('input, 'output) handle) = handle.workflow_id

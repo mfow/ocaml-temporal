@@ -255,6 +255,36 @@ let test_query_protocol () =
   | Protocol.Rpc { code = "failed_precondition" } -> ()
   | _ -> failwith "query rejection was not typed as failed_precondition"
 
+(** Visibility pages use an exact row schema and preserve opaque continuation
+    tokens without allowing unknown fields or malformed rows through. *)
+let test_visibility_protocol () =
+  let request : Protocol.visibility_request =
+    {
+      namespace = "default";
+      query = "WorkflowType = 'Smoke'";
+      page_size = 25;
+      next_page_token = None;
+    }
+  in
+  let encoded = unwrap (Protocol.encode_visibility_request request) in
+  require_fragment "visibility query" "WorkflowType" encoded;
+  require_fragment "visibility page size" "25" encoded;
+  let response =
+    {|{"executions":[{"workflow_id":"workflow-1","run_id":"run-1","workflow_type":"Smoke","task_queue":"queue","status":"running"}],"next_page_token":"dG9rZW4="}|}
+  in
+  (match unwrap (Protocol.decode_visibility_response response) with
+  | { executions = [ row ]; next_page_token = Some "dG9rZW4=" } ->
+      assert (String.equal row.workflow_id "workflow-1");
+      assert (String.equal row.status "running")
+  | _ -> failwith "visibility response changed shape");
+  List.iter
+    (fun malformed -> require_error (Protocol.decode_visibility_response malformed))
+    [
+      {|{"executions":[],"next_page_token":null,"extra":true}|};
+      {|{"executions":[{"workflow_id":"","run_id":"run-1","workflow_type":"Smoke","task_queue":"queue","status":"running"}],"next_page_token":null}|};
+      {|{"executions":[{"workflow_id":"workflow-1","run_id":"run-1","workflow_type":"Smoke","task_queue":"queue","status":"future_status"}],"next_page_token":null}|};
+    ]
+
 (** Exercises the asynchronous-start capability and all three terminal outcome
     variants. The request-bound ticket is deliberately opaque: this test can
     recover the retained request only through the protocol accessor, never by
@@ -423,6 +453,7 @@ let () =
   run "client cancellation protocol" test_cancellation_protocol;
   run "client signal protocol" test_signal_protocol;
   run "client query protocol" test_query_protocol;
+  run "client visibility protocol" test_visibility_protocol;
   run "client asynchronous starts" test_async_start_protocol;
   run "client closed response shape" test_closed_response_shape;
   run "client response correlation" test_response_execution_correlation;

@@ -43,6 +43,21 @@ type 'output terminal_result =
      returned successor identity. *)
   | Continued_as_new of execution
 
+(** One execution row returned by the Temporal visibility service. *)
+type visibility_execution = {
+  workflow_id : string;
+  run_id : string;
+  workflow_type : string;
+  task_queue : string;
+  status : string;
+}
+
+(** A bounded visibility page and its opaque continuation token. *)
+type visibility_page = {
+  executions : visibility_execution list;
+  next_page_token : string option;
+}
+
 (** Connects to the configured Temporal endpoint. [target_url] is copied into
     the private backend graph and [namespace] is required for every operation.
     The namespace and optional identity must be non-empty, NUL-free, and no
@@ -135,6 +150,17 @@ val query :
   ('workflow_input, 'workflow_output) handle ->
   query:'query Query.t ->
   ('query, Error.t) result
+
+(** Lists one bounded page of workflow executions using Temporal's visibility
+    query language. [page_token] is opaque and may be passed unchanged to a
+    later call. Invalid query metadata is returned as a typed defect. *)
+val list_visibility :
+  ?page_size:int ->
+  ?page_token:string ->
+  t ->
+  query:string ->
+  unit ->
+  (visibility_page, Error.t) result
 
 (** Returns the durable workflow ID supplied to [start]. *)
 val workflow_id : ('input, 'output) handle -> string

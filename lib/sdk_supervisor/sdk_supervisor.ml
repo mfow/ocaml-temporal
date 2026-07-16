@@ -649,6 +649,20 @@ module Protocol_adapter = struct
         | Error error -> client_error "client signal response decoding" error)
     | Error native_error -> decode_client_signal_failure native_error
 
+  (** Canonically serializes one bounded visibility request. *)
+  let encode_client_visibility_request request =
+    match Client.encode_visibility_request request with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> client_error "client visibility request encoding" error
+
+  (** Strictly decodes one visibility page returned by Rust. *)
+  let decode_client_visibility_result = function
+    | Ok input -> (
+        match Client.decode_visibility_response (Bytes.to_string input) with
+        | Ok response -> Ok response
+        | Error error -> client_error "client visibility response decoding" error)
+    | Error native_error -> Error native_error
+
   (** Decodes a native query payload list or preserves a structured server
       failure as an inner typed client error. The public layer enforces the
       output codec's expected payload cardinality. *)
@@ -714,6 +728,9 @@ module Native_backend = struct
     | Client_signal_workflow :
         Client.signal_request ->
         (unit, Client.client_error) result operation
+    | Client_list_visibility_workflows :
+        Client.visibility_request ->
+        Client.visibility_page operation
     | Client_query_workflow :
         Client.query_request ->
         (Client.payload list, Client.client_error) result operation
@@ -801,6 +818,12 @@ module Native_backend = struct
         | Ok input ->
             Protocol_adapter.decode_client_signal_result
               (Bridge.client_signal_workflow_json runtime input))
+    | Client_list_visibility_workflows request -> (
+        match Protocol_adapter.encode_client_visibility_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_visibility_result
+              (Bridge.client_list_visibility_json runtime input))
     | Client_query_workflow request -> (
         match Protocol_adapter.encode_client_query_request request with
         | Error error -> Error error
@@ -911,6 +934,9 @@ module Native = struct
     | Client_signal_workflow :
         Client.signal_request ->
         (unit, Client.client_error) result operation
+    | Client_list_visibility_workflows :
+        Client.visibility_request ->
+        Client.visibility_page operation
     | Client_query_workflow :
         Client.query_request ->
         (Client.payload list, Client.client_error) result operation

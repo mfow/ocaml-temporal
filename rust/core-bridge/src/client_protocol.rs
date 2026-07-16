@@ -7,6 +7,7 @@
 //! A wait never follows a continued-as-new successor: callers can inspect the
 //! successor metadata and decide what to do in OCaml.
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use temporalio_client::Connection;
@@ -18,7 +19,8 @@ use temporalio_common::protos::temporal::api::{
     query::v1::WorkflowQuery,
     taskqueue::v1::TaskQueue,
     workflowservice::v1::{
-        GetWorkflowExecutionHistoryRequest, QueryWorkflowRequest as QueryWorkflowExecutionRequest,
+        GetWorkflowExecutionHistoryRequest, ListWorkflowExecutionsRequest,
+        QueryWorkflowRequest as QueryWorkflowExecutionRequest,
         RequestCancelWorkflowExecutionRequest, SignalWorkflowExecutionRequest,
         StartWorkflowExecutionRequest,
     },
@@ -197,6 +199,51 @@ pub struct QueryWorkflowRequest {
 pub struct QueryWorkflowResponse {
     /// Ordered result payloads from the workflow query handler.
     pub result: Vec<workflow_protocol::Payload>,
+}
+
+/// One visibility row reduced to stable fields useful to an SDK caller.
+/// Temporal's visibility response contains many server/version-specific
+/// fields; the bridge intentionally exposes only the durable identity and
+/// routing/status fields that can be validated without copying arbitrary
+/// memo/search-attribute payloads across the FFI boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisibilityExecution {
+    /// Durable workflow identifier.
+    pub workflow_id: String,
+    /// Concrete run identifier.
+    pub run_id: String,
+    /// Registered workflow type.
+    pub workflow_type: String,
+    /// Task queue assigned to the execution.
+    pub task_queue: String,
+    /// Closed vocabulary status name from Temporal visibility.
+    pub status: String,
+}
+
+/// One bounded visibility page. The token is base64 for opaque protobuf bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisibilityPage {
+    /// Rows returned by the server in its ordering.
+    pub executions: Vec<VisibilityExecution>,
+    /// Opaque token for the next page, or null when exhausted.
+    pub next_page_token: Option<String>,
+}
+
+/// Request for one visibility page. Pagination is explicit so callers never
+/// accidentally issue an unbounded list operation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisibilityRequest {
+    /// Namespace queried by Temporal.
+    pub namespace: String,
+    /// Temporal visibility query expression.
+    pub query: String,
+    /// Number of rows requested, bounded to protect the bridge.
+    pub page_size: u32,
+    /// Opaque base64 token returned by a previous page.
+    pub next_page_token: Option<String>,
 }
 
 /// Metadata for a successor run created by continued-as-new.
@@ -510,6 +557,17 @@ pub fn decode_query_request(input: &str) -> Result<QueryWorkflowRequest, protoco
     Ok(request)
 }
 
+/// Strictly parses one bounded visibility page request.
+pub fn decode_visibility_request(
+    input: &str,
+) -> Result<VisibilityRequest, protocol::ProtocolError> {
+    protocol::decode_object(input)?;
+    let request = serde_json::from_str(input)
+        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid visibility request"))?;
+    validate_visibility_request(&request)?;
+    Ok(request)
+}
+
 /// Encodes and reparses a start response before ownership leaves Rust.
 pub fn encode_start_response(
     response: &StartWorkflowResponse,
@@ -552,6 +610,87 @@ pub fn encode_query_response(
 ) -> Result<String, protocol::ProtocolError> {
     validate_query_response(response)?;
     encode_document(response)
+}
+
+/// Encodes and reparses one visibility page before it crosses the ABI.
+pub fn encode_visibility_response(
+    response: &VisibilityPage,
+) -> Result<String, protocol::ProtocolError> {
+    validate_visibility_page(response)?;
+    encode_document(response)
+}
+
+/// Lists one visibility page through Temporal's official workflow service.
+/// The opaque page token is copied as bytes only inside Rust and is base64 at
+/// the JSON boundary; no server-owned protobuf or byte buffer is retained.
+pub async fn list_visibility(
+    connection: Connection,
+    request: VisibilityRequest,
+) -> Result<VisibilityPage, ClientOperationError> {
+    const VISIBILITY_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+    let token = request
+        .next_page_token
+        .as_deref()
+        .map(|value| {
+            base64::engine::general_purpose::STANDARD
+                .decode(value)
+                .map_err(|_| {
+                    ClientOperationError::Core(workflow_protocol::invalid_core(
+                        "invalid visibility page token",
+                    ))
+                })
+        })
+        .transpose()?;
+    let mut service = connection.workflow_service();
+    let response = match tokio::time::timeout(
+        VISIBILITY_RPC_TIMEOUT,
+        service.list_workflow_executions(
+            ListWorkflowExecutionsRequest {
+                namespace: request.namespace,
+                query: request.query,
+                page_size: request.page_size as i32,
+                next_page_token: token.unwrap_or_default(),
+            }
+            .into_request(),
+        ),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(map_rpc_status)?.into_inner(),
+        Err(_) => {
+            return Err(ClientOperationError::Rpc {
+                code: "deadline_exceeded".to_owned(),
+            });
+        }
+    };
+    let mut executions = Vec::with_capacity(response.executions.len());
+    for info in response.executions {
+        let execution = info.execution.ok_or_else(|| {
+            ClientOperationError::Core(workflow_protocol::invalid_core(
+                "visibility row has no execution identity",
+            ))
+        })?;
+        let workflow_type = info.r#type.ok_or_else(|| {
+            ClientOperationError::Core(workflow_protocol::invalid_core(
+                "visibility row has no workflow type",
+            ))
+        })?;
+        executions.push(VisibilityExecution {
+            workflow_id: execution.workflow_id,
+            run_id: execution.run_id,
+            workflow_type: workflow_type.name,
+            task_queue: info.task_queue,
+            status: visibility_status(info.status)?,
+        });
+    }
+    Ok(VisibilityPage {
+        executions,
+        next_page_token: if response.next_page_token.is_empty() {
+            None
+        } else {
+            Some(base64::engine::general_purpose::STANDARD.encode(response.next_page_token))
+        },
+    })
 }
 
 /// Requests cancellation of one exact run through Temporal's official
@@ -1121,6 +1260,75 @@ fn validate_query_response(value: &QueryWorkflowResponse) -> Result<(), protocol
     Ok(())
 }
 
+/// Validates a visibility request before any RPC or token decoding occurs.
+fn validate_visibility_request(value: &VisibilityRequest) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.namespace, "$.namespace")?;
+    if value.query.len() > protocol::MAX_STRING_BYTES || value.query.contains('\0') {
+        return Err(protocol::ProtocolError::invalid(
+            "$.query",
+            "query exceeds the protocol string safety limit or contains NUL",
+        ));
+    }
+    if !(1..=1_000).contains(&value.page_size) {
+        return Err(protocol::ProtocolError::invalid(
+            "$.page_size",
+            "page_size must be between 1 and 1000",
+        ));
+    }
+    if let Some(token) = &value.next_page_token {
+        if token.len() > protocol::MAX_STRING_BYTES || token.contains('\0') {
+            return Err(protocol::ProtocolError::invalid(
+                "$.next_page_token",
+                "page token exceeds the protocol string safety limit or contains NUL",
+            ));
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(token)
+            .map_err(|_| {
+                protocol::ProtocolError::invalid("$.next_page_token", "invalid base64 page token")
+            })?;
+    }
+    Ok(())
+}
+
+/// Validates every reduced visibility row and the opaque continuation token.
+fn validate_visibility_page(value: &VisibilityPage) -> Result<(), protocol::ProtocolError> {
+    for (index, execution) in value.executions.iter().enumerate() {
+        let path = format!("$.executions[{index}]");
+        validate_identifier(&execution.workflow_id, &format!("{path}.workflow_id"))?;
+        validate_identifier(&execution.run_id, &format!("{path}.run_id"))?;
+        validate_identifier(&execution.workflow_type, &format!("{path}.workflow_type"))?;
+        validate_identifier(&execution.task_queue, &format!("{path}.task_queue"))?;
+        validate_identifier(&execution.status, &format!("{path}.status"))?;
+    }
+    if let Some(token) = &value.next_page_token {
+        base64::engine::general_purpose::STANDARD
+            .decode(token)
+            .map_err(|_| {
+                protocol::ProtocolError::invalid("$.next_page_token", "invalid base64 page token")
+            })?;
+    }
+    Ok(())
+}
+
+/// Converts Temporal's numeric visibility enum into a stable closed string.
+fn visibility_status(status: i32) -> Result<String, ClientOperationError> {
+    match status {
+        1 => Ok("running"),
+        2 => Ok("completed"),
+        3 => Ok("failed"),
+        4 => Ok("canceled"),
+        5 => Ok("terminated"),
+        6 => Ok("continued_as_new"),
+        7 => Ok("timed_out"),
+        8 => Ok("paused"),
+        _ => Err(ClientOperationError::Core(workflow_protocol::invalid_core(
+            "visibility row has an unknown execution status",
+        ))),
+    }
+    .map(str::to_owned)
+}
+
 /// Validates one execution reference.
 fn validate_execution(value: &ExecutionRef, path: &str) -> Result<(), protocol::ProtocolError> {
     validate_identifier(&value.namespace, &format!("{path}.namespace"))?;
@@ -1262,8 +1470,17 @@ fn validate_identifier(value: &str, path: &str) -> Result<(), protocol::Protocol
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::engine::general_purpose::STANDARD;
     use temporalio_client::tonic::codegen::Bytes;
+
+    #[test]
+    /// Unknown and omitted Temporal visibility enum values fail closed instead
+    /// of being converted into a valid-looking status string.
+    fn unknown_visibility_status_is_rejected() {
+        assert!(visibility_status(0).is_err());
+        assert!(visibility_status(99).is_err());
+        assert_eq!(visibility_status(1).unwrap(), "running");
+    }
 
     /// Builds the smallest valid start document used by strict-parser tests.
     fn start_json() -> String {

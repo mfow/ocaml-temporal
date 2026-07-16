@@ -366,6 +366,7 @@ module Native : sig
     namespace:string ->
     task_queue:string ->
     build_id:string ->
+    ?versioning:Temporal_core_bridge.Native_bridge.worker_versioning ->
     max_cached_workflows:int ->
     max_outstanding_workflow_tasks:int ->
     max_concurrent_workflow_task_polls:int ->

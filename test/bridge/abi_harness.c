@@ -115,7 +115,7 @@ int main(void) {
    * mutating the runtime graph or retaining a partial worker. */
   const uint8_t worker_config[] =
       "{\"namespace\":\"temporal-sdk-test\",\"task_queue\":\"abi-test\","
-      "\"build_id\":\"abi-test\",\"max_cached_workflows\":100,"
+      "\"build_id\":\"abi-test\",\"versioning\":{\"kind\":\"none\"},\"max_cached_workflows\":100,"
       "\"max_outstanding_workflow_tasks\":100,"
       "\"max_concurrent_workflow_task_polls\":5,"
       "\"graceful_shutdown_timeout_ms\":1000}";

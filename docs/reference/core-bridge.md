@@ -367,17 +367,25 @@ failure, and scheduler contracts.
 The OCaml wrapper constructs two private JSON documents; applications never
 assemble these strings themselves. The client document contains exactly
 `target_url` and `identity`. The worker document contains exactly `namespace`,
-`task_queue`, `build_id`, `max_cached_workflows`,
+`task_queue`, `build_id`, `versioning`, `max_cached_workflows`,
 `max_outstanding_workflow_tasks`, `max_concurrent_workflow_task_polls`, and
 `graceful_shutdown_timeout_ms`. Closed Draft 2020-12 schemas live under
 `docs/schemas/bridge/`.
+
+`versioning` is a closed object: `{ "kind": "none" }` preserves the existing
+unversioned worker behavior, while `{ "kind": "legacy_build_id", "build_id":
+"..." }` selects Temporal Core's legacy whole-worker build-ID routing. In the
+legacy form the nested build ID must exactly match the top-level `build_id`;
+both OCaml and Rust validate that invariant before worker construction.
 
 Temporal Core requires at least two workflow-task pollers when
 `max_cached_workflows` is non-zero. The OCaml validator, the Rust validator,
 and the JSON Schema all enforce that relationship before worker construction;
 the public native worker default is two pollers.
 
-The public `Temporal.Worker.create` accepts an optional
+The public `Temporal.Worker.create` accepts validated `Temporal.Worker.Options`
+for routing and resource policy. `Options.make ~versioning:(Legacy_build_id
+"build-v2") ()` enables legacy build-ID routing. It also accepts an optional
 `max_cached_workflows` bound for applications that need to tune sticky
 workflow memory. Omitting it retains the bounded default of 1,000 cached
 workflows. A zero value disables the Core cache, while a positive value can

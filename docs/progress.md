@@ -29,6 +29,17 @@ expanded cases against Temporal Server and PostgreSQL. It covers all three
 transitions with separately compiled workers, exact normalized history and
 marker assertions, worker handoff evidence, and cleanup.
 
+## 2026-07-16: Legacy build-ID worker routing boundary
+
+`Temporal.Worker.Options` now provides an immutable, typed construction
+surface for selecting `No_versioning` or legacy whole-worker build-ID routing.
+The OCaml bridge emits a closed `versioning` JSON object, and Rust rejects
+unknown modes, malformed nested fields, and mismatched repeated build IDs
+before constructing Temporal Core's `LegacyBuildIdBased` strategy. The bridge
+schema, raw ABI fixtures, OCaml option tests, and Rust mapping tests cover both
+the default and legacy paths. A dedicated live routing/compatibility gate and
+modern deployment-based versioning remain separate follow-up work.
+
 ## 2026-07-15: Workflow patch deprecation surface
 
 `Temporal.Workflow.deprecate_patch ~id` now records the lifecycle phase after

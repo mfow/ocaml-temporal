@@ -331,10 +331,25 @@ struct WorkerConfigInput {
     namespace: String,
     task_queue: String,
     build_id: String,
+    versioning: WorkerVersioningInput,
     max_cached_workflows: u32,
     max_outstanding_workflow_tasks: u32,
     max_concurrent_workflow_task_polls: u32,
     graceful_shutdown_timeout_ms: u64,
+}
+
+/// Explicit worker-routing mode carried across the OCaml/Rust JSON boundary.
+/// The tag is intentionally closed so a typo cannot silently fall back to an
+/// unversioned worker.  The top-level build ID is retained for both modes and
+/// the legacy payload must repeat the same value; this bilateral consistency
+/// check prevents routing metadata from diverging from worker identity.
+#[derive(Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+enum WorkerVersioningInput {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "legacy_build_id")]
+    LegacyBuildId { build_id: String },
 }
 
 impl Runtime {
@@ -2147,6 +2162,21 @@ impl WorkerConfigInput {
         validate_identifier("namespace", &self.namespace)?;
         validate_identifier("task_queue", &self.task_queue)?;
         validate_identifier("build_id", &self.build_id)?;
+        let versioning_strategy = match self.versioning {
+            WorkerVersioningInput::None => WorkerVersioningStrategy::None {
+                build_id: self.build_id,
+            },
+            WorkerVersioningInput::LegacyBuildId { build_id } => {
+                validate_identifier("versioning.build_id", &build_id)?;
+                if build_id != self.build_id {
+                    return Err(Failure {
+                        status: STATUS_CONFIGURATION,
+                        message: "versioning.build_id must match build_id".to_owned(),
+                    });
+                }
+                WorkerVersioningStrategy::LegacyBuildIdBased { build_id }
+            }
+        };
         validate_count("max_cached_workflows", self.max_cached_workflows, true)?;
         validate_count(
             "max_outstanding_workflow_tasks",
@@ -2182,9 +2212,7 @@ impl WorkerConfigInput {
                 self.max_concurrent_workflow_task_polls as usize,
             ))
             .graceful_shutdown_period(Duration::from_millis(self.graceful_shutdown_timeout_ms))
-            .versioning_strategy(WorkerVersioningStrategy::None {
-                build_id: self.build_id,
-            })
+            .versioning_strategy(versioning_strategy)
             .max_outstanding_activities(DEFAULT_MAX_OUTSTANDING_ACTIVITIES)
             .activity_task_poller_behavior(PollerBehavior::SimpleMaximum(
                 DEFAULT_MAX_CONCURRENT_ACTIVITY_POLLS,
@@ -3781,6 +3809,7 @@ mod worker_config_tests {
             namespace: "temporal-sdk-test".to_owned(),
             task_queue: "worker-config-test".to_owned(),
             build_id: "worker-config-test".to_owned(),
+            versioning: super::WorkerVersioningInput::None,
             max_cached_workflows: 100,
             max_outstanding_workflow_tasks: 100,
             max_concurrent_workflow_task_polls: pollers,
@@ -3825,6 +3854,38 @@ mod worker_config_tests {
         };
         assert_eq!(failure.status, STATUS_CONFIGURATION);
         assert!(failure.message.contains("namespace must not contain NUL"));
+    }
+
+    /// Maps the explicit legacy mode to Core's build-ID strategy instead of
+    /// merely retaining the build ID as metadata.
+    #[test]
+    fn legacy_build_id_selects_core_versioning_strategy() {
+        let mut worker = config(MIN_CACHED_WORKFLOW_POLLS);
+        worker.versioning = super::WorkerVersioningInput::LegacyBuildId {
+            build_id: worker.build_id.clone(),
+        };
+        let core = worker
+            .into_core()
+            .expect("matching legacy build ID should be accepted");
+        assert!(matches!(
+            core.versioning_strategy,
+            temporalio_sdk_core::WorkerVersioningStrategy::LegacyBuildIdBased { .. }
+        ));
+    }
+
+    /// Rejects a mismatched repeated build ID before Core construction so the
+    /// server cannot receive contradictory worker routing metadata.
+    #[test]
+    fn legacy_build_id_must_match_top_level_build_id() {
+        let mut worker = config(MIN_CACHED_WORKFLOW_POLLS);
+        worker.versioning = super::WorkerVersioningInput::LegacyBuildId {
+            build_id: "different-build".to_owned(),
+        };
+        let failure = worker
+            .into_core()
+            .expect_err("mismatched legacy build IDs must fail closed");
+        assert_eq!(failure.status, STATUS_CONFIGURATION);
+        assert_eq!(failure.message, "versioning.build_id must match build_id");
     }
 }
 

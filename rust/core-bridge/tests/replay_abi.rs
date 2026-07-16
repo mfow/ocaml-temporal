@@ -178,7 +178,7 @@ fn complete_follow_up_eviction(runtime: *mut Runtime) {
 /// are intentionally independent of a Temporal endpoint because replay feeds
 /// histories directly into Core and never opens a network client.
 fn worker_config() -> &'static [u8] {
-    br#"{"namespace":"default","task_queue":"replay","build_id":"abi-test","max_cached_workflows":0,"max_outstanding_workflow_tasks":1,"max_concurrent_workflow_task_polls":1,"graceful_shutdown_timeout_ms":1000}"#
+    br#"{"namespace":"default","task_queue":"replay","build_id":"abi-test","versioning":{"kind":"none"},"max_cached_workflows":0,"max_outstanding_workflow_tasks":1,"max_concurrent_workflow_task_polls":1,"graceful_shutdown_timeout_ms":1000}"#
 }
 
 #[test]

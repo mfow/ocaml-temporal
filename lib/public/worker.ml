@@ -7,6 +7,65 @@ type registered_workflow =
       * Update.Handler.t list ->
       registered_workflow
 
+(** Immutable validated settings for one worker construction. Keeping this
+    record private means the public API cannot construct an invalid legacy
+    build ID or cache bound that would fail later during native startup. *)
+module Options = struct
+  type versioning =
+    | No_versioning
+    | Legacy_build_id of string
+
+  type t = {
+    versioning : versioning;
+    max_cached_workflows : int option;
+  }
+
+  let default = { versioning = No_versioning; max_cached_workflows = None }
+
+  (** Checks the bridge's transport-level identifier invariants before an
+      option value can be retained by a caller. *)
+  let validate_build_id value =
+    if String.equal value "" then
+      Error (Error.defect ~message:"build_id must not be empty")
+    else if String.contains value '\000' then
+      Error (Error.defect ~message:"build_id must not contain NUL")
+    else if String.length value > 65_536 then
+      Error
+        (Error.defect
+           ~message:"build_id exceeds 65536 UTF-8 bytes")
+    else Ok ()
+
+  (** Validates the optional sticky-cache override using the same bounded
+      resource policy enforced again by the private native bridge. *)
+  let validate_cache = function
+    | None -> Ok ()
+    | Some value when value >= 0 && value <= 1_000_000 -> Ok ()
+    | Some _ ->
+        Error
+          (Error.defect
+             ~message:
+               "max_cached_workflows must be between 0 and 1000000")
+
+  (** Builds an immutable option value after validating every user-supplied
+      field. Rust repeats these checks because JSON is an independent trust
+      boundary, not because callers should normally see duplicate failures. *)
+  let make ?(versioning = No_versioning) ?max_cached_workflows () =
+    let build_id_validation =
+      match versioning with
+      | No_versioning -> Ok ()
+      | Legacy_build_id build_id -> validate_build_id build_id
+    in
+    match build_id_validation with
+    | Error _ as error -> error
+    | Ok () ->
+        Result.map
+          (fun () -> { versioning; max_cached_workflows })
+          (validate_cache max_cached_workflows)
+
+  let versioning options = options.versioning
+  let max_cached_workflows options = options.max_cached_workflows
+end
+
 (** Heterogeneous activity registration package. *)
 type registered_activity =
   | Activity : ('input, 'output) Activity.t -> registered_activity
@@ -179,8 +238,32 @@ let collect_activities definitions =
 
 (** Creates the private backend only after all local registration invariants are
     proven. This ordering prevents leaked graphs on invalid definitions. *)
-let create ?(identity = default_identity) ?max_cached_workflows ~target_url
+let resolve_options options max_cached_workflows =
+  match (options, max_cached_workflows) with
+  | Some _, Some _ ->
+      Error
+        (Error.defect
+           ~message:
+             "Worker.create accepts either ~options or ~max_cached_workflows, not both")
+  | Some options, None -> Ok options
+  | None, Some max_cached_workflows ->
+      Options.make ~max_cached_workflows ()
+  | None, None -> Ok Options.default
+
+let create ?(identity = default_identity) ?options ?max_cached_workflows
+    ~target_url
     ~namespace ~task_queue ~workflows ~activities () =
+  match resolve_options options max_cached_workflows with
+  | Error error -> Error error
+  | Ok options ->
+    let effective_max_cached_workflows =
+      Options.max_cached_workflows options
+    in
+    let legacy_build_id =
+      match Options.versioning options with
+      | Options.No_versioning -> None
+      | Options.Legacy_build_id build_id -> Some build_id
+    in
   match validate_name "namespace" namespace with
   | Error error -> Error error
   | Ok () -> (
@@ -244,7 +327,9 @@ let create ?(identity = default_identity) ?max_cached_workflows ~target_url
                                        (Activity_private.to_base definition))
                         in
                         let native_result =
-                          Native_worker.create ?max_cached_workflows ~target_url
+                          Native_worker.create
+                            ?max_cached_workflows:effective_max_cached_workflows
+                            ?legacy_build_id ~target_url
                             ~namespace ~identity
                             ~task_queue ~workflows:native_workflows
                             ~activities:native_activities ()

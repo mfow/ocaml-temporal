@@ -20,8 +20,12 @@ result="$fixture/.child-failure-replay-result"
 diagnostics="$fixture/.child-failure-replay-diagnostics.json"
 driver_log="$fixture/.child-failure-replay-driver.log"
 controller="$fixture/.child-failure-replay-controller.json"
-worker_one_stopped="$fixture/.child-failure-replay-worker-one-stopped"
-worker_two_stopped="$fixture/.child-failure-replay-worker-two-stopped"
+# The failure-replay scenario reuses the parent-child-restart Compose worker
+# services. Their stopped-marker paths are part of that service contract, so
+# the controller must read those exact bind-mounted files rather than a
+# scenario-specific pathname that the worker never receives.
+worker_one_stopped="$fixture/.parent-child-restart-worker-one-stopped"
+worker_two_stopped="$fixture/.parent-child-restart-worker-two-stopped"
 parent_raw="$fixture/.child-failure-replay-parent.raw.json"
 child_raw="$fixture/.child-failure-replay-child.raw.json"
 parent_describe="$fixture/.child-failure-replay-parent.describe.json"

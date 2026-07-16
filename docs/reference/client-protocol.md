@@ -384,12 +384,12 @@ the focused and complete live evidence for this client operation.
 ## Query one exact run
 
 The public `Temporal.Client.query` operation asks Temporal to evaluate a
-read-only query handler for the exact workflow/run identity retained by a
-typed client handle. The first client slice intentionally supports output-only
-query definitions (`Temporal.Query.t` handlers receive `unit`); query
-arguments and suspended query continuations remain a separate interaction
-surface. A successful call returns the handler's typed value after decoding the
-single result payload with the query definition's codec.
+read-only output-only query handler for the exact workflow/run identity retained
+by a typed client handle. `Temporal.Client.query_with_input` uses the same
+transport for a `Temporal.Query.define_with_input` definition and sends exactly
+one encoded argument. Query handlers remain synchronous and non-suspending; a
+successful call returns the handler's typed value after decoding the single
+result payload with the query definition's codec.
 
 The private request is a closed JSON object:
 
@@ -399,15 +399,16 @@ The private request is a closed JSON object:
   "workflow_id": "summarize-1",
   "run_id": "server-assigned-run-id",
   "query_type": "current_state",
-  "input": []
+"input": []
 }
 ```
 
 `run_id` is mandatory, so a query cannot accidentally inspect a different
 execution after continued-as-new. OCaml and Rust validate every identifier,
 reject unknown and duplicate members, and validate each payload in `input`
-before entering the FFI; the public API currently requires that list to be
-empty. Rust wraps the list in Temporal's `WorkflowQuery.query_args`, sets the
+before entering the FFI; output-only queries send an empty list and typed
+queries send exactly one payload. Rust wraps the list in Temporal's
+`WorkflowQuery.query_args`, sets the
 non-rejecting query condition, and calls the official `QueryWorkflow` RPC.
 
 On success Rust returns:

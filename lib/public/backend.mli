@@ -80,13 +80,15 @@ type signal_request = {
   input : Payload.t;
 }
 
-(** Exact workflow/run pair and output-only query definition name. The
+(** Exact workflow/run identity and encoded query arguments. Output-only
+    queries use an empty list; typed-input queries use one payload. The
     connected client supplies the namespace when adapting this request to the
     closed native protocol. *)
 type query_request = {
   workflow_id : string;
   run_id : string;
   query_name : string;
+  input : Payload.t list;
 }
 
 (** One bounded visibility query. The continuation token is opaque to callers

@@ -94,8 +94,40 @@ let query dispatcher definition =
               Error
                 (Error.defect
                    ~message:
-                     (Printf.sprintf "query output codec raised: %s"
-                        (Printexc.to_string exception_)))))
+                   (Printf.sprintf "query output codec raised: %s"
+                      (Printexc.to_string exception_)))))
+
+(** Routes a typed one-input query through the local dispatcher.  This mirrors
+    [Client.query_with_input] without involving the native transport, which
+    makes deterministic unit tests exercise the same codec and name checks. *)
+let query_with_input dispatcher definition input =
+  match Codec.encode (Query.input definition) input with
+  | exception exception_ ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "query input codec raised: %s"
+                (Printexc.to_string exception_)))
+  | Error error -> Error error
+  | Ok encoded_input -> (
+      match Name_map.find_opt (Query.name_with_input definition) dispatcher.queries with
+      | None ->
+          missing_handler ~kind:"query" ~name:(Query.name_with_input definition)
+            ~category:`Workflow
+      | Some handler -> (
+          match
+            Query.Handler.dispatch_payloads handler [ encoded_input ]
+          with
+          | Error error -> Error error
+          | Ok payload -> (
+              match Codec.decode (Query.output_with_input definition) payload with
+              | result -> result
+              | exception exception_ ->
+                  Error
+                    (Error.defect
+                       ~message:
+                         (Printf.sprintf "query output codec raised: %s"
+                            (Printexc.to_string exception_))))))
 
 (** Encodes an update request, dispatches the validator/implementation pair,
     and decodes its result. The handler owns the validator order; this wrapper

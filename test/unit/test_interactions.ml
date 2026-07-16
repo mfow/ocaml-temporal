@@ -90,6 +90,27 @@ let test_dispatch_and_ordering () =
     (unwrap (Temporal.Interaction.update dispatcher update "ready") = "READY");
   assert (!update_calls = 1)
 
+(** Typed query arguments are decoded before the callback and re-encoded after
+    it.  The local dispatcher also proves that the output-only handler cannot
+    accidentally accept a non-empty payload list. *)
+let test_typed_query_arguments () =
+  let query =
+    Temporal.Query.define_with_input ~name:"length-of" ~input:Temporal.Codec.string
+      ~output:Temporal.Codec.string
+  in
+  let handler =
+    Temporal.Query.Handler.make_with_input query (fun value ->
+        Ok (string_of_int (String.length value)))
+  in
+  let dispatcher =
+    unwrap (Temporal.Interaction.create ~queries:[ handler ] ())
+  in
+  assert
+    (unwrap (Temporal.Interaction.query_with_input dispatcher query "hello") = "5");
+  let payload = unwrap (Temporal.Codec.encode Temporal.Codec.string "unexpected") in
+  expect_error_kind "defect"
+    (Temporal.Query.Handler.dispatch_payloads handler [ payload; payload ])
+
 (** Duplicate names are rejected while building a dispatcher, and unknown
     definitions fail before any callback can run. *)
 let test_registration_and_missing_handlers () =
@@ -248,6 +269,7 @@ let test_update_handler_codec_exception_containment () =
 (** Runs all interaction assertions. *)
 let () =
   test_dispatch_and_ordering ();
+  test_typed_query_arguments ();
   test_registration_and_missing_handlers ();
   test_codec_mismatch ();
   test_exception_containment ();

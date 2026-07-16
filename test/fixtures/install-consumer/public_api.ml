@@ -407,8 +407,22 @@ let _query_define :
     name:string -> output:'output T.Codec.t -> 'output T.Query.t =
   T.Query.define
 
+let _query_define_with_input :
+    name:string ->
+    input:'input T.Codec.t ->
+    output:'output T.Codec.t ->
+    ('input, 'output) T.Query.typed =
+  T.Query.define_with_input
+
 let _query_name : 'output T.Query.t -> string = T.Query.name
 let _query_output : 'output T.Query.t -> 'output T.Codec.t = T.Query.output
+let _query_name_with_input : ('input, 'output) T.Query.typed -> string =
+  T.Query.name_with_input
+let _query_input : ('input, 'output) T.Query.typed -> 'input T.Codec.t =
+  T.Query.input
+let _query_output_with_input :
+    ('input, 'output) T.Query.typed -> 'output T.Codec.t =
+  T.Query.output_with_input
 
 let _query_handler_make :
     'output T.Query.t ->
@@ -421,10 +435,23 @@ let _query_handler_handle :
     (unit -> ('output, T.Error.t) result) ->
     T.Query.Handler.t =
   T.Query.Handler.handle
+let _query_handler_make_with_input :
+    ('input, 'output) T.Query.typed ->
+    ('input -> ('output, T.Error.t) result) ->
+    T.Query.Handler.t =
+  T.Query.Handler.make_with_input
+let _query_handler_handle_with_input :
+    ('input, 'output) T.Query.typed ->
+    ('input -> ('output, T.Error.t) result) ->
+    T.Query.Handler.t =
+  T.Query.Handler.handle_with_input
 let _query_handler_name : T.Query.Handler.t -> string = T.Query.Handler.name
 let _query_handler_dispatch :
     T.Query.Handler.t -> (T.Payload.t, T.Error.t) result =
   T.Query.Handler.dispatch
+let _query_handler_dispatch_payloads :
+    T.Query.Handler.t -> T.Payload.t list -> (T.Payload.t, T.Error.t) result =
+  T.Query.Handler.dispatch_payloads
 
 let _update_define :
     name:string ->
@@ -470,6 +497,12 @@ let _interaction_signal :
 let _interaction_query :
     T.Interaction.t -> 'output T.Query.t -> ('output, T.Error.t) result =
   T.Interaction.query
+
+let _interaction_query_with_input :
+    T.Interaction.t ->
+    ('input, 'output) T.Query.typed ->
+    'input -> ('output, T.Error.t) result =
+  T.Interaction.query_with_input
 
 let _interaction_update :
     T.Interaction.t ->
@@ -539,6 +572,12 @@ let _client_query :
     query:'query T.Query.t ->
     ('query, T.Error.t) result =
   T.Client.query
+
+let _client_query_with_input :
+    ('workflow_input, 'workflow_output) T.Client.handle ->
+    query:('input, 'query) T.Query.typed ->
+    input:'input -> ('query, T.Error.t) result =
+  T.Client.query_with_input
 
 let _client_workflow_id :
     ('input, 'output) T.Client.handle -> string =

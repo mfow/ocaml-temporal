@@ -35,6 +35,10 @@ val signal : t -> 'input Signal.t -> 'input -> (unit, Error.t) result
     safe. *)
 val query : t -> 'output Query.t -> ('output, Error.t) result
 
+(** Routes a one-input typed query locally and decodes its typed result. *)
+val query_with_input :
+  t -> ('input, 'output) Query.typed -> 'input -> ('output, Error.t) result
+
 (** Encodes an update request, runs the registered validator before its
     implementation, and decodes the typed result. A rejected validator never
     invokes the implementation. *)

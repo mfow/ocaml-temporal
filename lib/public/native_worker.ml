@@ -219,28 +219,19 @@ let runtime_signal_handler (handler : Signal.Handler.t) =
                     name)
                ()))
 
-(** Converts one public output-only query handler into the private synchronous
-    callback package. Query arguments and headers remain available at the
-    boundary; until a typed-input public API exists, non-empty arguments fail
-    closed rather than being ignored. The callback is executed inline on the
-    worker owner Domain and cannot retain a workflow continuation. *)
+(** Converts one public query handler into the private synchronous callback
+    package. The handler owns the typed payload decoding boundary, so both
+    output-only and one-input queries reject malformed arity without dropping
+    data. The callback is executed inline on the worker owner Domain and
+    cannot retain a workflow continuation. *)
 let runtime_query_handler (handler : Query.Handler.t) =
   let name = Query.Handler.name handler in
   Workflow_adapter.make_query_handler ~name ~dispatch:(fun query ->
-      match Workflow_adapter.query_arguments query with
-      | [] ->
-          Query.Handler.dispatch handler
-          |> Result.map Payload_private.to_base
-          |> Result.map_error Error_private.to_base
-      | _ ->
-          Error
-            (Base_error.make ~non_retryable:true ~category:`Workflow
-               ~message:
-                 (Printf.sprintf
-                    "query %s received arguments but its OCaml handler is \
-                     output-only"
-                    name)
-               ()))
+      Query.Handler.dispatch_payloads handler
+        (List.map Payload_private.of_base
+           (Workflow_adapter.query_arguments query))
+      |> Result.map Payload_private.to_base
+      |> Result.map_error Error_private.to_base)
 
 (** Converts one public update handler into the private runtime callback. The
     public API currently accepts one input payload; an update activation with

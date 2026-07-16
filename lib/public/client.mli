@@ -174,9 +174,9 @@ val signal :
   (unit, Error.t) result
 
 (** Executes an output-only query against the exact run retained by [handle].
-    The query handler receives no input in this first client slice. A
-    successful result is decoded with [query]'s output codec; routine Temporal
-    query failures and codec failures are returned as typed [Error.t] values. *)
+    A successful result is decoded with [query]'s output codec; routine
+    Temporal query failures and codec failures are returned as typed [Error.t]
+    values. Use [query_with_input] when the query accepts one typed argument. *)
 val query :
   ('workflow_input, 'workflow_output) handle ->
   query:'query Query.t ->
@@ -192,6 +192,17 @@ val list_visibility :
   query:string ->
   unit ->
   (visibility_page, Error.t) result
+
+(** Executes a typed one-input query against the exact run retained by
+    [handle]. The input is encoded with [query]'s codec before transport and
+    the result is decoded with its output codec. Query handlers remain
+    synchronous and read-only; routine Temporal failures are returned as
+    typed errors. *)
+val query_with_input :
+  ('workflow_input, 'workflow_output) handle ->
+  query:('query_input, 'query_output) Query.typed ->
+  input:'query_input ->
+  ('query_output, Error.t) result
 
 (** Returns the durable workflow ID supplied to [start]. *)
 val workflow_id : ('input, 'output) handle -> string

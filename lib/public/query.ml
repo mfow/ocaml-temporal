@@ -12,6 +12,18 @@ type 'output definition = {
    [Handler.t] name inside the existential package. *)
 type 'output t = 'output definition
 
+(* A query with one typed input value.  Keeping this as a separate public
+   type preserves source compatibility for existing output-only queries while
+   allowing new handlers to use the payload list already supported by the
+   native protocol. *)
+type ('input, 'output) typed_definition = {
+  name : string;
+  input : 'input Codec.t;
+  output : 'output Codec.t;
+}
+
+type ('input, 'output) typed = ('input, 'output) typed_definition
+
 (* Keep interaction names aligned with the strict native identifier contract. *)
 let max_name_bytes = 65_536
 
@@ -30,52 +42,131 @@ let define ~name ~output =
   validate_name name;
   { name; output }
 
+(** Creates a query definition whose handler receives one value decoded with
+    [input].  The native bridge still carries an ordered payload list; the
+    public API deliberately accepts exactly one typed value so arity errors
+    remain explicit rather than silently dropping arguments. *)
+let define_with_input ~name ~input ~output =
+  validate_name name;
+  { name; input; output }
+
 (** Returns the stable query name. *)
-let name query = query.name
+let name (query : 'output t) = query.name
+
+(** Returns the stable name of a typed-input query. *)
+let name_with_input (query : ('input, 'output) typed) = query.name
 
 (** Returns the query result codec. *)
-let output query = query.output
+let output (query : 'output t) = query.output
+
+(** Returns the codec used to decode a typed query's input. *)
+let input (query : ('input, 'output) typed) = query.input
+
+(** Returns the codec used to decode a typed query's result. *)
+let output_with_input (query : ('input, 'output) typed) = query.output
 
 module Handler = struct
   (** A handler retains its query definition and callback as one existential
       package, preventing output codec mismatches in a registry. *)
   type t = Handler : {
-    definition : 'output definition;
-    implementation : unit -> ('output, Error.t) result;
+    name : string;
+    (* The payload-level closure is the single existential boundary.  It
+       decodes typed arguments and encodes typed results before the runtime
+       sees the handler, so no unsafe cast or scheduler state crosses here. *)
+    dispatch_payloads : Payload.t list -> (Payload.t, Error.t) result;
   } -> t
 
   (** Associates a read-only callback with [query]. *)
-  let make query implementation = Handler { definition = query; implementation }
+  let make (query : 'output definition) implementation =
+    Handler
+      {
+        name = query.name;
+        dispatch_payloads = (fun payloads ->
+          match payloads with
+          | [] -> (
+              let result =
+                try implementation () with
+                | exception_ ->
+                    Error
+                      (Error.defect
+                         ~message:
+                           (Printf.sprintf "query handler raised: %s"
+                              (Printexc.to_string exception_)))
+              in
+              match result with
+              | Error _ as error -> error
+              | Ok value -> (
+                  try Codec.encode query.output value with
+                  | exception_ ->
+                      Error
+                        (Error.defect
+                           ~message:
+                             (Printf.sprintf "query output codec raised: %s"
+                                (Printexc.to_string exception_)))))
+          | _ ->
+              Error
+                (Error.defect
+                   ~message:"output-only query received an input payload"));
+      }
+
+  (** Associates a one-input callback with [query]. Input and output codecs
+      are applied inside the handler closure, which keeps worker dispatch
+      independent of the existential input type. *)
+  let make_with_input (query : ('input, 'output) typed) implementation =
+    Handler
+      {
+        name = query.name;
+        dispatch_payloads = (fun payloads ->
+          match payloads with
+          | [ payload ] -> (
+              match Codec.decode query.input payload with
+              | Error error -> Error error
+              | Ok value -> (
+                  let result =
+                    try implementation value with
+                    | exception_ ->
+                        Error
+                          (Error.defect
+                             ~message:
+                               (Printf.sprintf "query handler raised: %s"
+                                  (Printexc.to_string exception_)))
+                  in
+                  match result with
+                  | Error _ as error -> error
+                  | Ok output -> (
+                      try Codec.encode query.output output with
+                      | exception_ ->
+                          Error
+                            (Error.defect
+                               ~message:
+                                 (Printf.sprintf
+                                    "query output codec raised: %s"
+                                    (Printexc.to_string exception_))))))
+          | [] ->
+              Error
+                (Error.defect
+                   ~message:"typed query requires exactly one input payload")
+          | _ ->
+              Error
+                (Error.defect
+                   ~message:"typed query received multiple input payloads"));
+      }
 
   (** Registration-friendly alias for [make]. *)
-  let handle = make
+  let handle : 'output definition -> (unit -> ('output, Error.t) result) -> t = make
+
+  (** Registration-friendly alias for one-input handlers. *)
+  let handle_with_input = make_with_input
 
   (** Returns the name used by the dispatcher. *)
-  let name (Handler { definition; _ }) = definition.name
+  let name (Handler { name; _ }) = name
 
   (** Runs the query callback and encodes its output. Callback exceptions are
       converted to defects so they cannot tear down the dispatcher; a raising
       output codec is contained the same way so it cannot escape dispatch
       half-applied. *)
-  let dispatch (Handler { definition; implementation }) =
-    let result =
-      try implementation () with
-      | exception_ ->
-          Error
-            (Error.defect
-               ~message:
-                 (Printf.sprintf "query handler raised: %s"
-                    (Printexc.to_string exception_)))
-    in
-    match result with
-    | Error _ as error -> error
-    | Ok value -> (
-        match Codec.encode definition.output value with
-        | result -> result
-        | exception exception_ ->
-            Error
-              (Error.defect
-                 ~message:
-                   (Printf.sprintf "query output codec raised: %s"
-                      (Printexc.to_string exception_))))
+  let dispatch_payloads (Handler { dispatch_payloads; _ }) =
+    dispatch_payloads
+
+  let dispatch handler = dispatch_payloads handler []
 end

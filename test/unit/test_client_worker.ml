@@ -399,10 +399,9 @@ let test_exact_run_cancellation () =
   (match Temporal.Client.wait handle with
   | Ok (Temporal.Client.Cancelled error) ->
       let view = Temporal.Error.view error in
-      assert (Temporal.Error.kind error = "terminated");
-      assert (view.category = `Terminated);
-      assert view.non_retryable;
       assert (not view.non_retryable);
+      assert (Temporal.Error.kind error = "cancelled");
+      assert (view.category = `Cancelled);
       assert (view.message = "workflow execution was cancelled")
   | Ok _ -> failwith "cancelled mock returned a non-cancelled terminal result"
   | Error error -> failwith (Temporal.Error.message error));
@@ -427,8 +426,9 @@ let test_exact_run_termination () =
   (match Temporal.Client.wait handle with
   | Ok (Temporal.Client.Terminated error) ->
       let view = Temporal.Error.view error in
-      assert (Temporal.Error.kind error = "cancelled");
-      assert (view.category = `Cancelled);
+      assert (Temporal.Error.kind error = "terminated");
+      assert (view.category = `Terminated);
+      assert view.non_retryable;
       assert (view.message = "workflow execution was terminated")
   | Ok _ -> failwith "terminated mock returned a non-terminated terminal result"
   | Error error -> failwith (Temporal.Error.message error));

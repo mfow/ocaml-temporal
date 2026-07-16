@@ -335,7 +335,8 @@ let generated_cancel_request_id (handle : ('input, 'output) handle) =
 (** Sends a cancellation request for one exact run and returns only after the
     server acknowledgement has been decoded. This operation is deliberately
     separate from [wait], because Temporal cancellation is asynchronous. *)
-let cancel ?request_id ?(reason = "") handle =
+let cancel ?request_id ?(reason = "")
+    (handle : ('workflow_input, 'workflow_output) handle) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -467,7 +468,9 @@ let generated_signal_request_id () =
 (** Sends one typed signal to the exact run retained by [handle]. The input is
     encoded before the backend call, and success means only that Temporal
     acknowledged the RPC; workflow code may process it asynchronously. *)
-let signal ?request_id handle ~(signal : 'signal Signal.t) ~input =
+let signal ?request_id
+    (handle : ('workflow_input, 'workflow_output) handle)
+    ~(signal : 'signal Signal.t) ~input =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -499,7 +502,8 @@ let signal ?request_id handle ~(signal : 'signal Signal.t) ~input =
     workflow-side [Query] definition is already output-only, and the result is
     decoded with the definition's codec only after the native bridge has
     validated the response payload. *)
-let query handle ~(query : 'query Query.t) =
+let query (handle : ('workflow_input, 'workflow_output) handle)
+    ~(query : 'query Query.t) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())

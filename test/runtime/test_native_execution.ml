@@ -796,10 +796,10 @@ let test_update_handler_can_suspend () =
                 } ]))
   in
   begin match waiting.commands with
-  | [ Protocol.Schedule_activity { seq = 2L; _ };
-      Protocol.Update_response
+  | [ Protocol.Update_response
         { protocol_instance_id = "suspended-update-protocol";
-          response = Update_accepted } ] ->
+          response = Update_accepted };
+      Protocol.Schedule_activity { seq = 2L; _ } ] ->
       ()
   | _ ->
       failwith

@@ -78,7 +78,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-api release-preflight test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-temporal-worker-cache-eviction-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live test-temporal-parent-child-restart test-temporal-parent-child-restart-contract test-temporal-parent-child-restart-live test-temporal-parent-child-failure-replay test-temporal-parent-child-failure-replay-contract test-temporal-parent-child-failure-replay-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-api release-preflight release-tag-check test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-temporal-worker-cache-eviction-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live test-temporal-parent-child-restart test-temporal-parent-child-restart-contract test-temporal-parent-child-restart-live test-temporal-parent-child-failure-replay test-temporal-parent-child-failure-replay-contract test-temporal-parent-child-failure-replay-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -127,8 +127,16 @@ test-install:
 # compatibility gate without knowing the package-layout test's implementation.
 test-api: test-install
 
+# Validates a concrete vMAJOR.MINOR.PATCH tag against the package manifests.
+# This is deliberately host-only so a release cannot spend time building an
+# artifact whose version metadata is inconsistent.
+release-tag-check:
+	@test -n "$(RELEASE_TAG)" || { echo "set RELEASE_TAG=vMAJOR.MINOR.PATCH" >&2; exit 2; }
+	sh scripts/check-release-tag.sh . "$(RELEASE_TAG)"
+
 test-quality-contract:
 	sh test/smoke/test_quality_contract.sh .
+	sh test/smoke/test_release_tag_contract.sh .
 
 test-temporal-config:
 	sh test/smoke/test_temporal_compose_config.sh

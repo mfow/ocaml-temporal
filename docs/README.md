@@ -47,7 +47,8 @@ The remaining reference documents are useful when changing one subsystem:
 - [Native workflow interactions](design/native-interactions.md) specifies the
   Core-to-Rust-to-OCaml mapping for signals, queries, and updates, including
   response timing, replay rules, validation, the implemented signal boundary,
-  the immediate update boundary, and the remaining suspended-update work.
+  the immediate and suspended update boundaries, and the remaining live
+  query/update acceptance work.
 - [OCaml SDK logging](reference/observability.md) documents log sources, tags,
   levels, privacy, and Domain behavior.
 - [Local Temporal stack](reference/local-temporal-stack.md) documents the

@@ -93,6 +93,9 @@ val client_cancel_workflow_json : runtime -> bytes -> (bytes, error) result
     process the signal. *)
 val client_signal_workflow_json : runtime -> bytes -> (bytes, error) result
 
+(** Lists one bounded visibility page through Rust's official client. *)
+val client_list_visibility_json : runtime -> bytes -> (bytes, error) result
+
 (** Executes one output-only query against one exact workflow run. *)
 val client_query_workflow_json : runtime -> bytes -> (bytes, error) result
 

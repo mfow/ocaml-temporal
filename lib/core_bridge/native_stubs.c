@@ -493,6 +493,14 @@ CAMLprim value ocaml_temporal_client_signal_workflow_json(value runtime,
       runtime, input, ocaml_temporal_core_v1_client_signal_workflow_json);
 }
 
+/* List one bounded visibility page. The input is copied before the OCaml
+ * runtime lock is released and the returned JSON is copied back by invoke. */
+CAMLprim value ocaml_temporal_client_list_visibility_json(value runtime,
+                                                          value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_client_list_visibility_json);
+}
+
 /* Execute one output-only query against one exact workflow run. The JSON
  * input is copied before the OCaml runtime lock is released; Rust owns the
  * Temporal protobuf request and returns only an owned JSON response. */

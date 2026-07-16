@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/schemas/bridge/client-visibility-response.schema.json",
+  "title": "OCaml Temporal visibility response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["executions", "next_page_token"],
+  "properties": {
+    "executions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workflow_id", "run_id", "workflow_type", "task_queue", "status"],
+        "properties": {
+          "workflow_id": { "type": "string", "minLength": 1, "maxLength": 65536 },
+          "run_id": { "type": "string", "minLength": 1, "maxLength": 65536 },
+          "workflow_type": { "type": "string", "minLength": 1, "maxLength": 65536 },
+          "task_queue": { "type": "string", "minLength": 1, "maxLength": 65536 },
+          "status": {
+            "type": "string",
+            "enum": ["running", "completed", "failed", "canceled", "terminated", "continued_as_new", "timed_out", "paused", "unspecified"]
+          }
+        }
+      }
+    },
+    "next_page_token": { "type": ["string", "null"], "maxLength": 65536 }
+  }
+}

@@ -75,6 +75,29 @@ type query_request = {
 type query_response = { result : payload list }
 (** Ordered payloads returned by a successful workflow query. *)
 
+type visibility_request = {
+  namespace : string;
+  query : string;
+  page_size : int;
+  next_page_token : string option;
+}
+(** One explicitly bounded visibility page request. The token is opaque base64. *)
+
+type visibility_execution = {
+  workflow_id : string;
+  run_id : string;
+  workflow_type : string;
+  task_queue : string;
+  status : string;
+}
+(** Stable subset of Temporal visibility metadata exposed by this SDK. *)
+
+type visibility_page = {
+  executions : visibility_execution list;
+  next_page_token : string option;
+}
+(** One visibility page and its optional opaque continuation token. *)
+
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -158,6 +181,12 @@ val encode_query_request : query_request -> (string, error) result
 
 val decode_query_response : string -> (query_response, error) result
 (** Strictly decodes one successful query result payload list. *)
+
+val encode_visibility_request : visibility_request -> (string, error) result
+(** Validates and serializes one bounded visibility request. *)
+
+val decode_visibility_response : string -> (visibility_page, error) result
+(** Strictly decodes one visibility page returned by Rust. *)
 
 val decode_wait_response : request:wait_request -> string -> (wait_response, error) result
 (** Strictly decodes one terminal exact-run response and verifies that the

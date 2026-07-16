@@ -218,6 +218,8 @@ module Native : sig
     (** Decodes the signal acknowledgement and preserves structured server
         failures as an inner typed result. *)
 
+    (** Decodes query result payloads and preserves structured server failures
+        as an inner typed result. *)
     val decode_client_query_result :
       (bytes, Temporal_core_bridge.Native_bridge.error) result ->
       ( ( Temporal_protocol.Client_protocol.payload list,
@@ -225,8 +227,16 @@ module Native : sig
         result,
         Temporal_core_bridge.Native_bridge.error )
       result
-    (** Decodes query result payloads and preserves structured server failures
-        as an inner typed result. *)
+    val encode_client_visibility_request :
+      Temporal_protocol.Client_protocol.visibility_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one bounded visibility request. *)
+
+    val decode_client_visibility_result :
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      (Temporal_protocol.Client_protocol.visibility_page,
+       Temporal_core_bridge.Native_bridge.error) result
+    (** Strictly decodes one visibility page returned by Rust. *)
   end
 
   (** Validated client settings whose representation remains bridge-private. *)
@@ -280,6 +290,10 @@ module Native : sig
         (unit, Temporal_protocol.Client_protocol.client_error) result operation
         (** Sends one signal to one exact run. The acknowledgement does not
             itself prove that workflow code has processed the signal. *)
+    | Client_list_visibility_workflows :
+        Temporal_protocol.Client_protocol.visibility_request ->
+        Temporal_protocol.Client_protocol.visibility_page operation
+        (** Lists one bounded visibility page. *)
     | Client_query_workflow :
         Temporal_protocol.Client_protocol.query_request ->
         ( Temporal_protocol.Client_protocol.payload list,

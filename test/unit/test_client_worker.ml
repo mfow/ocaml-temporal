@@ -286,6 +286,36 @@ let test_typed_start_and_wait_handle () =
     (Temporal.Client.start client ~workflow:echo_workflow
        ~task_queue:"unit-test" ~id:"after-shutdown" ~input:"ignored" ())
 
+(** The deterministic client seam exposes the same visibility row shape as the
+    native adapter. Starting two workflows proves rows retain type, queue,
+    exact run identity, and monotone running status before waits complete. *)
+let test_client_visibility_listing () =
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  ignore
+    (unwrap
+       (Temporal.Client.start client ~workflow:echo_workflow
+          ~task_queue:"unit-test" ~id:"visibility-a" ~input:"a" ()));
+  ignore
+    (unwrap
+       (Temporal.Client.start client ~workflow:echo_workflow
+          ~task_queue:"unit-test" ~id:"visibility-b" ~input:"b" ()));
+  let page = unwrap (Temporal.Client.list_visibility client ~query:"" ()) in
+  (match page.executions with
+  | [ first; second ] ->
+      assert (first.workflow_id = "visibility-a");
+      assert (second.workflow_id = "visibility-b");
+      assert (first.workflow_type = "unit.echo");
+      assert (first.task_queue = "unit-test");
+      assert (first.status = "running")
+  | _ -> failwith "visibility listing returned an unexpected row count");
+  expect_error "defect"
+    (Temporal.Client.list_visibility client ~page_size:0 ~query:"" ());
+  unwrap (Temporal.Client.shutdown client)
+
 (** A continuation identity can be turned back into a typed exact-run handle
     without starting a second execution. Using the mock ledger's existing run
     proves the returned handle retained the workflow's output codec: [wait]
@@ -625,6 +655,7 @@ let () =
   test_mock_worker_rejects_async_activity_without_stopping ();
   test_worker_run_after_shutdown_is_rejected ();
   test_typed_start_and_wait_handle ();
+  test_client_visibility_listing ();
   test_follow_continued_as_new_handle ();
   test_follow_rejects_malformed_successor_identity ();
   test_follow_rejects_cross_namespace_execution ();

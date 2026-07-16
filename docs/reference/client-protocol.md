@@ -588,3 +588,30 @@ run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368) is the
 recorded seventeen-result baseline evidence for those paths.
 The boundary and remaining cases are tracked in the
 [`two-OCaml-binary acceptance design`](two-ocaml-binary-e2e-acceptance.md).
+
+## List workflow executions through visibility
+
+`Temporal.Client.list_visibility` requests one bounded page from Temporal's
+visibility service:
+
+```ocaml
+Temporal.Client.list_visibility client
+  ~query:"WorkflowType = 'summarize_document'" ~page_size:100 ()
+```
+
+The OCaml request contains the connected namespace, the caller's query, a page
+size from 1 through 1,000, and an optional opaque continuation token. OCaml
+validates the query and token metadata, then serializes one closed JSON object;
+Rust validates it again, decodes the token as base64 protobuf bytes, and calls
+the official Temporal visibility RPC. Rust reduces each server row to workflow
+ID, run ID, workflow type, task queue, and a closed status string before
+encoding the response. OCaml strictly rejects unknown fields, missing row
+fields, empty identifiers, malformed tokens, and unexpected status values.
+
+The token is never interpreted by OCaml and must be passed unchanged to fetch
+the next page. The private request and response shapes are defined by
+[`client-visibility-request.schema.json`](../schemas/bridge/client-visibility-request.schema.json)
+and
+[`client-visibility-response.schema.json`](../schemas/bridge/client-visibility-response.schema.json).
+Temporal's protobuf/gRPC communication remains entirely inside Rust; JSON is
+only the ownership-safe OCaml/Rust boundary.

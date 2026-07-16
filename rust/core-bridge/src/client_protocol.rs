@@ -650,7 +650,12 @@ pub async fn query_workflow(
     connection: Connection,
     request: QueryWorkflowRequest,
 ) -> Result<QueryWorkflowResponse, ClientOperationError> {
-    const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(1);
+    // Query evaluation may require a workflow task to be scheduled and
+    // replayed before Temporal can reply. A one-second control-plane bound
+    // incorrectly rejects healthy slow workers, so use the same bounded
+    // service budget as the rest of this client slice while the public API
+    // does not yet expose a caller-selected deadline.
+    const QUERY_RPC_TIMEOUT: Duration = Duration::from_secs(30);
     let query_args = payloads_to_core(&request.input).map_err(ClientOperationError::Core)?;
     let mut service = connection.workflow_service();
     let request = QueryWorkflowExecutionRequest {
@@ -671,7 +676,7 @@ pub async fn query_workflow(
         ..Default::default()
     };
     let response = match tokio::time::timeout(
-        CONTROL_RPC_TIMEOUT,
+        QUERY_RPC_TIMEOUT,
         service.query_workflow(request.into_request()),
     )
     .await

@@ -74,6 +74,11 @@ type t = {
      makes repeated calls replay identically without consulting process-global
      randomness or the host clock. *)
   mutable random_state : int64;
+  (* Update validators are a read-only live-request check.  The runtime flips
+     this guard only while a validator callback runs so deterministic helpers
+     such as [random_int] cannot mutate workflow state on the live path that
+     replay intentionally skips. *)
+  mutable randomness_disabled : bool;
   mutable commands_rev : Activation.command list;
   (* Once true, [emit] ignores new commands. Set at the start of [shutdown]
      before waiters are discontinued so Fun.protect finally blocks cannot
@@ -145,6 +150,7 @@ let create ?(task_queue = "default") ?(randomness_seed = "0") scheduler =
         timers = Hashtbl.create 16;
         locals = Hashtbl.create 8;
         random_state = seed_of_decimal randomness_seed;
+        randomness_disabled = false;
         commands_rev = [];
         sealed = false;
       }
@@ -271,6 +277,10 @@ let random_int context ~bound =
     Error
       (Temporal_base.Error.defect
          ~message:"workflow randomness used after workflow execution ended")
+  else if context.randomness_disabled then
+    Error
+      (Temporal_base.Error.defect
+         ~message:"workflow randomness is unavailable in a read-only update validator")
   else if bound <= 0 then
     Error
       (Temporal_base.Error.defect
@@ -285,6 +295,15 @@ let random_int context ~bound =
       else Ok (Int64.to_int (Int64.rem sample bound64))
     in
     draw ()
+
+(** Runs a read-only callback with workflow randomness disabled.  Update
+    validators are evaluated only on live requests and are deliberately not
+    replayed; restoring the previous flag in [finally] keeps nested callbacks
+    and subsequent workflow handlers from inheriting this temporary mode. *)
+let with_randomness_disabled context action =
+  let previous = context.randomness_disabled in
+  context.randomness_disabled <- true;
+  Fun.protect action ~finally:(fun () -> context.randomness_disabled <- previous)
 
 (** Makes [context] current while [action] runs, then restores the previous
     value even if [action] raises. This prevents later code on the same Domain

@@ -78,6 +78,11 @@ val deprecate_patch : t -> patch_id:string -> unit
     owner Domain.  Invalid bounds and lifecycle misuse are typed defects. *)
 val random_int : t -> bound:int -> (int, Temporal_base.Error.t) result
 
+(** Runs a callback in the read-only mode used by live update validators.
+    Deterministic workflow helpers that would mutate execution state, such as
+    [random_int], return a typed defect while this callback is active. *)
+val with_randomness_disabled : t -> (unit -> 'value) -> 'value
+
 (** Runs [action] with [t] dynamically installed and restores the previous
     context even if [action] raises. Nested calls are supported. *)
 val with_context : t -> (unit -> 'value) -> 'value

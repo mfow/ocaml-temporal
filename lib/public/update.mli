@@ -57,7 +57,10 @@ module Handler : sig
       is a live-request check and must not run against historical input. When
       supplied, [on_validated] runs once after successful validation and before
       the handler, allowing the native runtime to acknowledge a handler that
-      may suspend. Application code normally leaves this optional hook unset. *)
+      may suspend. Validators execute in a read-only mode: deterministic
+      helpers such as [Temporal.Workflow.random_int] return a typed defect and
+      cannot advance replay-sensitive workflow state. Application code normally
+      leaves this optional hook unset. *)
   val dispatch :
     ?run_validator:bool ->
     ?on_validated:(unit -> unit) ->

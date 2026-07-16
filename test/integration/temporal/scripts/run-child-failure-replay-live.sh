@@ -177,6 +177,26 @@ wait_for_marker() {
   return 1
 }
 
+# Docker reports a container as stopped as soon as its process exits, while a
+# bind-mounted marker can become visible to the host just after that status
+# transition. Poll the complete, exact shutdown marker for a short bounded
+# interval so the teardown assertion checks the worker's published contract
+# rather than an intermediate filesystem observation. The marker is removed
+# before each stop request, so accepting it here cannot reuse a prior run.
+wait_for_shutdown_marker() {
+  marker=$1
+  generation=$2
+  marker_timeout=${SMOKE_PARENT_CHILD_RESTART_STOP_MARKER_TIMEOUT_SECONDS:-15}
+  for _attempt in $(seq 1 "$marker_timeout"); do
+    if [ "$(cat "$marker" 2>/dev/null || true)" = "worker-stopped" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "generation $generation did not publish graceful shutdown marker" >&2
+  return 1
+}
+
 # Checks the client's closed three-line marker before using its parent run ID.
 read_accepted_marker() {
   [ "$(wc -l <"$accepted" | tr -d ' ')" -eq 3 ] || return 1
@@ -309,10 +329,7 @@ stop_and_remove_worker() {
   # Leave ten additional seconds for the signal watcher, OCaml cleanup, and
   # atomic stopped-marker publication before Docker is allowed to force-kill.
   compose stop --timeout 40 "$service" >/dev/null
-  [ "$(cat "$stopped_file" 2>/dev/null || true)" = "worker-stopped" ] || {
-    echo "generation $generation did not publish graceful shutdown" >&2
-    return 1
-  }
+  wait_for_shutdown_marker "$stopped_file" "$generation" || return 1
   exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container_id")
   [ "$exit_code" -eq 0 ] || return 1
   compose rm --force "$service" >/dev/null

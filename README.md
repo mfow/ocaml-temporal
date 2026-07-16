@@ -399,6 +399,7 @@ are excluded from log messages. See the [observability reference](docs/reference
 - [Logging and observability](docs/reference/observability.md)
 - [Feature coverage and implementation status](docs/reference/feature-coverage.md)
 - [Workflow patching and replay contract](docs/reference/workflow-patching.md)
+- [Worker versioning](docs/reference/worker-versioning.md)
 - [Live acceptance coverage](docs/reference/live-acceptance-coverage.md)
 - [Worker restart and replay acceptance](docs/reference/worker-restart-replay-acceptance.md)
 - [Worker restart/replay diagnostic contract](docs/reference/worker-restart-replay-diagnostics.md)

@@ -104,6 +104,12 @@ ocaml_temporal_core_status ocaml_temporal_core_v2_client_cancel_workflow_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* Terminate one exact workflow run. The successful value is a strict
+ * {"acknowledged":true} document; termination is immediate. */
+ocaml_temporal_core_status ocaml_temporal_core_v2_client_terminate_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
 /* Send one signal to one exact workflow run. The successful value is a strict
  * {"acknowledged":true} document; the Rust client owns Temporal protobuf and
  * network state while this ABI exposes only copied JSON. */

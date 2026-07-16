@@ -437,6 +437,30 @@ let test_exact_run_cancellation () =
   | Error error -> failwith (Temporal.Error.message error));
   unwrap (Temporal.Client.shutdown client)
 
+(** Termination is distinct from cancellation: the mock records an immutable
+    terminated terminal event and repeated requests remain harmless. *)
+let test_exact_run_termination () =
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let handle =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"unit-terminate" ~input:"ignored" ())
+  in
+  unwrap (Temporal.Client.terminate ~reason:"operator test" handle);
+  unwrap (Temporal.Client.terminate ~reason:"operator test" handle);
+  (match Temporal.Client.wait handle with
+  | Ok (Temporal.Client.Terminated error) ->
+      let view = Temporal.Error.view error in
+      assert (view.category = `Terminated);
+      assert view.non_retryable
+  | Ok _ -> failwith "terminated mock returned an unexpected terminal result"
+  | Error error -> failwith (Temporal.Error.message error));
+  unwrap (Temporal.Client.shutdown client)
+
 (** A late cancellation request cannot rewrite a terminal result that the mock
     has already exposed. This protects the deterministic seam from modelling
     mutable terminal history unlike a real Temporal execution. *)
@@ -588,6 +612,8 @@ let test_client_validation_errors () =
   expect_error "defect"
     (Temporal.Client.cancel ~reason:"contains\000nul" handle);
   expect_error "defect"
+    (Temporal.Client.terminate ~reason:"contains\000nul" handle);
+  expect_error "defect"
     (Temporal.Client.signal ~request_id:"" handle ~signal:add_document_signal
        ~input:"ignored");
   unwrap (Temporal.Client.shutdown client)
@@ -685,6 +711,7 @@ let () =
   test_follow_rejects_malformed_successor_identity ();
   test_follow_rejects_cross_namespace_execution ();
   test_exact_run_cancellation ();
+  test_exact_run_termination ();
   test_completed_mock_run_is_immutable ();
   test_exact_run_signal ();
   test_default_signal_request_ids_are_process_wide ();

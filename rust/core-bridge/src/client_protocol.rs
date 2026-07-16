@@ -22,7 +22,7 @@ use temporalio_common::protos::temporal::api::{
         GetWorkflowExecutionHistoryRequest, ListWorkflowExecutionsRequest,
         QueryWorkflowRequest as QueryWorkflowExecutionRequest,
         RequestCancelWorkflowExecutionRequest, SignalWorkflowExecutionRequest,
-        StartWorkflowExecutionRequest,
+        StartWorkflowExecutionRequest, TerminateWorkflowExecutionRequest,
     },
 };
 
@@ -143,6 +143,28 @@ pub struct CancelWorkflowRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CancelWorkflowResponse {
+    /// Always true for a response emitted by this bridge.
+    pub acknowledged: bool,
+}
+
+/// Request to terminate one exact workflow run immediately.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminateWorkflowRequest {
+    /// Namespace containing the execution.
+    pub namespace: String,
+    /// Stable workflow identifier.
+    pub workflow_id: String,
+    /// Concrete run identifier; an empty run is never treated as "latest".
+    pub run_id: String,
+    /// Operator-facing reason copied to Temporal.
+    pub reason: String,
+}
+
+/// Positive acknowledgement returned after Temporal accepts termination.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminateWorkflowResponse {
     /// Always true for a response emitted by this bridge.
     pub acknowledged: bool,
 }
@@ -537,6 +559,17 @@ pub fn decode_cancel_request(
     Ok(request)
 }
 
+/// Strictly parses one exact-run termination request.
+pub fn decode_terminate_request(
+    input: &str,
+) -> Result<TerminateWorkflowRequest, protocol::ProtocolError> {
+    protocol::decode_object(input)?;
+    let request = serde_json::from_str(input)
+        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client terminate request"))?;
+    validate_terminate_request(&request)?;
+    Ok(request)
+}
+
 /// Strictly parses one exact-run signal request.
 pub fn decode_signal_request(
     input: &str,
@@ -585,6 +618,19 @@ pub fn encode_cancel_response(
         return Err(protocol::ProtocolError::invalid(
             "$.acknowledged",
             "cancellation acknowledgement must be true",
+        ));
+    }
+    encode_document(response)
+}
+
+/// Encodes and reparses a positive termination acknowledgement.
+pub fn encode_terminate_response(
+    response: &TerminateWorkflowResponse,
+) -> Result<String, protocol::ProtocolError> {
+    if !response.acknowledged {
+        return Err(protocol::ProtocolError::invalid(
+            "$.acknowledged",
+            "termination acknowledgement must be true",
         ));
     }
     encode_document(response)
@@ -733,6 +779,48 @@ pub async fn cancel_workflow(
         }
     }
     Ok(CancelWorkflowResponse { acknowledged: true })
+}
+
+/// Terminates one exact workflow run through Temporal's official service.
+/// Termination is intentionally separate from cancellation: the server writes
+/// an immutable terminated event immediately and does not wait for workflow
+/// code to observe a cancellation request.
+pub async fn terminate_workflow(
+    connection: Connection,
+    request: TerminateWorkflowRequest,
+) -> Result<TerminateWorkflowResponse, ClientOperationError> {
+    const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(1);
+    let mut service = connection.workflow_service();
+    let request = TerminateWorkflowExecutionRequest {
+        namespace: request.namespace,
+        workflow_execution: Some(WorkflowExecution {
+            workflow_id: request.workflow_id,
+            run_id: request.run_id,
+        }),
+        reason: request.reason,
+        identity: connection.identity().to_owned(),
+        ..Default::default()
+    };
+    match tokio::time::timeout(
+        CONTROL_RPC_TIMEOUT,
+        service.terminate_workflow_execution(request.into_request()),
+    )
+    .await
+    {
+        Ok(result) => {
+            result.map_err(map_rpc_status)?;
+        }
+        Err(_) => {
+            return Err(ClientOperationError::Rpc {
+                // TerminateWorkflowExecution has no request ID. If the
+                // transport deadline expires after the server accepted the
+                // command, retrying cannot be correlated with this attempt;
+                // preserve that ambiguity explicitly for the OCaml caller.
+                code: "termination_outcome_uncertain".to_owned(),
+            });
+        }
+    }
+    Ok(TerminateWorkflowResponse { acknowledged: true })
 }
 
 /// Delivers one signal to one exact workflow run through Temporal's official
@@ -1218,6 +1306,28 @@ fn validate_cancel_request(value: &CancelWorkflowRequest) -> Result<(), protocol
     Ok(())
 }
 
+/// Validates one exact-run termination request and keeps its reason bounded.
+fn validate_terminate_request(
+    value: &TerminateWorkflowRequest,
+) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.namespace, "$.namespace")?;
+    validate_identifier(&value.workflow_id, "$.workflow_id")?;
+    validate_identifier(&value.run_id, "$.run_id")?;
+    if value.reason.len() > protocol::MAX_STRING_BYTES {
+        return Err(protocol::ProtocolError::invalid(
+            "$.reason",
+            "reason exceeds the protocol string safety limit",
+        ));
+    }
+    if value.reason.contains('\0') {
+        return Err(protocol::ProtocolError::invalid(
+            "$.reason",
+            "reason contains a NUL byte",
+        ));
+    }
+    Ok(())
+}
+
 /// Validates one exact-run signal request and every payload conversion before
 /// it can reach the official Temporal service.
 fn validate_signal_request(value: &SignalWorkflowRequest) -> Result<(), protocol::ProtocolError> {
@@ -1669,6 +1779,45 @@ mod tests {
     }
 
     #[test]
+    /// Termination has its own closed request type and rejects cancellation's
+    /// idempotency-only member rather than silently ignoring it.
+    fn termination_request_and_acknowledgement_round_trip() {
+        let request = serde_json::json!({
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "run_id":"run-1",
+            "reason":"operator test"
+        })
+        .to_string();
+        let decoded = decode_terminate_request(&request).expect("terminate request decodes");
+        assert_eq!(decoded.reason, "operator test");
+        assert!(
+            decode_terminate_request(
+                &serde_json::json!({
+                    "namespace":"default",
+                    "workflow_id":"workflow-1",
+                    "run_id":"run-1",
+                    "reason":"operator test",
+                    "request_id":"not-supported"
+                })
+                .to_string()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            encode_terminate_response(&TerminateWorkflowResponse { acknowledged: true })
+                .expect("terminate acknowledgement encodes"),
+            r#"{"acknowledged":true}"#
+        );
+        assert!(
+            encode_terminate_response(&TerminateWorkflowResponse {
+                acknowledged: false
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
     /// Rejects cancellation documents that could lose identity or change the
     /// operation's meaning when decoded by a permissive JSON map.
     fn cancellation_request_is_closed_and_bounded() {
@@ -2044,6 +2193,19 @@ mod tests {
             }
         );
         assert!(!error.to_json().contains("server"));
+    }
+
+    #[test]
+    /// Keeps a timed-out termination distinguishable from an ordinary RPC
+    /// rejection because the server may have accepted the command already.
+    fn termination_timeout_error_is_explicitly_uncertain() {
+        let error = ClientOperationError::Rpc {
+            code: "termination_outcome_uncertain".to_owned(),
+        };
+        assert_eq!(
+            error.to_json(),
+            r#"{"kind":"rpc","code":"termination_outcome_uncertain"}"#
+        );
     }
 
     #[test]

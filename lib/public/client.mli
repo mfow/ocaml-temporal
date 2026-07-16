@@ -128,6 +128,18 @@ val cancel :
   ('input, 'output) handle ->
   (unit, Error.t) result
 
+(** Terminates the exact run retained by [handle] immediately. Success means
+    Temporal acknowledged the termination RPC; call [wait handle] to observe
+    the immutable [Terminated] terminal result. [reason] is bounded operator
+    context and may be empty. If the transport deadline expires, the returned
+    bridge error has code [termination_outcome_uncertain]: the server may have
+    accepted the command, and this RPC has no idempotency key for a blind
+    retry. Reconcile that result with [wait handle] or visibility. *)
+val terminate :
+  ?reason:string ->
+  ('input, 'output) handle ->
+  (unit, Error.t) result
+
 (** Sends one typed signal to the exact run retained by [handle]. A successful
     call acknowledges Temporal's signal RPC; it does not wait for workflow code
     to process the message. [request_id] is optional: when omitted, the SDK

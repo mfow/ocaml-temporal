@@ -48,6 +48,13 @@ type cancel_request = {
   reason : string;
 }
 
+(** Exact workflow/run pair and operator metadata for immediate termination. *)
+type terminate_request = {
+  workflow_id : string;
+  run_id : string;
+  reason : string;
+}
+
 (** Exact workflow/run pair and typed payload for one signal request. The
     connected client supplies the namespace to the native protocol so callers
     cannot redirect a handle to another namespace. *)
@@ -174,6 +181,9 @@ val client_wait : client -> wait_request -> (terminal_result, Error.t) result
 (** Requests cancellation of one exact workflow run. Success acknowledges the
     server RPC; a later [client_wait] observes the terminal cancellation. *)
 val client_cancel : client -> cancel_request -> (unit, Error.t) result
+
+(** Terminates one exact workflow run immediately. *)
+val client_terminate : client -> terminate_request -> (unit, Error.t) result
 
 (** Sends one signal to one exact workflow run. Success acknowledges the
     server RPC; it does not wait for workflow code to process the message. *)

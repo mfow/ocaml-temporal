@@ -32,6 +32,13 @@ type cancel_request = {
 
 type cancel_response = { acknowledged : bool }
 
+(** Exact-run termination request. Temporal termination is an immediate
+    control-plane operation and therefore carries operator reason text rather
+    than a cancellation request ID. *)
+type terminate_request = { execution : execution; reason : string }
+
+type terminate_response = { acknowledged : bool }
+
 type signal_request = {
   execution : execution;
   signal_name : string;
@@ -348,6 +355,34 @@ let decode_cancel_response input : (cancel_response, error) result =
   if acknowledged then Ok ({ acknowledged } : cancel_response)
   else Error (invalid ~path:"$.acknowledged" "cancellation was not acknowledged")
 
+(** Serializes termination using the same closed identity/reason shape as
+    cancellation while keeping the operation-specific type explicit. *)
+let encode_terminate_request (value : terminate_request) =
+  let* () = validate_identifier "$.namespace" value.execution.namespace in
+  let* () = validate_identifier "$.workflow_id" value.execution.workflow_id in
+  let* () = validate_identifier "$.run_id" value.execution.run_id in
+  if String.length value.reason > 65_536 then
+    Error (invalid ~path:"$.reason" "reason exceeds the protocol string safety limit")
+  else if String.contains value.reason '\000' then
+    Error (invalid ~path:"$.reason" "reason contains a NUL byte")
+  else
+    encode_object
+      (`Assoc
+        [ ("namespace", json_string value.execution.namespace);
+          ("workflow_id", json_string value.execution.workflow_id);
+          ("run_id", json_string value.execution.run_id);
+          ("reason", json_string value.reason) ])
+
+(** Decodes the positive acknowledgement returned after Temporal accepts a
+    termination request. *)
+let decode_terminate_response input : (terminate_response, error) result =
+  let* json = decode_object input in
+  let* entries = exact_object "$" [ "acknowledged" ] json in
+  let* acknowledged_json = field "$" "acknowledged" entries in
+  let* acknowledged = bool "$.acknowledged" acknowledged_json in
+  if acknowledged then Ok ({ acknowledged } : terminate_response)
+  else Error (invalid ~path:"$.acknowledged" "termination was not acknowledged")
+
 (** Serializes one exact-run signal request. Signal input remains an ordered
     payload list so codecs that produce multiple Temporal payloads retain the
     same order through OCaml, JSON, Rust, and the official protobuf service. *)
@@ -569,6 +604,7 @@ let client_error_code kind path value =
       "unknown";
       "invalid_argument";
       "deadline_exceeded";
+      "termination_outcome_uncertain";
       "not_found";
       "already_exists";
       "permission_denied";

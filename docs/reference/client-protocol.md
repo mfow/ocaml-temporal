@@ -208,7 +208,41 @@ pending. The earlier [PR #277 run](https://github.com/mfow/ocaml-temporal/action
 remains evidence for the prior fifteen-result slice, [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 for the prior twelve-result slice, and [PR #210](https://github.com/mfow/ocaml-temporal/actions/runs/29221151859)
 for the original nine-workflow slice. See the [live acceptance coverage](live-acceptance-coverage.md)
-for the remaining evidence boundary.
+
+## Terminate one exact run
+
+`Temporal.Client.terminate` requests immediate termination of the exact run
+held by a typed client handle:
+
+```ocaml
+Temporal.Client.terminate ~reason:"operator requested termination" handle
+```
+
+The call returns after Temporal acknowledges `TerminateWorkflowExecution`; it
+does not wait for workflow code. A later `Temporal.Client.wait handle` returns
+`Terminated` with a non-retryable typed error. The request carries namespace,
+workflow ID, run ID, and bounded reason text. It deliberately has no
+`request_id`: Temporal's terminate RPC has no idempotency-key field. The
+deterministic mock preserves this exact-run and terminal-history contract.
+
+The native call has a bounded control-plane deadline so a stalled server cannot
+hold the supervisor owner indefinitely. If that deadline expires, the server
+may already have accepted the command, so the bridge returns the explicit
+`rpc` code `termination_outcome_uncertain` rather than pretending that the
+termination was rejected or that a retry is safe. Reconcile this result by
+calling `wait handle` (or by checking visibility) before deciding what to do;
+there is no idempotency key that can make a blind retry equivalent to the first
+request.
+
+The closed documents are specified by
+[`client-terminate-request.schema.json`](../schemas/bridge/client-terminate-request.schema.json)
+and
+[`client-terminate-response.schema.json`](../schemas/bridge/client-terminate-response.schema.json).
+Both OCaml and Rust reject unknown or duplicate fields and validate the
+acknowledgement before it crosses the FFI boundary. Focused mock, supervisor,
+OCaml bridge, and Rust protocol tests cover the exact-run request, terminal
+mapping, and validation failures; live acceptance of this operator path remains
+the next evidence boundary.
 
 ## Send one signal to an exact run
 

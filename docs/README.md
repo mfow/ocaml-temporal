@@ -78,6 +78,8 @@ The remaining reference documents are useful when changing one subsystem:
 - [Installed package boundary](reference/package-boundary.md) documents which
   libraries are package-private and the installed-consumer regression that
   protects the public `Temporal` surface.
+- [Public API compatibility](reference/api-stability.md) documents the
+  pre-`0.1.0` compatibility policy and the installed-consumer type witness.
 - [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
   records the long-term design. APIs described there may be future work.
 

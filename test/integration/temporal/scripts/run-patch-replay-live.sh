@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-# Runs the real-server old/new history compatibility gate. Two physically
-# different OCaml worker executables are used: the first has no patch call and
-# the second contains the public patch-in gate. A second patched-to-patched
-# replacement proves marker-present replay independently of the legacy path.
+# Runs the real-server workflow-patch lifecycle compatibility gate. Four
+# physically different OCaml worker executables provide the legacy, active,
+# deprecated, and removed source generations. The three scenarios prove the
+# safe patch-in, deprecation, and removal transitions against durable history.
 
 root=$(CDPATH='' cd -- "$(dirname "$0")/../../../.." && pwd)
 fixture="$root/test/integration/temporal"
@@ -34,6 +34,17 @@ new_raw="$fixture/.patch-replay-new-history.raw.json"
 new_describe="$fixture/.patch-replay-new-describe.json"
 new_log="$fixture/.patch-replay-new-driver.log"
 new_stopped="$fixture/.patch-replay-new-worker-stopped"
+
+removal_workflow_id=two-binary-patch-replay-removal
+removal_accepted="$fixture/.patch-replay-removal-accepted"
+removal_result="$fixture/.patch-replay-removal-result"
+removal_diagnostics="$fixture/.patch-replay-removal-diagnostics.json"
+removal_initial="$fixture/.patch-replay-removal-history.initial.json"
+removal_terminal="$fixture/.patch-replay-removal-history.terminal.json"
+removal_raw="$fixture/.patch-replay-removal-history.raw.json"
+removal_describe="$fixture/.patch-replay-removal-describe.json"
+removal_log="$fixture/.patch-replay-removal-driver.log"
+removal_stopped="$fixture/.patch-replay-removal-worker-stopped"
 
 controller="$fixture/.patch-replay-controller.json"
 driver_container="$project-patch-replay-driver"
@@ -71,7 +82,9 @@ remove_artifacts() {
     "$legacy_log" \
     "$legacy_stopped" "$new_accepted" "$new_result" "$new_diagnostics" \
     "$new_initial" "$new_terminal" "$new_raw" "$new_describe" "$new_log" \
-    "$new_stopped" \
+    "$new_stopped" "$removal_accepted" "$removal_result" \
+    "$removal_diagnostics" "$removal_initial" "$removal_terminal" \
+    "$removal_raw" "$removal_describe" "$removal_log" "$removal_stopped" \
     "$controller"
 }
 
@@ -89,8 +102,11 @@ cleanup() {
     tail -n 200 "$legacy_log" 2>/dev/null >&2 || true
     printf '%s\n' '--- patch replay new driver ---' >&2
     tail -n 200 "$new_log" 2>/dev/null >&2 || true
+    printf '%s\n' '--- patch replay removal driver ---' >&2
+    tail -n 200 "$removal_log" 2>/dev/null >&2 || true
     compose logs --no-color --tail 200 temporal patch-replay-legacy-worker \
-      patch-replay-patched-worker >&2 2>/dev/null || true
+      patch-replay-patched-worker patch-replay-deprecated-worker \
+      patch-replay-removed-worker >&2 2>/dev/null || true
   fi
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   remove_artifacts
@@ -157,7 +173,8 @@ start_worker() {
 
 # Requests graceful public Worker shutdown, verifies its post-shutdown marker,
 # and removes the container before another source generation may poll the same
-# queue. The service label count prevents two code versions from overlapping.
+# queue. Counting every lifecycle worker service after removal proves that no
+# source generation remains able to poll before its replacement starts.
 stop_worker() {
   service=$1
   stopped_file=$2
@@ -174,11 +191,11 @@ stop_worker() {
     return 1
   }
   compose rm --force "$service" >/dev/null
-  remaining=$(docker ps -aq \
-    --filter "label=com.docker.compose.project=$project" \
-    --filter "label=com.docker.compose.service=$service" | wc -l | tr -d ' ')
+  remaining=$(compose ps -aq patch-replay-legacy-worker \
+    patch-replay-patched-worker patch-replay-deprecated-worker \
+    patch-replay-removed-worker | wc -l | tr -d ' ')
   [ "$remaining" -eq 0 ] || {
-    echo "$service container was not removed" >&2
+    echo "a patch lifecycle worker still exists after removing $service" >&2
     return 1
   }
 }
@@ -353,11 +370,15 @@ legacy_terminal_count=$(jq -r '.events | length' "$legacy_terminal")
 legacy_replay_history=$(jq -r '.records[1].history_length' "$legacy_diagnostics")
 legacy_marker_count=$(jq -r '[.events[] | select(.type == "MarkerRecorded")] | length' \
   "$legacy_terminal")
+legacy_marker_deprecated=$(jq -c \
+  '[.events[] | select(.type == "MarkerRecorded") | .deprecated]
+   | if length == 0 then null else .[0] end' "$legacy_terminal")
 stop_worker patch-replay-patched-worker "$legacy_stopped" \
   "$legacy_generation_two_container"
 
-# Scenario two: create a marker-bearing history with patched code, replace the
-# process, and require the fresh patched worker to replay the true/new branch.
+# Scenario two: create an active marker with patched code, then deploy the
+# deprecation source. Replay must keep the original false marker unchanged
+# while the new source runs the patched behavior without a branch decision.
 start_worker patch-replay-patched-worker "$new_workflow_id" 1 \
   "$container_fixture/.patch-replay-new-diagnostics.json" \
   "$container_fixture/.patch-replay-new-worker-stopped"
@@ -374,7 +395,7 @@ new_initial_count=$(jq -r '.events | length' "$new_initial")
 stop_worker patch-replay-patched-worker "$new_stopped" \
   "$new_generation_one_container"
 
-start_worker patch-replay-patched-worker "$new_workflow_id" 2 \
+start_worker patch-replay-deprecated-worker "$new_workflow_id" 2 \
   "$container_fixture/.patch-replay-new-diagnostics.json" \
   "$container_fixture/.patch-replay-new-worker-stopped"
 new_generation_two_container=$started_container
@@ -387,8 +408,52 @@ new_terminal_count=$(jq -r '.events | length' "$new_terminal")
 new_replay_history=$(jq -r '.records[1].history_length' "$new_diagnostics")
 new_marker_count=$(jq -r '[.events[] | select(.type == "MarkerRecorded")] | length' \
   "$new_terminal")
-stop_worker patch-replay-patched-worker "$new_stopped" \
+new_marker_deprecated=$(jq -c \
+  '[.events[] | select(.type == "MarkerRecorded") | .deprecated]
+   | if length == 0 then null else .[0] end' "$new_terminal")
+stop_worker patch-replay-deprecated-worker "$new_stopped" \
   "$new_generation_two_container"
+
+# Scenario three: start a fresh history with the deprecation source so Core
+# records a true marker, then remove all patch calls from generation two. The
+# retained marker and exact initial prefix prove that removal is replay-safe.
+start_worker patch-replay-deprecated-worker "$removal_workflow_id" 1 \
+  "$container_fixture/.patch-replay-removal-diagnostics.json" \
+  "$container_fixture/.patch-replay-removal-worker-stopped"
+removal_generation_one_container=$started_container
+start_driver "$removal_workflow_id" PATCH_REPLAY:NEW_HISTORY \
+  "$container_fixture/.patch-replay-removal-accepted" \
+  "$container_fixture/.patch-replay-removal-result" "$removal_log"
+wait_for_marker "$removal_accepted" "$driver_pid" "removal driver"
+removal_run_id=$(accepted_run_id "$removal_accepted" "$removal_workflow_id")
+check_execution_identity "$removal_workflow_id" "$removal_run_id" \
+  "$removal_describe"
+wait_initial_history removal-initial "$removal_workflow_id" "$removal_run_id" \
+  "$removal_raw" "$removal_initial" "$removal_diagnostics"
+removal_initial_count=$(jq -r '.events | length' "$removal_initial")
+stop_worker patch-replay-deprecated-worker "$removal_stopped" \
+  "$removal_generation_one_container"
+
+start_worker patch-replay-removed-worker "$removal_workflow_id" 2 \
+  "$container_fixture/.patch-replay-removal-diagnostics.json" \
+  "$container_fixture/.patch-replay-removal-worker-stopped"
+removal_generation_two_container=$started_container
+wait_replay_diagnostics "$removal_diagnostics" "$removal_run_id"
+finish_driver "$removal_result" "$removal_log" "$removal_workflow_id" \
+  "$removal_run_id" PATCH_REPLAY:NEW_HISTORY
+capture_history removal-terminal "$removal_workflow_id" "$removal_run_id" \
+  "$removal_raw" "$removal_terminal" "$removal_initial" "$removal_diagnostics"
+removal_terminal_count=$(jq -r '.events | length' "$removal_terminal")
+removal_replay_history=$(jq -r '.records[1].history_length' \
+  "$removal_diagnostics")
+removal_marker_count=$(jq -r \
+  '[.events[] | select(.type == "MarkerRecorded")] | length' \
+  "$removal_terminal")
+removal_marker_deprecated=$(jq -c \
+  '[.events[] | select(.type == "MarkerRecorded") | .deprecated]
+   | if length == 0 then null else .[0] end' "$removal_terminal")
+stop_worker patch-replay-removed-worker "$removal_stopped" \
+  "$removal_generation_two_container"
 
 compose down --volumes --remove-orphans >/dev/null
 remaining_project_volumes=$(project_volume_count)
@@ -400,30 +465,42 @@ remaining_project_volumes=$(project_volume_count)
 jq -n \
   --arg legacy_workflow_id "$legacy_workflow_id" --arg legacy_run_id "$legacy_run_id" \
   --arg new_workflow_id "$new_workflow_id" --arg new_run_id "$new_run_id" \
+  --arg removal_workflow_id "$removal_workflow_id" \
+  --arg removal_run_id "$removal_run_id" \
   --arg legacy_one "$legacy_generation_one_container" \
   --arg legacy_two "$legacy_generation_two_container" \
   --arg new_one "$new_generation_one_container" \
   --arg new_two "$new_generation_two_container" \
+  --arg removal_one "$removal_generation_one_container" \
+  --arg removal_two "$removal_generation_two_container" \
   --arg legacy_replay_history "$legacy_replay_history" \
   --arg new_replay_history "$new_replay_history" \
+  --arg removal_replay_history "$removal_replay_history" \
   --argjson legacy_initial_count "$legacy_initial_count" \
   --argjson legacy_terminal_count "$legacy_terminal_count" \
   --argjson new_initial_count "$new_initial_count" \
   --argjson new_terminal_count "$new_terminal_count" \
+  --argjson removal_initial_count "$removal_initial_count" \
+  --argjson removal_terminal_count "$removal_terminal_count" \
   --argjson legacy_marker_count "$legacy_marker_count" \
   --argjson new_marker_count "$new_marker_count" \
+  --argjson removal_marker_count "$removal_marker_count" \
+  --argjson legacy_marker_deprecated "$legacy_marker_deprecated" \
+  --argjson new_marker_deprecated "$new_marker_deprecated" \
+  --argjson removal_marker_deprecated "$removal_marker_deprecated" \
   --argjson stale_volumes "$stale_project_volumes_before_cleanup" \
   --argjson starting_volumes "$remaining_project_volumes_before_start" \
   --argjson remaining_volumes "$remaining_project_volumes" \
   '{legacy_workflow_id:$legacy_workflow_id,legacy_run_id:$legacy_run_id,
-    new_workflow_id:$new_workflow_id,new_run_id:$new_run_id,events:[
+    new_workflow_id:$new_workflow_id,new_run_id:$new_run_id,
+    removal_workflow_id:$removal_workflow_id,removal_run_id:$removal_run_id,events:[
     {step:"stack_ready",status:"ok",stale_project_volumes_before_cleanup:$stale_volumes,remaining_project_volumes_before_start:$starting_volumes,temporal_healthy:true},
     {step:"driver_accepted",status:"ok",scenario:"legacy",workflow_id:$legacy_workflow_id,run_id:$legacy_run_id},
     {step:"history_checked",status:"ok",scenario:"legacy",stage:"initial",event_count:$legacy_initial_count},
     {step:"worker_generation_stopped",status:"ok",scenario:"legacy",generation:1,container_id:$legacy_one,worker_version:"legacy",exit_code:0,shutdown_marker:true},
     {step:"worker_generation_removed",status:"ok",scenario:"legacy",generation:1,container_id:$legacy_one,remaining_worker_containers:0},
     {step:"worker_generation_ready",status:"ok",scenario:"legacy",generation:2,container_id:$legacy_two,worker_version:"patched",readiness_generation:2,fresh_container:true},
-    {step:"replay_observed",status:"ok",scenario:"legacy",generation:2,is_replaying:true,history_length:$legacy_replay_history,branch:"old",marker_count:$legacy_marker_count},
+    {step:"replay_observed",status:"ok",scenario:"legacy",generation:2,is_replaying:true,history_length:$legacy_replay_history,branch:"old",marker_count:$legacy_marker_count,marker_deprecated:$legacy_marker_deprecated},
     {step:"driver_completed",status:"ok",scenario:"legacy",outcome:"completed"},
     {step:"history_checked",status:"ok",scenario:"legacy",stage:"terminal",event_count:$legacy_terminal_count},
     {step:"worker_generation_stopped",status:"ok",scenario:"legacy",generation:2,container_id:$legacy_two,worker_version:"patched",exit_code:0,shutdown_marker:true},
@@ -432,17 +509,28 @@ jq -n \
     {step:"history_checked",status:"ok",scenario:"new",stage:"initial",event_count:$new_initial_count},
     {step:"worker_generation_stopped",status:"ok",scenario:"new",generation:1,container_id:$new_one,worker_version:"patched",exit_code:0,shutdown_marker:true},
     {step:"worker_generation_removed",status:"ok",scenario:"new",generation:1,container_id:$new_one,remaining_worker_containers:0},
-    {step:"worker_generation_ready",status:"ok",scenario:"new",generation:2,container_id:$new_two,worker_version:"patched",readiness_generation:2,fresh_container:true},
-    {step:"replay_observed",status:"ok",scenario:"new",generation:2,is_replaying:true,history_length:$new_replay_history,branch:"new",marker_count:$new_marker_count},
+    {step:"worker_generation_ready",status:"ok",scenario:"new",generation:2,container_id:$new_two,worker_version:"deprecated",readiness_generation:2,fresh_container:true},
+    {step:"replay_observed",status:"ok",scenario:"new",generation:2,is_replaying:true,history_length:$new_replay_history,branch:"new",marker_count:$new_marker_count,marker_deprecated:$new_marker_deprecated},
     {step:"driver_completed",status:"ok",scenario:"new",outcome:"completed"},
     {step:"history_checked",status:"ok",scenario:"new",stage:"terminal",event_count:$new_terminal_count},
-    {step:"worker_generation_stopped",status:"ok",scenario:"new",generation:2,container_id:$new_two,worker_version:"patched",exit_code:0,shutdown_marker:true},
+    {step:"worker_generation_stopped",status:"ok",scenario:"new",generation:2,container_id:$new_two,worker_version:"deprecated",exit_code:0,shutdown_marker:true},
     {step:"worker_generation_removed",status:"ok",scenario:"new",generation:2,container_id:$new_two,remaining_worker_containers:0},
+    {step:"driver_accepted",status:"ok",scenario:"removal",workflow_id:$removal_workflow_id,run_id:$removal_run_id},
+    {step:"history_checked",status:"ok",scenario:"removal",stage:"initial",event_count:$removal_initial_count},
+    {step:"worker_generation_stopped",status:"ok",scenario:"removal",generation:1,container_id:$removal_one,worker_version:"deprecated",exit_code:0,shutdown_marker:true},
+    {step:"worker_generation_removed",status:"ok",scenario:"removal",generation:1,container_id:$removal_one,remaining_worker_containers:0},
+    {step:"worker_generation_ready",status:"ok",scenario:"removal",generation:2,container_id:$removal_two,worker_version:"removed",readiness_generation:2,fresh_container:true},
+    {step:"replay_observed",status:"ok",scenario:"removal",generation:2,is_replaying:true,history_length:$removal_replay_history,branch:"new",marker_count:$removal_marker_count,marker_deprecated:$removal_marker_deprecated},
+    {step:"driver_completed",status:"ok",scenario:"removal",outcome:"completed"},
+    {step:"history_checked",status:"ok",scenario:"removal",stage:"terminal",event_count:$removal_terminal_count},
+    {step:"worker_generation_stopped",status:"ok",scenario:"removal",generation:2,container_id:$removal_two,worker_version:"removed",exit_code:0,shutdown_marker:true},
+    {step:"worker_generation_removed",status:"ok",scenario:"removal",generation:2,container_id:$removal_two,remaining_worker_containers:0},
     {step:"postgres_volume_removed",status:"ok",remaining_project_volumes:$remaining_volumes}
   ]}' >"$controller"
 
 sh "$controller_validator" --controller "$controller" \
   --legacy-workflow-id "$legacy_workflow_id" --legacy-run-id "$legacy_run_id" \
-  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id"
+  --new-workflow-id "$new_workflow_id" --new-run-id "$new_run_id" \
+  --removal-workflow-id "$removal_workflow_id" --removal-run-id "$removal_run_id"
 
 printf '%s\n' 'workflow patch replay acceptance: ok'

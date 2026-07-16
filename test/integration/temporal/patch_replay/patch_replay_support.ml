@@ -1,11 +1,10 @@
-(** Shared, private infrastructure for the live old/new workflow-patch replay
+(** Shared, private infrastructure for the live workflow-patch lifecycle replay
     acceptance fixture.
 
     This compilation unit intentionally contains no [Temporal.Workflow.patched]
-    call and no workflow implementation. [Legacy_definition] and
-    [Patched_definition] each own one source-version definition and its worker
-    registration, so the legacy executable cannot link the compilation unit
-    that contains the patch gate. Shared code is restricted to fixture
+    call and no workflow implementation. Each worker executable owns or selects
+    exactly one source-version definition, so the legacy and removed binaries
+    cannot accidentally link the active patch gate. Shared code is restricted to fixture
     constants, activity helpers, client references, and worker lifecycle
     support. *)
 
@@ -19,11 +18,11 @@ module Workflow = Temporal.Workflow
 
 (** Dedicated task queue for this isolated acceptance. Keeping it separate
     from the ordinary smoke queue prevents a manually running smoke worker
-    from accepting work intended for the old/new source-replacement test. *)
+    from accepting work intended for the lifecycle source-replacement test. *)
 let task_queue = "ocaml-temporal-patch-replay"
 
-(** Stable Temporal workflow type shared by the legacy and patched source
-    definitions. A replacement worker must register this exact name so it can
+(** Stable Temporal workflow type shared by every lifecycle source
+    definition. A replacement worker must register this exact name so it can
     replay the execution accepted by the legacy worker. *)
 let workflow_type = "smoke.patch_replay_history"
 
@@ -43,9 +42,10 @@ let replacement_timer = Temporal.Duration.of_ms 60_000L
     it is not inferred from a process-local flag or worker log. *)
 let legacy_activity_name = "smoke.patch_replay_history.legacy_activity"
 
-(** Activity type used only by the patch-in branch. The patched worker also
-    registers the legacy activity because it must be able to finish an older
-    history after the patch gate deterministically returns [false]. *)
+(** Activity type used by the migrated behavior. Active code selects it via
+    the patch decision; deprecated and removed generations schedule it
+    unconditionally after their lifecycle gates. Its distinct durable name
+    remains the terminal-history branch oracle. *)
 let patched_activity_name = "smoke.patch_replay_history.patched_activity"
 
 (** Exact activity output for the legacy branch. The result is intentionally a
@@ -73,7 +73,7 @@ let legacy_activity =
   Activity.define ~name:legacy_activity_name ~input:Temporal.Codec.unit
     ~output:Temporal.Codec.string (fun () -> Ok legacy_activity_result)
 
-(** Activity implementation registered only by patched code. Its separate
+(** Activity implementation registered by active, deprecated, and removed code. Its separate
     Temporal name lets the final history and driver distinguish a successful
     new branch from a fallback to the old branch. *)
 let patched_activity =
@@ -105,9 +105,9 @@ let run_legacy_activity () =
   require_activity_result ~branch:"legacy" ~expected:legacy_activity_result
     ~result:legacy_result actual
 
-(** Schedules and waits for the new activity selected by the patched source
-    definition. Only [Patched_definition] invokes this helper after its patch
-    gate selected the new-execution or marker-present replay branch. *)
+(** Schedules and waits for the migrated activity. Active code invokes it after
+    the patch decision; deprecated and removed generations invoke it
+    unconditionally after the lifecycle safety gates have been satisfied. *)
 let run_patched_activity () =
   let open Temporal.Result_syntax in
   let* actual =

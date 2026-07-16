@@ -1,4 +1,4 @@
-(** Client-only assertion driver for the live old/new patch-history fixture.
+(** Client-only assertion driver for the live patch-lifecycle history fixture.
 
     The controller launches this process beside either worker generation. It
     starts exactly one run of the common workflow type, publishes that returned

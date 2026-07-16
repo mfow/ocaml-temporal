@@ -1,0 +1,18 @@
+{
+  "workflow_id": "two-binary-patch-replay-removal",
+  "run_id": "33333333-3333-4333-8333-333333333333",
+  "records": [
+    {
+      "phase": "initial",
+      "generation": 1,
+      "is_replaying": false,
+      "history_length": "6"
+    },
+    {
+      "phase": "replay",
+      "generation": 2,
+      "is_replaying": true,
+      "history_length": "6"
+    }
+  ]
+}

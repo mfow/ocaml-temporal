@@ -129,8 +129,9 @@ and bridge, read the [documentation guide](../README.md) first.
 - Replay-safe randomness, side effects, and workflow logging APIs remain
   required before production release. The complete [PR #348 CI
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) verifies
-  the two-history live patch-in target; deprecation is focused-tested but its
-  live migration and later call removal remain separate acceptance work.
+  the two original live patch-in histories. The expanded lifecycle target adds
+  active-to-deprecated and deprecated-to-removed replacement and awaits its
+  first complete CI run.
 
 ## Core boundary assumptions
 

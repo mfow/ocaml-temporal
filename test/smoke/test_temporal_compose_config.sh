@@ -38,6 +38,8 @@ require_text 'smoke-restart-driver:'
 require_text 'smoke-cache-eviction-driver:'
 require_text 'patch-replay-legacy-worker:'
 require_text 'patch-replay-patched-worker:'
+require_text 'patch-replay-deprecated-worker:'
+require_text 'patch-replay-removed-worker:'
 require_text 'patch-replay-driver:'
 require_text 'parent-child-restart-worker-one:'
 require_text 'parent-child-restart-worker-two:'
@@ -49,6 +51,8 @@ require_text 'restart_driver.exe'
 require_text 'cache_eviction_driver.exe'
 require_text 'legacy_worker.exe'
 require_text 'patched_worker.exe'
+require_text 'deprecated_worker.exe'
+require_text 'removed_worker.exe'
 require_text 'patch_replay_driver.exe'
 require_text 'parent_child_restart_worker.exe'
 require_text 'parent_child_restart_driver.exe'
@@ -58,6 +62,8 @@ require_text '--build-dir=/workspace/_build/smoke-restart-driver'
 require_text '--build-dir=/workspace/_build/smoke-cache-eviction-driver'
 require_text '--build-dir=/workspace/_build/patch-replay-legacy-worker'
 require_text '--build-dir=/workspace/_build/patch-replay-patched-worker'
+require_text '--build-dir=/workspace/_build/patch-replay-deprecated-worker'
+require_text '--build-dir=/workspace/_build/patch-replay-removed-worker'
 require_text '--build-dir=/workspace/_build/patch-replay-driver'
 require_text '--build-dir=/workspace/_build/parent-child-restart-worker'
 require_text '--build-dir=/workspace/_build/parent-child-restart-driver'
@@ -151,22 +157,25 @@ require_source_text "$worker" 'publish_stopped stopped_file'
 require_source_absent "$worker" 'Client.start'
 require_source_absent "$worker" 'Client.wait'
 
-# Patching acceptance uses three isolated OCaml executables. The legacy worker
-# must select a source definition with no patch gate, the replacement worker
-# selects the patched definition, and the driver remains client-only. The live
-# target proves the server behavior; these source checks prevent a refactor
-# from collapsing the roles before that expensive gate starts.
+# Patching acceptance uses isolated OCaml executables for every source
+# generation plus a client-only driver. The live target proves server behavior;
+# these source checks ensure deprecation and removal cannot quietly reuse the
+# active patch definition before that expensive gate starts.
 patch_fixture="$fixture/patch_replay"
 patch_support="$patch_fixture/patch_replay_support.ml"
 patch_legacy_definition="$patch_fixture/legacy_definition.ml"
 patch_patched_definition="$patch_fixture/patched_definition.ml"
 patch_legacy_worker="$patch_fixture/legacy_worker.ml"
 patch_patched_worker="$patch_fixture/patched_worker.ml"
+patch_deprecated_worker="$patch_fixture/deprecated_worker.ml"
+patch_removed_worker="$patch_fixture/removed_worker.ml"
 patch_driver="$patch_fixture/patch_replay_driver.ml"
 patch_dune="$patch_fixture/dune"
 
 require_source_text "$patch_dune" '(name legacy_worker)'
 require_source_text "$patch_dune" '(name patched_worker)'
+require_source_text "$patch_dune" '(name deprecated_worker)'
+require_source_text "$patch_dune" '(name removed_worker)'
 require_source_text "$patch_dune" '(name patch_replay_driver)'
 require_source_text "$patch_dune" '(modules legacy_definition legacy_worker)'
 require_source_text "$patch_dune" '(modules patched_definition patched_worker)'
@@ -185,6 +194,13 @@ require_source_text "$patch_legacy_worker" \
   'Legacy_definition.run ()'
 require_source_text "$patch_patched_worker" \
   'Patched_definition.run ()'
+require_source_text "$patch_deprecated_worker" 'let deprecated_workflow ='
+require_source_text "$patch_deprecated_worker" \
+  'Workflow.deprecate_patch ~id:Support.patch_id'
+require_source_absent "$patch_deprecated_worker" 'Workflow.patched ~id'
+require_source_text "$patch_removed_worker" 'let removed_workflow ='
+require_source_absent "$patch_removed_worker" 'Workflow.patched ~id'
+require_source_absent "$patch_removed_worker" 'Workflow.deprecate_patch ~id'
 require_source_text "$patch_driver" 'module Client = Temporal.Client'
 require_source_text "$patch_driver" 'Client.start client ~workflow:'
 require_source_text "$patch_driver" 'Client.wait handle'

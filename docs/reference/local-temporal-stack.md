@@ -148,20 +148,22 @@ checks the checked-in fixtures, history-normalization, and fail-closed
 validation contract. It checks only that the acceptance-schema documents are
 readable JSON objects; it does not run a JSON Schema validator against the
 fixtures. The live portion starts a client-only OCaml driver plus distinct
-legacy and patch-aware worker processes.
+legacy, active, deprecated, and removed worker processes.
 
 The controller creates a marker-free history under a workflow definition with
 no `Temporal.Workflow.patched` call, replaces that worker with a fresh
 patch-aware process, and requires the old activity/result branch during replay.
-It then creates a marker-bearing history under the patch-aware definition,
-replaces that worker with a fresh patch-aware process, and requires the new
-branch during replay. It validates server history before and after each
+It then creates an active marker under the patch-aware definition and replaces
+that worker with deprecation-only code, which must preserve the false marker
+while running the new behavior. Finally, a fresh deprecation worker creates a
+true marker before code containing no patch API replays the same run. It validates server history before and after each
 replacement, observes `is_replaying=true` from generation two, and removes the
 project's PostgreSQL volume during teardown. The legacy snapshots must contain
-zero patch markers; the new snapshots must contain exactly one non-deprecated
-marker. The complete [PR #348 CI
+zero patch markers; the active snapshots must contain exactly one false marker,
+and the removal snapshots exactly one true marker. The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) records a
-successful invocation of both scenarios.
+successful invocation of the two original scenarios; the expanded cases await
+their first complete CI run.
 
 ## Parent/child restart and replay acceptance
 

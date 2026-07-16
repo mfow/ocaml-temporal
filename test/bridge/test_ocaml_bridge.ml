@@ -41,6 +41,7 @@ let () =
        ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
        ~max_cached_workflows:100 ~max_outstanding_workflow_tasks:100
        ~max_concurrent_workflow_task_polls:1 ~graceful_shutdown_timeout_ms:1_000L
+       ()
    with
   | Error { status = Configuration; message } ->
       assert
@@ -53,6 +54,7 @@ let () =
        ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
        ~max_cached_workflows:0 ~max_outstanding_workflow_tasks:100
        ~max_concurrent_workflow_task_polls:1 ~graceful_shutdown_timeout_ms:1_000L
+       ()
    with
   | Error { status = Configuration; message } ->
       assert (String.starts_with ~prefix:"namespace must not contain NUL" message)
@@ -63,7 +65,7 @@ let () =
          ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
          ~max_cached_workflows:100 ~max_outstanding_workflow_tasks:100
          ~max_concurrent_workflow_task_polls:5
-         ~graceful_shutdown_timeout_ms:1_000L)
+         ~graceful_shutdown_timeout_ms:1_000L ())
   in
   (match Bridge.worker_start runtime worker_config with
   | Error { status = Invalid_state; message } ->

@@ -1695,7 +1695,7 @@ let create ?max_cached_workflows ?legacy_build_id ~target_url ~namespace
       ~max_outstanding_workflow_tasks:default_max_outstanding_workflow_tasks
       ~max_concurrent_workflow_task_polls:
         default_max_concurrent_workflow_task_polls
-      ~graceful_shutdown_timeout_ms:default_graceful_shutdown_timeout_ms
+      ~graceful_shutdown_timeout_ms:default_graceful_shutdown_timeout_ms ()
     |> Result.map_error (public_bridge_error "worker configuration")
   in
   let* supervisor =

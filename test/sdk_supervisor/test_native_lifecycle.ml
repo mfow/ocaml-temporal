@@ -30,7 +30,7 @@ let test_native_shutdown_is_idempotent () =
          ~task_queue:"ocaml-temporal-unit" ~build_id:"unit-build"
          ~max_cached_workflows:100 ~max_outstanding_workflow_tasks:100
          ~max_concurrent_workflow_task_polls:5
-         ~graceful_shutdown_timeout_ms:1_000L)
+         ~graceful_shutdown_timeout_ms:1_000L ())
   in
   (match Native.perform supervisor (Native.Start_worker worker_config) with
   | Error

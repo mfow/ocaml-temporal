@@ -76,6 +76,7 @@ val worker_config :
   max_outstanding_workflow_tasks:int ->
   max_concurrent_workflow_task_polls:int ->
   graceful_shutdown_timeout_ms:int64 ->
+  unit ->
   (worker_config, error) result
 
 (** Creates a native runtime after checking that the statically linked bridge

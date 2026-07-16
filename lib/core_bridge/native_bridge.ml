@@ -300,7 +300,7 @@ let client_config ~target_url ~identity =
 let worker_config ~namespace ~task_queue ~build_id ?(versioning = No_versioning)
     ~max_cached_workflows
     ~max_outstanding_workflow_tasks ~max_concurrent_workflow_task_polls
-    ~graceful_shutdown_timeout_ms =
+    ~graceful_shutdown_timeout_ms () =
   let validations =
     [
       validate_identifier "namespace" namespace;

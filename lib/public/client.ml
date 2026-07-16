@@ -372,7 +372,7 @@ let validate_terminate_reason reason =
 
 (** Terminates one exact run. The acknowledgement is deliberately separate
     from [wait], which observes the server's terminal history event. *)
-let terminate ?(reason = "") handle =
+let terminate ?(reason = "") (handle : ('input, 'output) handle) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())

@@ -332,6 +332,26 @@ let signal ?request_id handle ~(signal : 'signal Signal.t) ~input =
             in
             Backend.client_signal handle.client.backend request)
 
+(** Executes one output-only query against the exact run retained by [handle].
+    Query arguments are intentionally absent in this first client slice: the
+    workflow-side [Query] definition is already output-only, and the result is
+    decoded with the definition's codec only after the native bridge has
+    validated the response payload. *)
+let query handle ~(query : 'query Query.t) =
+  if Atomic.get handle.client.closed then
+    Error
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else
+    let request : Backend.query_request =
+      {
+        workflow_id = handle.workflow_id;
+        run_id = handle.run_id;
+        query_name = Query.name query;
+      }
+    in
+    Result.bind (Backend.client_query handle.client.backend request) (fun payload ->
+        Codec.decode (Query.output query) payload)
+
 (** Returns the durable workflow identity retained by a handle. *)
 let workflow_id (handle : ('input, 'output) handle) = handle.workflow_id
 

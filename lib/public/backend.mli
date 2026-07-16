@@ -59,6 +59,15 @@ type signal_request = {
   input : Payload.t;
 }
 
+(** Exact workflow/run pair and output-only query definition name. The
+    connected client supplies the namespace when adapting this request to the
+    closed native protocol. *)
+type query_request = {
+  workflow_id : string;
+  run_id : string;
+  query_name : string;
+}
+
 (** Terminal outcomes are kept separate from bridge transport errors so a
     completed Temporal failure remains an ordinary typed value. *)
 type terminal_result =
@@ -146,6 +155,11 @@ val client_cancel : client -> cancel_request -> (unit, Error.t) result
 (** Sends one signal to one exact workflow run. Success acknowledges the
     server RPC; it does not wait for workflow code to process the message. *)
 val client_signal : client -> signal_request -> (unit, Error.t) result
+
+(** Executes one output-only query against an exact workflow run and returns
+    its encoded result payload. Query handler failures are typed errors; the
+    deterministic mock reports that it does not execute handlers. *)
+val client_query : client -> query_request -> (Payload.t, Error.t) result
 
 (** Closes a client backend. Native shutdown is serialized and terminal even
     when it returns an error; the public client caches that exact result so a

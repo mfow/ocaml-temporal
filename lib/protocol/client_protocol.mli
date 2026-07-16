@@ -63,6 +63,18 @@ type signal_request = {
 type signal_response = { acknowledged : bool }
 (** Positive acknowledgement returned after Temporal accepts a signal RPC. *)
 
+type query_request = {
+  execution : execution;
+  query_type : string;
+  input : payload list;
+}
+(** Exact execution identity and output-only query name sent to Temporal. The
+    input list is currently required to be empty by the public client API but
+    remains explicit in the closed protocol for future typed query arguments. *)
+
+type query_response = { result : payload list }
+(** Ordered payloads returned by a successful workflow query. *)
+
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -141,6 +153,12 @@ val encode_signal_request : signal_request -> (string, error) result
 val decode_signal_response : string -> (signal_response, error) result
 (** Strictly decodes the positive native signal acknowledgement. *)
 
+val encode_query_request : query_request -> (string, error) result
+(** Validates and serializes one exact-run, output-only query request. *)
+
+val decode_query_response : string -> (query_response, error) result
+(** Strictly decodes one successful query result payload list. *)
+
 val decode_wait_response : request:wait_request -> string -> (wait_response, error) result
 (** Strictly decodes one terminal exact-run response and verifies that the
     returned execution is exactly the requested run. *)
@@ -164,4 +182,8 @@ val decode_cancel_error : string -> (client_error, error) result
 
 val decode_signal_error : string -> (client_error, error) result
 (** Decodes a signal error and rejects the start-only [already_started]
+    category. *)
+
+val decode_query_error : string -> (client_error, error) result
+(** Decodes a query error and rejects the start-only [already_started]
     category. *)

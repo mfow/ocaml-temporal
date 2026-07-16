@@ -493,6 +493,15 @@ CAMLprim value ocaml_temporal_client_signal_workflow_json(value runtime,
       runtime, input, ocaml_temporal_core_v1_client_signal_workflow_json);
 }
 
+/* Execute one output-only query against one exact workflow run. The JSON
+ * input is copied before the OCaml runtime lock is released; Rust owns the
+ * Temporal protobuf request and returns only an owned JSON response. */
+CAMLprim value ocaml_temporal_client_query_workflow_json(value runtime,
+                                                         value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v1_client_query_workflow_json);
+}
+
 /* Admit one workflow start and return its opaque ticket. The input is copied
  * before releasing the OCaml runtime lock; Rust owns the pending Tokio task
  * and never retains OCaml memory from this call. */

@@ -526,6 +526,33 @@ impl Runtime {
             .map_err(protocol_failure)
     }
 
+    /// Executes one output-only query against one exact workflow run. Query
+    /// rejection is converted to the same structured client-error JSON used
+    /// by cancellation and signal operations; successful payloads are
+    /// revalidated before crossing the ABI.
+    fn query_workflow_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let request = client_protocol::decode_query_request(text).map_err(protocol_failure)?;
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+        let response = handle
+            .block_on(client_protocol::query_workflow(connection, request))
+            .map_err(client_operation_failure)?;
+        client_protocol::encode_query_response(&response)
+            .map(|encoded| encoded.into_bytes())
+            .map_err(protocol_failure)
+    }
+
     /// Begins one workflow start without waiting for the RPC response.
     ///
     /// The owner Domain performs only validation, ticket bookkeeping, and
@@ -2632,6 +2659,38 @@ pub unsafe extern "C" fn ocaml_temporal_core_v1_client_signal_workflow_json(
                     message: "runtime pointer is null".to_owned(),
                 })?
                 .signal_workflow_json(input)
+        })
+    }
+}
+
+/// Execute one output-only query against one exact workflow run.
+///
+/// The successful value is a strict `{"result": [...]}` document. Query
+/// rejection and gRPC failures remain structured client errors; no
+/// server-controlled diagnostic text is exposed through the ABI.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle. The input span
+/// is borrowed only for this synchronous call and `output` follows the normal
+/// initialized-result contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v1_client_query_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .query_workflow_json(input)
         })
     }
 }

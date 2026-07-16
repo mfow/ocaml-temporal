@@ -292,6 +292,57 @@ which includes the same signal/condition path. The acknowledgement therefore
 remains distinct from handler execution, while the two runs together preserve
 the focused and complete live evidence for this client operation.
 
+## Query one exact run
+
+The public `Temporal.Client.query` operation asks Temporal to evaluate a
+read-only query handler for the exact workflow/run identity retained by a
+typed client handle. The first client slice intentionally supports output-only
+query definitions (`Temporal.Query.t` handlers receive `unit`); query
+arguments and suspended query continuations remain a separate interaction
+surface. A successful call returns the handler's typed value after decoding the
+single result payload with the query definition's codec.
+
+The private request is a closed JSON object:
+
+```json
+{
+  "namespace": "default",
+  "workflow_id": "summarize-1",
+  "run_id": "server-assigned-run-id",
+  "query_type": "current_state",
+  "input": []
+}
+```
+
+`run_id` is mandatory, so a query cannot accidentally inspect a different
+execution after continued-as-new. OCaml and Rust validate every identifier,
+reject unknown and duplicate members, and validate each payload in `input`
+before entering the FFI; the public API currently requires that list to be
+empty. Rust wraps the list in Temporal's `WorkflowQuery.query_args`, sets the
+non-rejecting query condition, and calls the official `QueryWorkflow` RPC.
+
+On success Rust returns:
+
+```json
+{"result":[{"metadata":{},"data":{"encoding":"base64","data":"..."}}]}
+```
+
+The result list is preserved through the bridge and the public adapter accepts
+exactly one payload for the output codec. A server-side `query_rejected` value,
+an RPC failure, or a malformed response is returned as a typed client error;
+server diagnostic text does not cross the JSON boundary. The request and
+response schemas are
+[`client-query-request.schema.json`](../schemas/bridge/client-query-request.schema.json)
+and
+[`client-query-response.schema.json`](../schemas/bridge/client-query-response.schema.json).
+
+The deterministic mock transport validates the exact execution identity but
+does not run workflow code, so mock queries fail with a typed workflow error.
+Live acceptance of a query handler remains a follow-up test once the worker
+interaction fixture is extended; this slice proves the public API, strict
+protocol, supervisor serialization, ABI state guards, and official Rust RPC
+mapping without claiming live evidence prematurely.
+
 ## Complete a handed-off asynchronous activity
 
 The private client bridge also owns the two operations used after a worker has

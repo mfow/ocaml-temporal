@@ -439,6 +439,13 @@ module Protocol_adapter = struct
     | Ok output -> Ok (Bytes.of_string output)
     | Error error -> client_error "client signal request encoding" error
 
+  (** Canonically serializes one exact-run output-only query request before it
+      reaches the native bridge. *)
+  let encode_client_query_request request =
+    match Client.encode_query_request request with
+    | Ok output -> Ok (Bytes.of_string output)
+    | Error error -> client_error "client query request encoding" error
+
   (** Decodes the opaque ticket returned by native asynchronous-start
       admission. The ticket is bound to [request] before it is published to
       the supervisor caller, so later poll operations cannot mix identities. *)
@@ -641,6 +648,38 @@ module Protocol_adapter = struct
         | Ok _response -> Ok (Ok ())
         | Error error -> client_error "client signal response decoding" error)
     | Error native_error -> decode_client_signal_failure native_error
+
+  (** Decodes a native query payload list or preserves a structured server
+      failure as an inner typed client error. The public layer enforces the
+      output codec's expected payload cardinality. *)
+  let decode_client_query_result = function
+    | Ok input -> (
+        match Client.decode_query_response (Bytes.to_string input) with
+        | Ok response -> Ok (Ok response.result)
+        | Error error -> client_error "client query response decoding" error)
+    | Error native_error -> (
+        match native_error.Bridge.status with
+        | Connection | Protocol -> (
+            match Client.decode_query_error native_error.message with
+            | Error error -> malformed_client_error "client query" error
+            | Ok client_error ->
+                if native_error.Bridge.status = client_error_status client_error
+                then Ok (Error client_error)
+                else
+                  Error
+                    {
+                      Bridge.status = Protocol;
+                      message =
+                        "client query error status does not match its JSON kind";
+                    })
+        | Already_started ->
+            Error
+              {
+                Bridge.status = Protocol;
+                message =
+                  "client query returned an impossible already-started status";
+              }
+        | _ -> Error native_error)
 end
 
 (** The production backend owns one runtime-client-worker graph. Every
@@ -675,6 +714,9 @@ module Native_backend = struct
     | Client_signal_workflow :
         Client.signal_request ->
         (unit, Client.client_error) result operation
+    | Client_query_workflow :
+        Client.query_request ->
+        (Client.payload list, Client.client_error) result operation
     | Start_worker : Bridge.worker_config -> unit operation
     | Start_replay_worker : Bridge.worker_config -> unit operation
     | Feed_replay_history : bytes -> unit operation
@@ -759,6 +801,12 @@ module Native_backend = struct
         | Ok input ->
             Protocol_adapter.decode_client_signal_result
               (Bridge.client_signal_workflow_json runtime input))
+    | Client_query_workflow request -> (
+        match Protocol_adapter.encode_client_query_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_query_result
+              (Bridge.client_query_workflow_json runtime input))
     | Start_worker config -> Bridge.worker_start runtime config
     | Start_replay_worker config -> Bridge.replay_worker_start runtime config
     | Feed_replay_history input ->
@@ -863,6 +911,9 @@ module Native = struct
     | Client_signal_workflow :
         Client.signal_request ->
         (unit, Client.client_error) result operation
+    | Client_query_workflow :
+        Client.query_request ->
+        (Client.payload list, Client.client_error) result operation
     | Start_worker : worker_config -> unit operation
     | Start_replay_worker : worker_config -> unit operation
     | Feed_replay_history : bytes -> unit operation

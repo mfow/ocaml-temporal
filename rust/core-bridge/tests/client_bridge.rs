@@ -7,6 +7,7 @@ use ocaml_temporal_core_bridge::{
     STATUS_PROTOCOL, ocaml_temporal_core_v1_client_begin_start_workflow_json,
     ocaml_temporal_core_v1_client_cancel_workflow_json,
     ocaml_temporal_core_v1_client_poll_start_workflow_json,
+    ocaml_temporal_core_v1_client_query_workflow_json,
     ocaml_temporal_core_v1_client_signal_workflow_json,
     ocaml_temporal_core_v1_client_start_workflow_json,
     ocaml_temporal_core_v1_client_wait_start_workflow_json,
@@ -37,6 +38,8 @@ const WAIT_REQUEST: &[u8] =
     br#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1"}"#;
 /// Minimal valid exact-run signal document used for ABI state tests.
 const SIGNAL_REQUEST: &[u8] = br#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","signal_name":"add_document","request_id":"signal-1","input":[]}"#;
+/// Minimal valid output-only query document used when testing ABI state handling.
+const QUERY_REQUEST: &[u8] = br#"{"namespace":"default","workflow_id":"workflow-1","run_id":"run-1","query_type":"current_state","input":[]}"#;
 /// Syntactically valid opaque ticket used for unknown-ticket state tests.
 const START_TICKET: &[u8] = br#"{"ticket":"ticket-1"}"#;
 
@@ -345,6 +348,59 @@ fn client_signal_validates_json_before_state_use() {
         STATUS_OK
     );
 
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
+        STATUS_OK
+    );
+}
+
+#[test]
+/// Query validation runs before connection-state lookup, and a complete
+/// request reaches the lifecycle guard only after the closed JSON shape has
+/// been accepted.
+fn client_query_validates_json_before_state_use() {
+    let mut runtime = ptr::null_mut();
+    let mut result = empty_result();
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_client_query_workflow_json(
+                runtime,
+                br#"{}"#.as_ptr(),
+                2,
+                &mut result,
+            )
+        },
+        STATUS_PROTOCOL
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
+
+    assert_eq!(
+        unsafe {
+            ocaml_temporal_core_v1_client_query_workflow_json(
+                runtime,
+                QUERY_REQUEST.as_ptr(),
+                QUERY_REQUEST.len(),
+                &mut result,
+            )
+        },
+        STATUS_INVALID_STATE
+    );
+    assert_eq!(
+        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        STATUS_OK
+    );
     assert_eq!(
         unsafe { ocaml_temporal_core_v1_runtime_free(&mut runtime) },
         STATUS_OK

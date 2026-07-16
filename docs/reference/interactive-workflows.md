@@ -18,8 +18,10 @@ output-only query delivery is also implemented at the bridge boundary. Native
 updates have an experimental immediate slice: a registered one-input,
 non-suspending handler can run through the Rust/Core bridge and return a typed
 result. PR #266 provides the first focused live proof of the typed
-signal/condition path; the complete current seventeen-result Compose
-acceptance is also covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
+signal/condition path; the recorded seventeen-result Compose baseline is
+also covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
+That historical run predates the long-backoff workflow now present in the
+fixture, whose first live run remains pending.
 Live query/update delivery, suspended updates, and broader interaction
 coverage remain future work.
 
@@ -325,8 +327,8 @@ The supervisor remains the sole owner of the Rust handle graph, and native
 readiness is observed through its scheduler-safe boundary. Rust never calls an
 OCaml closure. The focused runtime tests prove scheduler delivery, metadata
 retention, and fail-closed handling. PR #266 established the first focused
-live signal/condition acceptance, and the complete current seventeen-result
-path is covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
+live signal/condition acceptance, and the recorded seventeen-result baseline
+is covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
 Native query delivery now uses the same private registration path:
 query IDs, repeated arguments, and headers are retained, output-only handlers
 run synchronously on the owner Domain, and non-empty arguments produce a

@@ -29,9 +29,10 @@ clock value for the same history event. The OCaml implementation does not call
 
 `Temporal.Time.of_unix` can validate an application-provided timestamp when a
 helper needs to compare or store one. Its nanosecond component must be in the
-range `0` through `999_999_999`; invalid values return a non-retryable
-`Temporal.Error.t`. `Temporal.Time.compare` and `Temporal.Time.equal` compare
-the integer representation exactly.
+range `0` through `999_999_999`; invalid values return a typed non-retryable
+`Temporal.Error.t` with category `` `Defect `` rather than raising.
+`Temporal.Time.compare` and `Temporal.Time.equal` compare the integer
+representation exactly.
 
 Outside workflow execution, or for a synthetic activation that has no Temporal
 timestamp (such as cache eviction), `Temporal.Workflow.now ()` returns a typed

@@ -63,7 +63,7 @@ let () =
          ~build_id:"live-lifecycle-build" ~max_cached_workflows:100
          ~max_outstanding_workflow_tasks:100
          ~max_concurrent_workflow_task_polls:5
-         ~graceful_shutdown_timeout_ms:1_000L)
+         ~graceful_shutdown_timeout_ms:1_000L ())
   in
   let supervisor = require_supervisor (Native.create ~capacity:8 ()) in
   require_supervisor (Native.perform supervisor (Native.Connect_client client));

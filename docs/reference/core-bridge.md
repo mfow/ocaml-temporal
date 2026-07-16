@@ -13,7 +13,7 @@ background threads.
 
 ## Version and symbols
 
-ABI version 1 uses only symbols beginning with `ocaml_temporal_core_v1_`.
+ABI version 2 uses only symbols beginning with `ocaml_temporal_core_v2_`.
 Before using the bridge, OCaml asks Rust which ABI version it implements and
 checks that it matches `OCAML_TEMPORAL_CORE_ABI_VERSION`. The bridge represents
 the Rust runtime with one opaque handle. Client connection and worker state are
@@ -21,6 +21,13 @@ subordinate Rust-owned state in that runtime; they are not separate handles
 passed through the C ABI. “Opaque” means OCaml can pass the runtime handle back
 to Rust but cannot inspect the Rust object it refers to. A connection is only
 one internal part of the SDK; the public package is not merely a service client.
+
+Version 2 is intentionally incompatible with version 1. The worker
+configuration document now contains a required, strict `versioning` object;
+the versioned symbols and negotiation constant therefore change together so
+an OCaml object and Rust archive built from different contracts fail during
+startup negotiation instead of reaching worker construction with ambiguous
+JSON semantics.
 
 The canonical header is
 `rust/core-bridge/include/ocaml_temporal_core.h`. Both Rust and C compile-time
@@ -211,7 +218,7 @@ A result has one success buffer and one error buffer. At most one owns memory:
 
 Rust owns both allocations. The caller may copy their bytes but must never
 mutate or directly free their fields. It must call
-`ocaml_temporal_core_v1_result_free` exactly once after consuming an initialized
+`ocaml_temporal_core_v2_result_free` exactly once after consuming an initialized
 result. That function clears the object, so accidentally calling it again on
 the same object is safe. Copying a live result structure creates no new
 ownership; freeing both copies is invalid.
@@ -223,7 +230,7 @@ result when passed to another operation. Free the previous result first.
 
 The private C stubs allocate an OCaml custom block before entering Rust. That
 block is the sole owner of the ABI result and has a finalizer which calls
-`ocaml_temporal_core_v1_result_free`. The OCaml wrapper also uses
+`ocaml_temporal_core_v2_result_free`. The OCaml wrapper also uses
 `Fun.protect` to release the result deterministically after copying its bytes.
 This gives every path two compatible safeguards: normal operation frees
 immediately, while an OCaml allocation failure or other exception leaves a
@@ -288,7 +295,7 @@ and cannot retire the real lease. The malformed-byte case is defensive:
 successful Rust poll encoding cannot produce malformed JSON, but both language
 decoders and both rejection entry points still validate it.
 
-`Sdk_supervisor.Native` is the private OCaml adapter for these ABI version 1
+`Sdk_supervisor.Native` is the private OCaml adapter for these ABI version 2
 operations. It exposes a typed GADT rather than raw JSON bytes:
 
 | Supervisor operation | Result and boundary behavior |
@@ -367,17 +374,25 @@ failure, and scheduler contracts.
 The OCaml wrapper constructs two private JSON documents; applications never
 assemble these strings themselves. The client document contains exactly
 `target_url` and `identity`. The worker document contains exactly `namespace`,
-`task_queue`, `build_id`, `max_cached_workflows`,
+`task_queue`, `build_id`, `versioning`, `max_cached_workflows`,
 `max_outstanding_workflow_tasks`, `max_concurrent_workflow_task_polls`, and
 `graceful_shutdown_timeout_ms`. Closed Draft 2020-12 schemas live under
 `docs/schemas/bridge/`.
+
+`versioning` is a closed object: `{ "kind": "none" }` preserves the existing
+unversioned worker behavior, while `{ "kind": "legacy_build_id", "build_id":
+"..." }` selects Temporal Core's legacy whole-worker build-ID routing. In the
+legacy form the nested build ID must exactly match the top-level `build_id`;
+both OCaml and Rust validate that invariant before worker construction.
 
 Temporal Core requires at least two workflow-task pollers when
 `max_cached_workflows` is non-zero. The OCaml validator, the Rust validator,
 and the JSON Schema all enforce that relationship before worker construction;
 the public native worker default is two pollers.
 
-The public `Temporal.Worker.create` accepts an optional
+The public `Temporal.Worker.create` accepts validated `Temporal.Worker.Options`
+for routing and resource policy. `Options.make ~versioning:(Legacy_build_id
+"build-v2") ()` enables legacy build-ID routing. It also accepts an optional
 `max_cached_workflows` bound for applications that need to tune sticky
 workflow memory. Omitting it retains the bounded default of 1,000 cached
 workflows. A zero value disables the Core cache, while a positive value can
@@ -411,7 +426,7 @@ and no long Core poll occupies the supervisor Domain. Keeping the lanes
 independent prevents an idle activity poll from delaying workflow completion,
 or vice versa.
 
-ABI version 1 includes private readiness-wait symbols for the two independent
+ABI version 2 includes private readiness-wait symbols for the two independent
 poll lanes. The supervisor may invoke them only from the owner-domain mailbox
 handler; the C boundary releases the OCaml runtime lock while Rust waits and
 reacquires it before returning. Callers must not turn a readiness wait into a

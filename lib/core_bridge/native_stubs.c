@@ -155,7 +155,7 @@ static void release_response(owned_response *response) {
   if (atomic_compare_exchange_strong_explicit(
           &response->live, &expected, 0, memory_order_acq_rel,
           memory_order_acquire)) {
-    (void)ocaml_temporal_core_v1_result_free(&response->result);
+    (void)ocaml_temporal_core_v2_result_free(&response->result);
   }
 }
 
@@ -188,7 +188,7 @@ static void finalize_runtime(value runtime) {
    * reacquiring the OCaml lock here. */
   wait_for_runtime_calls(owned);
   if (native_runtime != NULL) {
-    (void)ocaml_temporal_core_v1_runtime_dispose(&native_runtime);
+    (void)ocaml_temporal_core_v2_runtime_dispose(&native_runtime);
   }
   free(owned);
 }
@@ -366,7 +366,7 @@ CAMLprim value ocaml_temporal_check_abi_version(value requested_version) {
 
   response = alloc_response();
   owned = Response_val(response);
-  (void)ocaml_temporal_core_v1_check_abi_version(
+  (void)ocaml_temporal_core_v2_check_abi_version(
       (uint32_t)Int32_val(requested_version), &owned->result);
   CAMLreturn(response);
 }
@@ -394,7 +394,7 @@ CAMLprim value ocaml_temporal_echo(value input) {
   }
 
   caml_enter_blocking_section();
-  (void)ocaml_temporal_core_v1_echo(input_copy, input_length, &native_result);
+  (void)ocaml_temporal_core_v2_echo(input_copy, input_length, &native_result);
   caml_leave_blocking_section();
   free(input_copy);
   /* Re-resolve after reacquiring the runtime lock: a concurrent minor GC may
@@ -421,7 +421,7 @@ CAMLprim value ocaml_temporal_conformance_wait_ms(value milliseconds) {
 
   response = alloc_response();
   caml_enter_blocking_section();
-  (void)ocaml_temporal_core_v1_conformance_wait_ms(bounded_request,
+  (void)ocaml_temporal_core_v2_conformance_wait_ms(bounded_request,
                                                    &native_result);
   caml_leave_blocking_section();
   Response_val(response)->result = native_result;
@@ -443,7 +443,7 @@ CAMLprim value ocaml_temporal_runtime_create(value unit) {
   response = alloc_response();
 
   caml_enter_blocking_section();
-  (void)ocaml_temporal_core_v1_runtime_new(&native_runtime, &native_result);
+  (void)ocaml_temporal_core_v2_runtime_new(&native_runtime, &native_result);
   caml_leave_blocking_section();
 
   runtime_owner = Runtime_val(runtime);
@@ -462,7 +462,7 @@ CAMLprim value ocaml_temporal_runtime_create(value unit) {
  * OCaml runtime lock is available to other Domains. */
 CAMLprim value ocaml_temporal_client_connect(value runtime, value input) {
   return invoke_runtime_json(runtime, input,
-                             ocaml_temporal_core_v1_client_connect_json);
+                             ocaml_temporal_core_v2_client_connect_json);
 }
 
 /* Start one dynamically named workflow through the connected native client.
@@ -471,7 +471,7 @@ CAMLprim value ocaml_temporal_client_connect(value runtime, value input) {
 CAMLprim value ocaml_temporal_client_start_workflow_json(value runtime,
                                                          value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_client_start_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_client_start_workflow_json);
 }
 
 /* Request cancellation of one exact workflow run. The JSON input is copied
@@ -481,7 +481,7 @@ CAMLprim value ocaml_temporal_client_start_workflow_json(value runtime,
 CAMLprim value ocaml_temporal_client_cancel_workflow_json(value runtime,
                                                           value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_client_cancel_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_client_cancel_workflow_json);
 }
 
 /* Send one signal to one exact workflow run. The JSON input is copied before
@@ -490,7 +490,7 @@ CAMLprim value ocaml_temporal_client_cancel_workflow_json(value runtime,
 CAMLprim value ocaml_temporal_client_signal_workflow_json(value runtime,
                                                           value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_client_signal_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_client_signal_workflow_json);
 }
 
 /* Execute one output-only query against one exact workflow run. The JSON
@@ -499,7 +499,7 @@ CAMLprim value ocaml_temporal_client_signal_workflow_json(value runtime,
 CAMLprim value ocaml_temporal_client_query_workflow_json(value runtime,
                                                          value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_client_query_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_client_query_workflow_json);
 }
 
 /* Admit one workflow start and return its opaque ticket. The input is copied
@@ -508,7 +508,7 @@ CAMLprim value ocaml_temporal_client_query_workflow_json(value runtime,
 CAMLprim value ocaml_temporal_client_begin_start_workflow_json(value runtime,
                                                                value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_client_begin_start_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_client_begin_start_workflow_json);
 }
 
 /* Poll one asynchronous start ticket without blocking. STATUS_NOT_READY is
@@ -517,7 +517,7 @@ CAMLprim value ocaml_temporal_client_begin_start_workflow_json(value runtime,
 CAMLprim value ocaml_temporal_client_poll_start_workflow_json(value runtime,
                                                               value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_client_poll_start_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_client_poll_start_workflow_json);
 }
 
 /* Wait one bounded interval for an asynchronous start ticket. The shared
@@ -525,7 +525,7 @@ CAMLprim value ocaml_temporal_client_poll_start_workflow_json(value runtime,
 CAMLprim value ocaml_temporal_client_wait_start_workflow_json(value runtime,
                                                               value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_client_wait_start_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_client_wait_start_workflow_json);
 }
 
 /* Wait for one exact run while Rust performs the long poll outside the OCaml
@@ -533,7 +533,7 @@ CAMLprim value ocaml_temporal_client_wait_start_workflow_json(value runtime,
 CAMLprim value ocaml_temporal_client_wait_workflow_json(value runtime,
                                                         value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_client_wait_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_client_wait_workflow_json);
 }
 
 /* Complete an activity that has already returned WillCompleteAsync. Rust
@@ -542,7 +542,7 @@ CAMLprim value
 ocaml_temporal_client_complete_async_activity_json(value runtime, value input) {
   return invoke_runtime_json(
       runtime, input,
-      ocaml_temporal_core_v1_client_complete_async_activity_json);
+      ocaml_temporal_core_v2_client_complete_async_activity_json);
 }
 
 /* Record progress for an admitted asynchronous activity through the same
@@ -551,14 +551,14 @@ CAMLprim value ocaml_temporal_client_record_async_activity_heartbeat_json(
     value runtime, value input) {
   return invoke_runtime_json(
       runtime, input,
-      ocaml_temporal_core_v1_client_record_async_activity_heartbeat_json);
+      ocaml_temporal_core_v2_client_record_async_activity_heartbeat_json);
 }
 
 /* Construct and validate the workflow-only Core worker. Network validation
  * and any failure cleanup happen with the OCaml runtime lock released. */
 CAMLprim value ocaml_temporal_worker_start(value runtime, value input) {
   return invoke_runtime_json(runtime, input,
-                             ocaml_temporal_core_v1_worker_start_json);
+                             ocaml_temporal_core_v2_worker_start_json);
 }
 
 /* Construct the workflow-only replay worker from strict settings. Replay
@@ -566,7 +566,7 @@ CAMLprim value ocaml_temporal_worker_start(value runtime, value input) {
  * is released; Rust owns the Core graph after this call returns. */
 CAMLprim value ocaml_temporal_replay_worker_start(value runtime, value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_replay_worker_start_json);
+      runtime, input, ocaml_temporal_core_v2_replay_worker_start_json);
 }
 
 /* Feed one replay-history document while Rust drives the bounded feeder on its
@@ -575,26 +575,26 @@ CAMLprim value ocaml_temporal_replay_worker_feed_history(value runtime,
                                                          value input) {
   return invoke_runtime_json(
       runtime, input,
-      ocaml_temporal_core_v1_replay_worker_feed_history_json);
+      ocaml_temporal_core_v2_replay_worker_feed_history_json);
 }
 
 /* Close replay input; Core will publish terminal shutdown after all admitted
  * histories and their workflow completions have been consumed. */
 CAMLprim value ocaml_temporal_replay_worker_finish_input(value runtime) {
   return invoke_runtime(
-      runtime, ocaml_temporal_core_v1_replay_worker_finish_input);
+      runtime, ocaml_temporal_core_v2_replay_worker_finish_input);
 }
 
 /* Drain one replay activation without waiting on Core. */
 CAMLprim value ocaml_temporal_replay_worker_try_poll_workflow(value runtime) {
   return invoke_runtime(
-      runtime, ocaml_temporal_core_v1_replay_worker_try_poll_workflow);
+      runtime, ocaml_temporal_core_v2_replay_worker_try_poll_workflow);
 }
 
 /* Wait for replay readiness with the OCaml runtime lock released. */
 CAMLprim value ocaml_temporal_replay_worker_wait_workflow(value runtime) {
   return invoke_runtime(
-      runtime, ocaml_temporal_core_v1_replay_worker_wait_workflow);
+      runtime, ocaml_temporal_core_v2_replay_worker_wait_workflow);
 }
 
 /* Submit one replay workflow completion after copying the JSON input. */
@@ -602,7 +602,7 @@ CAMLprim value ocaml_temporal_replay_worker_complete_workflow(value runtime,
                                                               value input) {
   return invoke_runtime_json(
       runtime, input,
-      ocaml_temporal_core_v1_replay_worker_complete_workflow_json);
+      ocaml_temporal_core_v2_replay_worker_complete_workflow_json);
 }
 
 /* Retire one replay activation after OCaml semantic decode failure. */
@@ -610,17 +610,17 @@ CAMLprim value ocaml_temporal_replay_worker_reject_workflow(value runtime,
                                                             value input) {
   return invoke_runtime_json(
       runtime, input,
-      ocaml_temporal_core_v1_replay_worker_reject_workflow_json);
+      ocaml_temporal_core_v2_replay_worker_reject_workflow_json);
 }
 
 /* Finalize a naturally drained replay while Rust retains ownership on error. */
 CAMLprim value ocaml_temporal_replay_worker_finalize(value runtime) {
-  return invoke_runtime(runtime, ocaml_temporal_core_v1_replay_worker_finalize);
+  return invoke_runtime(runtime, ocaml_temporal_core_v2_replay_worker_finalize);
 }
 
 /* Explicitly dispose replay and force-complete native debts. */
 CAMLprim value ocaml_temporal_replay_worker_dispose(value runtime) {
-  return invoke_runtime(runtime, ocaml_temporal_core_v1_replay_worker_dispose);
+  return invoke_runtime(runtime, ocaml_temporal_core_v2_replay_worker_dispose);
 }
 
 /* Drain one ready workflow activation without waiting on Core. The Rust
@@ -629,7 +629,7 @@ CAMLprim value ocaml_temporal_replay_worker_dispose(value runtime) {
  * the OCaml scheduler can decide how to yield or wait for native readiness. */
 CAMLprim value ocaml_temporal_worker_try_poll_workflow(value runtime) {
   return invoke_runtime(runtime,
-                        ocaml_temporal_core_v1_worker_try_poll_workflow);
+                        ocaml_temporal_core_v2_worker_try_poll_workflow);
 }
 
 /* Wait for native workflow readiness with the OCaml runtime lock released. The
@@ -638,7 +638,7 @@ CAMLprim value ocaml_temporal_worker_try_poll_workflow(value runtime) {
  * signals readiness; the owner must still call the non-blocking drain above. */
 CAMLprim value ocaml_temporal_worker_wait_workflow(value runtime) {
   return invoke_runtime(runtime,
-                        ocaml_temporal_core_v1_worker_wait_workflow);
+                        ocaml_temporal_core_v2_worker_wait_workflow);
 }
 
 /* Copy a semantic workflow completion before releasing the OCaml runtime lock.
@@ -647,7 +647,7 @@ CAMLprim value ocaml_temporal_worker_wait_workflow(value runtime) {
 CAMLprim value ocaml_temporal_worker_complete_workflow_json(value runtime,
                                                             value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_worker_complete_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_worker_complete_workflow_json);
 }
 
 /* Return the exact Rust-produced activation document when the OCaml decoder
@@ -656,21 +656,21 @@ CAMLprim value ocaml_temporal_worker_complete_workflow_json(value runtime,
 CAMLprim value ocaml_temporal_worker_reject_workflow_json(value runtime,
                                                           value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_worker_reject_workflow_json);
+      runtime, input, ocaml_temporal_core_v2_worker_reject_workflow_json);
 }
 
 /* Drain one ready remote activity task without waiting. Workflow and activity
  * lanes are independent in Rust, so an empty activity lane does not delay a
  * ready workflow activation. */
 CAMLprim value ocaml_temporal_worker_try_poll_activity(value runtime) {
-  return invoke_runtime(runtime, ocaml_temporal_core_v1_worker_try_poll_activity);
+  return invoke_runtime(runtime, ocaml_temporal_core_v2_worker_try_poll_activity);
 }
 
 /* Wait for native remote-activity readiness under the same released-lock and
  * bounded-time contract as workflow readiness. */
 CAMLprim value ocaml_temporal_worker_wait_activity(value runtime) {
   return invoke_runtime(runtime,
-                        ocaml_temporal_core_v1_worker_wait_activity);
+                        ocaml_temporal_core_v2_worker_wait_activity);
 }
 
 /* Apply the fixed activity-completion retry delay on the Rust supervisor
@@ -680,7 +680,7 @@ CAMLprim value
 ocaml_temporal_worker_wait_activity_completion_retry_backoff(value runtime) {
   return invoke_runtime(
       runtime,
-      ocaml_temporal_core_v1_worker_wait_activity_completion_retry_backoff);
+      ocaml_temporal_core_v2_worker_wait_activity_completion_retry_backoff);
 }
 
 /* Copy a semantic activity completion before entering the blocking section.
@@ -689,7 +689,7 @@ ocaml_temporal_worker_wait_activity_completion_retry_backoff(value runtime) {
 CAMLprim value ocaml_temporal_worker_complete_activity_json(value runtime,
                                                             value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_worker_complete_activity_json);
+      runtime, input, ocaml_temporal_core_v2_worker_complete_activity_json);
 }
 
 /* Submit one heartbeat without exposing the native task token to OCaml. */
@@ -698,7 +698,7 @@ ocaml_temporal_worker_record_activity_heartbeat_json(value runtime,
                                                      value input) {
   return invoke_runtime_json(
       runtime, input,
-      ocaml_temporal_core_v1_worker_record_activity_heartbeat_json);
+      ocaml_temporal_core_v2_worker_record_activity_heartbeat_json);
 }
 
 /* Return the original Rust-produced activity document after OCaml decode
@@ -707,17 +707,17 @@ ocaml_temporal_worker_record_activity_heartbeat_json(value runtime,
 CAMLprim value ocaml_temporal_worker_reject_activity_json(value runtime,
                                                           value input) {
   return invoke_runtime_json(
-      runtime, input, ocaml_temporal_core_v1_worker_reject_activity_json);
+      runtime, input, ocaml_temporal_core_v2_worker_reject_activity_json);
 }
 
 /* Gracefully stop the worker; Rust treats an absent worker as already closed. */
 CAMLprim value ocaml_temporal_worker_shutdown(value runtime) {
-  return invoke_runtime(runtime, ocaml_temporal_core_v1_worker_shutdown);
+  return invoke_runtime(runtime, ocaml_temporal_core_v2_worker_shutdown);
 }
 
 /* Drop the client only after the worker child is absent. */
 CAMLprim value ocaml_temporal_client_disconnect(value runtime) {
-  return invoke_runtime(runtime, ocaml_temporal_core_v1_client_disconnect);
+  return invoke_runtime(runtime, ocaml_temporal_core_v2_client_disconnect);
 }
 
 /* Close the owner in three ordered phases: reject new borrows, detach the
@@ -739,7 +739,7 @@ CAMLprim value ocaml_temporal_runtime_close(value runtime) {
 
   caml_enter_blocking_section();
   wait_for_runtime_calls(owned);
-  status = ocaml_temporal_core_v1_runtime_free(&native_runtime);
+  status = ocaml_temporal_core_v2_runtime_free(&native_runtime);
   caml_leave_blocking_section();
   CAMLreturn(Val_int(status));
 }

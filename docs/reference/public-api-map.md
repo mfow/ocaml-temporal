@@ -99,7 +99,9 @@ for those rules.
   teardown failure so cleanup problems are not silently discarded.
 - `Temporal.Worker` registers workflows, activities, and the signal, query, and
   update handlers attached to each workflow registration. It owns one
-  supervisor graph, runs the poll loops, and performs idempotent shutdown. A
+  supervisor graph, runs the poll loops, and performs idempotent shutdown.
+  `Temporal.Worker.Options` provides typed, immutable resource and worker
+  routing settings, including legacy build-ID versioning. A
   successfully shut-down worker is not reusable: the mock backend reports a
   typed `bridge` error if `Worker.run` is called again, while the native backend
   returns without polling because its closed gate is already set. Create a new

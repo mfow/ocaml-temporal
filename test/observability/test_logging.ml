@@ -223,7 +223,7 @@ let test_source_and_tag_names () =
     changing their typed result behavior. *)
 let test_bridge_events () =
   with_capture (fun () ->
-      (match Bridge.check_abi_version 2l with
+      (match Bridge.check_abi_version 1l with
       | Error { status = Abi_mismatch; _ } -> ()
       | _ -> failwith "ABI mismatch contract changed");
       let failure =
@@ -354,7 +354,7 @@ let test_reporter_exceptions_are_contained () =
       Logs.set_reporter reporter;
       Logs.set_level level)
     (fun () ->
-      (match Bridge.check_abi_version 2l with
+      (match Bridge.check_abi_version 1l with
       | Error { status = Abi_mismatch; _ } -> ()
       | _ -> failwith "reporter changed bridge behavior");
       let execution = Execution.start waiting_workflow "private-input" in

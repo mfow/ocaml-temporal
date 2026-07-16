@@ -2,8 +2,8 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use ocaml_temporal_core_bridge::{
-    Result as AbiResult, STATUS_OK, ocaml_temporal_core_v1_result_free,
-    ocaml_temporal_core_v1_runtime_dispose, ocaml_temporal_core_v1_runtime_new,
+    Result as AbiResult, STATUS_OK, ocaml_temporal_core_v2_result_free,
+    ocaml_temporal_core_v2_runtime_dispose, ocaml_temporal_core_v2_runtime_new,
     test_runtime_cleanup_counts,
 };
 
@@ -18,15 +18,15 @@ fn asynchronous_disposal_completes_without_leaking_core() {
     let mut result = AbiResult::default();
 
     assert_eq!(
-        unsafe { ocaml_temporal_core_v1_runtime_new(&mut runtime, &mut result) },
+        unsafe { ocaml_temporal_core_v2_runtime_new(&mut runtime, &mut result) },
         STATUS_OK
     );
     assert_eq!(
-        unsafe { ocaml_temporal_core_v1_result_free(&mut result) },
+        unsafe { ocaml_temporal_core_v2_result_free(&mut result) },
         STATUS_OK
     );
     assert_eq!(
-        unsafe { ocaml_temporal_core_v1_runtime_dispose(&mut runtime) },
+        unsafe { ocaml_temporal_core_v2_runtime_dispose(&mut runtime) },
         STATUS_OK
     );
     assert!(runtime.is_null());

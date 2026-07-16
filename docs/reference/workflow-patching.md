@@ -7,8 +7,9 @@ change, then mark the patch as deprecated while incompatible histories drain.
 
 This is not a general deployment-versioning system. Removing a deprecated
 patch call is supported for histories that passed the documented lifecycle
-gates; worker deployment/build-ID routing, side effects, arbitrary historic
-compatibility, and migration tooling remain separate work.
+gates. Legacy build-ID worker routing is available separately through
+`Temporal.Worker.Options`; deployment-based routing, side effects, arbitrary
+historic compatibility, and migration tooling remain separate work.
 
 ## Authoring contract
 
@@ -147,7 +148,7 @@ and round trips through the pinned Core protobuf types. The expanded live target
 adds exact server-history and worker-replacement evidence for lifecycle
 transitions once its complete CI run succeeds.
 
-Worker deployment/build-ID versioning, side effects, arbitrary historical
+Deployment-based worker versioning, side effects, arbitrary historical
 compatibility, automated migration safety analysis, and histories that have not
 passed both documented gates remain separate roadmap work. For the overall evidence boundary,
 read [live acceptance coverage](live-acceptance-coverage.md).

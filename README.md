@@ -115,8 +115,10 @@ opaque bytes and applications may choose another deterministic codec.
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374)
   live-verifies the two original patch-in scenarios; the complete [PR #356 CI
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271) also
-  verifies active-to-deprecated and deprecated-to-removed replacement. Worker deployment/build-ID versioning,
-  arbitrary historical compatibility, and migration tooling remain pending.
+  verifies active-to-deprecated and deprecated-to-removed replacement. Legacy
+  build-ID worker routing is now available through `Temporal.Worker.Options`
+  and the private Core bridge; deployment-based routing, arbitrary historical
+  compatibility, and migration tooling remain pending.
 - Typed signal, query, and update definitions plus deterministic local handler
   dispatch are available as an experimental slice. Native signal delivery,
   output-only query delivery, immediate one-input non-suspending updates, and
@@ -124,7 +126,7 @@ opaque bytes and applications may choose another deterministic codec.
   delivery and condition wake-up are also covered by the [PR #289 Compose
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368);
   live query/update acceptance, typed query inputs, suspended update
-  continuations, richer handler policies, full workflow versioning, local
+  continuations, richer handler policies, full workflow-code versioning, local
   activities, Nexus, and the remaining cross-SDK parity surface remain roadmap
   work. Continue-as-
   new is implemented and locally tested at the workflow/native bridge boundary
@@ -269,8 +271,10 @@ replay occurred. The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) is the
 corresponding real-server evidence for the original cases; the complete [PR
 #356 run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271)
-verifies the expanded lifecycle cases. Deployment/build-ID routing,
-arbitrary historical compatibility, and migration tooling remain separate.
+verifies the expanded lifecycle cases. Deployment-based routing, arbitrary
+historical compatibility, and migration tooling remain separate; legacy
+build-ID worker routing is covered by bilateral bridge tests but still needs a
+dedicated live routing gate.
 See [workflow patching](docs/reference/workflow-patching.md)
 for the authoring and replay contract.
 

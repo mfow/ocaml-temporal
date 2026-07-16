@@ -1670,8 +1670,16 @@ let cleanup_abandoned worker =
     [Native.create] enters [cleanup], which joins the supervisor owner Domain
     and closes all native resources before returning. Successful construction
     attaches a GC finalizer so abandoned workers still drain leases. *)
-let create ?(max_cached_workflows = default_max_cached_workflows) ~target_url
-    ~namespace ~identity ~task_queue ~workflows ~activities () =
+let create ?max_cached_workflows ?legacy_build_id ~target_url ~namespace
+    ~identity ~task_queue ~workflows ~activities () =
+  let max_cached_workflows =
+    Option.value max_cached_workflows ~default:default_max_cached_workflows
+  in
+  let build_id, versioning =
+    match legacy_build_id with
+    | None -> (default_build_id, Bridge.No_versioning)
+    | Some build_id -> (build_id, Bridge.Legacy_build_id build_id)
+  in
   let* single_run_on_activation, on_completion = replay_diagnostic_hook () in
   let* parent_child_on_activation = parent_child_replay_diagnostic_hook () in
   let on_activation =
@@ -1682,12 +1690,12 @@ let create ?(max_cached_workflows = default_max_cached_workflows) ~target_url
     |> Result.map_error (public_bridge_error "client configuration")
   in
   let* worker_config =
-    Native.worker_config ~namespace ~task_queue ~build_id:default_build_id
+    Native.worker_config ~namespace ~task_queue ~build_id ~versioning
       ~max_cached_workflows
       ~max_outstanding_workflow_tasks:default_max_outstanding_workflow_tasks
       ~max_concurrent_workflow_task_polls:
         default_max_concurrent_workflow_task_polls
-      ~graceful_shutdown_timeout_ms:default_graceful_shutdown_timeout_ms
+      ~graceful_shutdown_timeout_ms:default_graceful_shutdown_timeout_ms ()
     |> Result.map_error (public_bridge_error "worker configuration")
   in
   let* supervisor =

@@ -7,6 +7,38 @@
     each definition's input and output codecs paired with its implementation. *)
 type registered_workflow
 
+(** Immutable worker construction options. The record is abstract so callers
+    can only obtain validated values through [make] or [default]. *)
+module Options : sig
+  (** Worker routing mode. [No_versioning] keeps the build ID as metadata;
+      [Legacy_build_id] enables Temporal's whole-worker build-ID versioning. *)
+  type versioning =
+    | No_versioning
+    | Legacy_build_id of string
+
+  (** A validated set of optional worker resource and routing settings. *)
+  type t
+
+  (** Existing worker defaults: no routing versioning and the standard sticky
+      cache bound. *)
+  val default : t
+
+  (** Validates and constructs options. A supplied cache value overrides the
+      normal worker default; [0] disables sticky workflow caching. Legacy build
+      IDs must be non-empty, NUL-free, and within the bridge transport limit. *)
+  val make :
+    ?versioning:versioning ->
+    ?max_cached_workflows:int ->
+    unit ->
+    (t, Error.t) result
+
+  (** Reads the validated routing mode without exposing the internal record. *)
+  val versioning : t -> versioning
+
+  (** Returns the explicit cache override, or [None] when worker defaults apply. *)
+  val max_cached_workflows : t -> int option
+end
+
 (** Packs a typed workflow definition for a worker registration list. [signals]
     attach scheduler handlers for matching native signal activations; [queries]
     attach synchronous read-only handlers for matching query requests; [updates]
@@ -37,6 +69,7 @@ type t
     an empty completion. *)
 val create :
   ?identity:string ->
+  ?options:Options.t ->
   ?max_cached_workflows:int ->
   target_url:string ->
   namespace:string ->

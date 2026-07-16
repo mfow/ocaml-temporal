@@ -1794,6 +1794,36 @@ let test_incoming_patch_notification_snapshot () =
         { patch_id = "orders.v2"; deprecated = false } ] -> ()
   | _ -> failwith "notification ID mutation changed retained patch state"
 
+(** Confirms the workflow random stream is owned by the execution context and
+    therefore repeats exactly for the same Core seed. The public function also
+    rejects an invalid bound through the normal typed-defect path. *)
+let test_workflow_random_int_is_replay_stable () =
+  let draw seed =
+    let scheduler = Scheduler.create () in
+    let context =
+      Workflow_context_store.create ~randomness_seed:seed scheduler
+    in
+    Workflow_context_store.with_context context (fun () ->
+        List.init 8 (fun _ -> Temporal.Workflow.random_int ~bound:97))
+  in
+  let first = draw "18446744073709551615" in
+  let replay = draw "18446744073709551615" in
+  if first <> replay then failwith "workflow random stream changed during replay";
+  List.iter
+    (function
+      | Ok value when value >= 0 && value < 97 -> ()
+      | Ok _ -> failwith "workflow random value exceeded its bound"
+      | Error _ -> failwith "workflow random stream unexpectedly failed")
+    first;
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  (match
+     Workflow_context_store.with_context context (fun () ->
+         Temporal.Workflow.random_int ~bound:0)
+   with
+  | Error error when String.equal (Temporal.Error.kind error) "defect" -> ()
+  | _ -> failwith "invalid workflow random bound was accepted")
+
 let () =
   test_commands_and_completion ();
   test_activity_options_and_queue ();
@@ -1830,4 +1860,5 @@ let () =
   test_workflow_patch_mode_invariant ();
   test_workflow_patch_mode_isolation_and_public_deprecation_snapshot ();
   test_workflow_patch_isolation_and_public_id_snapshot ();
-  test_incoming_patch_notification_snapshot ()
+  test_incoming_patch_notification_snapshot ();
+  test_workflow_random_int_is_replay_stable ()

@@ -70,6 +70,13 @@ val sleep : Duration.t -> (unit, Error.t) result
     a typed defect rather than reading the host wall clock. *)
 val now : unit -> (Time.t, Error.t) result
 
+(** Returns a deterministic pseudo-random integer in [0, bound).  The stream
+    is seeded by Temporal for the workflow run and replayed from the same
+    initialization metadata, so the result is stable for an identical call
+    sequence.  [bound] must be positive; invalid bounds and calls outside a
+    workflow return a typed defect. *)
+val random_int : bound:int -> (int, Error.t) result
+
 (** Returns whether workflow code should take the new branch identified by
     [id]. On a new execution the first call returns [true] and records a patch
     marker; replay returns [true] only when Core reports that marker, otherwise

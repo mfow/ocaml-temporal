@@ -83,6 +83,7 @@ type ('input, 'output) t
     commands when a workflow does not supply an explicit queue. *)
 val start :
   ?task_queue:string ->
+  ?randomness_seed:string ->
   ?signal_handlers:signal_handler list ->
   ?query_handlers:query_handler list ->
   ?update_handlers:update_handler list ->

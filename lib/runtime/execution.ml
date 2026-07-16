@@ -51,12 +51,13 @@ type update = {
   update_id : string;
 }
 
-(** An update callback returns its encoded result synchronously in this first
-    native slice. [run_validator] is false on replay and skips the validator. *)
+(** An update callback returns its encoded result and may suspend on a workflow
+    future. [on_validated] is called before the callback so the owner can emit
+    the accepted response while the callback is parked. *)
 type update_handler = {
   name : string;
   dispatch :
-    run_validator:bool -> update ->
+    run_validator:bool -> on_validated:(unit -> unit) -> update ->
     (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
 }
 
@@ -149,6 +150,10 @@ type ('input, 'output) t = {
   signal_handlers : signal_handler Signal_map.t;
   query_handlers : query_handler Query_map.t;
   update_handlers : update_handler Update_map.t;
+  (** Protocol IDs whose update handlers have acknowledged validation but are
+      still suspended. This table belongs to the execution owner and is never
+      accessed by Rust or another Domain. *)
+  pending_updates : (string, unit) Hashtbl.t;
   mutable started : bool;
   mutable terminal : bool;
   mutable evicted : bool;
@@ -195,6 +200,7 @@ let start ?(task_queue = "default") ?(signal_handlers = []) ?(query_handlers = [
       signal_handlers = signal_handler_map;
       query_handlers = query_handler_map;
       update_handlers = update_handler_map;
+      pending_updates = Hashtbl.create 8;
       started = false;
       terminal = false;
       evicted = false;
@@ -223,12 +229,27 @@ let set_activation_timestamp execution timestamp =
 let set_activation_is_replaying execution is_replaying =
   Workflow_context_store.set_activation_is_replaying execution.context is_replaying
 
+(** Validates the opaque protocol instance identifier before it is retained as
+    a pending continuation key. IDs are transport strings, but accepting an
+    empty, NUL-containing, or invalid UTF-8 key would make duplicate detection
+    and diagnostics ambiguous. *)
+let valid_protocol_instance_id id =
+  not (String.equal id "")
+  && not (String.contains id '\000')
+  && String.length id <= 65_536
+  && Temporal_base.Codec.valid_utf_8 id
+
+(** Removes all suspended update bookkeeping during terminal teardown. The
+    scheduler separately releases the actual OCaml continuations. *)
+let clear_pending_updates execution = Hashtbl.clear execution.pending_updates
+
 (** Emits the workflow's completion, failure, or cancellation command once and
     immediately releases every paused fiber. *)
 let emit_terminal execution command =
   if not execution.terminal then (
     execution.terminal <- true;
     Workflow_context_store.emit execution.context command;
+    clear_pending_updates execution;
     Workflow_context_store.shutdown execution.context;
     match command with
     | Activation.Complete_workflow _ ->
@@ -405,6 +426,12 @@ let process_job execution = function
             Workflow_context_store.emit execution.context
               (Activation.Update_response { protocol_instance_id; response })
           in
+          let accepted = ref false in
+          let acknowledged = ref false in
+          let reject error =
+            if !accepted then Hashtbl.remove execution.pending_updates protocol_instance_id;
+            emit (`Rejected error)
+          in
           match Update_map.find_opt name execution.update_handlers with
           | None ->
               let error = bridge_error ("unhandled workflow update: " ^ name) in
@@ -413,22 +440,46 @@ let process_job execution = function
                   (Observability.tags ~operation:"workflow_update_unhandled"
                      ~workflow_type:(workflow_type execution) ())
                 "workflow update has no registered handler";
-              emit (`Rejected error)
+              reject error
           | Some handler ->
-              let dispatched =
-                try handler.dispatch ~run_validator update with
+              if not (valid_protocol_instance_id protocol_instance_id) then
+                reject (bridge_error "workflow update has an invalid protocol instance ID")
+              else if Hashtbl.mem execution.pending_updates protocol_instance_id then
+                reject (bridge_error "workflow update protocol instance ID is already pending")
+              else
+                let on_validated () =
+                  if !acknowledged then
+                    invalid_arg "workflow update validation acknowledged twice"
+                  else if Hashtbl.mem execution.pending_updates protocol_instance_id then
+                    invalid_arg "workflow update protocol instance ID became pending twice"
+                  else begin
+                    Hashtbl.add execution.pending_updates protocol_instance_id ();
+                    acknowledged := true;
+                    (* Mark ownership before emitting. If the context has
+                       already shut down, [emit] can raise; the rejection path
+                       must still remove the entry this handler created. *)
+                    accepted := true;
+                    emit `Accepted
+                  end
+                in
+                let dispatched =
+                  try handler.dispatch ~run_validator ~on_validated update with
                 | exn ->
                     Error
                       (Temporal_base.Error.defect
                          ~message:
                            ("update handler raised: " ^ Printexc.to_string exn))
               in
-              begin match dispatched with
-              | Error error -> emit (`Rejected error)
-              | Ok payload ->
-                  emit `Accepted;
-                  emit (`Completed payload)
-              end)
+                begin match dispatched with
+                | Error error -> reject error
+                | Ok payload ->
+                    if not !accepted then
+                      reject (bridge_error "workflow update completed without validation acknowledgement")
+                    else begin
+                      Hashtbl.remove execution.pending_updates protocol_instance_id;
+                      emit (`Completed payload)
+                    end
+                end)
   | Activation.Signal_workflow { signal_name; input; identity; headers } ->
       (* Signals are queued as scheduler work rather than dispatched inline.
          This preserves FIFO ordering with root and resolver continuations and
@@ -490,6 +541,7 @@ let process_job execution = function
       in
       report ~src:Observability.Source.workflow Logs.Debug ~tags
         "workflow execution evicted";
+      clear_pending_updates execution;
       Workflow_context_store.shutdown execution.context
 
 (** Runs queued fibers with this workflow installed as the current context. An
@@ -541,6 +593,7 @@ let run_scheduler execution =
 let shutdown execution =
   (* Teardown must not raise into lease-ack bookkeeping. Continuations that
      mishandle the private shutdown exception are contained here. *)
+  clear_pending_updates execution;
   try Workflow_context_store.shutdown execution.context with _ -> ()
 
 (** Processes jobs in order, runs fibers, and returns new commands. Cache
@@ -592,6 +645,7 @@ let activate execution jobs =
                 commands
             then (
               execution.terminal <- true;
+              clear_pending_updates execution;
               Workflow_context_store.shutdown execution.context);
             commands)))
   in

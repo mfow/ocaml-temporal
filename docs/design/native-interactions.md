@@ -255,16 +255,16 @@ contains the `DoUpdate` job:
 | Validation | `accepted` or `rejected` | Always in the same activation as `DoUpdate`. |
 | Handler | `completed` or `rejected` | In that activation or a later activation after the handler finishes. |
 
-The current native implementation covers the non-suspending case. It decodes
-one payload with the registered input codec, runs the validator when
-`run_validator` is true, runs the implementation, and encodes one result. It
-then emits `accepted` followed by `completed` in the same completion. A
-validator or implementation failure emits only `rejected`; no workflow
-continuation is retained. On replay, the validator is skipped while the
-handler still follows the recorded update path. The current public API does
-not expose update headers or requester identity to the callback, but the
-private record validates and retains them so adding a metadata-aware API will
-not change the bridge shape.
+The native implementation decodes one payload with the registered input codec,
+runs the validator when `run_validator` is true, and emits `accepted` before
+calling the implementation. If the implementation parks on a workflow future,
+the scheduler retains its continuation in an execution-owned map keyed by
+`protocol_instance_id`; a later activation emits `completed` or `rejected` and
+removes the entry. A validator failure emits only `rejected`. On replay, the
+validator is skipped while the handler still follows the recorded update path.
+The current public API does not expose update headers or requester identity to
+the callback, but the private record validates and retains them so adding a
+metadata-aware API will not change the bridge shape.
 
 The private JSON shape is deliberately small and mirrors the semantic records
 used by both decoders. For example, one activation job is:
@@ -306,14 +306,13 @@ completed result in the same activation. A handler failure emits a structured
 `rejected` response; a successful handler encodes its output in `completed`.
 
 If a future handler suspends on a supported workflow operation, the initial
-acceptance must still belong to the current activation and the terminal handler
-response must be retained until the future resolves. That implementation
-requires an update-owned continuation keyed by `protocol_instance_id`, not a
-global mutable callback map. Shutdown, eviction, duplicate delivery, and
-malformed completion must release that continuation exactly once. The current
-native slice deliberately does not claim this behavior: a handler that needs a
-later activation is rejected by its public one-result boundary until the
-continuation machinery and replay tests are implemented.
+acceptance belongs to the current activation and the terminal handler response
+is retained until the future resolves. The implementation uses an
+execution-owned continuation table keyed by `protocol_instance_id`, not a
+global mutable callback map. Shutdown and eviction clear that table before
+releasing scheduler continuations; duplicate IDs are rejected without touching
+the existing entry. Focused tests cover this lifecycle; live recovery coverage
+remains pending.
 
 `id` and `protocol_instance_id` have different purposes and must not be
 interchanged. The former is workflow-visible update identity; the latter is
@@ -390,11 +389,10 @@ single side accepting a new variant early:
    dispatch, and rejected extra arguments. Live Server coverage remains open.
 3. **Implemented bounded milestone:** add `DoUpdate` and `UpdateResponse`
    semantic records, strict JSON/schema validation, pinned-Core conversion,
-   immediate non-suspending public handler dispatch, replay validator skipping,
-   and response-phase tests. Suspended handler completion, shutdown, and
-   eviction cleanup remain open.
-4. **Next milestone:** add update-owned continuations, later-activation
-   completion, and lifecycle tests before advertising full update support.
+   immediate and suspended public handler dispatch, replay validator skipping,
+   pending-continuation lifecycle tests, and response-phase tests. Live recovery
+   acceptance remains open.
+4. Add live update acceptance, recovery, and broader query coverage.
 5. Add Core conversion fixtures in `rust/core-bridge/tests/`, OCaml runtime
    tests under `test/`, and bilateral JSON round-trip tests for every supported
    variant. Run the representative local Makefile gates; queued GitHub
@@ -406,11 +404,10 @@ single side accepting a new variant early:
    with PR #266 retained as focused historical evidence. Record the query and
    update results separately from synthetic and bridge-only evidence.
 
-Until the later update continuation stages have passed, the overall feature
-status remains experimental: native `SignalWorkflow` transport and its typed
-signal/condition success path, output-only `QueryWorkflow` delivery, and
-immediate non-suspending update dispatch are implemented and focused-tested.
-Live query/update delivery, suspended updates, and broader interaction
-acceptance remain pending.
+The overall feature status remains experimental: native `SignalWorkflow`
+transport and its typed signal/condition success path, output-only
+`QueryWorkflow` delivery, and two-phase update dispatch (including suspended
+handlers) are implemented and focused-tested. Live query/update delivery,
+update recovery, and broader interaction acceptance remain pending.
 `Temporal.Interaction` remains the public local-testing path for all three
 interaction kinds.

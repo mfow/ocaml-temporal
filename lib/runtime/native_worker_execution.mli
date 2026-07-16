@@ -116,7 +116,7 @@ val query_handler_name : query_handler -> string
 val make_update_handler :
   name:string ->
   dispatch:
-    (run_validator:bool -> update ->
+    (run_validator:bool -> on_validated:(unit -> unit) -> update ->
      (Temporal_base.Codec.payload, Temporal_base.Error.t) result) ->
   update_handler
 

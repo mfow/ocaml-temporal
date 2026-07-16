@@ -60,12 +60,11 @@ module Handler = struct
   let name (Handler { definition; _ }) = definition.name
 
   (** Performs the strict input-decode, validator, implementation, and output
-      encode sequence. Each callback boundary contains exceptions as defects;
-      importantly, the implementation is not called when validation fails.
-      Both codec calls are contained the same way as the validator and
-      implementation callbacks, so a raising codec cannot escape dispatch
-      half-applied. *)
-  let dispatch ?(run_validator = true)
+      encode sequence. [on_validated] runs exactly once after input and
+      validator checks succeed and immediately before the implementation. The
+      runtime uses that boundary to acknowledge a handler before it parks on a
+      workflow future. Callback exceptions are converted to defects. *)
+  let dispatch ?(run_validator = true) ?on_validated
       (Handler { definition; validator; implementation }) payload =
     match Codec.decode definition.input payload with
     | exception exception_ ->
@@ -75,7 +74,7 @@ module Handler = struct
                (Printf.sprintf "update input codec raised: %s"
                   (Printexc.to_string exception_)))
     | Error error -> Error error
-    | Ok input -> (
+    | Ok input ->
         let validation_result =
           if not run_validator then Ok ()
           else
@@ -90,27 +89,49 @@ module Handler = struct
                            (Printf.sprintf "update validator raised: %s"
                               (Printexc.to_string exception_))))
         in
-        match validation_result with
+        (match validation_result with
         | Error _ as error -> error
-        | Ok () -> (
-            let result =
-              try implementation input with
-              | exception_ ->
-                  Error
-                    (Error.defect
-                       ~message:
-                         (Printf.sprintf "update handler raised: %s"
-                            (Printexc.to_string exception_)))
+        | Ok () ->
+            let acknowledgement_error =
+              match on_validated with
+              | None -> None
+              | Some callback ->
+                  (* The acknowledgement hook is deliberately effect-only.  A
+                     callback defect becomes a typed update failure, so the
+                     implementation is skipped when it raises. *)
+                  (try
+                     callback ();
+                     None
+                   with
+                  | exception_ ->
+                      Some
+                        (Error.defect
+                           ~message:
+                             (Printf.sprintf
+                                "update validation acknowledgement raised: %s"
+                                (Printexc.to_string exception_))))
             in
-            match result with
-            | Error _ as error -> error
-            | Ok output -> (
-                match Codec.encode definition.output output with
-                | result -> result
-                | exception exception_ ->
-                    Error
-                      (Error.defect
-                         ~message:
-                           (Printf.sprintf "update output codec raised: %s"
-                              (Printexc.to_string exception_))))))
+            (match acknowledgement_error with
+            | Some error -> Error error
+            | None ->
+                let result =
+                  try implementation input with
+                  | exception_ ->
+                      Error
+                        (Error.defect
+                           ~message:
+                             (Printf.sprintf "update handler raised: %s"
+                                (Printexc.to_string exception_)))
+                in
+                (match result with
+                | Error _ as error -> error
+                | Ok output -> (
+                    match Codec.encode definition.output output with
+                    | result -> result
+                    | exception exception_ ->
+                        Error
+                          (Error.defect
+                             ~message:
+                               (Printf.sprintf "update output codec raised: %s"
+                                  (Printexc.to_string exception_)))))))
 end

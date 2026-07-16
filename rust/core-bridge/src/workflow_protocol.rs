@@ -1220,13 +1220,8 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                         )?;
                         identifier(&root.run_id, "$.jobs.context.root_workflow.run_id")?;
                     }
-                    if let Some(priority) = &context.priority
-                        && priority.fairness_key.len() > 64
-                    {
-                        return Err(ProtocolError::invalid(
-                            "$.jobs.context.priority.fairness_key",
-                            "fairness key exceeds Core's 64-byte limit",
-                        ));
+                    if let Some(priority) = &context.priority {
+                        validate_priority(priority, "$.jobs.context.priority")?;
                     }
                     if let Some(retry_policy) = &context.retry_policy {
                         validate_retry_policy(retry_policy, "$.jobs.context.retry_policy")?;
@@ -1608,6 +1603,12 @@ fn validate_priority(value: &WorkflowPriority, path: &str) -> Result<(), Protoco
         return Err(ProtocolError::invalid(
             path,
             "fairness key exceeds Core's 64-byte limit",
+        ));
+    }
+    if value.fairness_key.as_bytes().contains(&0) {
+        return Err(ProtocolError::invalid(
+            path,
+            "fairness key must not contain NUL",
         ));
     }
     let weight = f32::from_bits(value.fairness_weight_bits);

@@ -1052,7 +1052,11 @@ let test_activate_installs_deployment_metadata () =
              observed :=
                !observed @ [ Temporal.Workflow.current_deployment_version () ];
              match Temporal.Workflow.sleep (Temporal.Duration.of_ms 1L) with
-             | Ok () -> Ok ()
+             | Ok () ->
+                 observed :=
+                   !observed
+                   @ [ Temporal.Workflow.current_deployment_version () ];
+                 Ok ()
              | Error error ->
                  Error
                    (Temporal_base.Error.defect
@@ -1080,10 +1084,10 @@ let test_activate_installs_deployment_metadata () =
   let second_completion =
     unwrap "workflow deployment timer activation"
       (Native_execution.activate execution
-         (activation ?metadata:None [ Protocol.Fire_timer { seq = 0L } ]))
+         (activation ?metadata:None [ Protocol.Fire_timer { seq = 1L } ]))
   in
   begin match first_completion.commands with
-  | [ Protocol.Start_timer { seq = 0L; _ } ] -> ()
+  | [ Protocol.Start_timer { seq = 1L; _ } ] -> ()
   | _ -> failwith "deployment metadata workflow did not schedule its timer"
   end;
   begin match second_completion.commands, !observed with

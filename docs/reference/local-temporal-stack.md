@@ -178,6 +178,11 @@ replay for both, and deletes the project volume. See the
 the three history stages, private atomic checkpoint, and current live-evidence
 status.
 
+`make test-temporal-parent-child-failure-replay` runs the corresponding
+Docker-free failure contract and then the live replacement scenario. The child
+fails after generation-two replay and the parent must handle that typed child
+failure; see [child failure after worker-replay acceptance](child-failure-replay-acceptance.md).
+
 Running `docker compose` directly from the repository root is unsupported. The
 root Make targets are the stable interface and deliberately hide the fixture's
 test-only location and Compose project identity.

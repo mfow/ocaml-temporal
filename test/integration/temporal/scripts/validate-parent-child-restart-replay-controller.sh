@@ -13,7 +13,8 @@ usage: validate-parent-child-restart-replay-controller.sh \
        --controller FILE \
        --parent-workflow-id ID --parent-run-id ID \
        --child-workflow-id ID --child-run-id ID \
-       --initiated-event-id EVENT_ID
+       --initiated-event-id EVENT_ID \
+       [--expected-outcome completed|child_failure_recovered]
 EOF
   exit 2
 }
@@ -31,6 +32,7 @@ parent_run_id=''
 child_workflow_id=''
 child_run_id=''
 initiated_event_id=''
+expected_outcome='completed'
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --controller)
@@ -63,6 +65,11 @@ while [ "$#" -gt 0 ]; do
       initiated_event_id=$2
       shift 2
       ;;
+    --expected-outcome)
+      [ "$#" -ge 2 ] || usage
+      expected_outcome=$2
+      shift 2
+      ;;
     --help|-h)
       usage
       ;;
@@ -71,6 +78,11 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+case "$expected_outcome" in
+  completed|child_failure_recovered) ;;
+  *) usage ;;
+esac
 
 for value in \
   "$controller" "$parent_workflow_id" "$parent_run_id" \
@@ -88,6 +100,7 @@ if ! "$jq_bin" -e \
   --arg child_workflow "$child_workflow_id" \
   --arg child_run "$child_run_id" \
   --arg initiated_event "$initiated_event_id" \
+  --arg expected_outcome "$expected_outcome" \
   '
     def identifier:
       type == "string" and length > 0 and utf8bytelength <= 4096
@@ -150,7 +163,7 @@ if ! "$jq_bin" -e \
       and (keys | sort) == ["outcome", "run_id", "status", "step", "workflow_id"]
       and .step == "parent_driver_completed" and .status == "ok"
       and .workflow_id == $parent_workflow and .run_id == $parent_run
-      and .outcome == "completed";
+      and .outcome == $expected_outcome;
     def volume_removed:
       type == "object"
       and (keys | sort) == ["remaining_project_volumes", "status", "step"]

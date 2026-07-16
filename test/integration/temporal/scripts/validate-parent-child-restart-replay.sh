@@ -14,6 +14,7 @@ usage: validate-parent-child-restart-replay.sh \
        --parent-history FILE --child-history FILE --diagnostics FILE \
        --parent-workflow-id ID --parent-run-id ID \
        --child-workflow-id ID --child-run-id ID \
+       [--outcome success|failure] [--child-workflow-type TYPE] \
        [--parent-initial-history FILE --child-initial-history FILE] \
        [--parent-post-removal-history FILE --child-post-removal-history FILE]
 
@@ -21,7 +22,7 @@ initial:      accepts exactly the generation-one initial snapshots and two recor
 post-removal: also requires the initial snapshots; verifies nonterminal prefixes
               after generation-one removal and before generation-two readiness.
 terminal:     also requires both initial and post-removal snapshots; verifies
-              replay records, exact prefixes, and successful terminal order.
+              replay records, exact prefixes, and the selected terminal order.
 EOF
   exit 2
 }
@@ -49,6 +50,7 @@ child_run_id=''
 # so a matching identifier alone cannot make a different workflow definition
 # look like the expected durable parent-child relationship.
 expected_child_workflow_type='smoke.parent_child_restart_child'
+outcome='success'
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --stage)
@@ -111,6 +113,16 @@ while [ "$#" -gt 0 ]; do
       child_run_id=$2
       shift 2
       ;;
+    --child-workflow-type)
+      [ "$#" -ge 2 ] || usage
+      expected_child_workflow_type=$2
+      shift 2
+      ;;
+    --outcome)
+      [ "$#" -ge 2 ] || usage
+      outcome=$2
+      shift 2
+      ;;
     --help|-h)
       usage
       ;;
@@ -122,6 +134,10 @@ done
 
 case "$stage" in
   initial|post-removal|terminal) ;;
+  *) usage ;;
+esac
+case "$outcome" in
+  success|failure) ;;
   *) usage ;;
 esac
 for value in \
@@ -454,6 +470,8 @@ case "$stage" in
       --slurpfile terminal_child "$child_history" \
       --arg child_workflow "$child_workflow_id" \
       --arg child_run "$child_run_id" \
+      --arg expected_child_workflow_type "$expected_child_workflow_type" \
+      --arg outcome "$outcome" \
       '
         def prefix($prefix; $whole):
           $whole.events[0:($prefix.events | length)] == $prefix.events;
@@ -465,26 +483,40 @@ case "$stage" in
         | $terminal_child[0] as $terminal_child_history
         | $initial_parent_history.events[4] as $initiated
         | $initial_parent_history.events[5] as $started
-        | $terminal_parent_history.events[($post_parent_history.events | length)] as $completed
+        | $terminal_parent_history.events[($post_parent_history.events | length)] as $child_terminal
         | prefix($initial_parent_history; $terminal_parent_history)
         and prefix($initial_child_history; $terminal_child_history)
         and prefix($post_parent_history; $terminal_parent_history)
         and prefix($post_child_history; $terminal_child_history)
-        and (["ChildWorkflowExecutionCompleted", "WorkflowTaskScheduled", "WorkflowTaskStarted", "WorkflowTaskCompleted", "WorkflowExecutionCompleted"]
-             == [$terminal_parent_history.events[($post_parent_history.events | length):][].type])
-        and (([$post_child_history.events[($initial_child_history.events | length):][].type] == []
-              and ["TimerFired", "WorkflowTaskScheduled", "WorkflowTaskStarted", "WorkflowTaskCompleted", "WorkflowExecutionCompleted"]
-                  == [$terminal_child_history.events[($post_child_history.events | length):][].type])
-             or ([$post_child_history.events[($initial_child_history.events | length):][].type] == ["TimerFired", "WorkflowTaskScheduled"]
-                 and ["WorkflowTaskStarted", "WorkflowTaskCompleted", "WorkflowExecutionCompleted"]
-                     == [$terminal_child_history.events[($post_child_history.events | length):][].type]))
-        and $completed.child_workflow_id == $child_workflow
-        and $completed.child_run_id == $child_run
-        and $completed.child_workflow_type == $initiated.child_workflow_type
-        and $completed.initiated_event_id == $initiated.event_id
-        and $completed.started_event_id == $started.event_id
+        and (if $outcome == "success" then
+               ["ChildWorkflowExecutionCompleted", "WorkflowTaskScheduled", "WorkflowTaskStarted", "WorkflowTaskCompleted", "WorkflowExecutionCompleted"]
+               == [$terminal_parent_history.events[($post_parent_history.events | length):][].type]
+             else
+               ["ChildWorkflowExecutionFailed", "WorkflowTaskScheduled", "WorkflowTaskStarted", "WorkflowTaskCompleted", "WorkflowExecutionCompleted"]
+               == [$terminal_parent_history.events[($post_parent_history.events | length):][].type]
+             end)
+        and (if $outcome == "success" then
+               (([$post_child_history.events[($initial_child_history.events | length):][].type] == []
+                 and ["TimerFired", "WorkflowTaskScheduled", "WorkflowTaskStarted", "WorkflowTaskCompleted", "WorkflowExecutionCompleted"]
+                     == [$terminal_child_history.events[($post_child_history.events | length):][].type])
+                or ([$post_child_history.events[($initial_child_history.events | length):][].type] == ["TimerFired", "WorkflowTaskScheduled"]
+                    and ["WorkflowTaskStarted", "WorkflowTaskCompleted", "WorkflowExecutionCompleted"]
+                        == [$terminal_child_history.events[($post_child_history.events | length):][].type]))
+             else
+               (([$post_child_history.events[($initial_child_history.events | length):][].type] == []
+                 and ["TimerFired", "WorkflowTaskScheduled", "WorkflowTaskStarted", "WorkflowTaskCompleted", "WorkflowExecutionFailed"]
+                     == [$terminal_child_history.events[($post_child_history.events | length):][].type])
+                or ([$post_child_history.events[($initial_child_history.events | length):][].type] == ["TimerFired", "WorkflowTaskScheduled"]
+                    and ["WorkflowTaskStarted", "WorkflowTaskCompleted", "WorkflowExecutionFailed"]
+                        == [$terminal_child_history.events[($post_child_history.events | length):][].type]))
+             end)
+        and $child_terminal.child_workflow_id == $child_workflow
+        and $child_terminal.child_run_id == $child_run
+        and $child_terminal.child_workflow_type == $expected_child_workflow_type
+        and $child_terminal.initiated_event_id == $initiated.event_id
+        and $child_terminal.started_event_id == $started.event_id
       ' >/dev/null; then
-      fail "terminal histories do not preserve the post-removal prefix and successful completion order"
+      fail "terminal histories do not preserve the post-removal prefix and selected outcome order"
     fi
     validate_diagnostics 4 \
       "$parent_initial_history" "$child_initial_history" \

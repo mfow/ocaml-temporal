@@ -78,7 +78,7 @@ QUALITY_CARGO_DENY_VERSION ?= 0.20.2
 QUALITY_CARGO_MACHETE_VERSION ?= 0.9.2
 QUALITY_TYPOS_VERSION ?= 1.48.0
 
-.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-api test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-temporal-worker-cache-eviction-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live test-temporal-parent-child-restart test-temporal-parent-child-restart-contract test-temporal-parent-child-restart-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
+.PHONY: version-check build build-examples cargo-metadata test test-unit test-runtime test-rust test-bridge test-install test-api test-quality-contract test-temporal-config test-temporal-worker-readiness-contract test-temporal-worker-stop-contract test-temporal-worker-crash-recovery-contract test-temporal-worker-cache-eviction-contract test-core-lifecycle-integration temporal-start temporal-start-worker temporal-run-driver temporal-inspect-smoke temporal-stop-worker test-temporal-two-binary test-temporal-integration test-temporal-worker-restart test-temporal-worker-restart-contract test-temporal-worker-restart-live test-temporal-worker-crash-recovery test-temporal-worker-cache-eviction test-temporal-worker-cache-eviction-live test-temporal-workflow-patching test-temporal-workflow-patching-contract test-temporal-workflow-patching-live test-temporal-parent-child-restart test-temporal-parent-child-restart-contract test-temporal-parent-child-restart-live test-temporal-parent-child-failure-replay test-temporal-parent-child-failure-replay-contract test-temporal-parent-child-failure-replay-live temporal-health temporal-status temporal-logs temporal-stop temporal-clean lint lint-rust fmt quality quality-tool-version-check quality-rust quality-spelling license-check audit clean verify check native-version-check native-build native-test native-test-rust native-test-install native-lint native-lint-rust native-verify
 version-check:
 	@actual="$$( $(RUN) ocamlc -version | tail -n 1 )"; \
 	case "$$actual" in \
@@ -368,6 +368,22 @@ test-temporal-parent-child-restart-live: test-temporal-config
 		TEMPORAL_COMPOSE_PROJECT="$(TEMPORAL_COMPOSE_PROJECT)" \
 		SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS="$(SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS)" \
 		sh test/integration/temporal/scripts/run-parent-child-restart-replay-live.sh
+
+# Exercises the same two-generation parent/child replay lifecycle with a
+# deterministic non-retryable child failure. The source-only contract runs on
+# every host; the live target is reserved for the Compose Temporal gate.
+test-temporal-parent-child-failure-replay:
+	$(MAKE) test-temporal-parent-child-failure-replay-contract
+	$(MAKE) test-temporal-parent-child-failure-replay-live
+
+test-temporal-parent-child-failure-replay-contract:
+	sh test/integration/temporal/scripts/test-child-failure-replay-contract.sh
+
+test-temporal-parent-child-failure-replay-live: test-temporal-config
+	OCAML_IMAGE="$(OCAML_IMAGE)" HOST_UID="$(HOST_UID)" HOST_GID="$(HOST_GID)" \
+		TEMPORAL_COMPOSE_PROJECT="$(TEMPORAL_COMPOSE_PROJECT)" \
+		SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS="$(SMOKE_PARENT_CHILD_RESTART_TIMEOUT_SECONDS)" \
+		sh test/integration/temporal/scripts/run-child-failure-replay-live.sh
 
 test-temporal-worker-cache-eviction-live: test-temporal-config
 	@set -eu; \

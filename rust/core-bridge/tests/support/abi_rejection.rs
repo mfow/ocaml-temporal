@@ -273,6 +273,16 @@ fn conversion_failure_classifies_cancel_without_start_completion_debt() {
         task_token: vec![0, 1, 2],
         variant: Some(core_activity_task::activity_task::Variant::Start(
             core_activity_task::Start {
+                workflow_namespace: "default".to_owned(),
+                workflow_type: "example.workflow".to_owned(),
+                workflow_execution: Some(
+                    temporalio_common::protos::temporal::api::common::v1::WorkflowExecution {
+                        workflow_id: "workflow-1".to_owned(),
+                        run_id: "run-1".to_owned(),
+                    },
+                ),
+                activity_id: "activity-1".to_owned(),
+                activity_type: "example.activity".to_owned(),
                 is_local: true,
                 ..Default::default()
             },

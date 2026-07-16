@@ -687,11 +687,13 @@ not log text, are the workflow success oracle. Per-activation/task identifiers
 and completion latency are a future observability enhancement and must remain
 payload-free if added.
 
-The first live test is intentionally small. With the current seventeen-result
-success path verified in CI, extend the same two-binary topology rather than
-adding a separate pseudo-worker test:
+The first live test was intentionally small. The parent/child replay and
+recovery item from this historical expansion list is now covered by the
+complete [PR #351 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013),
+and typed child failure after replacement replay is covered by the complete
+[PR #361 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29475615866).
+The remaining expansion of the same two-binary topology is:
 
-* child workflow replay and recovery;
 * multiple concurrent activities with `Future.all`, `race`, and cancellation;
 * broader cache and recovery cases beyond the separately verified one-slot
   sticky-cache eviction and live worker restart/replay paths; and
@@ -711,9 +713,12 @@ run adds start-to-close timeout-triggered retry for the earlier delay. The PR
 server. PR #289 adds heartbeat-timeout, non-retryable activity, and child retry
 plus duplicate-ID child-start-failure evidence; the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 adds live worker restart/replay evidence. These baseline assertions do not
-claim sticky-cache eviction or crash-recovery coverage; those behaviors have
-their own live acceptance gates recorded in the [coverage
-matrix](live-acceptance-coverage.md).
+claim sticky-cache eviction or crash-recovery coverage. The bilateral
+parent/child replay and typed child-failure-after-replay gates are separate
+live scenarios, verified by [PR #351](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013)
+and [PR #361](https://github.com/mfow/ocaml-temporal/actions/runs/29475615866),
+respectively. Sticky-cache eviction and crash recovery have their own live
+acceptance gates recorded in the [coverage matrix](live-acceptance-coverage.md).
 
 ## Completion criteria for this design
 

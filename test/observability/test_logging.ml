@@ -311,6 +311,7 @@ let test_workflow_events_and_privacy () =
                 start_to_close_timeout = Some 60_000L;
                 heartbeat_timeout = None;
                 retry_policy = None;
+                priority = None;
                 cancellation_type = Activation.Try_cancel;
                 do_not_eagerly_execute = false;
               };

@@ -718,6 +718,7 @@ let command_to_protocol command =
         start_to_close_timeout;
         heartbeat_timeout;
         retry_policy;
+        priority;
         cancellation_type;
         do_not_eagerly_execute;
       } ->
@@ -783,6 +784,19 @@ let command_to_protocol command =
             in
             Ok (Some policy)
       in
+      let priority =
+        Option.map
+          (fun value ->
+            Protocol.
+              {
+                priority_key = Int32.to_int (Temporal_base.Priority.priority_key value);
+                fairness_key = Temporal_base.Priority.fairness_key value;
+                fairness_weight_bits =
+                  Int64.of_int32
+                    (Temporal_base.Priority.fairness_weight_bits value);
+              })
+          priority
+      in
       if Option.is_none schedule_to_close_timeout
          && Option.is_none start_to_close_timeout
       then
@@ -803,6 +817,7 @@ let command_to_protocol command =
                start_to_close_timeout;
                heartbeat_timeout;
                retry_policy;
+               priority;
                cancellation_type = protocol_cancellation_type cancellation_type;
                do_not_eagerly_execute;
              })

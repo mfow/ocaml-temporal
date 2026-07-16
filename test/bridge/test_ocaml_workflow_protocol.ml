@@ -1082,7 +1082,7 @@ let test_required_nullable_fields () =
        {|{"run_id":"run-required-null","commands":[{"kind":"complete_workflow"}]}|});
   require_error
     (Protocol.decode_completion
-       {|{"run_id":"run-required-null","commands":[{"kind":"schedule_activity","seq":0,"activity_id":"activity","activity_type":"activity","task_queue":"queue","arguments":[],"schedule_to_start_timeout":null,"start_to_close_timeout":null,"heartbeat_timeout":null,"cancellation_type":"try_cancel","do_not_eagerly_execute":false}]}|})
+       {|{"run_id":"run-required-null","commands":[{"kind":"schedule_activity","seq":0,"activity_id":"activity","activity_type":"activity","task_queue":"queue","arguments":[],"schedule_to_start_timeout":null,"start_to_close_timeout":null,"heartbeat_timeout":null,"retry_policy":null,"priority":null,"cancellation_type":"try_cancel","do_not_eagerly_execute":false}]}|})
 
 (** Proves an explicit activity retry policy is represented with exact
     durations and coefficient bits, while [None] remains an explicit JSON
@@ -1110,6 +1110,13 @@ let test_activity_retry_policy () =
         start_to_close_timeout = Some { seconds = 30L; nanoseconds = 0 };
         heartbeat_timeout = None;
         retry_policy;
+        priority =
+          Some
+            {
+              priority_key = 2;
+              fairness_key = "tenant-a";
+              fairness_weight_bits = Int64.of_int32 (Int32.bits_of_float 1.5);
+            };
         cancellation_type = Try_cancel;
         do_not_eagerly_execute = false;
       }
@@ -1123,6 +1130,17 @@ let test_activity_retry_policy () =
       Yojson.Safe.from_string encoded |> member "commands" |> index 0
       |> member "retry_policy")
   in
+  let priority_json =
+    Yojson.Safe.Util.(
+      Yojson.Safe.from_string encoded |> member "commands" |> index 0
+      |> member "priority")
+  in
+  if Yojson.Safe.Util.(priority_json |> member "priority_key" |> to_int) <> 2 then
+    failwith "activity priority key was not encoded"
+  else if
+    Yojson.Safe.Util.(priority_json |> member "fairness_key" |> to_string)
+    <> "tenant-a"
+  then failwith "activity fairness key was not encoded";
   if
     not
       (String.equal

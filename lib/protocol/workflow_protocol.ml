@@ -291,6 +291,7 @@ type completion_command =
       start_to_close_timeout : duration option;
       heartbeat_timeout : duration option;
       retry_policy : retry_policy option;
+      priority : workflow_priority option;
       cancellation_type : activity_cancellation_type;
       do_not_eagerly_execute : bool;
     }
@@ -1255,13 +1256,28 @@ let workflow_priority path json =
   let* entries = exact_object path [ "priority_key"; "fairness_key"; "fairness_weight_bits" ] json in
   let* key_json = field path "priority_key" entries in
   let* priority_key = int32 (path ^ ".priority_key") key_json in
+  if priority_key < 0 then
+    Error (invalid (path ^ ".priority_key") "priority key cannot be negative")
+  else
   let* fairness_json = field path "fairness_key" entries in
   let* fairness_key = string (path ^ ".fairness_key") fairness_json in
   if String.length fairness_key > 64 then Error (invalid (path ^ ".fairness_key") "fairness key exceeds Core's 64-byte limit")
+  else if String.contains fairness_key '\000' then
+    Error (invalid (path ^ ".fairness_key") "fairness key contains a NUL byte")
+  else if not (Control.valid_utf_8 fairness_key) then
+    Error (invalid (path ^ ".fairness_key") "fairness key is not valid UTF-8")
   else
     let* bits_json = field path "fairness_weight_bits" entries in
     let* fairness_weight_bits = uint32 (path ^ ".fairness_weight_bits") bits_json in
-    Ok { priority_key; fairness_key; fairness_weight_bits }
+    let weight = Int32.float_of_bits (Int64.to_int32 fairness_weight_bits) in
+    if
+      not (Float.is_finite weight)
+      || (weight <> 0. && (weight < 0.001 || weight > 1000.))
+    then
+      Error
+        (invalid (path ^ ".fairness_weight_bits")
+           "fairness weight must be zero or finite in [0.001, 1000]")
+    else Ok { priority_key; fairness_key; fairness_weight_bits }
 
 (** Decodes the canonical unsigned decimal used for an IEEE-754 bit pattern.
     The two limbs keep every intermediate value below [2^64] while avoiding
@@ -2062,6 +2078,7 @@ let completion_command path json =
             "start_to_close_timeout";
             "heartbeat_timeout";
             "retry_policy";
+            "priority";
             "cancellation_type";
             "do_not_eagerly_execute";
           ]
@@ -2089,6 +2106,8 @@ let completion_command path json =
       let* retry_policy =
         nullable (path ^ ".retry_policy") retry_policy retry_policy_json
       in
+      let* priority_json = field path "priority" entries in
+      let* priority = nullable (path ^ ".priority") workflow_priority priority_json in
       let* cancellation_json = field path "cancellation_type" entries in
       let* cancellation_name = string (path ^ ".cancellation_type") cancellation_json in
       let* cancellation_type = cancellation_type (path ^ ".cancellation_type") cancellation_name in
@@ -2112,6 +2131,7 @@ let completion_command path json =
                start_to_close_timeout;
                heartbeat_timeout;
                retry_policy;
+               priority;
                cancellation_type;
                do_not_eagerly_execute;
              })
@@ -2236,6 +2256,18 @@ let completion_command_json = function
         | None -> Ok `Null
         | Some value -> retry_policy_json value
       in
+      let priority =
+        match value.priority with
+        | None -> `Null
+        | Some value ->
+            `Assoc
+              [
+                ("priority_key", `Int value.priority_key);
+                ("fairness_key", `String value.fairness_key);
+                ( "fairness_weight_bits",
+                  `Intlit (Int64.to_string value.fairness_weight_bits) );
+              ]
+      in
       Ok
         (`Assoc
           [
@@ -2250,6 +2282,7 @@ let completion_command_json = function
             ("start_to_close_timeout", optional_duration_json value.start_to_close_timeout);
             ("heartbeat_timeout", optional_duration_json value.heartbeat_timeout);
             ("retry_policy", retry_policy);
+            ("priority", priority);
             ("cancellation_type", `String (cancellation_type_string value.cancellation_type));
             ("do_not_eagerly_execute", `Bool value.do_not_eagerly_execute);
           ])

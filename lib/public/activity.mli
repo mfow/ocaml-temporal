@@ -37,6 +37,42 @@ type ('input, 'output) async_implementation =
     implementation, or neither when it is a remote scheduling reference. *)
 type ('input, 'output) t
 
+(** Scheduling metadata for an activity task.  Temporal uses the lower
+    positive [priority_key] first, then applies [fairness_key] and
+    [fairness_weight] as best-effort queue fairness controls.  The value is
+    immutable and validated before it can enter workflow history. *)
+module Priority : sig
+  (** Opaque, immutable priority configuration. *)
+  type t
+
+  (** Validates and constructs priority metadata.  At least one field must be
+      supplied.  [priority_key] is a positive integer; [fairness_key] is at
+      most 64 UTF-8 bytes; and [fairness_weight] is finite in [0.001, 1000.0]. *)
+  val make :
+    ?priority_key:int ->
+    ?fairness_key:string ->
+    ?fairness_weight:float ->
+    unit ->
+    (t, Error.t) result
+
+  (** Alias for [make]. *)
+  val create :
+    ?priority_key:int ->
+    ?fairness_key:string ->
+    ?fairness_weight:float ->
+    unit ->
+    (t, Error.t) result
+
+  (** Returns the configured priority key, if present. *)
+  val priority_key : t -> int option
+
+  (** Returns the configured fairness key, if present. *)
+  val fairness_key : t -> string option
+
+  (** Returns the configured fairness weight, if present. *)
+  val fairness_weight : t -> float option
+end
+
 (** Creates a definition for an activity that this OCaml worker will run. The
     name is validated immediately; it must be non-empty, valid UTF-8, NUL-free,
     and no more than 65,536 bytes because it crosses the native protocol into
@@ -233,6 +269,7 @@ val start_handle :
   ?start_to_close_timeout:Duration.t ->
   ?heartbeat_timeout:Duration.t ->
   ?retry_policy:Retry_policy.t ->
+  ?priority:Priority.t ->
   ?cancellation_type:cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   ('input, 'output) t ->
@@ -267,6 +304,7 @@ val start :
   ?start_to_close_timeout:Duration.t ->
   ?heartbeat_timeout:Duration.t ->
   ?retry_policy:Retry_policy.t ->
+  ?priority:Priority.t ->
   ?cancellation_type:cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   ('input, 'output) t ->
@@ -283,6 +321,7 @@ val execute :
   ?start_to_close_timeout:Duration.t ->
   ?heartbeat_timeout:Duration.t ->
   ?retry_policy:Retry_policy.t ->
+  ?priority:Priority.t ->
   ?cancellation_type:cancellation_type ->
   ?do_not_eagerly_execute:bool ->
   ('input, 'output) t -> 'input -> ('output, Error.t) result

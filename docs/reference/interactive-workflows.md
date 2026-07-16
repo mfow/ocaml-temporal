@@ -25,6 +25,13 @@ fixture, whose first live run remains pending.
 Live query/update delivery, suspended updates, and broader interaction
 coverage remain future work.
 
+`Temporal.Client.query` is a separate control-plane operation: it asks an
+already registered workflow for the same output-only query through an exact
+workflow/run handle and returns the typed result. It does not register or
+invoke a handler locally. See the [native client JSON protocol](client-protocol.md)
+for the request/response shape and exact-run semantics; live server acceptance
+for client queries remains follow-up work.
+
 ## Current status: local handlers and a partial native boundary
 
 `Temporal.Interaction` remains the public, deterministic path for exercising

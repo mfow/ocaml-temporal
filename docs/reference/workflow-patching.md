@@ -133,7 +133,8 @@ occurred.
 The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) records the
 successful real-server invocation of the two original patch-in scenarios. The
-expanded three-scenario target is awaiting its first complete CI run.
+complete [PR #356 run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271)
+also verifies the active-to-deprecated and deprecated-to-removed transitions.
 
 ## Focused evidence and remaining boundary
 

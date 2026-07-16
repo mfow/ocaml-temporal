@@ -162,8 +162,9 @@ project's PostgreSQL volume during teardown. The legacy snapshots must contain
 zero patch markers; the active snapshots must contain exactly one false marker,
 and the removal snapshots exactly one true marker. The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) records a
-successful invocation of the two original scenarios; the expanded cases await
-their first complete CI run.
+successful invocation of the two original scenarios; the complete [PR #356
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271) records
+the active-to-deprecated and deprecated-to-removed scenarios as well.
 
 ## Parent/child restart and replay acceptance
 

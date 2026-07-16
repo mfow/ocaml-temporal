@@ -9,7 +9,11 @@ type 'a local
 (** Creates an empty context whose futures use [scheduler]. [task_queue] is the
     deterministic default used by activities that do not override their queue;
     a worker supplies its own queue when it creates an execution. *)
-val create : ?task_queue:string -> Scheduler.t -> t
+val create :
+  ?task_queue:string ->
+  ?randomness_seed:string ->
+  Scheduler.t ->
+  t
 
 (** Checks a worker's implicit activity queue without allocating a context.
     [Ok ()] means that the byte string is non-empty, contains no NUL byte, is
@@ -68,6 +72,16 @@ val patched : t -> patch_id:string -> bool
     Core would otherwise keep only the first mode. The ID is copied before
     retention and emission, and calls after shutdown raise [Invalid_argument]. *)
 val deprecate_patch : t -> patch_id:string -> unit
+
+(** Draws one deterministic integer in [0, bound).  The stream is seeded from
+    Temporal's initialization metadata and advances only in this execution's
+    owner Domain.  Invalid bounds and lifecycle misuse are typed defects. *)
+val random_int : t -> bound:int -> (int, Temporal_base.Error.t) result
+
+(** Runs a callback in the read-only mode used by live update validators.
+    Deterministic workflow helpers that would mutate execution state, such as
+    [random_int], return a typed defect while this callback is active. *)
+val with_randomness_disabled : t -> (unit -> 'value) -> 'value
 
 (** Runs [action] with [t] dynamically installed and restores the previous
     context even if [action] raises. Nested calls are supported. *)

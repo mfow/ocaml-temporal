@@ -1862,6 +1862,102 @@ let test_incoming_patch_notification_snapshot () =
         { patch_id = "orders.v2"; deprecated = false } ] -> ()
   | _ -> failwith "notification ID mutation changed retained patch state"
 
+(** Confirms the workflow random stream is owned by the execution context and
+    therefore repeats exactly for the same Core seed. The public function also
+    rejects an invalid bound through the normal typed-defect path. *)
+let test_workflow_random_int_is_replay_stable () =
+  let draw seed =
+    let scheduler = Scheduler.create () in
+    let context =
+      Workflow_context_store.create ~randomness_seed:seed scheduler
+    in
+    Workflow_context_store.with_context context (fun () ->
+        List.init 8 (fun _ -> Temporal.Workflow.random_int ~bound:97))
+  in
+  let first = draw "18446744073709551615" in
+  let replay = draw "18446744073709551615" in
+  if first <> replay then failwith "workflow random stream changed during replay";
+  List.iter
+    (function
+      | Ok value when value >= 0 && value < 97 -> ()
+      | Ok _ -> failwith "workflow random value exceeded its bound"
+      | Error _ -> failwith "workflow random stream unexpectedly failed")
+    first;
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  (match
+     Workflow_context_store.with_context context (fun () ->
+         Temporal.Workflow.random_int ~bound:0)
+   with
+  | Error error when String.equal (Temporal.Error.kind error) "defect" -> ()
+  | _ -> failwith "invalid workflow random bound was accepted")
+
+(** Ensures a live update validator cannot consume the workflow random stream.
+    Validators are not replayed, so allowing [Temporal.Workflow.random_int]
+    there would make the next handler draw differ between live execution and
+    replay. The guard must be removed before the update implementation runs,
+    and the first post-validation draw must match a fresh execution. *)
+let test_update_validator_cannot_consume_workflow_randomness () =
+  let scheduler = Scheduler.create () in
+  let context =
+    Workflow_context_store.create ~randomness_seed:"314159" scheduler
+  in
+  let validator_error = ref None in
+  let implementation_called = ref false in
+  let definition =
+    Temporal.Update.define ~name:"read_only_random_validator"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit
+  in
+  let handler =
+    Temporal.Update.Handler.make
+      ~validator:(fun () ->
+        validator_error :=
+          Some
+            (match Temporal.Workflow.random_int ~bound:97 with
+            | Ok _ -> "randomness unexpectedly allowed"
+            | Error error -> Temporal.Error.message error);
+        Ok ())
+      definition (fun () ->
+        implementation_called := true;
+        Ok ())
+  in
+  let unit_payload =
+    match Temporal.Codec.encode Temporal.Codec.unit () with
+    | Ok payload -> payload
+    | Error error -> failwith (Temporal.Error.message error)
+  in
+  let dispatch () = Temporal.Update.Handler.dispatch handler unit_payload in
+  let result = Workflow_context_store.with_context context dispatch in
+  (match result with
+  | Ok _ -> ()
+  | Error error ->
+      failwith
+        ("read-only validator unexpectedly rejected update: "
+        ^ Temporal.Error.message error));
+  if not !implementation_called then
+    failwith "update implementation did not run after validator";
+  (match !validator_error with
+  | Some message
+    when String.equal message
+           "workflow randomness is unavailable in a read-only update validator" ->
+      ()
+  | Some message ->
+      failwith ("unexpected validator randomness result: " ^ message)
+  | None -> failwith "update validator did not run");
+  let after_validation =
+    Workflow_context_store.with_context context (fun () ->
+        Temporal.Workflow.random_int ~bound:97)
+  in
+  let fresh_context =
+    Workflow_context_store.create ~randomness_seed:"314159" (Scheduler.create ())
+  in
+  let fresh_first =
+    Workflow_context_store.with_context fresh_context (fun () ->
+        Temporal.Workflow.random_int ~bound:97)
+  in
+  if after_validation <> fresh_first then
+    failwith "update validator changed the workflow random stream"
+
 let () =
   test_commands_and_completion ();
   test_activity_options_and_queue ();
@@ -1899,4 +1995,6 @@ let () =
   test_workflow_patch_mode_invariant ();
   test_workflow_patch_mode_isolation_and_public_deprecation_snapshot ();
   test_workflow_patch_isolation_and_public_id_snapshot ();
-  test_incoming_patch_notification_snapshot ()
+  test_incoming_patch_notification_snapshot ();
+  test_workflow_random_int_is_replay_stable ();
+  test_update_validator_cannot_consume_workflow_randomness ()

@@ -81,7 +81,17 @@ module Handler = struct
             match validator with
             | None -> Ok ()
             | Some validate -> (
-                try validate input with
+                try
+                  (* Validators run only for live requests, so a deterministic
+                     helper must not advance mutable workflow state here.  The
+                     runtime guard is scoped to this callback and restored
+                     before the update implementation runs. *)
+                  match Temporal_runtime.Workflow_context_store.current () with
+                  | None -> validate input
+                  | Some context ->
+                      Temporal_runtime.Workflow_context_store.with_randomness_disabled
+                        context (fun () -> validate input)
+                with
                 | exception_ ->
                     Error
                       (Error.defect

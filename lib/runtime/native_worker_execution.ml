@@ -965,6 +965,7 @@ module Make (Supervisor : SUPERVISOR) = struct
                               | Ok input ->
                                   let execution =
                                     Execution.start ~task_queue:adapter.task_queue
+                                      ~randomness_seed:init.randomness_seed
                                       ~signal_handlers ~query_handlers
                                       ~update_handlers definition input
                                   in

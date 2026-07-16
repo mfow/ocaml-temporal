@@ -104,8 +104,22 @@ let now () =
                ~message:
                  "Temporal.Workflow.now is unavailable for this activation")
       | Some timestamp ->
-          Time.of_unix ~seconds:timestamp.seconds
+            Time.of_unix ~seconds:timestamp.seconds
             ~nanoseconds:timestamp.nanoseconds)
+
+(** Draws a deterministic pseudo-random integer for the current workflow run.
+    Temporal supplies the run seed in the initialization activation; the
+    private runtime advances an execution-local stream so replay observes the
+    same value at each call without reading host randomness. *)
+let random_int ~bound =
+  match Temporal_runtime.Workflow_context_store.current () with
+  | None ->
+      Error
+        (Error.defect
+           ~message:"Temporal.Workflow.random_int used outside a workflow execution")
+  | Some context ->
+      Temporal_runtime.Workflow_context_store.random_int context ~bound
+      |> Result.map_error Error_private.of_base
 
 (** Validates and snapshots a patch ID before consulting workflow state. The
     copy prevents a caller-created mutable string from changing the hash-table

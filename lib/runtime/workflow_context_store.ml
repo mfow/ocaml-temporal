@@ -91,6 +91,16 @@ type t = {
      boundary is private and safe because callers can only use the same
      existentially typed key returned by [create_local]. *)
   locals : (int, Obj.t) Hashtbl.t;
+  (* Seeded deterministic pseudo-random state.  Temporal supplies one seed
+     when a run is initialized; keeping the state in the execution context
+     makes repeated calls replay identically without consulting process-global
+     randomness or the host clock. *)
+  mutable random_state : int64;
+  (* Update validators are a read-only live-request check.  The runtime flips
+     this guard only while a validator callback runs so deterministic helpers
+     such as [random_int] cannot mutate workflow state on the live path that
+     replay intentionally skips. *)
+  mutable randomness_disabled : bool;
   mutable commands_rev : Activation.command list;
   (* Once true, [emit] ignores new commands. Set at the start of [shutdown]
      before waiters are discontinued so Fun.protect finally blocks cannot
@@ -118,7 +128,28 @@ let validate_task_queue task_queue =
 
 (** Creates empty activity and timer tables. The tables grow normally if a
     workflow has more than the small initial capacity. *)
-let create ?(task_queue = "default") scheduler =
+let seed_of_decimal seed =
+  let maximum = "18446744073709551615" in
+  if String.length seed = 0
+     || (String.length seed > 1 && Char.equal seed.[0] '0')
+     || not (String.for_all (function '0' .. '9' -> true | _ -> false) seed)
+     || String.length seed > String.length maximum
+     || (String.length seed = String.length maximum
+        && String.compare seed maximum > 0)
+  then invalid_arg "randomness seed must be an unsigned decimal string";
+  (* Arithmetic on [Int64] deliberately wraps modulo 2^64.  The protocol
+     validator already bounds the input to uint64, so this parser accepts the
+     full Core range without an intermediate signed conversion. *)
+  let state =
+    String.fold_left
+      (fun state digit ->
+        Int64.add (Int64.mul state 10L)
+          (Int64.of_int (Char.code digit - Char.code '0')))
+      0L seed
+  in
+  if Int64.equal state 0L then 1L else state
+
+let create ?(task_queue = "default") ?(randomness_seed = "0") scheduler =
   match validate_task_queue task_queue with
   | Error message ->
       (* Preserve the existing execution-construction contract for callers
@@ -141,6 +172,8 @@ let create ?(task_queue = "default") scheduler =
         child_workflows = Hashtbl.create 16;
         timers = Hashtbl.create 16;
         locals = Hashtbl.create 8;
+        random_state = seed_of_decimal randomness_seed;
+        randomness_disabled = false;
         commands_rev = [];
         sealed = false;
       }
@@ -246,6 +279,54 @@ let patched context ~patch_id =
     public operation exists only to record the marker lifecycle transition. *)
 let deprecate_patch context ~patch_id =
   ignore (call_patch_api context ~patch_id ~mode:Deprecated)
+
+(** Advances the execution-local xorshift generator.  The generator is not
+    exposed publicly: its only contract is that a given Temporal seed and call
+    order produce the same stream during live execution and replay. *)
+let next_random_word context =
+  let value = context.random_state in
+  let value = Int64.logxor value (Int64.shift_left value 13) in
+  let value = Int64.logxor value (Int64.shift_right_logical value 7) in
+  let value = Int64.logxor value (Int64.shift_left value 17) in
+  let value = if Int64.equal value 0L then 1L else value in
+  context.random_state <- value;
+  value
+
+(** Returns one unbiased integer below [bound] from the deterministic stream.
+    Rejection sampling avoids the modulo bias that would otherwise make the
+    same workflow produce a skewed distribution for non-power-of-two bounds. *)
+let random_int context ~bound =
+  if context.sealed then
+    Error
+      (Temporal_base.Error.defect
+         ~message:"workflow randomness used after workflow execution ended")
+  else if context.randomness_disabled then
+    Error
+      (Temporal_base.Error.defect
+         ~message:"workflow randomness is unavailable in a read-only update validator")
+  else if bound <= 0 then
+    Error
+      (Temporal_base.Error.defect
+         ~message:"workflow random_int bound must be positive")
+  else
+    let bound64 = Int64.of_int bound in
+    let remainder = Int64.rem Int64.max_int bound64 in
+    let limit = Int64.sub Int64.max_int remainder in
+    let rec draw () =
+      let sample = Int64.logand (next_random_word context) Int64.max_int in
+      if Int64.compare sample limit >= 0 then draw ()
+      else Ok (Int64.to_int (Int64.rem sample bound64))
+    in
+    draw ()
+
+(** Runs a read-only callback with workflow randomness disabled.  Update
+    validators are evaluated only on live requests and are deliberately not
+    replayed; restoring the previous flag in [finally] keeps nested callbacks
+    and subsequent workflow handlers from inheriting this temporary mode. *)
+let with_randomness_disabled context action =
+  let previous = context.randomness_disabled in
+  context.randomness_disabled <- true;
+  Fun.protect action ~finally:(fun () -> context.randomness_disabled <- previous)
 
 (** Makes [context] current while [action] runs, then restores the previous
     value even if [action] raises. This prevents later code on the same Domain

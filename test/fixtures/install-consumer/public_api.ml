@@ -374,6 +374,8 @@ let _workflow_sleep : T.Duration.t -> (unit, T.Error.t) result = T.Workflow.slee
 let _workflow_now : unit -> (T.Time.t, T.Error.t) result = T.Workflow.now
 let _workflow_patched : id:string -> bool = T.Workflow.patched
 let _workflow_deprecate_patch : id:string -> unit = T.Workflow.deprecate_patch
+let _workflow_random_int : bound:int -> (int, T.Error.t) result =
+  T.Workflow.random_int
 let _workflow_continue_as_new :
     ('input, 'output) T.Workflow.t -> 'input -> 'value =
   T.Workflow.continue_as_new

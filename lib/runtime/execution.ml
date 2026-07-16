@@ -161,8 +161,9 @@ type ('input, 'output) t = {
 
 (** Creates execution state without calling user workflow code. The code starts
     only after Temporal delivers a start job, matching replay behavior. *)
-let start ?(task_queue = "default") ?(signal_handlers = []) ?(query_handlers = [])
-    ?(update_handlers = []) definition input =
+let start ?(task_queue = "default") ?(randomness_seed = "0")
+    ?(signal_handlers = []) ?(query_handlers = []) ?(update_handlers = [])
+    definition input =
   let signal_handler_map : signal_handler Signal_map.t =
     List.fold_left
       (fun (handlers : signal_handler Signal_map.t) (handler : signal_handler) ->
@@ -196,7 +197,8 @@ let start ?(task_queue = "default") ?(signal_handlers = []) ?(query_handlers = [
       definition;
       input;
       scheduler;
-      context = Workflow_context_store.create ~task_queue scheduler;
+      context =
+        Workflow_context_store.create ~task_queue ~randomness_seed scheduler;
       signal_handlers = signal_handler_map;
       query_handlers = query_handler_map;
       update_handlers = update_handler_map;

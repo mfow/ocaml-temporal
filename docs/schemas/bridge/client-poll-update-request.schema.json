@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-poll-update-request.schema.json",
+  "title": "OCaml Temporal native client workflow update poll request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "workflow_id", "run_id", "update_id"],
+  "properties": {
+    "namespace": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "workflow_id": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "update_id": {"type": "string", "minLength": 1, "maxLength": 65536}
+  }
+}

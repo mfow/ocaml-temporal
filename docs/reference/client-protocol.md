@@ -606,6 +606,53 @@ bit and the same non-empty, NUL-free, 65,536-byte identifier limits used by
 `start` and `wait`; malformed, cross-namespace, or shut-down-client input is
 returned as an ordinary `Error.t` result.
 
+## Admit and await a workflow update
+
+`Temporal.Client.start_update` sends a typed update to an exact workflow run
+and returns after Temporal has admitted it. The returned update handle retains
+the update name, exact run, caller-supplied or generated update ID, and output
+codec. It contains no native pointer and can be held while other updates or
+workflow operations are started. `Temporal.Client.wait_update` polls the same
+ID until the server returns a completed value or an application failure.
+
+Admission and completion are deliberately separate: an admitted update may
+still be waiting behind workflow code, and a pending poll is not a failure.
+The OCaml supervisor serializes both requests through the one native owner;
+Rust owns the Temporal protobuf and gRPC state and returns only copied JSON.
+No Rust task calls an OCaml closure, and update failures are typed `Error.t`
+values rather than exceptions.
+
+Admission uses this closed object:
+
+```json
+{
+  "namespace": "default",
+  "workflow_id": "summarize-1",
+  "run_id": "server-assigned-run-id",
+  "update_id": "update-1",
+  "update_name": "set_state",
+  "input": []
+}
+```
+
+Rust validates every identity, update ID/name, payload, and duplicate/unknown
+member before invoking Temporal's `UpdateWorkflowExecution` RPC. The response
+echoes the update ID and exact execution. Its `outcome` is `null` while the
+update is admitted but not yet complete, or a closed `completed`/`failed`
+object when Core already has a terminal result. Poll requests contain only the
+namespace, exact execution, and update ID; poll responses contain only the
+optional outcome. OCaml rejects an outcome or execution that does not match the
+handle, so a response for another update cannot be mistaken for success.
+
+The normative schemas are
+[`client-update-request.schema.json`](../schemas/bridge/client-update-request.schema.json),
+[`client-update-response.schema.json`](../schemas/bridge/client-update-response.schema.json),
+[`client-poll-update-request.schema.json`](../schemas/bridge/client-poll-update-request.schema.json),
+and [`client-poll-update-response.schema.json`](../schemas/bridge/client-poll-update-response.schema.json).
+The OCaml protocol test is
+[`test_ocaml_client_update_protocol.ml`](../../test/bridge/test_ocaml_client_update_protocol.ml);
+Rust tests cover strict validation and Core response conversion.
+
 ## Structured failures
 
 Routine transport and Core failures do not raise OCaml exceptions. Rust emits

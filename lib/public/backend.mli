@@ -114,6 +114,31 @@ type visibility_page = {
   next_page_token : string option;
 }
 
+(** Request to admit one named workflow update on an exact run. *)
+type update_request = {
+  workflow_id : string;
+  run_id : string;
+  update_id : string;
+  update_name : string;
+  input : Payload.t;
+}
+
+(** Terminal update outcome returned by the native protocol. *)
+type update_outcome =
+  | Update_completed of Payload.t list
+  | Update_failed of Error.t
+
+(** Admission response retained by the typed client update handle. *)
+type update_response = {
+  update_id : string;
+  workflow_id : string;
+  run_id : string;
+  outcome : update_outcome option;
+}
+
+(** Bounded completion poll response; [None] means still pending. *)
+type poll_update_response = { outcome : update_outcome option }
+
 (** Terminal outcomes are kept separate from bridge transport errors so a
     completed Temporal failure remains an ordinary typed value. *)
 type terminal_result =
@@ -216,6 +241,13 @@ val client_query : client -> query_request -> (Payload.t, Error.t) result
 (** Lists one bounded visibility page through Temporal's visibility service. *)
 val client_list_visibility :
   client -> visibility_request -> (visibility_page, Error.t) result
+
+(** Admits one workflow update and returns its durable update handle data. *)
+val client_update : client -> update_request -> (update_response, Error.t) result
+
+(** Polls one admitted workflow update for completion. *)
+val client_poll_update :
+  client -> update_request -> (poll_update_response, Error.t) result
 
 (** Closes a client backend. Native shutdown is serialized and terminal even
     when it returns an error; the public client caches that exact result so a

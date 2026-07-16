@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-update-outcome.schema.json",
+  "title": "OCaml Temporal native client workflow update outcome",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "result"],
+      "properties": {
+        "kind": {"const": "completed"},
+        "result": {"type": "array", "items": {"$ref": "temporal-payload.schema.json"}}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "failure"],
+      "properties": {
+        "kind": {"const": "failed"},
+        "failure": {"$ref": "temporal-failure.schema.json"}
+      }
+    }
+  ]
+}

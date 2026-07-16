@@ -9,22 +9,22 @@
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::Duration;
 use temporalio_client::Connection;
 use temporalio_client::tonic::{Code, IntoRequest, Status};
 use temporalio_common::protos::temporal::api::{
-    common::v1::{Memo, Payloads, SearchAttributes, WorkflowExecution, WorkflowType},
-    enums::v1::HistoryEventFilterType,
+    common::v1::{Payloads, WorkflowExecution, WorkflowType},
+    enums::v1::{HistoryEventFilterType, UpdateWorkflowExecutionLifecycleStage},
     history::v1::{HistoryEvent, history_event::Attributes},
     query::v1::WorkflowQuery,
     taskqueue::v1::TaskQueue,
+    update::{self, v1::WaitPolicy},
     workflowservice::v1::{
         GetWorkflowExecutionHistoryRequest, ListWorkflowExecutionsRequest,
-        QueryWorkflowRequest as QueryWorkflowExecutionRequest,
+        PollWorkflowExecutionUpdateRequest, QueryWorkflowRequest as QueryWorkflowExecutionRequest,
         RequestCancelWorkflowExecutionRequest, ResetWorkflowExecutionRequest,
         SignalWorkflowExecutionRequest, StartWorkflowExecutionRequest,
-        TerminateWorkflowExecutionRequest,
+        TerminateWorkflowExecutionRequest, UpdateWorkflowExecutionRequest,
     },
 };
 
@@ -40,18 +40,6 @@ pub struct ExecutionRef {
     pub workflow_id: String,
     /// Concrete run identifier.
     pub run_id: String,
-}
-
-/// One named payload in a workflow-start memo or search-attribute map.
-/// Arrays are used at the JSON boundary so duplicate names can be rejected
-/// before conversion to protobuf maps.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MetadataField {
-    /// User-visible metadata key.
-    pub key: String,
-    /// Payload retained under that key.
-    pub value: workflow_protocol::Payload,
 }
 
 /// Request to start one workflow execution with raw Temporal payloads.
@@ -76,12 +64,6 @@ pub struct StartWorkflowRequest {
     pub task_queue: String,
     /// Ordered input payloads; an empty vector means no workflow arguments.
     pub input: Vec<workflow_protocol::Payload>,
-    /// Optional memo fields copied to Temporal's start request.
-    #[serde(default)]
-    pub memo: Vec<MetadataField>,
-    /// Optional indexed search attributes copied to Temporal's start request.
-    #[serde(default)]
-    pub search_attributes: Vec<MetadataField>,
 }
 
 /// Successful result returned by the start operation.
@@ -267,6 +249,72 @@ pub struct QueryWorkflowRequest {
 pub struct QueryWorkflowResponse {
     /// Ordered result payloads from the workflow query handler.
     pub result: Vec<workflow_protocol::Payload>,
+}
+
+/// Request to start one named workflow update and wait until it is admitted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateWorkflowRequest {
+    /// Namespace containing the execution.
+    pub namespace: String,
+    /// Stable workflow identifier.
+    pub workflow_id: String,
+    /// Concrete run identifier; an empty run is never treated as latest.
+    pub run_id: String,
+    /// Caller-owned workflow-scoped update idempotency key.
+    pub update_id: String,
+    /// Registered workflow update handler name.
+    pub update_name: String,
+    /// Ordered update argument payloads.
+    pub input: Vec<workflow_protocol::Payload>,
+}
+
+/// Request to poll a previously admitted workflow update until completion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PollWorkflowUpdateRequest {
+    /// Namespace containing the execution.
+    pub namespace: String,
+    /// Stable workflow identifier.
+    pub workflow_id: String,
+    /// Concrete run identifier returned by start or retained by the caller.
+    pub run_id: String,
+    /// Workflow-scoped update id returned by the admission response.
+    pub update_id: String,
+}
+
+/// Terminal result of one workflow update.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UpdateOutcome {
+    /// The handler completed successfully with ordered result payloads.
+    Completed {
+        result: Vec<workflow_protocol::Payload>,
+    },
+    /// The handler rejected or failed with a structured Temporal failure.
+    Failed {
+        failure: Box<workflow_protocol::Failure>,
+    },
+}
+
+/// Response from update admission, optionally containing a fast completion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateWorkflowResponse {
+    /// Update id echoed by Temporal's update reference.
+    pub update_id: String,
+    /// Exact execution used by the update.
+    pub execution: ExecutionRef,
+    /// Present when the server completed the update before admission returned.
+    pub outcome: Option<UpdateOutcome>,
+}
+
+/// Response from a completed-update poll.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PollWorkflowUpdateResponse {
+    /// Terminal outcome, or `None` when the bounded poll has no result yet.
+    pub outcome: Option<UpdateOutcome>,
 }
 
 /// One visibility row reduced to stable fields useful to an SDK caller.
@@ -655,6 +703,28 @@ pub fn decode_query_request(input: &str) -> Result<QueryWorkflowRequest, protoco
     Ok(request)
 }
 
+/// Strictly parses a request that starts one workflow update.
+pub fn decode_update_request(
+    input: &str,
+) -> Result<UpdateWorkflowRequest, protocol::ProtocolError> {
+    protocol::decode_object(input)?;
+    let request = serde_json::from_str(input)
+        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client update request"))?;
+    validate_update_request(&request)?;
+    Ok(request)
+}
+
+/// Strictly parses a request that polls a previously admitted update.
+pub fn decode_poll_update_request(
+    input: &str,
+) -> Result<PollWorkflowUpdateRequest, protocol::ProtocolError> {
+    protocol::decode_object(input)?;
+    let request = serde_json::from_str(input)
+        .map_err(|_| protocol::ProtocolError::invalid("$", "invalid client update poll request"))?;
+    validate_poll_update_request(&request)?;
+    Ok(request)
+}
+
 /// Strictly parses one bounded visibility page request.
 pub fn decode_visibility_request(
     input: &str,
@@ -720,6 +790,23 @@ pub fn encode_query_response(
     response: &QueryWorkflowResponse,
 ) -> Result<String, protocol::ProtocolError> {
     validate_query_response(response)?;
+    encode_document(response)
+}
+
+/// Encodes and reparses update admission before ownership leaves Rust.
+pub fn encode_update_response(
+    response: &UpdateWorkflowResponse,
+) -> Result<String, protocol::ProtocolError> {
+    validate_update_response(response)?;
+    encode_document(response)
+}
+
+/// Encodes and reparses a bounded update poll response before ownership leaves
+/// Rust. A missing outcome is a normal pending result, not an error.
+pub fn encode_poll_update_response(
+    response: &PollWorkflowUpdateResponse,
+) -> Result<String, protocol::ProtocolError> {
+    validate_poll_update_response(response)?;
     encode_document(response)
 }
 
@@ -1053,6 +1140,152 @@ pub async fn query_workflow(
     })
 }
 
+/// Starts one update through Temporal's workflow service and waits only for
+/// admission. Completion is a separate poll operation.
+pub async fn update_workflow(
+    connection: Connection,
+    request: UpdateWorkflowRequest,
+) -> Result<UpdateWorkflowResponse, ClientOperationError> {
+    let input = payloads_to_core(&request.input).map_err(ClientOperationError::Core)?;
+    let mut service = connection.workflow_service();
+    let response = tokio::time::timeout(
+        Duration::from_secs(30),
+        service.update_workflow_execution(
+            UpdateWorkflowExecutionRequest {
+                namespace: request.namespace.clone(),
+                workflow_execution: Some(WorkflowExecution {
+                    workflow_id: request.workflow_id.clone(),
+                    run_id: request.run_id.clone(),
+                }),
+                wait_policy: Some(WaitPolicy {
+                    lifecycle_stage: UpdateWorkflowExecutionLifecycleStage::Admitted as i32,
+                }),
+                request: Some(update::v1::Request {
+                    meta: Some(update::v1::Meta {
+                        update_id: request.update_id.clone(),
+                        identity: connection.identity().to_owned(),
+                    }),
+                    input: Some(update::v1::Input {
+                        name: request.update_name,
+                        args: Some(input),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+            .into_request(),
+        ),
+    )
+    .await
+    .map_err(|_| ClientOperationError::Rpc {
+        code: "deadline_exceeded".to_owned(),
+    })?
+    .map_err(map_rpc_status)?
+    .into_inner();
+    let update_ref = response.update_ref.ok_or_else(|| {
+        ClientOperationError::Core(workflow_protocol::invalid_core(
+            "Temporal update admission omitted update_ref",
+        ))
+    })?;
+    let execution = update_ref.workflow_execution.ok_or_else(|| {
+        ClientOperationError::Core(workflow_protocol::invalid_core(
+            "Temporal update admission omitted workflow execution",
+        ))
+    })?;
+    if update_ref.update_id != request.update_id {
+        return Err(ClientOperationError::Core(workflow_protocol::invalid_core(
+            "Temporal update response changed update_id",
+        )));
+    }
+    let execution = ExecutionRef {
+        namespace: request.namespace,
+        workflow_id: execution.workflow_id,
+        run_id: if execution.run_id.is_empty() {
+            request.run_id.clone()
+        } else {
+            execution.run_id
+        },
+    };
+    if execution.workflow_id != request.workflow_id || execution.run_id != request.run_id {
+        return Err(ClientOperationError::Core(workflow_protocol::invalid_core(
+            "Temporal update response changed workflow execution",
+        )));
+    }
+    let outcome = response
+        .outcome
+        .as_ref()
+        .map(update_outcome_from_core)
+        .transpose()
+        .map_err(ClientOperationError::Core)?;
+    Ok(UpdateWorkflowResponse {
+        update_id: update_ref.update_id,
+        execution,
+        outcome,
+    })
+}
+
+/// Polls one update until completion, bounded so the supervisor remains
+/// responsive to shutdown and unrelated client requests.
+pub async fn poll_workflow_update(
+    connection: Connection,
+    request: PollWorkflowUpdateRequest,
+) -> Result<PollWorkflowUpdateResponse, ClientOperationError> {
+    let mut service = connection.workflow_service();
+    let response = tokio::time::timeout(
+        Duration::from_secs(30),
+        service.poll_workflow_execution_update(
+            PollWorkflowExecutionUpdateRequest {
+                namespace: request.namespace,
+                update_ref: Some(update::v1::UpdateRef {
+                    workflow_execution: Some(WorkflowExecution {
+                        workflow_id: request.workflow_id,
+                        run_id: request.run_id,
+                    }),
+                    update_id: request.update_id,
+                }),
+                identity: connection.identity().to_owned(),
+                wait_policy: Some(WaitPolicy {
+                    lifecycle_stage: UpdateWorkflowExecutionLifecycleStage::Completed as i32,
+                }),
+            }
+            .into_request(),
+        ),
+    )
+    .await
+    .map_err(|_| ClientOperationError::Rpc {
+        code: "deadline_exceeded".to_owned(),
+    })?
+    .map_err(map_rpc_status)?
+    .into_inner();
+    Ok(PollWorkflowUpdateResponse {
+        outcome: response
+            .outcome
+            .as_ref()
+            .map(update_outcome_from_core)
+            .transpose()
+            .map_err(ClientOperationError::Core)?,
+    })
+}
+
+/// Converts the protobuf oneof used by Temporal's update response into the
+/// closed semantic result without retaining protobuf ownership.
+fn update_outcome_from_core(
+    outcome: &update::v1::Outcome,
+) -> Result<UpdateOutcome, workflow_protocol::CoreConversionError> {
+    match outcome.value.as_ref() {
+        Some(update::v1::outcome::Value::Success(payloads)) => Ok(UpdateOutcome::Completed {
+            result: payloads_from_core(Some(payloads))?,
+        }),
+        Some(update::v1::outcome::Value::Failure(failure)) => Ok(UpdateOutcome::Failed {
+            failure: Box::new(workflow_protocol::failure_from_core(failure)?),
+        }),
+        None => Err(workflow_protocol::invalid_core(
+            "Temporal update outcome omitted success and failure",
+        )),
+    }
+}
+
 /// Encodes one terminal asynchronous-start outcome and reparses the bytes
 /// before ownership leaves Rust.  The closed object keeps `Unknown` explicit
 /// instead of overloading a transport error status that could be mistaken for
@@ -1102,9 +1335,6 @@ pub async fn start_workflow(
     request: StartWorkflowRequest,
 ) -> Result<StartWorkflowResponse, ClientOperationError> {
     let payloads = payloads_to_core(&request.input).map_err(ClientOperationError::Core)?;
-    let memo = metadata_to_memo(&request.memo).map_err(ClientOperationError::Core)?;
-    let search_attributes = metadata_to_search_attributes(&request.search_attributes)
-        .map_err(ClientOperationError::Core)?;
     let workflow_id = request.workflow_id.clone();
     let mut service = connection.workflow_service();
     let response = match tokio::time::timeout(
@@ -1122,8 +1352,6 @@ pub async fn start_workflow(
                     kind: 0,
                     normal_name: String::new(),
                 }),
-                memo,
-                search_attributes,
                 identity: connection.identity().to_owned(),
                 request_id: request.request_id,
                 // The first slice intentionally uses server defaults for all
@@ -1318,41 +1546,6 @@ fn payloads_to_core(
     })
 }
 
-/// Converts named OCaml metadata to Temporal's memo map while preserving
-/// validation guarantees established by [`validate_metadata`].
-fn metadata_to_memo(
-    fields: &[MetadataField],
-) -> Result<Option<Memo>, workflow_protocol::CoreConversionError> {
-    if fields.is_empty() {
-        return Ok(None);
-    }
-    let mut values = HashMap::with_capacity(fields.len());
-    for field in fields {
-        let payload = workflow_protocol::payload_to_core(&field.value)?;
-        values.insert(field.key.clone(), payload);
-    }
-    Ok(Some(Memo { fields: values }))
-}
-
-/// Converts named OCaml search attributes to Temporal's indexed-field map.
-/// Temporal represents each indexed field as one payload; callers that need
-/// multiple values should encode a list using their normal codec first.
-fn metadata_to_search_attributes(
-    fields: &[MetadataField],
-) -> Result<Option<SearchAttributes>, workflow_protocol::CoreConversionError> {
-    if fields.is_empty() {
-        return Ok(None);
-    }
-    let mut values = HashMap::with_capacity(fields.len());
-    for field in fields {
-        let payload = workflow_protocol::payload_to_core(&field.value)?;
-        values.insert(field.key.clone(), payload);
-    }
-    Ok(Some(SearchAttributes {
-        indexed_fields: values,
-    }))
-}
-
 /// Builds successor metadata only for a nonempty Core run ID.
 fn successor_ref(namespace: &str, workflow_id: &str, run_id: &str) -> Option<SuccessorRef> {
     (!run_id.is_empty()).then(|| SuccessorRef {
@@ -1441,32 +1634,6 @@ fn validate_start_request(value: &StartWorkflowRequest) -> Result<(), protocol::
     for payload in &value.input {
         workflow_protocol::payload_to_core(payload)
             .map_err(|_| protocol::ProtocolError::invalid("$.input", "invalid Temporal payload"))?;
-    }
-    validate_metadata(&value.memo, "$.memo")?;
-    validate_metadata(&value.search_attributes, "$.search_attributes")?;
-    Ok(())
-}
-
-/// Validates metadata names, duplicate rejection, and payload conversion
-/// before any protobuf map is constructed. Duplicate names would otherwise
-/// be silently overwritten by a `HashMap` and make retries ambiguous.
-fn validate_metadata(fields: &[MetadataField], path: &str) -> Result<(), protocol::ProtocolError> {
-    let mut names = std::collections::HashSet::new();
-    for (index, field) in fields.iter().enumerate() {
-        let field_path = format!("{path}[{index}].key");
-        validate_identifier(&field.key, &field_path)?;
-        if !names.insert(&field.key) {
-            return Err(protocol::ProtocolError::invalid(
-                &field_path,
-                "duplicate metadata key",
-            ));
-        }
-        workflow_protocol::payload_to_core(&field.value).map_err(|_| {
-            protocol::ProtocolError::invalid(
-                format!("{path}[{index}].value"),
-                "invalid Temporal payload",
-            )
-        })?;
     }
     Ok(())
 }
@@ -1587,6 +1754,71 @@ fn validate_query_response(value: &QueryWorkflowResponse) -> Result<(), protocol
         workflow_protocol::payload_to_core(payload).map_err(|_| {
             protocol::ProtocolError::invalid("$.result", "invalid Temporal payload")
         })?;
+    }
+    Ok(())
+}
+
+/// Validates one update admission request and every argument payload.
+fn validate_update_request(value: &UpdateWorkflowRequest) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.namespace, "$.namespace")?;
+    validate_identifier(&value.workflow_id, "$.workflow_id")?;
+    validate_identifier(&value.run_id, "$.run_id")?;
+    validate_identifier(&value.update_id, "$.update_id")?;
+    validate_identifier(&value.update_name, "$.update_name")?;
+    for payload in &value.input {
+        workflow_protocol::payload_to_core(payload)
+            .map_err(|_| protocol::ProtocolError::invalid("$.input", "invalid Temporal payload"))?;
+    }
+    Ok(())
+}
+
+/// Validates one update poll request.
+fn validate_poll_update_request(
+    value: &PollWorkflowUpdateRequest,
+) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.namespace, "$.namespace")?;
+    validate_identifier(&value.workflow_id, "$.workflow_id")?;
+    validate_identifier(&value.run_id, "$.run_id")?;
+    validate_identifier(&value.update_id, "$.update_id")?;
+    Ok(())
+}
+
+/// Validates update output payloads and recursive failure trees before JSON
+/// serialization crosses the native boundary.
+fn validate_update_response(value: &UpdateWorkflowResponse) -> Result<(), protocol::ProtocolError> {
+    validate_identifier(&value.update_id, "$.update_id")?;
+    validate_execution(&value.execution, "$.execution")?;
+    if let Some(outcome) = &value.outcome {
+        validate_update_outcome(outcome)?;
+    }
+    Ok(())
+}
+
+/// Validates an optional bounded poll outcome.
+fn validate_poll_update_response(
+    value: &PollWorkflowUpdateResponse,
+) -> Result<(), protocol::ProtocolError> {
+    if let Some(outcome) = &value.outcome {
+        validate_update_outcome(outcome)?;
+    }
+    Ok(())
+}
+
+/// Validates either successful update payloads or a recursive failure tree.
+fn validate_update_outcome(value: &UpdateOutcome) -> Result<(), protocol::ProtocolError> {
+    match value {
+        UpdateOutcome::Completed { result } => {
+            for payload in result {
+                workflow_protocol::payload_to_core(payload).map_err(|_| {
+                    protocol::ProtocolError::invalid("$.outcome.result", "invalid Temporal payload")
+                })?;
+            }
+        }
+        UpdateOutcome::Failed { failure } => {
+            workflow_protocol::validate_failure(failure, "$.outcome.failure").map_err(|_| {
+                protocol::ProtocolError::invalid("$.outcome.failure", "invalid Temporal failure")
+            })?;
+        }
     }
     Ok(())
 }
@@ -2601,33 +2833,76 @@ mod tests {
     }
 
     #[test]
-    /// Retains named start metadata as owned values and rejects duplicate
-    /// keys before protobuf map conversion can overwrite one entry.
-    fn start_metadata_is_closed_and_duplicate_safe() {
-        let json = serde_json::json!({
-            "request_id":"request-1",
-            "namespace":"default",
-            "workflow_id":"workflow-1",
-            "workflow_type":"smoke",
-            "task_queue":"queue",
-            "input":[],
-            "memo":[{"key":"owner","value":{"metadata":{},"data":{"encoding":"base64","data":"b3duZXI="}}}],
-            "search_attributes":[{"key":"priority","value":{"metadata":{},"data":{"encoding":"base64","data":"aGlnaA=="}}}]
-        })
-        .to_string();
-        let request = decode_start_request(&json).unwrap();
-        assert_eq!(request.memo.len(), 1);
-        assert_eq!(request.search_attributes[0].key, "priority");
+    /// Keeps update admission and polling round trips closed and preserves a
+    /// pending outcome as JSON `null` rather than inventing a terminal value.
+    fn update_request_and_pending_response_round_trip() {
+        let request = UpdateWorkflowRequest {
+            namespace: "default".to_owned(),
+            workflow_id: "workflow-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            update_id: "update-1".to_owned(),
+            update_name: "set_state".to_owned(),
+            input: Vec::new(),
+        };
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(decode_update_request(&encoded).unwrap(), request);
+        let response = UpdateWorkflowResponse {
+            update_id: request.update_id.clone(),
+            execution: ExecutionRef {
+                namespace: request.namespace.clone(),
+                workflow_id: request.workflow_id.clone(),
+                run_id: request.run_id.clone(),
+            },
+            outcome: None,
+        };
+        let encoded_response = encode_update_response(&response).unwrap();
+        assert!(encoded_response.contains(r#""outcome":null"#));
+        assert_eq!(
+            serde_json::from_str::<UpdateWorkflowResponse>(&encoded_response).unwrap(),
+            response
+        );
+    }
 
-        // Build the duplicate through a JSON value rather than textual
-        // replacement: serde_json is free to choose object-key order, while
-        // the validation contract concerns duplicate array entries only.
-        let mut duplicate: serde_json::Value = serde_json::from_str(&json).unwrap();
-        duplicate["memo"] = serde_json::json!([
-            {"key":"owner","value":{"metadata":{},"data":{"encoding":"base64","data":"b3duZXI="}}},
-            {"key":"owner","value":{"metadata":{},"data":{"encoding":"base64","data":"b3duZXI="}}}
-        ]);
-        let duplicate = duplicate.to_string();
-        assert!(decode_start_request(&duplicate).is_err());
+    #[test]
+    /// Rejects update responses with an empty echoed ID before they can cross
+    /// the native boundary; OCaml performs the request-correlation check.
+    fn update_response_rejects_invalid_update_id() {
+        let response = UpdateWorkflowResponse {
+            update_id: String::new(),
+            execution: ExecutionRef {
+                namespace: "default".to_owned(),
+                workflow_id: "workflow-1".to_owned(),
+                run_id: "run-1".to_owned(),
+            },
+            outcome: Some(UpdateOutcome::Completed { result: Vec::new() }),
+        };
+        assert!(encode_update_response(&response).is_err());
+    }
+
+    #[test]
+    /// Preserves a structured failure outcome through the bilateral JSON
+    /// codec instead of flattening it into server diagnostic text.
+    fn update_failure_response_round_trip() {
+        let response = PollWorkflowUpdateResponse {
+            outcome: Some(UpdateOutcome::Failed {
+                failure: Box::new(workflow_protocol::Failure {
+                    message: "failed".to_owned(),
+                    source: "worker".to_owned(),
+                    stack_trace: String::new(),
+                    encoded_attributes: None,
+                    cause: None,
+                    info: workflow_protocol::FailureInfo::Application {
+                        type_name: "Failure".to_owned(),
+                        non_retryable: true,
+                        details: Vec::new(),
+                    },
+                }),
+            }),
+        };
+        let encoded = encode_poll_update_response(&response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PollWorkflowUpdateResponse>(&encoded).unwrap(),
+            response
+        );
     }
 }

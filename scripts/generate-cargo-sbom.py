@@ -19,10 +19,58 @@ from typing import Any
 NAMESPACE = "https://github.com/mfow/ocaml-temporal/sbom/cargo"
 
 
-def package_spdx_id(package_id: str) -> str:
-    """Return a stable SPDX identifier derived from Cargo's package ID."""
+def normalized_manifest_path(
+    package: dict[str, Any], workspace_root: str | None = None
+) -> str:
+    """Return a checkout-independent path for one Cargo manifest.
 
-    digest = hashlib.sha256(package_id.encode("utf-8")).hexdigest()[:16]
+    Cargo's path-package IDs include the absolute checkout directory. Workspace
+    manifests are therefore reduced to their path relative to Cargo's reported
+    workspace root, while registry and git dependencies use stable
+    source-class/name/version labels. The fallback is deliberately semantic so
+    a path outside the workspace cannot leak an absolute local path into the
+    generated document.
+    """
+
+    name = package.get("name", "unknown")
+    version = package.get("version", "unknown")
+    raw_path = package.get("manifest_path")
+    if isinstance(raw_path, str):
+        path = raw_path.replace("\\", "/")
+        if isinstance(workspace_root, str) and workspace_root:
+            root = workspace_root.replace("\\", "/").rstrip("/")
+            if path == root:
+                return "Cargo.toml"
+            prefix = root + "/"
+            if path.startswith(prefix):
+                return path[len(root) + 1 :]
+        # Keep this compatibility fallback for callers that use the helper
+        # directly rather than passing the full Cargo metadata object.
+        marker = "/rust/"
+        if marker in path:
+            return "rust/" + path.rsplit(marker, 1)[1]
+    source = package.get("source")
+    if isinstance(source, str) and source.startswith("registry+"):
+        return f"registry/{name}/{version}/Cargo.toml"
+    if isinstance(source, str) and source.startswith("git+"):
+        return f"git/{name}/{version}/Cargo.toml"
+    return f"path/{name}/{version}/Cargo.toml"
+
+
+def package_spdx_id(
+    package: dict[str, Any], workspace_root: str | None = None
+) -> str:
+    """Return a stable SPDX identifier from semantic package identity fields."""
+
+    name = package.get("name")
+    version = package.get("version")
+    source = package.get("source") or "NOASSERTION"
+    if not isinstance(name, str) or not isinstance(version, str):
+        raise ValueError("Cargo package is missing name or version")
+    identity = "\n".join(
+        (name, version, normalized_manifest_path(package, workspace_root), source)
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     return f"SPDXRef-Package-{digest}"
 
 
@@ -44,6 +92,9 @@ def make_document(metadata: dict[str, Any]) -> dict[str, Any]:
     packages = metadata.get("packages")
     if not isinstance(packages, list) or not packages:
         raise ValueError("Cargo metadata contains no packages")
+    workspace_root = metadata.get("workspace_root")
+    if workspace_root is not None and not isinstance(workspace_root, str):
+        raise ValueError("Cargo metadata workspace_root must be a string")
     normalized: list[dict[str, str]] = []
     for package in packages:
         if not isinstance(package, dict):
@@ -55,7 +106,7 @@ def make_document(metadata: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("Cargo package is missing id, name, or version")
         normalized.append(
             {
-                "SPDXID": package_spdx_id(package_id),
+                "SPDXID": package_spdx_id(package, workspace_root),
                 "name": name,
                 "versionInfo": version,
                 "licenseConcluded": package.get("license") or "NOASSERTION",

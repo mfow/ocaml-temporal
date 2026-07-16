@@ -7,6 +7,7 @@ set -eu
 root=${1:-.}
 cd "$root"
 sh -n scripts/check-release-preflight.sh
+sh test/smoke/test_cargo_sbom_contract.sh .
 if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
   echo "release preflight contract requires a clean checkout" >&2
   exit 1

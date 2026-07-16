@@ -1026,6 +1026,72 @@ let test_activate_installs_workflow_time () =
       failwith ("workflow time implementation failed: " ^ failure.message)
   | _ -> failwith "workflow time activation did not complete with unit result"
 
+(** Proves the native adapter installs task-local worker deployment metadata
+    before workflow code runs. *)
+let test_activate_installs_deployment_metadata () =
+  let metadata =
+    Some
+      {
+        Protocol.available_internal_flags = [];
+        history_size_bytes = "0";
+        continue_as_new_suggested = false;
+        deployment_version_for_current_task =
+          Some { deployment_name = "orders"; build_id = "build-42" };
+        last_sdk_version = "test";
+        suggest_continue_as_new_reasons = [];
+        target_worker_deployment_version_changed = false;
+      }
+  in
+  let observed = ref [] in
+  let workflow =
+    Temporal_base.Definition.make ~name:"native_workflow_deployment"
+      ~input:Temporal_base.Codec.unit ~output:Temporal_base.Codec.unit
+      ~implementation:
+        (Some
+           (fun () ->
+             observed :=
+               !observed @ [ Temporal.Workflow.current_deployment_version () ];
+             match Temporal.Workflow.sleep (Temporal.Duration.of_ms 1L) with
+             | Ok () -> Ok ()
+             | Error error ->
+                 Error
+                   (Temporal_base.Error.defect
+                      ~message:(Temporal.Error.message error))))
+  in
+  let execution = Execution.start workflow () in
+  let first_completion =
+    unwrap "workflow deployment activation"
+      (Native_execution.activate execution
+         (activation ?metadata
+            [ Protocol.Initialize_workflow
+                {
+                  workflow_id = "workflow-deployment";
+                  workflow_type = "native_workflow_deployment";
+                  arguments = [];
+                  randomness_seed = "1";
+                  attempt = 1;
+                  context = None;
+                } ]))
+  in
+  begin match !observed with
+  | [ Some { Temporal.Workflow.deployment_name = "orders"; build_id = "build-42" } ] -> ()
+  | _ -> failwith "native adapter did not install deployment metadata"
+  end;
+  let second_completion =
+    unwrap "workflow deployment timer activation"
+      (Native_execution.activate execution
+         (activation ?metadata:None [ Protocol.Fire_timer { seq = 0L } ]))
+  in
+  begin match first_completion.commands with
+  | [ Protocol.Start_timer { seq = 0L; _ } ] -> ()
+  | _ -> failwith "deployment metadata workflow did not schedule its timer"
+  end;
+  begin match second_completion.commands, !observed with
+  | [ Protocol.Complete_workflow { result = None } ],
+    [ Some { Temporal.Workflow.deployment_name = "orders"; build_id = "build-42" }; None ] -> ()
+  | _ -> failwith "native adapter retained stale deployment metadata"
+  end
+
 (** Proves the native adapter installs replay state and patch notifications
     before entering workflow code. The replayed body must take the new branch
     only because Core supplied the marker, then return the marker command in
@@ -1421,6 +1487,7 @@ let () =
   test_cancellation_and_eviction ();
   test_activate_terminal_completion ();
   test_activate_installs_workflow_time ();
+  test_activate_installs_deployment_metadata ();
   test_activate_installs_workflow_patch_state ();
   test_activate_emits_deprecated_workflow_patch ();
   test_activate_eviction_completion ();

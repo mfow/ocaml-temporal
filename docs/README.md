@@ -80,6 +80,8 @@ The remaining reference documents are useful when changing one subsystem:
   protects the public `Temporal` surface.
 - [Public API compatibility](reference/api-stability.md) documents the
   pre-`0.1.0` compatibility policy and the installed-consumer type witness.
+- [Release preflight](reference/release-preflight.md) documents the clean-tree
+  metadata gate and deterministic CI-only Cargo SBOM audit.
 - [Architecture specification](superpowers/specs/2026-07-11-ocaml-temporal-sdk-design.md)
   records the long-term design. APIs described there may be future work.
 

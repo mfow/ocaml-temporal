@@ -49,6 +49,14 @@ val set_activation_timestamp :
 val activation_timestamp :
   t -> Temporal_protocol.Workflow_protocol.timestamp option
 
+(** Records the deployment/build identity attached to the current activation;
+    [None] clears the value so metadata cannot leak between tasks. *)
+val set_activation_deployment_version : t -> (string * string) option -> unit
+
+(** Returns the deployment/build identity for the current activation, if Core
+    supplied one. *)
+val activation_deployment_version : t -> (string * string) option
+
 (** Records whether Core is replaying history for the activation about to run.
     This must be installed before patch notifications and workflow dispatch. *)
 val set_activation_is_replaying : t -> bool -> unit

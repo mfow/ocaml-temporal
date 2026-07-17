@@ -4,6 +4,11 @@
 type ('input, 'output) implementation =
   'input -> ('output, Error.t) result
 
+(** Deployment identity selected for one workflow task by Temporal's worker
+    versioning layer. The public record contains only validated text and does
+    not expose the private activation protocol. *)
+type deployment_version = { deployment_name : string; build_id : string }
+
 type ('input, 'output) t = {
   (* Stable Temporal workflow type name used in registrations and child
      workflow commands; it is validated before this record is published. *)
@@ -205,6 +210,18 @@ let random_int ~bound =
   | Some context ->
       Temporal_sdk_kernel.Workflow_context_store.random_int context ~bound
       |> Result.map_error Error_private.of_base
+
+(** Reads the deployment identity retained for the current activation. The
+    runtime clears this field before every task, so [None] cannot accidentally
+    report a previous task's build. *)
+let current_deployment_version () =
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
+  | None -> None
+  | Some context ->
+      Option.map
+        (fun (deployment_name, build_id) -> { deployment_name; build_id })
+        (Temporal_sdk_kernel.Workflow_context_store.activation_deployment_version
+           context)
 
 (** Validates and snapshots a patch ID before consulting workflow state. The
     copy prevents a caller-created mutable string from changing the hash-table

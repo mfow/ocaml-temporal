@@ -215,10 +215,14 @@ worker. The execution mode depends on the interaction kind:
   `(unit, Temporal.Error.t) result` and can call deterministic workflow
   helpers, including operations that suspend. Their commands are included in
   the containing workflow-task completion.
-- A query handler is invoked synchronously on the execution owner Domain. It
-  must be read-only and non-suspending; it cannot await a future, schedule an
-  activity, or mutate durable workflow state. Its encoded result is returned
-  as the query response rather than as a workflow-task command.
+- A query handler is invoked synchronously on the execution owner Domain with
+  that execution's context installed, so it can read execution-local state
+  through `Temporal.Workflow_context.Local.get`. It does not enter the
+  workflow scheduler, and its temporary mode disables the deterministic random
+  stream; handlers must remain read-only and non-suspending. They cannot await
+  a future, schedule an activity, or mutate durable workflow state. Their
+  encoded result is returned as the query response rather than as a
+  workflow-task command.
 - An update handler currently has one input. Its validator runs before the
   implementation for a live request and is skipped when Core replays an
   already-validated update. The runtime emits acceptance before a handler can

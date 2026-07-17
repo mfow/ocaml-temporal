@@ -62,6 +62,23 @@ the default on the selected deployment version. These choices are passed to
 Temporal Core's `WorkerDeploymentBased` strategy; the SDK does not perform
 deployment registration or rollout automation.
 
+## Reading the selected deployment in a workflow
+
+When a versioned worker receives a task, workflow code can inspect the exact
+deployment and build that Core selected:
+
+```ocaml
+match Temporal.Workflow.current_deployment_version () with
+| None -> () (* unversioned or synthetic activation *)
+| Some { deployment_name; build_id } ->
+    Logs.debug (fun log -> log "running %s/%s" deployment_name build_id)
+```
+
+The value is replaced before every activation and is therefore safe to log or
+attach to diagnostics without retaining stale state. It is metadata, not a
+replacement for `Temporal.Workflow.patched`: using it to choose commands is
+replay-safe only when the deployment routing policy is stable for the run.
+
 ## OCaml/Rust protocol
 
 The private worker document contains a closed `versioning` object in addition
@@ -88,8 +105,9 @@ hand-authored document reaches the ABI boundary.
 ## Scope and evidence
 
 This slice covers legacy and deployment-based worker routing plus their
-bilateral configuration contracts. It does not implement workflow-code
-history compatibility, migration automation, or a live routing acceptance
-test. Those require server-side deployment orchestration and are tracked
-separately in the [feature coverage](feature-coverage.md) and [implementation
-roadmap](../implementation-roadmap.md).
+bilateral configuration contracts and task-local deployment metadata
+inspection. It does not implement workflow-code history compatibility,
+migration automation, or a live routing
+acceptance test. Those require server-side compatibility-set orchestration and
+are tracked separately in the [feature coverage](feature-coverage.md) and
+[implementation roadmap](../implementation-roadmap.md).

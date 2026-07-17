@@ -92,6 +92,9 @@ type t = {
   conditions : Condition_store.t;
   mutable activation_timestamp :
     Temporal_protocol.Workflow_protocol.timestamp option;
+  (* Deployment metadata is task-local. Core may route successive tasks for
+     one run to different builds, so replace it before every activation. *)
+  mutable activation_deployment_version : (string * string) option;
   (* Replaced before every activation. Patch decisions use this flag only when
      their ID has not already been fixed for this workflow execution. *)
   mutable activation_is_replaying : bool;
@@ -182,6 +185,7 @@ let create ?(task_queue = "default") ?(randomness_seed = "0") scheduler =
         task_queue;
         conditions = Condition_store.create scheduler;
         activation_timestamp = None;
+        activation_deployment_version = None;
         activation_is_replaying = false;
         patches = Hashtbl.create 8;
         next_sequence = 0L;
@@ -230,6 +234,15 @@ let set_activation_timestamp context timestamp =
 
 (** Reads the timestamp most recently installed for this execution context. *)
 let activation_timestamp context = context.activation_timestamp
+
+(** Stores the deployment/build identity attached to the current task. [None]
+    clears stale metadata for unversioned or synthetic activations. *)
+let set_activation_deployment_version context version =
+  context.activation_deployment_version <- version
+
+(** Returns the deployment/build identity supplied for the current task. *)
+let activation_deployment_version context =
+  context.activation_deployment_version
 
 (** Stores Core's replay status for the activation about to run. The value is
     task-local; previously established patch decisions remain execution-local

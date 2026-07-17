@@ -226,6 +226,11 @@ let workflow_type execution =
 let set_activation_timestamp execution timestamp =
   Workflow_context_store.set_activation_timestamp execution.context timestamp
 
+(** Installs Core's deployment/build identity before workflow fibers run. *)
+let set_activation_deployment_version execution version =
+  Workflow_context_store.set_activation_deployment_version execution.context
+    version
+
 (** Updates the task-local replay flag before patch notifications and workflow
     code are dispatched through this execution. *)
 let set_activation_is_replaying execution is_replaying =
@@ -385,7 +390,20 @@ let process_job execution = function
               (bridge_error ("unhandled workflow query: " ^ query_type))
         | Some handler -> (
             let dispatched =
-              try handler.dispatch query with
+              try
+                (* Query work must not enter [run_scheduler]: Core accepts only
+                   query responses for a query-only activation.  It nevertheless
+                   needs the owning execution context so a handler can inspect
+                   deterministic execution-local state established by the
+                   workflow or an earlier signal.  The dynamic binding is
+                   restored before the QueryResult is emitted. Disabling the
+                   deterministic random stream also prevents this synchronous,
+                   non-replayed callback from advancing that replay-visible
+                   state. *)
+                Workflow_context_store.with_context execution.context (fun () ->
+                    Workflow_context_store.with_randomness_disabled execution.context
+                      (fun () -> handler.dispatch query))
+              with
               | exn ->
                   Error
                     (Temporal_base.Error.defect

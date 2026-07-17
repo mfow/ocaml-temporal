@@ -1176,6 +1176,14 @@ let activate execution activation =
      explicitly clear the previous value rather than leaving stale time
      visible to [Temporal.Workflow.now]. *)
   Execution.set_activation_timestamp execution translated.timestamp;
+  let deployment_version =
+    Option.map
+      (fun (version : Protocol.worker_deployment_version) ->
+        (version.deployment_name, version.build_id))
+      (Option.bind translated.metadata (fun metadata ->
+           metadata.deployment_version_for_current_task))
+  in
+  Execution.set_activation_deployment_version execution deployment_version;
   Execution.set_activation_is_replaying execution translated.is_replaying;
   let commands = Execution.activate execution translated.jobs in
   let* completion = completion_of_commands ~run_id:translated.run_id commands in

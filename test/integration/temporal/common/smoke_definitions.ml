@@ -27,6 +27,15 @@ let mock_transform =
 let signal_value =
   Temporal.Signal.define ~name:"smoke.set_value" ~input:Temporal.Codec.string
 
+(** The output-only query used by the live client/worker interaction scenario.
+    The query shares its state source with [signal_value_handler], but it is
+    registered independently so the acceptance test proves that a client query
+    is delivered as a read-only activation rather than being emulated through a
+    signal or an activity. *)
+let signal_condition_status =
+  Temporal.Query.define ~name:"smoke.signal_condition_status"
+    ~output:Temporal.Codec.string
+
 (** The signal handler and workflow body share this key, while every Temporal
     execution receives an independent value slot. A new run therefore starts
     with [None] even when the same worker process has already handled another
@@ -78,6 +87,20 @@ let clear_signal_condition_ready_file path =
 let signal_value_handler =
   Temporal.Signal.Handler.make signal_value (fun value ->
       Temporal.Workflow_context.Local.set signal_value_state value)
+
+(** Reads the parked signal workflow's current state without changing it. The
+    initial [None] result is deliberately a stable marker rather than an
+    optional value, so the external driver can distinguish a real query reply
+    from a missing or undecodable response. [Local.get] is safe here because
+    the native query dispatcher installs the current execution context while
+    it invokes the handler. *)
+let signal_condition_status_handler =
+  Temporal.Query.Handler.make signal_condition_status (fun () ->
+      match Temporal.Workflow_context.Local.get signal_value_state with
+      | Ok None -> Ok "SMOKE:QUERY:PENDING"
+      | Ok (Some value) ->
+          Ok ("SMOKE:QUERY:SIGNAL:" ^ String.uppercase_ascii value)
+      | Error error -> Error error)
 
 (** Counts attempts for the intentionally transient activity used by the live
     retry scenario. This state belongs to the activity worker process rather

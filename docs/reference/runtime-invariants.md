@@ -13,6 +13,10 @@ and bridge, read the [documentation guide](../README.md) first.
   and continuation set.
 - A workflow operation can access its context only while that execution's
   activation is running on the current domain.
+- An inline query temporarily installs its owning execution context only for
+  its synchronous handler, letting it inspect workflow-local state without
+  running scheduler fibers. Query dispatch disables deterministic randomness,
+  and the dynamic context binding is restored before its response is emitted.
 - Futures from different schedulers cannot be combined.
 - Terminal completion, failure, cancellation, eviction, and shutdown dispose
   all pending callbacks and captured continuations.

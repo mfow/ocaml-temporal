@@ -4,6 +4,11 @@
 type ('input, 'output) implementation =
   'input -> ('output, Error.t) result
 
+(** The deployment identity Core selected for the workflow task currently
+    running this workflow. It is task-local because a versioned worker may
+    route later tasks of the same run to another build. *)
+type deployment_version = { deployment_name : string; build_id : string }
+
 (** A description of a workflow and the OCaml types it accepts and returns. A
     definition stores the Temporal workflow type name, its codecs, and
     optionally the OCaml function that implements it. *)
@@ -76,6 +81,12 @@ val now : unit -> (Time.t, Error.t) result
     sequence.  [bound] must be positive; invalid bounds and calls outside a
     workflow return a typed defect. *)
 val random_int : bound:int -> (int, Error.t) result
+
+(** Returns the deployment/build identity attached to the current workflow
+    task. [None] means that the worker is unversioned, the activation is
+    synthetic, or the call is outside workflow execution. The value is
+    Temporal metadata and never reads process or wall-clock state. *)
+val current_deployment_version : unit -> deployment_version option
 
 (** Returns whether workflow code should take the new branch identified by
     [id]. On a new execution the first call returns [true] and records a patch

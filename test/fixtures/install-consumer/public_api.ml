@@ -599,6 +599,7 @@ let _worker_activity :
 
 let _worker_create :
     ?identity:string ->
+    ?options:T.Worker.Options.t ->
     ?max_cached_workflows:int ->
     target_url:string ->
     namespace:string ->
@@ -607,6 +608,10 @@ let _worker_create :
     activities:T.Worker.registered_activity list ->
     unit -> (T.Worker.t, T.Error.t) result =
   T.Worker.create
+
+let _workflow_current_deployment_version :
+    unit -> T.Workflow.deployment_version option =
+  T.Workflow.current_deployment_version
 
 let _worker_run : T.Worker.t -> (unit, T.Error.t) result = T.Worker.run
 let _worker_shutdown : T.Worker.t -> (unit, T.Error.t) result = T.Worker.shutdown

@@ -73,9 +73,30 @@ let test_invalid_timestamp_fraction () =
       expect "upper-bound fraction kind" "defect" (Temporal.Error.kind error)
   end
 
+(** Verifies that deployment/build metadata is task-local and cannot leak from
+    one activation into the next or into detached application code. *)
+let test_deployment_version_metadata () =
+  expect "detached deployment version" None
+    (Temporal.Workflow.current_deployment_version ());
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  Workflow_context_store.set_activation_deployment_version context
+    (Some ("orders", "build-42"));
+  let observed = ref None in
+  Workflow_context_store.with_context context (fun () ->
+      observed := Temporal.Workflow.current_deployment_version ());
+  expect "deployment version" (Some { Temporal.Workflow.deployment_name = "orders"; build_id = "build-42" })
+    !observed;
+  Workflow_context_store.set_activation_deployment_version context None;
+  Workflow_context_store.with_context context (fun () ->
+      observed := Temporal.Workflow.current_deployment_version ());
+  expect "cleared deployment version" None !observed;
+  Workflow_context_store.shutdown context
+
 (** Runs all deterministic clock scenarios as one dune test executable. *)
 let () =
   test_now_outside_workflow ();
   test_now_round_trip ();
   test_missing_activation_timestamp ();
-  test_invalid_timestamp_fraction ()
+  test_invalid_timestamp_fraction ();
+  test_deployment_version_metadata ()

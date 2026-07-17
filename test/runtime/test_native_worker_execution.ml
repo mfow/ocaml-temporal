@@ -651,11 +651,23 @@ let test_signal_handler_runs_on_scheduler () =
     as a typed query failure instead of silently ignoring them. *)
 let test_public_query_handler_registration () =
   let supervisor = fake_supervisor () in
+  (* This value is allocated beside the workflow definition, then populated by
+     the scheduler-owned workflow body.  The query handler may only read it;
+     successful delivery proves the inline query dispatch temporarily installs
+     the same execution context without resuming the parked scheduler. *)
+  let status_local = Temporal.Workflow_context.Local.create () in
   let query =
     Temporal.Query.define ~name:"current-status" ~output:Temporal.Codec.string
   in
   let public_handler =
-    Temporal.Query.Handler.make query (fun () -> Ok "ready")
+    Temporal.Query.Handler.make query (fun () ->
+        match Temporal.Workflow_context.Local.get status_local with
+        | Ok (Some status) -> Ok status
+        | Ok None ->
+            Error
+              (Temporal.Error.defect
+                 ~message:"query observed no workflow-local status")
+        | Error error -> Error error)
   in
   let query_handler =
     Raw_adapter.make_query_handler ~name:(Temporal.Query.name query)
@@ -672,7 +684,9 @@ let test_public_query_handler_registration () =
   let workflow =
     Temporal.Workflow.define ~name:"native_worker_query"
       ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
-        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+        match Temporal.Workflow_context.Local.set status_local "ready" with
+        | Error error -> Error error
+        | Ok () -> Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
   in
   let run_id = "run-public-query" in
   enqueue supervisor

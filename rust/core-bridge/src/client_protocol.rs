@@ -1719,7 +1719,7 @@ fn validate_metadata(fields: &[MetadataField], path: &str) -> Result<(), protoco
         }
         workflow_protocol::payload_to_core(&field.value).map_err(|_| {
             protocol::ProtocolError::invalid(
-                &format!("{path}[{index}].value"),
+                format!("{path}[{index}].value"),
                 "invalid Temporal payload",
             )
         })?;

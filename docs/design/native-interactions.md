@@ -59,12 +59,13 @@ Consequently:
   accepts exactly one payload; a missing handler or unsupported arity is logged
   and completed as a non-retryable workflow failure rather than acknowledged
   as a no-op.
-- `QueryWorkflow` is deliverable to a registered output-only OCaml query
-  handler. Core's repeated arguments and headers remain in the private runtime
-  record. Until a typed-input public query API exists, any non-empty argument
-  list returns `QueryResult.failed` and is not silently truncated. Missing
-  handlers and handler errors use the same failed-query response and leave the
-  workflow execution unchanged.
+- `QueryWorkflow` is deliverable to a registered output-only or exactly-one-
+  input OCaml query handler. Core's repeated arguments and headers remain in
+  the private runtime record. Output-only definitions reject non-empty
+  argument lists; typed-input definitions decode exactly one argument, so the
+  bridge never silently truncates or ignores a payload. Missing handlers and
+  handler errors use the same failed-query response and leave the workflow
+  execution unchanged.
 - `DoUpdate` is deliverable to a registered OCaml update handler when the
   handler accepts exactly one input payload and returns without suspending.
   The private runtime retains the full input, headers, identity, metadata ID,
@@ -207,9 +208,9 @@ The native query path is implemented as a read-only, non-suspending handler
 mode:
 
 1. validate and copy the query arguments and headers at the semantic boundary;
-2. invoke the output-only handler inline on the owner Domain without allowing
-   workflow commands, timers, activities, child workflows, or arbitrary
-   effects;
+2. invoke the synchronous output-only or exactly-one-input handler inline on
+   the owner Domain without allowing workflow commands, timers, activities,
+   child workflows, or arbitrary effects;
 3. encode the result or typed failure; and
 4. emit exactly one `QueryResult` command with the same `query_id`.
 
@@ -218,19 +219,20 @@ structured Temporal failure. The response is part of the query activation's
 completion. It is not a workflow terminal result and must not be confused
 with `CompleteWorkflowExecution`.
 
-The first public OCaml query definition has no input. That API restriction is
-not a Core restriction: Core carries repeated arguments. Native integration
-must preserve the repeated list in the semantic record and either add a typed
-query-input definition before accepting arguments or reject a non-empty list
-with a documented typed error. It must not silently decode only the first
-argument.
+The public OCaml query definitions include an output-only form and an
+exactly-one-input form. This API distinction is not a Core restriction: Core
+carries repeated arguments. Native integration preserves the repeated list in
+the semantic record, rejects non-empty input for the output-only form, and
+decodes exactly one input for the typed form. It must not silently decode only
+the first argument or accept extra arguments.
 
 The query mode is intentionally stricter than a normal workflow fiber. A
 query cannot suspend on an activity, child, timer, or future that requires a
-later activation. The current public handler is output-only, so a non-empty
-argument list returns a typed non-retryable failure in `QueryResult.failed`.
-The query handler's result and failure are emitted without running the normal
-workflow scheduler, so no pending continuation is retained.
+later activation. The output-only form returns a typed non-retryable failure
+for a non-empty argument list; the exactly-one-input form decodes its single
+argument before invoking the handler. Both forms emit the result or failure
+without running the normal workflow scheduler, so no pending continuation is
+retained.
 
 ## Update delivery and two-phase response
 
@@ -385,8 +387,9 @@ single side accepting a new variant early:
 2. Add `QueryWorkflow` and `QueryResult`, including the no-suspension query
    mode and query-only completion tests. **Implemented in the current
    semantic/runtime slice:** bilateral Core conversion, exact query-ID
-   preservation (including Core's `legacy_query` path), output-only handler
-   dispatch, and rejected extra arguments. Live Server coverage remains open.
+   preservation (including Core's `legacy_query` path), output-only and
+   exactly-one-input handler dispatch, and rejected extra arguments. Live
+   Server coverage remains open.
 3. **Implemented bounded milestone:** add `DoUpdate` and `UpdateResponse`
    semantic records, strict JSON/schema validation, pinned-Core conversion,
    immediate and suspended public handler dispatch, replay validator skipping,
@@ -405,9 +408,10 @@ single side accepting a new variant early:
    update results separately from synthetic and bridge-only evidence.
 
 The overall feature status remains experimental: native `SignalWorkflow`
-transport and its typed signal/condition success path, output-only
-`QueryWorkflow` delivery, and two-phase update dispatch (including suspended
-handlers) are implemented and focused-tested. Live query/update delivery,
-update recovery, and broader interaction acceptance remain pending.
+transport and its typed signal/condition success path, output-only and
+exactly-one-input `QueryWorkflow` delivery, and two-phase update dispatch
+(including suspended handlers) are implemented and focused-tested. Live
+query/update delivery, update recovery, and broader interaction acceptance
+remain pending.
 `Temporal.Interaction` remains the public local-testing path for all three
 interaction kinds.

@@ -10,7 +10,8 @@ The public `Temporal.Client` module does not expose these JSON documents,
 start tickets, or native status codes. On an HTTP(S) client, `start` returns a
 typed exact-run handle, `wait` hides the bounded polling loop and returns a
 typed terminal value, and the exact-run control operations (`cancel`,
-`terminate`, `reset`, `signal`, and output-only `query`) expose typed results.
+`terminate`, `reset`, `signal`, `query`, and `query_with_input`) expose typed
+results.
 `list_visibility` returns one bounded page. The sections below describe the
 private steps that make those public operations safe.
 

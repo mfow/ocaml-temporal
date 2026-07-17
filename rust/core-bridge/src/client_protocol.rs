@@ -23,8 +23,8 @@ use temporalio_common::protos::temporal::api::{
         GetWorkflowExecutionHistoryRequest, ListWorkflowExecutionsRequest,
         QueryWorkflowRequest as QueryWorkflowExecutionRequest,
         RequestCancelWorkflowExecutionRequest, ResetWorkflowExecutionRequest,
-        SignalWorkflowExecutionRequest,
-        StartWorkflowExecutionRequest, TerminateWorkflowExecutionRequest,
+        SignalWorkflowExecutionRequest, StartWorkflowExecutionRequest,
+        TerminateWorkflowExecutionRequest,
     },
 };
 

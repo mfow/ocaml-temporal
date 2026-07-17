@@ -410,20 +410,25 @@ let validate_reset_fields ~request_id ~reason ~workflow_task_finish_event_id =
       Error (Error.defect ~message:"reset reason must not contain NUL")
   | Ok () -> Ok ()
 
-(** Derives an idempotency key for an omitted reset request ID. The exact run
-    and event boundary are included so retries of one logical reset are stable,
-    while different reset points cannot alias one another. *)
-let generated_reset_request_id (handle : ('input, 'output) handle) event_id =
+(** Derives an idempotency key for an omitted reset request ID from the exact
+    execution identity. Taking copied identity fields rather than a particular
+    public handle keeps this private helper independent of record-label
+    inference: workflow and update handles deliberately share those labels,
+    but only a workflow handle is accepted by [reset]. The run and event
+    boundary make retries of one logical reset stable while distinct reset
+    points cannot alias one another. *)
+let generated_reset_request_id ~workflow_id ~run_id event_id =
   "ocaml-client-reset-"
   ^ Digest.to_hex
       (Digest.string
-         (handle.workflow_id ^ "\000" ^ handle.run_id ^ "\000"
+         (workflow_id ^ "\000" ^ run_id ^ "\000"
         ^ Int64.to_string event_id))
 
 (** Resets one exact run and returns the new execution identity. A successful
     acknowledgement does not imply the new run has completed; use [follow] and
     [wait] to observe it explicitly. *)
-let reset ?request_id ?(reason = "") ~workflow_task_finish_event_id handle =
+let reset ?request_id ?(reason = "") ~workflow_task_finish_event_id
+    (handle : ('input, 'output) handle) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -436,7 +441,9 @@ let reset ?request_id ?(reason = "") ~workflow_task_finish_event_id handle =
         let request_id =
           match request_id with
           | Some request_id -> request_id
-          | None -> generated_reset_request_id handle workflow_task_finish_event_id
+          | None ->
+              generated_reset_request_id ~workflow_id:handle.workflow_id
+                ~run_id:handle.run_id workflow_task_finish_event_id
         in
         let request : Backend.reset_request =
           {

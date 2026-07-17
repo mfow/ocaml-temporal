@@ -14,6 +14,22 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-17: Live output-only query acceptance (#406)
+
+The two-binary Temporal/PostgreSQL smoke now queries the exact
+`smoke.signal_condition` run while the workflow is parked on its deterministic
+condition. The driver waits for the worker-visible readiness marker, requires
+the output-only query result `SMOKE:QUERY:PENDING`, then submits the typed
+signal and checks the ordinary terminal result. This ordering proves that the
+query response came from a live workflow execution rather than a local
+dispatcher or a completed final state.
+
+The complete [PR #406 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643)
+passed the live integration smoke and all compatibility jobs. It establishes
+live output-only query acceptance only; typed-input query acceptance,
+query-error and deadline paths, replay or cache-recovery query behavior, and
+update acceptance remain separate scenarios.
+
 ## 2026-07-17: Typed workflow query-input API
 
 `Temporal.Query.define_with_input` now defines a synchronous, read-only query

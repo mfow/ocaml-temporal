@@ -298,7 +298,7 @@ let create ?(identity = default_identity) ?options ?max_cached_workflows
     let effective_max_cached_workflows =
       Options.max_cached_workflows options
     in
-    let legacy_build_id =
+    let native_versioning =
       match Options.versioning options with
       | Options.No_versioning -> Bridge.No_versioning
       | Options.Legacy_build_id build_id -> Bridge.Legacy_build_id build_id
@@ -387,7 +387,7 @@ let create ?(identity = default_identity) ?options ?max_cached_workflows
                         let native_result =
                           Native_worker.create
                             ?max_cached_workflows:effective_max_cached_workflows
-                            ~versioning:legacy_build_id ~target_url
+                            ~versioning:native_versioning ~target_url
                             ~namespace ~identity
                             ~task_queue ~workflows:native_workflows
                             ~activities:native_activities ()

@@ -116,6 +116,12 @@ val patched : id:string -> bool
     for. *)
 val deprecate_patch : id:string -> unit
 
+(** Merges encoded values into Temporal's indexed search attributes. The
+    update is deterministic and becomes visible only after the workflow task
+    is accepted. Duplicate, empty, malformed, or oversized keys raise
+    [Invalid_argument] as programmer misuse; payload ownership is copied. *)
+val upsert_search_attributes : (string * Payload.t) list -> unit
+
 (** Ends the current run and starts a new run of [definition] with [input].
     This operation never returns to the calling workflow fiber. It is
     deterministic: the input is encoded through the definition's codec before

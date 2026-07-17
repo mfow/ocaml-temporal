@@ -391,6 +391,8 @@ type completion_command =
       may repeat one mode for an ID, but validation rejects both modes for the
       same ID because Core durably retains the first such command. *)
   | Set_patch_marker of { patch_id : string; deprecated : bool }
+  (** Merges payload values into Temporal's indexed search-attribute map. *)
+  | Upsert_search_attributes of { search_attributes : (string * payload) list }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
   (** Ends this run and starts a successor run of [workflow_type] with the

@@ -177,6 +177,40 @@ let deprecate_patch ~id =
   | Some context ->
       Temporal_sdk_kernel.Workflow_context_store.deprecate_patch context ~patch_id
 
+(** Validates one search-attribute key at the public boundary. Search
+    attributes are persisted in workflow history, so rejecting malformed keys
+    before buffering a command prevents a programmer error from becoming a
+    delayed worker failure. *)
+let validate_search_attribute_key key =
+  if String.equal key "" then invalid_arg "Temporal search-attribute key is empty";
+  if String.contains key '\000' then
+    invalid_arg "Temporal search-attribute key contains a NUL byte";
+  if String.length key > max_name_bytes then
+    invalid_arg "Temporal search-attribute key exceeds 65536 bytes";
+  if not (Temporal_base.Codec.valid_utf_8 key) then
+    invalid_arg "Temporal search-attribute key must be valid UTF-8"
+
+(** Converts public payloads into private owned values and emits one Core
+    search-attribute merge command. No network or nondeterministic operation
+    occurs until the enclosing workflow activation is completed. *)
+let upsert_search_attributes values =
+  let rec validate_keys seen = function
+    | [] -> ()
+    | (key, _) :: rest ->
+        validate_search_attribute_key key;
+        if List.exists (String.equal key) seen then
+          invalid_arg "Temporal search-attribute keys must be unique"
+        else validate_keys (key :: seen) rest
+  in
+  validate_keys [] values;
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
+  | None ->
+      invalid_arg
+        "Temporal.Workflow.upsert_search_attributes used outside a workflow execution"
+  | Some context ->
+      let values = List.map (fun (key, payload) -> (key, Payload_private.to_base payload)) values in
+      Temporal_sdk_kernel.Workflow_context_store.upsert_search_attributes context values
+
 (** Requests a fresh run of the same workflow type with [input]. This is a
     terminal direct-style operation: it encodes the successor input, buffers a
     Core continue-as-new command, and aborts the current private workflow

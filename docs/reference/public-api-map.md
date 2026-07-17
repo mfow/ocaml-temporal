@@ -134,9 +134,10 @@ for those rules.
 
 ## What is not public
 
-Source files such as `Backend`, `Native_worker`, the runtime libraries, the
-mailbox, the supervisor, and the Rust/C bridge may be needed to build the
-package, but they are not supported application modules. Do not depend on
+Source files such as `Backend`, `Native_worker`, the private
+`Temporal_sdk_kernel` library, the runtime libraries, the mailbox, the
+supervisor, and the Rust/C bridge may be needed to build the package, but they
+are not supported application modules. Do not depend on
 their records, constructors, JSON documents, Rust handles, protobuf values, or
 generated interfaces. The installed-package rules and regression test are
 described in the [package-boundary reference](package-boundary.md).

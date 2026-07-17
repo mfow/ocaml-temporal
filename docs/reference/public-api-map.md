@@ -34,7 +34,10 @@ for those rules.
   `current_deployment_version ()` reports the deployment and build identity
   selected for the current task, or `None` when no versioned task metadata is
   available; it is diagnostic metadata, not a replacement for replay-safe
-  patching. `continue_as_new` ends the current run and starts a successor. `patched ~id`
+  patching. `upsert_search_attributes` merges encoded values into the
+  execution's indexed search attributes; the update becomes visible after the
+  workflow task is accepted. `continue_as_new` ends the current run and starts
+  a successor. `patched ~id`
   introduces a new deterministic branch while allowing histories created
   before that marker to replay the old branch. `deprecate_patch ~id` is the
   later unit-returning lifecycle marker used while phasing that branch gate
@@ -105,7 +108,10 @@ for those rules.
   that successor. The client also sends typed signals and output-only or
   exactly-one-input queries. `Client.query_with_input` encodes the typed query
   argument before transport; the client lists bounded visibility results and
-  waits for typed terminal outcomes.
+  waits for typed terminal outcomes. `Client.start_update` admits one typed
+  workflow update and returns an opaque handle; `Client.wait_update` polls that
+  exact update until it has a typed outcome, while `Client.update_id` exposes
+  the server-correlated update ID for diagnostics and retry bookkeeping.
   `Client.follow`
   only validates and combines the existing client, workflow definition, and
   successor identity; it does not start or implicitly follow a run. A

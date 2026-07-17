@@ -91,11 +91,14 @@ for those rules.
 
 ### Application lifecycle and interactions
 
-- `Temporal.Client` starts typed workflow executions, retains the exact
-  workflow/run identity, rebuilds a typed handle for a `Continued_as_new`
-  successor with `Client.follow`, requests exact-run cancellation or
-  termination, sends typed signals and output-only queries, lists bounded
-  visibility results, and waits for typed terminal outcomes. `Client.follow`
+- `Temporal.Client` starts typed workflow executions, optionally attaching
+  validated `memo` and `search_attributes` payloads. A caller-owned
+  `request_id` makes an uncertain start safe to retry as the same logical
+  request. The client retains the exact workflow/run identity, rebuilds a
+  typed handle for a `Continued_as_new` successor with `Client.follow`,
+  requests exact-run cancellation or termination, sends typed signals and
+  output-only queries, lists bounded visibility results, and waits for typed
+  terminal outcomes. `Client.follow`
   only validates and combines the existing client, workflow definition, and
   successor identity; it does not start or implicitly follow a run. A
   successful cancel, terminate, or signal acknowledges the server request; it

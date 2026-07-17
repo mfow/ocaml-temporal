@@ -186,13 +186,13 @@ let upsert_search_attributes values =
         else validate_keys (key :: seen) rest
   in
   validate_keys [] values;
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None ->
       invalid_arg
         "Temporal.Workflow.upsert_search_attributes used outside a workflow execution"
   | Some context ->
       let values = List.map (fun (key, payload) -> (key, Payload_private.to_base payload)) values in
-      Temporal_runtime.Workflow_context_store.upsert_search_attributes context values
+      Temporal_sdk_kernel.Workflow_context_store.upsert_search_attributes context values
 
 (** Requests a fresh run of the same workflow type with [input]. This is a
     terminal direct-style operation: it encodes the successor input, buffers a

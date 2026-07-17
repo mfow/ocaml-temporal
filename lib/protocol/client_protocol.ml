@@ -92,6 +92,26 @@ type visibility_page = {
   next_page_token : string option;
 }
 
+type update_request = {
+  execution : execution;
+  update_id : string;
+  update_name : string;
+  input : payload list;
+}
+
+type poll_update_request = { execution : execution; update_id : string }
+
+type update_outcome =
+  | Update_completed of { result : payload list }
+  | Update_failed of { failure : failure }
+
+type update_response = {
+  update_id : string;
+  execution : execution;
+  outcome : update_outcome option;
+}
+
+type poll_update_response = { outcome : update_outcome option }
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -583,6 +603,89 @@ let decode_visibility_response input : (visibility_page, error) result =
   let* token_json = field "$" "next_page_token" entries in
   let* next_page_token = nullable "$.next_page_token" (identifier "$.next_page_token") token_json in
   Ok { executions; next_page_token }
+
+let decode_update_outcome path json =
+  let* kind_json =
+    match json with
+    | `Assoc entries -> field path "kind" entries
+    | _ -> Error (invalid ~path "expected JSON object")
+  in
+  let* kind = string (path ^ ".kind") kind_json in
+  match kind with
+  | "completed" ->
+      let* entries = exact_object path [ "kind"; "result" ] json in
+      let* result_json = field path "result" entries in
+      let* result = payloads (path ^ ".result") result_json in
+      Ok (Update_completed { result })
+  | "failed" ->
+      let* entries = exact_object path [ "kind"; "failure" ] json in
+      let* failure_json = field path "failure" entries in
+      let* failure =
+        match Workflow.Internal.failure (path ^ ".failure") failure_json with
+        | Ok failure -> Ok failure
+        | Error error -> Error (of_workflow_error (path ^ ".failure") error)
+      in
+      Ok (Update_failed { failure })
+  | _ -> Error (invalid ~path:(path ^ ".kind") "unknown workflow update outcome kind")
+
+let encode_update_request (value : update_request) =
+  let* _execution = encode_execution "$.execution" value.execution in
+  let* () = validate_identifier "$.update_id" value.update_id in
+  let* () = validate_identifier "$.update_name" value.update_name in
+  let* input = payloads_json value.input in
+  encode_object
+    (`Assoc
+      [
+        ("namespace", json_string value.execution.namespace);
+        ("workflow_id", json_string value.execution.workflow_id);
+        ("run_id", json_string value.execution.run_id);
+        ("update_id", json_string value.update_id);
+        ("update_name", json_string value.update_name);
+        ("input", input);
+      ])
+
+let encode_poll_update_request (value : poll_update_request) =
+  let* () = validate_identifier "$.namespace" value.execution.namespace in
+  let* () = validate_identifier "$.workflow_id" value.execution.workflow_id in
+  let* () = validate_identifier "$.run_id" value.execution.run_id in
+  let* () = validate_identifier "$.update_id" value.update_id in
+  encode_object
+    (`Assoc
+      [
+        ("namespace", json_string value.execution.namespace);
+        ("workflow_id", json_string value.execution.workflow_id);
+        ("run_id", json_string value.execution.run_id);
+        ("update_id", json_string value.update_id);
+      ])
+
+let decode_optional_update_outcome path entries =
+  let* outcome_json = field path "outcome" entries in
+  nullable (path ^ ".outcome") (decode_update_outcome (path ^ ".outcome")) outcome_json
+
+let decode_update_response ~(request : update_request) input =
+  let* json = decode_object input in
+  let* entries = exact_object "$" [ "update_id"; "execution"; "outcome" ] json in
+  let* update_id_json = field "$" "update_id" entries in
+  let* update_id = identifier "$.update_id" update_id_json in
+  if not (String.equal update_id request.update_id) then
+    Error (invalid ~path:"$.update_id" "update response update ID does not match request")
+  else
+    let* execution_json = field "$" "execution" entries in
+    let* execution = decode_execution "$.execution" execution_json in
+    let* () =
+      validate_execution_matches "$.execution"
+        ~namespace:request.execution.namespace
+        ~workflow_id:request.execution.workflow_id
+        ~run_id:request.execution.run_id execution
+    in
+    let* outcome = decode_optional_update_outcome "$" entries in
+    Ok { update_id; execution; outcome }
+
+let decode_poll_update_response input =
+  let* json = decode_object input in
+  let* entries = exact_object "$" [ "outcome" ] json in
+  let* outcome = decode_optional_update_outcome "$" entries in
+  Ok { outcome }
 
 let decode_successor path entries =
   let* successor_json = field path "successor" entries in

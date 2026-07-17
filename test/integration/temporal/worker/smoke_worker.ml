@@ -299,7 +299,9 @@ let run () =
               Worker.workflow Definitions.non_retryable_failure;
               Worker.workflow Definitions.long_running_cancellation;
               Worker.workflow Definitions.worker_restart_replay;
-              Worker.workflow Definitions.cache_eviction;
+              Worker.workflow
+                ~queries:[ Definitions.cache_eviction_residency_handler ]
+                Definitions.cache_eviction;
             ]
           ~activities:
             [

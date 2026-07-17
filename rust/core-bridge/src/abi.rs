@@ -631,6 +631,57 @@ impl Runtime {
             .map_err(protocol_failure)
     }
 
+    /// Starts one named workflow update and returns its durable update handle.
+    /// Completion is observed through the separate bounded poll operation.
+    fn update_workflow_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let request = client_protocol::decode_update_request(text).map_err(protocol_failure)?;
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+        let response = handle
+            .block_on(client_protocol::update_workflow(connection, request))
+            .map_err(client_operation_failure)?;
+        client_protocol::encode_update_response(&response)
+            .map(|encoded| encoded.into_bytes())
+            .map_err(protocol_failure)
+    }
+
+    /// Polls one admitted update until completion or the bounded poll budget
+    /// expires. A missing outcome is a normal pending result.
+    fn poll_update_workflow_json(&mut self, input: &[u8]) -> Operation {
+        let text = decode_semantic_input(input)?;
+        let request =
+            client_protocol::decode_poll_update_request(text).map_err(protocol_failure)?;
+        let connection = self.client.as_ref().cloned().ok_or_else(|| Failure {
+            status: STATUS_INVALID_STATE,
+            message: "Temporal client is not connected".to_owned(),
+        })?;
+        let handle = self
+            .core
+            .as_ref()
+            .ok_or_else(|| Failure {
+                status: STATUS_INVALID_STATE,
+                message: "Temporal runtime is already closed".to_owned(),
+            })?
+            .tokio_handle();
+        let response = handle
+            .block_on(client_protocol::poll_workflow_update(connection, request))
+            .map_err(client_operation_failure)?;
+        client_protocol::encode_poll_update_response(&response)
+            .map(|encoded| encoded.into_bytes())
+            .map_err(protocol_failure)
+    }
+
     /// Lists one bounded visibility page through Temporal's official client.
     /// The Rust owner performs protobuf conversion and returns only the
     /// validated JSON page; no server-owned bytes or handles cross the ABI.
@@ -2917,6 +2968,62 @@ pub unsafe extern "C" fn ocaml_temporal_core_v2_client_query_workflow_json(
                     message: "runtime pointer is null".to_owned(),
                 })?
                 .query_workflow_json(input)
+        })
+    }
+}
+
+/// Starts one workflow update and returns a strict admitted-update response.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle. The input span
+/// must remain readable for this synchronous call and `output` must point to
+/// writable result storage owned by the caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v2_client_update_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .update_workflow_json(input)
+        })
+    }
+}
+
+/// Polls one admitted workflow update for a bounded interval.
+///
+/// # Safety
+///
+/// `runtime` must be a live, exclusively owned runtime handle. The input span
+/// must remain readable for this synchronous call and `output` must point to
+/// writable result storage owned by the caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ocaml_temporal_core_v2_client_poll_update_workflow_json(
+    runtime: *mut Runtime,
+    input: *const u8,
+    input_len: usize,
+    output: *mut Result,
+) -> Status {
+    unsafe {
+        invoke(output, || {
+            let input = input_span(input, input_len, crate::protocol::MAX_DOCUMENT_BYTES)?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    status: STATUS_INVALID_ARGUMENT,
+                    message: "runtime pointer is null".to_owned(),
+                })?
+                .poll_update_workflow_json(input)
         })
     }
 }

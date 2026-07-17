@@ -745,6 +745,61 @@ module Protocol_adapter = struct
                   "client query returned an impossible already-started status";
               }
         | _ -> Error native_error)
+
+  (** Encodes one update admission request through the closed JSON protocol. *)
+  let encode_client_update_request request =
+    match Client.encode_update_request request with
+    | Ok input -> Ok (Bytes.of_string input)
+    | Error error -> client_error "client update request encoding" error
+
+  (** Encodes one update completion poll request. *)
+  let encode_client_poll_update_request request =
+    match Client.encode_poll_update_request request with
+    | Ok input -> Ok (Bytes.of_string input)
+    | Error error -> client_error "client update poll request encoding" error
+
+  (** Converts a native update failure into the closed client error type. *)
+  let decode_client_update_failure native_error =
+    match native_error.Bridge.status with
+    | Connection | Protocol -> (
+        match Client.decode_query_error native_error.message with
+        | Error error -> malformed_client_error "client update" error
+        | Ok client_error ->
+            if native_error.Bridge.status = client_error_status client_error then
+              Ok (Error client_error)
+            else
+              Error
+                {
+                  Bridge.status = Protocol;
+                  message =
+                    "client update error status does not match its JSON kind";
+                })
+    | Already_started ->
+        Error
+          {
+            Bridge.status = Protocol;
+            message =
+              "client update returned an impossible already-started status";
+          }
+    | _ -> Error native_error
+
+  (** Decodes one update admission response and correlates its update ID and
+      execution with the original request. *)
+  let decode_client_update_result request = function
+    | Ok input -> (
+        match Client.decode_update_response ~request (Bytes.to_string input) with
+        | Ok response -> Ok (Ok response)
+        | Error error -> client_error "client update response decoding" error)
+    | Error native_error -> decode_client_update_failure native_error
+
+  (** Decodes one bounded update poll. A missing outcome is a normal pending
+      state rather than an error. *)
+  let decode_client_poll_update_result = function
+    | Ok input -> (
+        match Client.decode_poll_update_response (Bytes.to_string input) with
+        | Ok response -> Ok (Ok response)
+        | Error error -> client_error "client update poll response decoding" error)
+    | Error native_error -> decode_client_update_failure native_error
 end
 
 (** The production backend owns one runtime-client-worker graph. Every
@@ -791,6 +846,12 @@ module Native_backend = struct
     | Client_query_workflow :
         Client.query_request ->
         (Client.payload list, Client.client_error) result operation
+    | Client_update_workflow :
+        Client.update_request ->
+        (Client.update_response, Client.client_error) result operation
+    | Client_poll_update_workflow :
+        Client.poll_update_request ->
+        (Client.poll_update_response, Client.client_error) result operation
     | Start_worker : Bridge.worker_config -> unit operation
     | Start_replay_worker : Bridge.worker_config -> unit operation
     | Feed_replay_history : bytes -> unit operation
@@ -899,6 +960,18 @@ module Native_backend = struct
         | Ok input ->
             Protocol_adapter.decode_client_query_result
               (Bridge.client_query_workflow_json runtime input))
+    | Client_update_workflow request -> (
+        match Protocol_adapter.encode_client_update_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_update_result request
+              (Bridge.client_update_workflow_json runtime input))
+    | Client_poll_update_workflow request -> (
+        match Protocol_adapter.encode_client_poll_update_request request with
+        | Error error -> Error error
+        | Ok input ->
+            Protocol_adapter.decode_client_poll_update_result
+              (Bridge.client_poll_update_workflow_json runtime input))
     | Start_worker config -> Bridge.worker_start runtime config
     | Start_replay_worker config -> Bridge.replay_worker_start runtime config
     | Feed_replay_history input ->
@@ -1015,6 +1088,12 @@ module Native = struct
     | Client_query_workflow :
         Client.query_request ->
         (Client.payload list, Client.client_error) result operation
+    | Client_update_workflow :
+        Client.update_request ->
+        (Client.update_response, Client.client_error) result operation
+    | Client_poll_update_workflow :
+        Client.poll_update_request ->
+        (Client.poll_update_response, Client.client_error) result operation
     | Start_worker : worker_config -> unit operation
     | Start_replay_worker : worker_config -> unit operation
     | Feed_replay_history : bytes -> unit operation

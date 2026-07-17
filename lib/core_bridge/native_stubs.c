@@ -526,6 +526,24 @@ CAMLprim value ocaml_temporal_client_query_workflow_json(value runtime,
       runtime, input, ocaml_temporal_core_v2_client_query_workflow_json);
 }
 
+/* Admit one workflow update. The shared invoke helper copies the JSON input,
+ * releases the OCaml runtime lock while Rust performs the bounded RPC, and
+ * returns an owned response buffer which the normal custom block finalizer
+ * releases exactly once. */
+CAMLprim value ocaml_temporal_client_update_workflow_json(value runtime,
+                                                         value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v2_client_update_workflow_json);
+}
+
+/* Poll one admitted workflow update. Pending and terminal outcomes use the
+ * same response ownership contract as every other client bridge operation. */
+CAMLprim value ocaml_temporal_client_poll_update_workflow_json(value runtime,
+                                                               value input) {
+  return invoke_runtime_json(
+      runtime, input, ocaml_temporal_core_v2_client_poll_update_workflow_json);
+}
+
 /* Admit one workflow start and return its opaque ticket. The input is copied
  * before releasing the OCaml runtime lock; Rust owns the pending Tokio task
  * and never retains OCaml memory from this call. */

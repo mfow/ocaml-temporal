@@ -143,14 +143,18 @@ separate runs.
 
 The sticky-cache eviction gate uses `make
 test-temporal-worker-cache-eviction`: it configures one Core cache slot, starts
-two runs whose first workflow task schedules a long deterministic timer, waits
-for the worker's payload-free `cache_full` marker, and checks empty eviction
-acknowledgement plus typed cancellation of both exact runs. The timer provides
-a durable pending boundary before the second run is admitted; the driver does
-not wait for a second-run completion callback because Core may evict the first
-run before delivering that callback. PR #322 is historical evidence for the
-original gate; PR #395 is the current fix and must pass the complete live
-real-server contract before this row is considered green again.
+two runs whose first workflow task schedules a long deterministic timer, makes
+a typed read-only cache-settling query of the first run, waits for the
+worker's payload-free `cache_full` marker, and checks empty eviction
+acknowledgement plus typed cancellation of both exact runs. The query gives
+Core a completed follow-up activation boundary after the initial OCaml marker
+and before the second run is admitted; it does not infer cache insertion from
+the marker itself. Pinned Core ordering buffers the second run until the first
+run's cache-full removal is acknowledged, so the driver's second-run marker is
+timeout diagnostic information only and can never satisfy the required
+`cache_full` observation. PR #322 is historical evidence for the original gate; the current
+implementation must pass the complete live real-server contract before this
+row is considered green again.
 
 ## Stable evidence commands
 

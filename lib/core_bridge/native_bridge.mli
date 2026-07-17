@@ -127,6 +127,12 @@ val client_list_visibility_json : runtime -> bytes -> (bytes, error) result
 (** Executes one output-only query against one exact workflow run. *)
 val client_query_workflow_json : runtime -> bytes -> (bytes, error) result
 
+(** Starts one workflow update and waits until it is admitted. *)
+val client_update_workflow_json : runtime -> bytes -> (bytes, error) result
+
+(** Polls one admitted workflow update for a bounded interval. *)
+val client_poll_update_workflow_json : runtime -> bytes -> (bytes, error) result
+
 (** Admits one asynchronous workflow start and returns a strict opaque ticket
     document. Rust owns the pending task and its request metadata until a
     later poll or bounded wait reaches a terminal outcome. *)

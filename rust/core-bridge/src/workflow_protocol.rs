@@ -466,7 +466,7 @@ pub enum ExternalWorkflowResolution {
     /// Temporal accepted the command for delivery.
     Succeeded,
     /// Temporal could not deliver or complete the command.
-    Failed { failure: Failure },
+    Failed { failure: Box<Failure> },
 }
 
 /// Why Core requested removal of a workflow from the language cache.
@@ -778,7 +778,7 @@ pub enum QueryResult {
     Succeeded { payload: Payload },
     /// Query handler could not produce a value; Core receives this failure
     /// without failing the workflow execution itself.
-    Failed { failure: Failure },
+    Failed { failure: Box<Failure> },
 }
 
 /// The closed set of responses accepted by Core for one workflow update.
@@ -788,7 +788,7 @@ pub enum UpdateResponseResult {
     /// Validator passed, or Core requested replay without re-running it.
     Accepted,
     /// Validator or handler rejected the update.
-    Rejected { failure: Failure },
+    Rejected { failure: Box<Failure> },
     /// Handler completed successfully with one encoded payload.
     Completed { payload: Payload },
 }
@@ -2446,7 +2446,7 @@ fn external_workflow_resolution_from_core(
     match failure {
         None => Ok(ExternalWorkflowResolution::Succeeded),
         Some(failure) => Ok(ExternalWorkflowResolution::Failed {
-            failure: failure_from_core(failure)?,
+            failure: Box::new(failure_from_core(failure)?),
         }),
     }
 }
@@ -3459,7 +3459,7 @@ fn command_from_core(
                     }
                 }
                 core_commands::query_result::Variant::Failed(failure) => QueryResult::Failed {
-                    failure: failure_from_core(failure)?,
+                    failure: Box::new(failure_from_core(failure)?),
                 },
             };
             Ok(CompletionCommand::QueryResult {
@@ -3476,7 +3476,7 @@ fn command_from_core(
             {
                 Response::Accepted(_) => UpdateResponseResult::Accepted,
                 Response::Rejected(failure) => UpdateResponseResult::Rejected {
-                    failure: failure_from_core(failure)?,
+                    failure: Box::new(failure_from_core(failure)?),
                 },
                 Response::Completed(payload) => UpdateResponseResult::Completed {
                     payload: payload_from_core(payload)?,

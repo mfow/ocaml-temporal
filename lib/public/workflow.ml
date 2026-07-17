@@ -130,12 +130,12 @@ let random_int ~bound =
     runtime clears this field before every task, so [None] cannot accidentally
     report a previous task's build. *)
 let current_deployment_version () =
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None -> None
   | Some context ->
       Option.map
         (fun (deployment_name, build_id) -> { deployment_name; build_id })
-        (Temporal_runtime.Workflow_context_store.activation_deployment_version
+        (Temporal_sdk_kernel.Workflow_context_store.activation_deployment_version
            context)
 
 (** Validates and snapshots a patch ID before consulting workflow state. The

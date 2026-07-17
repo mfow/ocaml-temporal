@@ -1,5 +1,7 @@
 (** Implements the public worker over the private semantic backend. *)
 
+module Bridge = Temporal_core_bridge.Native_bridge
+
 (** Heterogeneous workflow registration package. *)
 type registered_workflow =
   | Workflow :
@@ -14,6 +16,12 @@ module Options = struct
   type versioning =
     | No_versioning
     | Legacy_build_id of string
+    | Deployment_based of {
+        deployment_name : string;
+        build_id : string;
+        use_worker_versioning : bool;
+        default_versioning_behavior : [ `Auto_upgrade | `Pinned ] option;
+      }
 
   type t = {
     versioning : versioning;
@@ -54,6 +62,37 @@ module Options = struct
       match versioning with
       | No_versioning -> Ok ()
       | Legacy_build_id build_id -> validate_build_id build_id
+      | Deployment_based
+          {
+            deployment_name;
+            build_id;
+            use_worker_versioning;
+            default_versioning_behavior;
+          } ->
+          let validate_name field value =
+            if String.equal value "" then
+              Error (Error.defect ~message:(field ^ " must not be empty"))
+            else if String.contains value '\000' then
+              Error (Error.defect ~message:(field ^ " must not contain NUL"))
+            else if String.length value > 65_536 then
+              Error (Error.defect ~message:(field ^ " exceeds 65536 bytes"))
+            else Ok ()
+          in
+          (match validate_name "deployment_name" deployment_name with
+          | Error _ as error -> error
+          | Ok () -> (
+              match validate_build_id build_id with
+              | Error _ as error -> error
+              | Ok () ->
+                  if use_worker_versioning then Ok ()
+                  else
+                    match default_versioning_behavior with
+                    | None -> Ok ()
+                    | Some _ ->
+                        Error
+                          (Error.defect
+                             ~message:
+                               "default_versioning_behavior requires use_worker_versioning")))
     in
     match build_id_validation with
     | Error _ as error -> error
@@ -259,10 +298,29 @@ let create ?(identity = default_identity) ?options ?max_cached_workflows
     let effective_max_cached_workflows =
       Options.max_cached_workflows options
     in
-    let legacy_build_id =
+    let native_versioning =
       match Options.versioning options with
-      | Options.No_versioning -> None
-      | Options.Legacy_build_id build_id -> Some build_id
+      | Options.No_versioning -> Bridge.No_versioning
+      | Options.Legacy_build_id build_id -> Bridge.Legacy_build_id build_id
+      | Options.Deployment_based
+          {
+            deployment_name;
+            build_id;
+            use_worker_versioning;
+            default_versioning_behavior;
+          } ->
+          Bridge.Deployment_based
+            {
+              deployment_name;
+              build_id;
+              use_worker_versioning;
+              default_versioning_behavior =
+                Option.map
+                  (function
+                    | `Auto_upgrade -> Bridge.Auto_upgrade
+                    | `Pinned -> Bridge.Pinned)
+                  default_versioning_behavior;
+            }
     in
   match validate_name "namespace" namespace with
   | Error error -> Error error
@@ -329,7 +387,7 @@ let create ?(identity = default_identity) ?options ?max_cached_workflows
                         let native_result =
                           Native_worker.create
                             ?max_cached_workflows:effective_max_cached_workflows
-                            ?legacy_build_id ~target_url
+                            ~versioning:native_versioning ~target_url
                             ~namespace ~identity
                             ~task_queue ~workflows:native_workflows
                             ~activities:native_activities ()

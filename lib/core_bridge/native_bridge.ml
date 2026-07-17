@@ -53,9 +53,21 @@ type client_config = {
 (** Selects whether Core should use no worker versioning or its legacy build-ID
     routing. The top-level [build_id] remains present in both modes because it
     is also the worker identity sent in Core metadata. *)
+type default_versioning_behavior =
+  | Auto_upgrade
+  | Pinned
+
 type worker_versioning =
   | No_versioning
   | Legacy_build_id of string
+  | Deployment_based of {
+      deployment_name : string;
+      build_id : string;
+      use_worker_versioning : bool;
+      default_versioning_behavior : default_versioning_behavior option;
+    }
+
+let ( let* ) = Result.bind
 
 (** Validated workflow-only worker settings retained as ordinary OCaml data
     until the supervisor serializes worker construction. *)
@@ -319,7 +331,30 @@ let worker_config ~namespace ~task_queue ~build_id ?(versioning = No_versioning)
           | Error _ as error -> error
           | Ok () ->
               if String.equal build_id versioning_build_id then Ok ()
-              else configuration_error "versioning.build_id must match build_id"));
+              else configuration_error "versioning.build_id must match build_id")
+      | Deployment_based
+          {
+            deployment_name;
+            build_id = deployment_build_id;
+            use_worker_versioning;
+            default_versioning_behavior;
+          } ->
+          let* () = validate_identifier "versioning.deployment_name" deployment_name in
+          let* () = validate_identifier "versioning.build_id" deployment_build_id in
+          let* () =
+            if String.equal build_id deployment_build_id then Ok ()
+            else configuration_error "versioning.build_id must match build_id"
+          in
+          if use_worker_versioning then
+            (match default_versioning_behavior with
+            | None -> Ok ()
+            | Some (Auto_upgrade | Pinned) -> Ok ())
+          else
+            match default_versioning_behavior with
+            | None -> Ok ()
+            | Some _ ->
+                configuration_error
+                  "versioning.default_versioning_behavior requires use_worker_versioning");
       validate_count ~allow_zero:true "max_cached_workflows"
         max_cached_workflows;
       validate_count ~allow_zero:false "max_outstanding_workflow_tasks"
@@ -382,7 +417,24 @@ let encode_worker_config config =
         | Legacy_build_id build_id ->
             `Assoc
               [ ("kind", `String "legacy_build_id");
-                ("build_id", `String build_id) ] );
+                ("build_id", `String build_id) ]
+        | Deployment_based
+            {
+              deployment_name;
+              build_id;
+              use_worker_versioning;
+              default_versioning_behavior;
+            } ->
+            `Assoc
+              [ ("kind", `String "deployment_based");
+                ("deployment_name", `String deployment_name);
+                ("build_id", `String build_id);
+                ("use_worker_versioning", `Bool use_worker_versioning);
+                ( "default_versioning_behavior",
+                  match default_versioning_behavior with
+                  | None -> `Null
+                  | Some Auto_upgrade -> `String "auto_upgrade"
+                  | Some Pinned -> `String "pinned" ) ] );
       ("max_cached_workflows", `Int config.max_cached_workflows);
       ( "max_outstanding_workflow_tasks",
         `Int config.max_outstanding_workflow_tasks );

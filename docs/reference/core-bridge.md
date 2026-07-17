@@ -388,6 +388,24 @@ unversioned worker behavior, while `{ "kind": "legacy_build_id", "build_id":
 "..." }` selects Temporal Core's legacy whole-worker build-ID routing. In the
 legacy form the nested build ID must exactly match the top-level `build_id`;
 both OCaml and Rust validate that invariant before worker construction.
+The modern deployment form is:
+
+```json
+{
+  "kind": "deployment_based",
+  "deployment_name": "agents",
+  "build_id": "agent-worker-2026-07-16",
+  "use_worker_versioning": true,
+  "default_versioning_behavior": "pinned"
+}
+```
+
+Its nested `build_id` is subject to the same equality check. The deployment
+name identifies the Temporal deployment, while `use_worker_versioning` and
+the optional `default_versioning_behavior` (`"auto_upgrade"` or `"pinned"`)
+are passed to Core's `WorkerDeploymentBased` strategy. A behavior is rejected
+when worker versioning is disabled. Registration, rollout, and compatibility
+set management remain server-side responsibilities.
 
 Temporal Core requires at least two workflow-task pollers when
 `max_cached_workflows` is non-zero. The OCaml validator, the Rust validator,

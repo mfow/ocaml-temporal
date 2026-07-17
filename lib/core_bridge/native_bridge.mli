@@ -36,13 +36,25 @@ type client_config
     not perform network access; the supervisor sends it to Rust at start. *)
 type worker_config
 
+(** The default workflow versioning behavior for deployment-based workers. *)
+type default_versioning_behavior =
+  | Auto_upgrade
+  | Pinned
+
 (** Selects how Temporal routes workflow tasks to this worker. [No_versioning]
     preserves the existing unversioned behavior while retaining the build ID as
     worker metadata. [Legacy_build_id] enables Temporal's whole-worker legacy
-    build-ID versioning and routes tasks only when that build ID is eligible. *)
+    build-ID versioning. [Deployment_based] opts into Temporal's modern
+    deployment versioning with an explicit deployment name and build ID. *)
 type worker_versioning =
   | No_versioning
   | Legacy_build_id of string
+  | Deployment_based of {
+      deployment_name : string;
+      build_id : string;
+      use_worker_versioning : bool;
+      default_versioning_behavior : default_versioning_behavior option;
+    }
 
 (** Version of the C-compatible interface expected by this OCaml code. *)
 val abi_version : int32

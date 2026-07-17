@@ -40,6 +40,17 @@ schema, raw ABI fixtures, OCaml option tests, and Rust mapping tests cover both
 the default and legacy paths. A dedicated live routing/compatibility gate and
 modern deployment-based versioning remain separate follow-up work.
 
+## 2026-07-17: Deployment-based worker routing boundary
+
+The worker options and private bridge now also accept a modern
+`Deployment_based` routing mode. It carries a deployment name, a build ID that
+must match the top-level worker build ID, a worker-versioning toggle, and an
+optional `auto_upgrade` or `pinned` default behavior. OCaml validates the typed
+option before crossing the ABI, while Rust validates the JSON again and maps
+it to Temporal Core's `WorkerDeploymentBased` strategy. The schema and
+focused OCaml/Rust mapping tests cover the contract. Deployment registration,
+rollout automation, and live server routing evidence remain future work.
+
 ## 2026-07-15: Workflow patch deprecation surface
 
 `Temporal.Workflow.deprecate_patch ~id` now records the lifecycle phase after

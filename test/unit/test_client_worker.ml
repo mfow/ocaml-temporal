@@ -686,13 +686,59 @@ let test_worker_options_versioning () =
   | Temporal.Worker.Options.Legacy_build_id build_id ->
       assert (build_id = "build-v2")
   | Temporal.Worker.Options.No_versioning ->
-      failwith "legacy options were changed to unversioned mode");
+      failwith "legacy options were changed to unversioned mode"
+  | Temporal.Worker.Options.Deployment_based _ ->
+      failwith "legacy options were changed to deployment versioning");
   assert (Temporal.Worker.Options.max_cached_workflows options = Some 0);
   expect_error "defect"
     (Temporal.Worker.Options.make
        ~versioning:(Temporal.Worker.Options.Legacy_build_id "") ());
   expect_error "defect"
     (Temporal.Worker.Options.make ~max_cached_workflows:(-1) ())
+
+(** Deployment-based routing keeps the deployment identity and default task
+    behavior together, while rejecting a default behavior on an opted-out
+    worker before the native bridge can allocate resources. *)
+let test_worker_options_deployment_versioning () =
+  let options =
+    match
+      Temporal.Worker.Options.make
+        ~versioning:
+          (Temporal.Worker.Options.Deployment_based
+             {
+               deployment_name = "agents";
+               build_id = "agents-v3";
+               use_worker_versioning = true;
+               default_versioning_behavior = Some `Auto_upgrade;
+             })
+        ()
+    with
+    | Ok options -> options
+    | Error _ -> failwith "valid deployment worker options were rejected"
+  in
+  (match Temporal.Worker.Options.versioning options with
+  | Temporal.Worker.Options.Deployment_based
+      {
+        deployment_name;
+        build_id;
+        use_worker_versioning;
+        default_versioning_behavior = Some `Auto_upgrade;
+      } ->
+      assert (deployment_name = "agents");
+      assert (build_id = "agents-v3");
+      assert use_worker_versioning
+  | _ -> failwith "deployment worker options changed during construction");
+  expect_error "defect"
+    (Temporal.Worker.Options.make
+       ~versioning:
+         (Temporal.Worker.Options.Deployment_based
+            {
+              deployment_name = "agents";
+              build_id = "agents-v3";
+              use_worker_versioning = false;
+              default_versioning_behavior = Some `Pinned;
+            })
+       ())
 
 (** Runs all public worker and client regression assertions. *)
 let () =
@@ -720,4 +766,5 @@ let () =
   test_native_client_configuration_boundary ();
   test_worker_validation_errors ();
   test_native_worker_configuration_boundary ();
-  test_worker_options_versioning ()
+  test_worker_options_versioning ();
+  test_worker_options_deployment_versioning ()

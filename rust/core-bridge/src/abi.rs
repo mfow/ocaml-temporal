@@ -23,7 +23,10 @@ use temporalio_common::protos::coresdk::{
     ActivityHeartbeat as CoreActivityHeartbeat,
     activity_task::{self, ActivityTask as CoreActivityTask},
 };
-use temporalio_common::protos::{TaskToken, temporal::api::common::v1 as api_common};
+use temporalio_common::protos::{
+    TaskToken,
+    temporal::api::{common::v1 as api_common, enums::v1::VersioningBehavior},
+};
 use temporalio_sdk_core::{
     CoreRuntime, PollerBehavior, RuntimeOptions, TokioRuntimeBuilder, WorkerConfig,
     WorkerVersioningStrategy,
@@ -350,6 +353,13 @@ enum WorkerVersioningInput {
     None,
     #[serde(rename = "legacy_build_id")]
     LegacyBuildId { build_id: String },
+    #[serde(rename = "deployment_based")]
+    DeploymentBased {
+        deployment_name: String,
+        build_id: String,
+        use_worker_versioning: bool,
+        default_versioning_behavior: Option<String>,
+    },
 }
 
 impl Runtime {
@@ -2228,6 +2238,52 @@ impl WorkerConfigInput {
                 }
                 WorkerVersioningStrategy::LegacyBuildIdBased { build_id }
             }
+            WorkerVersioningInput::DeploymentBased {
+                deployment_name,
+                build_id,
+                use_worker_versioning,
+                default_versioning_behavior,
+            } => {
+                validate_identifier("versioning.deployment_name", &deployment_name)?;
+                validate_identifier("versioning.build_id", &build_id)?;
+                if build_id != self.build_id {
+                    return Err(Failure {
+                        status: STATUS_CONFIGURATION,
+                        message: "versioning.build_id must match build_id".to_owned(),
+                    });
+                }
+                let default_versioning_behavior = match default_versioning_behavior.as_deref() {
+                    None => None,
+                    Some("auto_upgrade") => Some(VersioningBehavior::AutoUpgrade),
+                    Some("pinned") => Some(VersioningBehavior::Pinned),
+                    Some(value) => {
+                        return Err(Failure {
+                            status: STATUS_CONFIGURATION,
+                            message: format!(
+                                "versioning.default_versioning_behavior has unsupported value {value}"
+                            ),
+                        });
+                    }
+                };
+                if !use_worker_versioning && default_versioning_behavior.is_some() {
+                    return Err(Failure {
+                        status: STATUS_CONFIGURATION,
+                        message:
+                            "versioning.default_versioning_behavior requires use_worker_versioning"
+                                .to_owned(),
+                    });
+                }
+                WorkerVersioningStrategy::WorkerDeploymentBased(
+                    temporalio_common::worker::WorkerDeploymentOptions {
+                        version: temporalio_common::worker::WorkerDeploymentVersion {
+                            deployment_name,
+                            build_id,
+                        },
+                        use_worker_versioning,
+                        default_versioning_behavior,
+                    },
+                )
+            }
         };
         validate_count("max_cached_workflows", self.max_cached_workflows, true)?;
         validate_count(
@@ -3914,7 +3970,9 @@ mod pending_start_reservation_tests {
 
 #[cfg(test)]
 mod worker_config_tests {
-    use super::{MIN_CACHED_WORKFLOW_POLLS, STATUS_CONFIGURATION, WorkerConfigInput};
+    use super::{
+        MIN_CACHED_WORKFLOW_POLLS, STATUS_CONFIGURATION, VersioningBehavior, WorkerConfigInput,
+    };
 
     /// Builds a complete worker document while varying only workflow poller
     /// concurrency, so the Core cache invariant is isolated from other fields.
@@ -4001,6 +4059,58 @@ mod worker_config_tests {
         };
         assert_eq!(failure.status, STATUS_CONFIGURATION);
         assert_eq!(failure.message, "versioning.build_id must match build_id");
+    }
+
+    /// Maps deployment-based routing to Core's modern worker deployment
+    /// strategy and preserves the pinned default behavior used by workflows
+    /// that do not specify an explicit versioning option.
+    #[test]
+    fn deployment_based_selects_core_versioning_strategy() {
+        let mut worker = config(MIN_CACHED_WORKFLOW_POLLS);
+        worker.versioning = super::WorkerVersioningInput::DeploymentBased {
+            deployment_name: "agents".to_owned(),
+            build_id: worker.build_id.clone(),
+            use_worker_versioning: true,
+            default_versioning_behavior: Some("pinned".to_owned()),
+        };
+        let core = worker
+            .into_core()
+            .expect("valid deployment routing should be accepted");
+        match core.versioning_strategy {
+            temporalio_sdk_core::WorkerVersioningStrategy::WorkerDeploymentBased(options) => {
+                assert_eq!(options.version.deployment_name, "agents");
+                assert_eq!(options.version.build_id, "worker-config-test");
+                assert!(options.use_worker_versioning);
+                assert_eq!(
+                    options.default_versioning_behavior,
+                    Some(VersioningBehavior::Pinned)
+                );
+            }
+            other => panic!("unexpected Core versioning strategy: {other:?}"),
+        }
+    }
+
+    /// Rejects a deployment behavior when worker versioning is disabled; this
+    /// avoids silently carrying a policy that Core would ignore.
+    #[test]
+    fn deployment_behavior_requires_worker_versioning() {
+        let mut worker = config(MIN_CACHED_WORKFLOW_POLLS);
+        worker.versioning = super::WorkerVersioningInput::DeploymentBased {
+            deployment_name: "agents".to_owned(),
+            build_id: worker.build_id.clone(),
+            use_worker_versioning: false,
+            default_versioning_behavior: Some("auto_upgrade".to_owned()),
+        };
+        let failure = match worker.into_core() {
+            Err(failure) => failure,
+            Ok(_) => panic!("disabled deployment versioning must reject a default behavior"),
+        };
+        assert_eq!(failure.status, STATUS_CONFIGURATION);
+        assert!(
+            failure
+                .message
+                .contains("default_versioning_behavior requires use_worker_versioning")
+        );
     }
 }
 

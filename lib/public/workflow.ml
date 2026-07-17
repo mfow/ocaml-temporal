@@ -120,7 +120,7 @@ let signal_external_workflow ~workflow_id ~run_id ~(signal : 'input Signal.t)
   let outside_error () =
     Error.defect ~message:"external workflow signal used outside a workflow execution"
   in
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None -> Future_private.resolved ~outside_error (Error (outside_error ()))
   | Some context -> (
       match validate_external_target ~workflow_id ~run_id with
@@ -133,7 +133,7 @@ let signal_external_workflow ~workflow_id ~run_id ~(signal : 'input Signal.t)
                 (Error (Error_private.of_base error))
           | Ok payload ->
               let future =
-                Temporal_runtime.Workflow_context_store.signal_external_workflow
+                Temporal_sdk_kernel.Workflow_context_store.signal_external_workflow
                   context ~workflow_id ~run_id
                   ~signal_name:(Signal.name signal) ~input:[ payload ] ()
               in
@@ -146,7 +146,7 @@ let cancel_external_workflow ~workflow_id ~run_id ~reason =
   let outside_error () =
     Error.defect ~message:"external workflow cancellation used outside a workflow execution"
   in
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None -> Future_private.resolved ~outside_error (Error (outside_error ()))
   | Some context -> (
       match validate_external_target ~workflow_id ~run_id with
@@ -166,7 +166,7 @@ let cancel_external_workflow ~workflow_id ~run_id ~reason =
             (Error (Error.defect ~message:"external cancellation reason must be valid UTF-8"))
       | Ok () ->
           Future_private.of_internal
-            (Temporal_runtime.Workflow_context_store.cancel_external_workflow
+            (Temporal_sdk_kernel.Workflow_context_store.cancel_external_workflow
                context ~workflow_id ~run_id ~reason ()))
 
 (** Reads the deterministic timestamp captured from the current Temporal

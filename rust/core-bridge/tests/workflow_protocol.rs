@@ -1342,7 +1342,7 @@ fn converts_query_results_and_matches_activation_ids() {
         commands: vec![workflow_protocol::CompletionCommand::QueryResult {
             query_id: "query-42".to_owned(),
             result: workflow_protocol::QueryResult::Failed {
-                failure: failure.clone(),
+                failure: Box::new(failure.clone()),
             },
         }],
     };
@@ -1677,7 +1677,7 @@ fn converts_update_responses_and_enforces_phases() {
             workflow_protocol::CompletionCommand::UpdateResponse {
                 protocol_instance_id: "protocol-42".to_owned(),
                 response: workflow_protocol::UpdateResponseResult::Rejected {
-                    failure: workflow_protocol::Failure {
+                    failure: Box::new(workflow_protocol::Failure {
                         message: "handler failed".to_owned(),
                         source: "ocaml".to_owned(),
                         stack_trace: String::new(),
@@ -1688,7 +1688,7 @@ fn converts_update_responses_and_enforces_phases() {
                             non_retryable: true,
                             details: Vec::new(),
                         },
-                    },
+                    }),
                 },
             },
         ],

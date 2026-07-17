@@ -99,15 +99,18 @@ for those rules.
   requests exact-run cancellation, reset, or termination. `Client.reset`
   stops an exact run at a workflow-task event boundary and returns a new
   execution identity; call `Client.follow` explicitly if you want to await
-  that successor. The client also sends typed signals and output-only queries,
-  lists bounded visibility results, and waits for typed terminal outcomes.
+  that successor. The client also sends typed signals and output-only or
+  exactly-one-input queries. `Client.query_with_input` encodes the typed query
+  argument before transport; the client lists bounded visibility results and
+  waits for typed terminal outcomes.
   `Client.follow`
   only validates and combines the existing client, workflow definition, and
   successor identity; it does not start or implicitly follow a run. A
   successful cancel, terminate, or signal acknowledges the server request; it
   does not claim that workflow code has already processed an asynchronous
-  request. A query returns the decoded output-only handler result or a typed
-  error. Call `Client.shutdown` when the client is no longer needed to release
+  request. A query returns the decoded output-only or typed-input handler
+  result or a typed error. Call `Client.shutdown` when the client is no longer
+  needed to release
   its native graph; shutdown is idempotent and retains a teardown failure so
   cleanup problems are not silently discarded.
 - `Temporal.Worker` registers workflows, activities, and the signal, query, and
@@ -128,7 +131,9 @@ for those rules.
   confirms that the Rust bridge linked into the executable matches the OCaml
   package expectation; it is not a worker health probe.
 - `Temporal.Signal`, `Temporal.Query`, and `Temporal.Update` define typed
-  interaction names and codecs. `Temporal.Interaction` is the deterministic,
+  interaction names and codecs. Queries may be output-only or accept exactly
+  one typed input; their handlers remain synchronous and read-only.
+  `Temporal.Interaction` is the deterministic,
   synchronous local dispatcher for tests. Native interaction delivery has a
   narrower experimental boundary; see the [interactive-workflow reference](interactive-workflows.md).
 

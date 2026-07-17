@@ -126,8 +126,10 @@ opaque bytes and applications may choose another deterministic codec.
   deterministic condition waits are implemented and focused-tested. Signal
   delivery and condition wake-up are also covered by the [PR #289 Compose
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368);
-  live query/update acceptance, suspended update continuations, richer handler
-  policies, full workflow-code versioning,
+  output-only query acceptance is live-verified by the [PR #406
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643), while
+  typed-input query acceptance, live update acceptance, suspended update
+  continuations, richer handler policies, full workflow-code versioning,
   Nexus, and the remaining cross-SDK parity surface remain roadmap work.
   Experimental local activities have focused protocol, bridge, and runtime
   coverage but still need live acceptance. Continue-as-
@@ -138,9 +140,10 @@ opaque bytes and applications may choose another deterministic codec.
   completion are also covered. The complete [PR #277 CI
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069) additionally
   verifies heartbeat-timeout retry and activity-level non-retryable error-type
-  matching. Native query/update acceptance, reset, termination, visibility,
-  replay, recovery, and the remaining interaction lifecycle work remain
-  separate work.
+  matching. Native typed-input query and update acceptance, reset, termination,
+  visibility, replay, recovery, and the remaining interaction lifecycle work
+  remain separate work; output-only query acceptance is live-verified by the
+  [PR #406 run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643).
 - The public API, native protocol, and Temporal Core pin remain experimental
   and may change before a stable release.
 

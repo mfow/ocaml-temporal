@@ -86,8 +86,10 @@ Consequently:
   the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
   That historical run predates the long-backoff workflow now present in the
   fixture, whose first live run remains pending.
-  Neither run establishes live query or update delivery; the focused scheduler
-  and bridge tests remain the evidence for those paths.
+  The [PR #406 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643)
+  additionally proves an output-only query against a parked exact run. The
+  focused scheduler and bridge tests remain the evidence for typed-input query
+  and update delivery.
 
 Unsupported Core fields and oneof variants still fail explicitly. This is
 intentional: a newer Core field or update metadata field must not silently
@@ -395,14 +397,15 @@ single side accepting a new variant early:
    immediate and suspended public handler dispatch, replay validator skipping,
    pending-continuation lifecycle tests, and response-phase tests. Live recovery
    acceptance remains open.
-4. Add live update acceptance, recovery, and broader query coverage.
+4. Add live typed-input query and update acceptance, recovery, and broader
+   query coverage.
 5. Add Core conversion fixtures in `rust/core-bridge/tests/`, OCaml runtime
    tests under `test/`, and bilateral JSON round-trip tests for every supported
    variant. Run the representative local Makefile gates; queued GitHub
    Actions checks remain unexecuted evidence until the repository quota clears.
 6. Expand the Docker Compose acceptance scenario with Temporal Server and
-   PostgreSQL to issue a query and wait for an update through the two OCaml
-   binaries. The current typed signal/condition path is live-verified in the
+   PostgreSQL to issue a typed-input query and wait for an update through the
+   two OCaml binaries. The current typed signal/condition path is live-verified in the
    [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368),
    with PR #266 retained as focused historical evidence. Record the query and
    update results separately from synthetic and bridge-only evidence.
@@ -410,8 +413,8 @@ single side accepting a new variant early:
 The overall feature status remains experimental: native `SignalWorkflow`
 transport and its typed signal/condition success path, output-only and
 exactly-one-input `QueryWorkflow` delivery, and two-phase update dispatch
-(including suspended handlers) are implemented and focused-tested. Live
-query/update delivery, update recovery, and broader interaction acceptance
-remain pending.
+(including suspended handlers) are implemented and focused-tested. Output-only
+query acceptance is live-verified by PR #406; live typed-input query/update
+delivery, update recovery, and broader interaction acceptance remain pending.
 `Temporal.Interaction` remains the public local-testing path for all three
 interaction kinds.

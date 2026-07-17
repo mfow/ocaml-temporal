@@ -22,7 +22,10 @@ signal/condition path; the recorded seventeen-result Compose baseline is
 also covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
 That historical run predates the long-backoff workflow now present in the
 fixture, whose first live run remains pending.
-Live query/update delivery and broader interaction coverage remain future work.
+The [PR #406 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643)
+also proves an output-only client query against the exact signal-condition run
+while it is parked. Typed-input query acceptance, live update delivery, and
+broader interaction coverage remain future work.
 
 `Temporal.Client.query` is a separate control-plane operation: it asks an
 already registered workflow for an output-only query through an exact
@@ -30,8 +33,9 @@ workflow/run handle and returns the typed result. `Temporal.Client.query_with_in
 does the same for a query defined with `Query.define_with_input`; it encodes
 exactly one argument before transport. Neither method registers or invokes a
 handler locally. See the [native client JSON protocol](client-protocol.md) for
-the request/response shape and exact-run semantics; live server acceptance for
-client queries remains follow-up work.
+the request/response shape and exact-run semantics; output-only query
+acceptance is recorded in PR #406, while typed-input query acceptance remains
+follow-up work.
 
 ## Current status: local handlers and a partial native boundary
 
@@ -86,7 +90,8 @@ handler that was defined for bytes without receiving a typed codec error. The
 native transport and the remaining handler/response lifecycles are described
 in the [native interaction design](../design/native-interactions.md). Signal
 and typed query activation delivery plus two-phase update responses are
-implemented; live query/update acceptance remains deferred.
+implemented. Output-only query acceptance is live-verified by PR #406; typed-
+input query and update acceptance remain deferred.
 
 ## Definitions
 
@@ -352,7 +357,7 @@ synchronously on the owner Domain, and argument arity is checked by the
 registered output-only or typed handler rather than discarded. The remaining native
 interaction work is:
 
-- live acceptance scenarios for handlers that suspend, including recovery and
-  shutdown/eviction cleanup;
-- Docker Compose acceptance scenarios for queries and updates, including
-  workflow-side assertions through Temporal Server.
+- live acceptance scenarios for typed-input queries and update handlers that
+  suspend, including recovery and shutdown/eviction cleanup;
+- Docker Compose acceptance scenarios for updates, including workflow-side
+  assertions through Temporal Server.

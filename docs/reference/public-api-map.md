@@ -105,7 +105,8 @@ for those rules.
   update handlers attached to each workflow registration. It owns one
   supervisor graph, runs the poll loops, and performs idempotent shutdown.
   `Temporal.Worker.Options` provides typed, immutable resource and worker
-  routing settings, including legacy build-ID versioning. A
+  routing settings, including legacy build-ID and deployment-based versioning;
+  see the [worker versioning reference](worker-versioning.md). A
   successfully shut-down worker is not reusable: the mock backend reports a
   typed `bridge` error if `Worker.run` is called again, while the native backend
   returns without polling because its closed gate is already set. Create a new

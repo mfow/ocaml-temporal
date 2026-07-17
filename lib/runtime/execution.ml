@@ -226,6 +226,11 @@ let workflow_type execution =
 let set_activation_timestamp execution timestamp =
   Workflow_context_store.set_activation_timestamp execution.context timestamp
 
+(** Installs Core's deployment/build identity before workflow fibers run. *)
+let set_activation_deployment_version execution version =
+  Workflow_context_store.set_activation_deployment_version execution.context
+    version
+
 (** Updates the task-local replay flag before patch notifications and workflow
     code are dispatched through this execution. *)
 let set_activation_is_replaying execution is_replaying =

@@ -105,6 +105,10 @@ val activate : ('input, 'output) t -> Activation.job list -> Activation.command 
 val set_activation_timestamp :
   ('input, 'output) t -> Temporal_protocol.Workflow_protocol.timestamp option -> unit
 
+(** Installs the deployment/build identity attached to the activation. *)
+val set_activation_deployment_version :
+  ('input, 'output) t -> (string * string) option -> unit
+
 (** Installs Core's replay status for the activation currently being
     dispatched. The native adapter calls this before patch notifications and
     workflow fibers are processed. *)

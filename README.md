@@ -138,8 +138,9 @@ opaque bytes and applications may choose another deterministic codec.
   completion are also covered. The complete [PR #277 CI
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29318684069) additionally
   verifies heartbeat-timeout retry and activity-level non-retryable error-type
-  matching. Native query/update acceptance, replay, recovery, and the remaining
-  interaction lifecycle work remain separate work.
+  matching. Native query/update acceptance, reset, termination, visibility,
+  replay, recovery, and the remaining interaction lifecycle work remain
+  separate work.
 - The public API, native protocol, and Temporal Core pin remain experimental
   and may change before a stable release.
 

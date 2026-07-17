@@ -94,13 +94,28 @@ or:
 {"kind":"legacy_build_id","build_id":"agent-worker-2026-07-16"}
 ```
 
+or, for modern deployment-based routing:
+
+```json
+{
+  "kind": "deployment_based",
+  "deployment_name": "agents",
+  "build_id": "agent-worker-2026-07-16",
+  "use_worker_versioning": true,
+  "default_versioning_behavior": "pinned"
+}
+```
+
 The JSON schema is
 [`worker-config.schema.json`](../schemas/bridge/worker-config.schema.json).
 OCaml validates the option before creating a native graph and Rust validates
 the decoded document again. Unknown keys and modes are rejected, and the
-nested legacy build ID must exactly equal the top-level `build_id`. This
-redundancy is intentional: either side must fail closed if a stale or
-hand-authored document reaches the ABI boundary.
+nested build ID in either routing form must exactly equal the top-level
+`build_id`. For deployment-based routing, `default_versioning_behavior` may be
+`"auto_upgrade"`, `"pinned"`, or `null`; it must be `null` when
+`use_worker_versioning` is `false`. This redundancy is intentional: either
+side must fail closed if a stale or hand-authored document reaches the ABI
+boundary.
 
 ## Scope and evidence
 

@@ -40,8 +40,9 @@ The remaining reference documents are useful when changing one subsystem:
   and deprecation, durable patch IDs, per-execution decisions and mode safety,
   and the initial plus lifecycle live gates verified by PR #348 and PR #356.
 - [Worker versioning](reference/worker-versioning.md) documents typed legacy
-  build-ID routing options, the closed OCaml/Rust JSON contract, and its current
-  evidence boundary.
+  build-ID and deployment-based routing options, task-local selected deployment
+  metadata, the closed OCaml/Rust JSON contract, and the current evidence
+  boundary.
 - [Interactive workflows](reference/interactive-workflows.md) documents the
   experimental typed signal, query, and update definitions, deterministic
   handler dispatcher, and the remaining native-delivery boundary.

@@ -31,7 +31,10 @@ for those rules.
   convenience form. `Workflow.now ()` reads the activation timestamp supplied
   by Temporal and never falls back to host wall-clock time. `random_int ~bound`
   makes a replay-safe pseudo-random choice from the execution-local stream.
-  `continue_as_new` ends the current run and starts a successor. `patched ~id`
+  `current_deployment_version ()` reports the deployment and build identity
+  selected for the current task, or `None` when no versioned task metadata is
+  available; it is diagnostic metadata, not a replacement for replay-safe
+  patching. `continue_as_new` ends the current run and starts a successor. `patched ~id`
   introduces a new deterministic branch while allowing histories created
   before that marker to replay the old branch. `deprecate_patch ~id` is the
   later unit-returning lifecycle marker used while phasing that branch gate

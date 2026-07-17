@@ -107,6 +107,17 @@ optional worker, and serializes lifecycle operations on one owner Domain. Rust
 is a static library linked into the OCaml executable. There is no required
 Rust sidecar or separate OCaml/Rust service to deploy.
 
+The public facade reaches that native transport through a private OCaml
+kernel. The kernel owns deterministic activation scheduling, execution-local
+state, future callbacks, mailbox serialization, and the one-owner-Domain
+supervisor. `Temporal_sdk_kernel` is a package-private module allow-list, while
+the private `Backend` and `Native_worker` adapters translate public values into
+kernel operations. Applications should use the installed `Temporal` facade
+instead of depending on those implementation modules; the [three-layer
+boundary decision](decisions/0009-three-layer-ocaml-boundary.md) and the
+[installed-package boundary](reference/package-boundary.md) describe the
+ownership and compatibility rules.
+
 The private OCaml/Rust boundary uses strictly validated JSON semantic records.
 This is an internal, inspectable representation chosen to keep the ownership
 and validation contract small. Temporal Server does not receive these JSON

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/metadata-field.schema.json",
+  "title": "Named Temporal metadata payload",
+  "description": "One key/value entry used by workflow-start memo and search-attribute collections.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["key", "value"],
+  "properties": {
+    "key": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\u0000]+$"},
+    "value": {"$ref": "temporal-payload.schema.json"}
+  }
+}

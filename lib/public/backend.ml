@@ -31,6 +31,8 @@ type start_request = {
   workflow_id : string;
   task_queue : string;
   input : Payload.t;
+  memo : (string * Payload.t) list;
+  search_attributes : (string * Payload.t) list;
 }
 
 (** Server-issued workflow identity. *)
@@ -572,6 +574,12 @@ let native_start_request client (request : start_request) : Client_protocol.star
     | Some request_id -> request_id
     | None -> native_request_id client
   in
+  let metadata fields =
+    List.map
+      (fun (key, value) ->
+        { Client_protocol.key = key; value = protocol_payload value })
+      fields
+  in
   {
     request_id;
     namespace = client.namespace;
@@ -579,6 +587,8 @@ let native_start_request client (request : start_request) : Client_protocol.star
     workflow_type = request.workflow_name;
     task_queue = request.task_queue;
     input = [ protocol_payload request.input ];
+    memo = metadata request.memo;
+    search_attributes = metadata request.search_attributes;
   }
 
 (** Starts one native workflow through the asynchronous ticket path. Each

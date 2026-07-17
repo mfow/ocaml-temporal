@@ -84,10 +84,17 @@ val create :
     start result is uncertain, retry the same logical start with the same
     [request_id] so Temporal can deduplicate an already accepted request. If
     omitted, the SDK allocates a fresh request ID for this call. Do not reuse
-    one ID for unrelated workflow starts. *)
+    one ID for unrelated workflow starts.
+
+    [memo] attaches named payloads visible when describing the execution.
+    [search_attributes] attaches named indexed payloads used by visibility
+    queries. Keys are non-empty, NUL-free, at most 65,536 bytes, and unique within each collection;
+    payload values are encoded before the native bridge is called. *)
 val start :
   t ->
   ?request_id:string ->
+  ?memo:(string * Payload.t) list ->
+  ?search_attributes:(string * Payload.t) list ->
   workflow:('input, 'output) Workflow.t ->
   task_queue:string ->
   id:string ->

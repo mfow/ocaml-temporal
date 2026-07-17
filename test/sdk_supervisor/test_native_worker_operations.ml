@@ -196,6 +196,8 @@ let test_client_protocol_adapter () =
       workflow_type = "Smoke";
       task_queue = "queue";
       input = [];
+      memo = [];
+      search_attributes = [];
     }
   in
   let wait_request : Client.wait_request =
@@ -506,6 +508,8 @@ let test_native_client_lifecycle_guards () =
       workflow_type = "Smoke";
       task_queue = "queue";
       input = [];
+      memo = [];
+      search_attributes = [];
     }
   in
   let wait_request : Client.wait_request =

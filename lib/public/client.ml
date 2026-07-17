@@ -148,10 +148,34 @@ let validate_start_fields ~request_id ~workflow_name ~id ~task_queue =
           | Error _ as error -> error
           | Ok () -> validate_name "task queue" task_queue))
 
+(** Checks metadata keys before they reach the protocol map representation.
+    Rejecting duplicates here keeps caller-visible behavior independent of
+    Rust's map implementation and avoids silently losing one value. *)
+let validate_metadata_fields label fields =
+  let rec loop seen = function
+    | [] -> Ok ()
+    | (key, _value) :: rest ->
+        if List.mem key seen then
+          Error
+            (Error.make ~category:`Defect
+               ~message:(Printf.sprintf "duplicate %s key %S" label key) ())
+        else if String.equal key "" || String.contains key '\000' then
+          Error
+            (Error.make ~category:`Defect
+               ~message:(Printf.sprintf "invalid %s key" label) ())
+        else if String.length key > 65_536 then
+          Error
+            (Error.make ~category:`Defect
+               ~message:(Printf.sprintf "%s key exceeds protocol limit" label) ())
+        else loop (key :: seen) rest
+  in
+  loop [] fields
+
 (** Starts a workflow after encoding its typed input and checking the backend's
     response still refers to the request. The response check prevents an
     adapter bug from creating a handle for a different execution. *)
-let start client ?request_id ~workflow ~task_queue ~id ~input () =
+let start client ?request_id ?(memo = []) ?(search_attributes = []) ~workflow
+    ~task_queue ~id ~input () =
   if Atomic.get client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -162,7 +186,13 @@ let start client ?request_id ~workflow ~task_queue ~id ~input () =
     with
     | Error error -> Error error
     | Ok () -> (
-        match Codec.encode (Workflow.input workflow) input with
+        match validate_metadata_fields "memo" memo with
+        | Error error -> Error error
+        | Ok () -> (
+          match validate_metadata_fields "search attribute" search_attributes with
+          | Error error -> Error error
+          | Ok () ->
+            match Codec.encode (Workflow.input workflow) input with
         | Error error -> Error error
         | Ok encoded_input ->
             let request : Backend.start_request =
@@ -172,6 +202,8 @@ let start client ?request_id ~workflow ~task_queue ~id ~input () =
                 workflow_id = id;
                 task_queue;
                 input = encoded_input;
+                memo;
+                search_attributes;
               }
             in
             Result.bind (Backend.client_start client.backend request) (fun response ->
@@ -190,7 +222,7 @@ let start client ?request_id ~workflow ~task_queue ~id ~input () =
                       workflow;
                       workflow_id = id;
                       run_id = response.run_id;
-                    }))
+                    })))
 
 (** Rebuilds a typed handle for a successor run without starting another
     execution. Temporal returns a continuation's workflow/run identity in the

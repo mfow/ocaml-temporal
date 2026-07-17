@@ -329,9 +329,11 @@ test-temporal-worker-crash-recovery-contract:
 	sh test/smoke/test_temporal_worker_crash_recovery_contract.sh
 
 # Runs a one-slot Core cache against two independent parked executions. The
-# driver does not infer eviction from replay: it waits for the worker's exact
-# RemoveFromCache marker, then cancels both exact runs and checks their typed
-# terminal outcomes before the worker is shut down.
+# driver waits for the first task acknowledgement, admits the second run, and
+# then waits for the worker's exact RemoveFromCache marker. It does not require
+# a second-run completion callback because that callback can be withheld while
+# Core evicts the first run; waiting for it would deadlock the eviction proof.
+# Both exact runs are then cancelled and checked for typed terminal outcomes.
 test-temporal-worker-cache-eviction:
 	$(MAKE) test-temporal-worker-cache-eviction-contract
 	SMOKE_WORKER_MAX_CACHED_WORKFLOWS=1 \

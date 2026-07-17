@@ -1196,15 +1196,15 @@ let worker_restart_replay =
           Ok ("SMOKE:" ^ transformed))
 
 (** Keeps a workflow run in Core's sticky cache while a second run is admitted.
-    The replay-safe false condition emits no command or history event, so both
-    runs remain open without introducing an unrelated durable replay boundary.
-    The live eviction fixture configures the worker with one cache slot, so
-    admitting the second workflow task must deliver a
+    The long deterministic timer gives Core an explicit pending history
+    boundary, so the first workflow task is fully acknowledged before cache
+    pressure is introduced. The live fixture configures one cache slot; when
+    the second workflow is admitted Core must therefore deliver a
     [RemoveFromCache(CacheFull)] activation for the older run. The driver
     observes that marker and cancels both exact executions. *)
 let cache_eviction =
   Temporal.Workflow.define ~name:"smoke.cache_eviction"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
       let open Temporal.Result_syntax in
-      let* () = Temporal.Condition.wait_until_result (fun () -> Ok false) in
+      let* () = Temporal.Workflow.sleep (Temporal.Duration.of_ms 60_000L) in
       Ok ("SMOKE:CACHE:" ^ String.uppercase_ascii seed))

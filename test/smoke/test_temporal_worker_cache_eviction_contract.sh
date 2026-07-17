@@ -23,8 +23,9 @@ require_source() {
   fi
 }
 
-# Rejects replay-only guards that would prevent an acknowledged normal cache
-# activation from releasing the driver's post-completion barrier.
+# Rejects the old second-run barrier. Under a one-slot sticky cache, Core may
+# evict the first run before delivering the second completion callback; waiting
+# for that callback makes the eviction gate self-deadlock.
 reject_source() {
   path=$1
   needle=$2
@@ -39,10 +40,7 @@ require_source "$makefile" 'SMOKE_WORKER_MAX_CACHED_WORKFLOWS=1'
 require_source "$makefile" 'SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS'
 require_source "$makefile" 'SMOKE_WORKER_CACHE_EVICTION_FILE='
 require_source "$makefile" 'SMOKE_WORKER_CACHE_EVICTION_READY_FILE='
-require_source "$makefile" 'SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE='
-require_source "$makefile" 'SMOKE_CACHE_EVICTION_SECOND_WORKFLOW_ID=two-binary-cache-eviction-b'
 require_source "$makefile" 'SMOKE_CACHE_EVICTION_READY_FILE'
-require_source "$makefile" 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE'
 require_source "$makefile" 'SMOKE_REPLAY_WORKFLOW_ID=two-binary-cache-eviction-a'
 require_source "$makefile" 'smoke-cache-eviction-driver'
 require_source "$worker" 'Worker.create ?max_cached_workflows'
@@ -51,8 +49,8 @@ require_source "$driver_dune" '(name cache_eviction_driver)'
 require_source "$driver" 'wait_for_marker'
 require_source "$driver" 'initial-completion'
 require_source "$driver" 'SMOKE_CACHE_EVICTION_READY_FILE'
-require_source "$driver" 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE'
-require_source "$driver" 'ready_b'
+reject_source "$driver" 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE'
+reject_source "$driver" 'ready_b'
 require_source "$driver" 'two-binary-cache-eviction-a'
 require_source "$driver" 'two-binary-cache-eviction-b'
 require_source "$driver" 'Client.cancel ~request_id ~reason:'
@@ -70,8 +68,8 @@ reject_source "$root/lib/public/native_worker.ml" \
 require_source "$root/lib/runtime/native_worker_execution.ml" 'cache_removal_reason'
 require_source "$root/lib/runtime/native_worker_execution.ml" 'on_completion'
 require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
-  'Temporal.Condition.wait_until_result'
-require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
+  'Temporal.Workflow.sleep (Temporal.Duration.of_ms 60_000L)'
+reject_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
   'fun () -> Ok false'
 
 expected='{"workflow_id":"two-binary-cache-eviction-a","run_id":"22222222-2222-4222-8222-222222222222","reason":"cache_full"}'

@@ -142,10 +142,14 @@ separate runs.
 
 The sticky-cache eviction gate uses `make
 test-temporal-worker-cache-eviction`: it configures one Core cache slot, starts
-two runs parked on a replay-safe condition, waits for the worker's payload-free
-`cache_full` marker, and checks empty eviction acknowledgement plus typed
-cancellation of both exact runs. The complete PR #322 CI run is the live
-real-server evidence for that contract.
+two runs whose first workflow task schedules a long deterministic timer, waits
+for the worker's payload-free `cache_full` marker, and checks empty eviction
+acknowledgement plus typed cancellation of both exact runs. The timer provides
+a durable pending boundary before the second run is admitted; the driver does
+not wait for a second-run completion callback because Core may evict the first
+run before delivering that callback. PR #322 is historical evidence for the
+original gate; PR #395 is the current fix and must pass the complete live
+real-server contract before this row is considered green again.
 
 ## Stable evidence commands
 

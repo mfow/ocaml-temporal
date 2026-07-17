@@ -45,13 +45,17 @@ Core to route it as another.
 
 ```ocaml
 let options =
-  Temporal.Worker.Options.make
-    ~versioning:(Temporal.Worker.Options.Deployment_based {
-      deployment_name = "agents";
-      build_id = "agent-worker-2026-07-16";
-      use_worker_versioning = true;
-      default_versioning_behavior = Some `Pinned;
-    }) ()
+  match
+    Temporal.Worker.Options.make
+      ~versioning:(Temporal.Worker.Options.Deployment_based {
+        deployment_name = "agents";
+        build_id = "agent-worker-2026-07-16";
+        use_worker_versioning = true;
+        default_versioning_behavior = Some `Pinned;
+      }) ()
+  with
+  | Ok options -> options
+  | Error error -> failwith (Temporal.Error.message error)
 ```
 
 `use_worker_versioning` controls whether Core applies deployment routing. When

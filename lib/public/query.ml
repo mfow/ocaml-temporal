@@ -119,7 +119,18 @@ module Handler = struct
         dispatch_payloads = (fun payloads ->
           match payloads with
           | [ payload ] -> (
+              (* A codec is supplied by the application, so it may raise even
+                 though the normal codec contract is result-based.  Keep that
+                 exception inside the existential worker boundary and report
+                 it as a typed defect, just like callback and output codec
+                 failures below. *)
               match Codec.decode query.input payload with
+              | exception exception_ ->
+                  Error
+                    (Error.defect
+                       ~message:
+                         (Printf.sprintf "query input codec raised: %s"
+                            (Printexc.to_string exception_)))
               | Error error -> Error error
               | Ok value -> (
                   let result =

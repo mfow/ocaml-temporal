@@ -218,6 +218,21 @@ let test_query_handler_encode_exception_containment () =
   let handler = Temporal.Query.Handler.make query (fun () -> Ok ()) in
   expect_error_kind "defect" (Temporal.Query.Handler.dispatch handler)
 
+(** [Query.Handler.dispatch_payloads] must contain a raising typed-input
+    decoder before invoking the user callback.  This protects the worker
+    adapter boundary even when a malformed or application-defined codec is
+    used directly, without the higher-level [Interaction] wrapper. *)
+let test_typed_query_handler_decode_exception_containment () =
+  let input_codec = raising_decode_codec () in
+  let query =
+    Temporal.Query.define_with_input ~name:"raising-query-input"
+      ~input:input_codec ~output:Temporal.Codec.unit
+  in
+  let handler = Temporal.Query.Handler.make_with_input query (fun () -> Ok ()) in
+  let payload = unwrap (Temporal.Codec.encode input_codec ()) in
+  expect_error_kind "defect"
+    (Temporal.Query.Handler.dispatch_payloads handler [ payload ])
+
 (** [Interaction.update] must contain both a raising input encode and a
     raising output decode, since it owns both codec boundaries around the
     handler dispatch it delegates to. *)
@@ -277,5 +292,6 @@ let () =
   test_signal_handler_decode_exception_containment ();
   test_query_output_codec_exception_containment ();
   test_query_handler_encode_exception_containment ();
+  test_typed_query_handler_decode_exception_containment ();
   test_update_codec_exception_containment ();
   test_update_handler_codec_exception_containment ()

@@ -48,9 +48,11 @@ always removes its containers and volume.
 
 The ordinary unit and native desktop jobs remain independent of these Linux
 services. This keeps Windows x64 and macOS ARM build verification focused on
-the native OCaml/Rust artifact. A future Linux integration job can invoke
-`make test-temporal-integration` without duplicating service setup in workflow
-YAML.
+the native OCaml/Rust artifact. The Linux `temporal-integration` workflow job
+invokes `make test-temporal-integration` and the related live restart,
+recovery, cache-eviction, patching, and parent/child replay gates. Keeping
+those commands in the Makefile lets CI reuse the same service setup without
+duplicating it in workflow YAML.
 
 This milestone does not claim that the OCaml SDK can connect, start, poll, or
 complete a workflow. It establishes the real database and server substrate for

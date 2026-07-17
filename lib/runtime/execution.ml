@@ -262,9 +262,10 @@ let emit_terminal execution command =
         report ~src:Observability.Source.workflow Logs.Info ~tags
           "workflow completed"
     | Fail_workflow _ | Cancel_workflow_execution
-    | Schedule_activity _ | Schedule_local_activity _ | Start_child_workflow _ | Request_cancel_activity _
-    | Request_cancel_local_activity _
-    | Cancel_child_workflow _ | Start_timer _ | Cancel_timer _
+    | Schedule_activity _ | Schedule_local_activity _ | Start_child_workflow _
+    | Request_cancel_activity _ | Request_cancel_local_activity _
+    | Cancel_child_workflow _ | Signal_external_workflow _
+    | Request_cancel_external_workflow _ | Start_timer _ | Cancel_timer _
     | Query_result _ | Update_response _ | Set_patch_marker _
     | Continue_as_new _ -> ())
 
@@ -363,6 +364,20 @@ let process_job execution = function
   | Resolve_child_workflow { seq; result } -> (
       match
         Workflow_context_store.resolve_child_workflow execution.context ~seq result
+      with
+      | Ok () -> ()
+      | Error error -> fail execution error)
+  | Resolve_signal_external_workflow { seq; result } -> (
+      match
+        Workflow_context_store.resolve_external_workflow execution.context
+          ~operation:`Signal ~seq result
+      with
+      | Ok () -> ()
+      | Error error -> fail execution error)
+  | Resolve_request_cancel_external_workflow { seq; result } -> (
+      match
+        Workflow_context_store.resolve_external_workflow execution.context
+          ~operation:`Cancel ~seq result
       with
       | Ok () -> ()
       | Error error -> fail execution error)

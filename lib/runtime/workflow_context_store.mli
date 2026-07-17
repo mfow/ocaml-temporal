@@ -193,6 +193,29 @@ val start_child_workflow :
   ( ('output, Temporal_base.Error.t) Future_store.t
   * (reason:string -> (unit, Temporal_base.Error.t) result) )
 
+(** Sends a signal to an external workflow and returns a future resolved by
+    Core's delivery acknowledgement or structured failure. *)
+val signal_external_workflow :
+  t ->
+  workflow_id:string ->
+  run_id:string ->
+  signal_name:string ->
+  input:Temporal_base.Codec.payload list ->
+  ?child_workflow_only:bool ->
+  ?headers:(string * Temporal_base.Codec.payload) list ->
+  unit ->
+  (unit, Temporal_base.Error.t) Future_store.t
+
+(** Requests cancellation of an external workflow and returns a future for
+    Core's asynchronous resolution. *)
+val cancel_external_workflow :
+  t ->
+  workflow_id:string ->
+  run_id:string ->
+  reason:string ->
+  unit ->
+  (unit, Temporal_base.Error.t) Future_store.t
+
 (** Emits a durable timer command and returns a future resolved by [fire_timer].
     The duration is an exact non-negative millisecond count. *)
 val start_timer : t -> int64 -> (unit, Temporal_base.Error.t) Future_store.t
@@ -225,6 +248,14 @@ val resolve_child_workflow :
   t ->
   seq:int64 ->
   (Temporal_base.Codec.payload, Temporal_base.Error.t) result ->
+  (unit, Temporal_base.Error.t) result
+
+(** Completes one external workflow signal/cancellation operation. *)
+val resolve_external_workflow :
+  t ->
+  operation:[ `Cancel | `Signal ] ->
+  seq:int64 ->
+  (unit, Temporal_base.Error.t) result ->
   (unit, Temporal_base.Error.t) result
 
 (** Records a child start acknowledgment. [Ok run_id] advances the pending

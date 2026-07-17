@@ -287,7 +287,8 @@ resolver state unchanged.
 
 A completion is a closed object sent from OCaml to Rust. Its ordered commands
 cover scheduling and requesting cancellation of remote activities, starting and
-cancelling a child workflow, starting and cancelling timers, and completing,
+cancelling a child workflow, signalling or requesting cancellation of an
+external workflow, starting and cancelling timers, and completing,
 failing, or cancelling the workflow. A child start includes an explicit
 cancellation policy, and a later cancel command carries a validated reason;
 Core applies that policy while preserving command order for replay. The child
@@ -313,6 +314,30 @@ authoritative for duplicate members and UTF-8 byte limits. A terminal workflow
 command may occur at most once and must be last.
 When acknowledging an eviction, the completion command list must be empty and
 the run ID must match the activation.
+
+### External workflow operations
+
+`signal_external_workflow` and `request_cancel_external_workflow` are
+asynchronous workflow commands. OCaml allocates a sequence number, emits the
+command, and returns a workflow future; it does not call Temporal directly or
+block a scheduler thread. Core later sends a matching activation job named
+`resolve_signal_external_workflow` or
+`resolve_request_cancel_external_workflow`. The job is either
+`{"kind":"succeeded"}` or contains a structured `failure`. The runtime removes
+the one resolver for that sequence before waking the future, so duplicate,
+unknown, or cross-operation sequence numbers are rejected as bridge defects.
+
+An external signal contains a non-empty workflow ID, an optional exact run ID,
+an identifier-safe signal name, ordered payloads, and a bounded header map.
+When `child_workflow_only` is true, Rust constructs Core's child-workflow target;
+otherwise it constructs a namespaced workflow execution using the worker's
+validated namespace. External cancellation retains the same target fields and
+requires a non-empty reason. Payload bytes are copied at the OCaml/Rust
+boundary, and both language validators reject unknown fields, duplicate keys,
+invalid UTF-8, NUL bytes, and oversized values before Core sees a command.
+The complete shapes are defined by
+[`workflow-activation.schema.json`](../schemas/bridge/workflow-activation.schema.json)
+and [`workflow-completion.schema.json`](../schemas/bridge/workflow-completion.schema.json).
 
 ### Patch notification and marker
 

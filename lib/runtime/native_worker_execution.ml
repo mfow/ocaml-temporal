@@ -360,6 +360,8 @@ let is_terminal completion =
       | Protocol.Schedule_local_activity _
       | Protocol.Start_child_workflow _
       | Protocol.Cancel_child_workflow _
+      | Protocol.Signal_external_workflow _
+      | Protocol.Request_cancel_external_workflow _
       | Protocol.Request_cancel_activity _
       | Protocol.Request_cancel_local_activity _
       | Protocol.Start_timer _
@@ -607,6 +609,15 @@ module Make (Supervisor : SUPERVISOR) = struct
       | Protocol.Start_child_workflow command ->
           Protocol.Start_child_workflow
             { command with input = List.map copy_payload command.input }
+      | Protocol.Signal_external_workflow command ->
+          Protocol.Signal_external_workflow
+            {
+              command with
+              input = List.map copy_payload command.input;
+              headers =
+                List.map (fun (key, payload) -> (key, copy_payload payload))
+                  command.headers;
+            }
       | Protocol.Query_result { query_id; result } ->
           let result =
             match result with
@@ -626,6 +637,7 @@ module Make (Supervisor : SUPERVISOR) = struct
           in
           Protocol.Update_response { protocol_instance_id; response }
       | Protocol.Cancel_child_workflow _ as command -> command
+      | Protocol.Request_cancel_external_workflow _ as command -> command
       | Protocol.Request_cancel_activity _ as command -> command
       | Protocol.Request_cancel_local_activity _ as command -> command
       | Protocol.Start_timer _ as command -> command

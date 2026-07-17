@@ -457,6 +457,18 @@ pub enum ChildWorkflowResolution {
     },
 }
 
+/// Result of an external signal or cancellation command. Core represents a
+/// successful operation with an absent failure field and all rejected or
+/// cancelled operations with one structured Temporal failure.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExternalWorkflowResolution {
+    /// Temporal accepted the command for delivery.
+    Succeeded,
+    /// Temporal could not deliver or complete the command.
+    Failed { failure: Failure },
+}
+
 /// Why Core requested removal of a workflow from the language cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -500,6 +512,16 @@ pub enum ActivationJob {
     ResolveChildWorkflow {
         seq: u32,
         result: ChildWorkflowResolution,
+    },
+    /// Reports completion of an external workflow signal command.
+    ResolveSignalExternalWorkflow {
+        seq: u32,
+        result: ExternalWorkflowResolution,
+    },
+    /// Reports completion of an external workflow cancellation command.
+    ResolveRequestCancelExternalWorkflow {
+        seq: u32,
+        result: ExternalWorkflowResolution,
     },
     /// Incoming signal data delivered by Core. Signals are activation events,
     /// not completions, so they intentionally do not carry a sequence number.
@@ -675,6 +697,23 @@ pub enum CompletionCommand {
     /// Requests cancellation of a previously started child workflow.
     CancelChildWorkflow {
         seq: u32,
+        reason: String,
+    },
+    /// Sends a signal to a named external workflow execution.
+    SignalExternalWorkflow {
+        seq: u32,
+        workflow_id: String,
+        run_id: String,
+        signal_name: String,
+        input: Vec<Payload>,
+        child_workflow_only: bool,
+        headers: BTreeMap<String, Payload>,
+    },
+    /// Requests cancellation of a named external workflow execution.
+    RequestCancelExternalWorkflow {
+        seq: u32,
+        workflow_id: String,
+        run_id: String,
         reason: String,
     },
     RequestCancelActivity {
@@ -1333,6 +1372,12 @@ fn validate_activation(value: &Activation) -> Result<(), ProtocolError> {
                     validate_failure(failure, "$.jobs.result.failure")?
                 }
             },
+            ActivationJob::ResolveSignalExternalWorkflow { result, .. }
+            | ActivationJob::ResolveRequestCancelExternalWorkflow { result, .. } => {
+                if let ExternalWorkflowResolution::Failed { failure } = result {
+                    validate_failure(failure, "$.jobs.result.failure")?
+                }
+            }
             ActivationJob::SignalWorkflow {
                 signal_name,
                 identity,
@@ -1555,6 +1600,51 @@ fn validate_completion(value: &Completion) -> Result<(), ProtocolError> {
                 if let Some(retry_policy) = retry_policy {
                     validate_retry_policy(retry_policy, "$.commands.retry_policy")?;
                 }
+            }
+            CompletionCommand::SignalExternalWorkflow {
+                workflow_id,
+                run_id,
+                signal_name,
+                input,
+                headers,
+                ..
+            } => {
+                identifier(workflow_id, "$.commands.workflow_id")?;
+                if !run_id.is_empty() {
+                    identifier(run_id, "$.commands.run_id")?;
+                }
+                identifier(signal_name, "$.commands.signal_name")?;
+                for payload in input {
+                    validate_failure_payloads(std::slice::from_ref(payload), "$.commands.input")?;
+                }
+                for (key, payload) in headers {
+                    identifier(key, "$.commands.headers")?;
+                    validate_failure_payloads(std::slice::from_ref(payload), "$.commands.headers")?;
+                }
+            }
+            CompletionCommand::RequestCancelExternalWorkflow {
+                workflow_id,
+                run_id,
+                reason,
+                ..
+            } => {
+                identifier(workflow_id, "$.commands.workflow_id")?;
+                if !run_id.is_empty() {
+                    identifier(run_id, "$.commands.run_id")?;
+                }
+                if reason.is_empty() {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.reason",
+                        "reason must not be empty",
+                    ));
+                }
+                if reason.as_bytes().contains(&0) {
+                    return Err(ProtocolError::invalid(
+                        "$.commands.reason",
+                        "reason must not contain NUL",
+                    ));
+                }
+                bounded_text(reason, "$.commands.reason")?;
             }
             CompletionCommand::CancelChildWorkflow { reason, .. } => {
                 if reason.is_empty() {
@@ -1815,8 +1905,8 @@ pub(crate) fn invalid_core(message: &'static str) -> CoreConversionError {
 use temporalio_protos::{
     coresdk::{
         activity_result as core_activity, child_workflow as core_child_workflow,
-        workflow_activation as core_activation, workflow_commands as core_commands,
-        workflow_completion as core_completion,
+        common as core_common, workflow_activation as core_activation,
+        workflow_commands as core_commands, workflow_completion as core_completion,
     },
     temporal::api::{common::v1 as api_common, enums::v1 as api_enums, failure::v1 as api_failure},
 };
@@ -2349,6 +2439,18 @@ fn child_workflow_resolution_from_core(
     }
 }
 
+/// Converts Core's nullable failure field for an external workflow command.
+fn external_workflow_resolution_from_core(
+    failure: Option<&api_failure::Failure>,
+) -> Result<ExternalWorkflowResolution, CoreConversionError> {
+    match failure {
+        None => Ok(ExternalWorkflowResolution::Succeeded),
+        Some(failure) => Ok(ExternalWorkflowResolution::Failed {
+            failure: failure_from_core(failure)?,
+        }),
+    }
+}
+
 /// Maps every official cache-eviction enum in the pinned Core revision.
 fn eviction_reason_from_core(value: i32) -> Result<EvictionReason, CoreConversionError> {
     use core_activation::remove_from_cache::EvictionReason as Core;
@@ -2539,6 +2641,18 @@ pub fn activation_from_core(
                                 invalid_core("Core child workflow result is absent")
                             })?,
                         )?,
+                    })
+                }
+                Variant::ResolveSignalExternalWorkflow(value) => {
+                    Ok(ActivationJob::ResolveSignalExternalWorkflow {
+                        seq: value.seq,
+                        result: external_workflow_resolution_from_core(value.failure.as_ref())?,
+                    })
+                }
+                Variant::ResolveRequestCancelExternalWorkflow(value) => {
+                    Ok(ActivationJob::ResolveRequestCancelExternalWorkflow {
+                        seq: value.seq,
+                        result: external_workflow_resolution_from_core(value.failure.as_ref())?,
                     })
                 }
                 Variant::SignalWorkflow(value) => Ok(ActivationJob::SignalWorkflow {
@@ -2928,6 +3042,60 @@ fn command_to_core(
                 reason: reason.clone(),
             })
         }
+        CompletionCommand::SignalExternalWorkflow {
+            seq,
+            workflow_id,
+            run_id,
+            signal_name,
+            input,
+            child_workflow_only,
+            headers,
+        } => {
+            let target = if *child_workflow_only {
+                core_commands::signal_external_workflow_execution::Target::ChildWorkflowId(
+                    workflow_id.clone(),
+                )
+            } else {
+                core_commands::signal_external_workflow_execution::Target::WorkflowExecution(
+                    core_common::NamespacedWorkflowExecution {
+                        namespace: child_workflow_namespace.unwrap_or_default().to_owned(),
+                        workflow_id: workflow_id.clone(),
+                        run_id: run_id.clone(),
+                    },
+                )
+            };
+            Variant::SignalExternalWorkflowExecution(
+                core_commands::SignalExternalWorkflowExecution {
+                    seq: *seq,
+                    target: Some(target),
+                    signal_name: signal_name.clone(),
+                    args: input
+                        .iter()
+                        .map(payload_to_core)
+                        .collect::<Result<_, _>>()?,
+                    headers: headers
+                        .iter()
+                        .map(|(key, payload)| Ok((key.clone(), payload_to_core(payload)?)))
+                        .collect::<Result<_, CoreConversionError>>()?,
+                },
+            )
+        }
+        CompletionCommand::RequestCancelExternalWorkflow {
+            seq,
+            workflow_id,
+            run_id,
+            reason,
+        } => Variant::RequestCancelExternalWorkflowExecution(
+            core_commands::RequestCancelExternalWorkflowExecution {
+                seq: *seq,
+                workflow_execution: Some(core_common::NamespacedWorkflowExecution {
+                    namespace: child_workflow_namespace.unwrap_or_default().to_owned(),
+                    workflow_id: workflow_id.clone(),
+                    run_id: run_id.clone(),
+                }),
+                reason: reason.clone(),
+            },
+        ),
         CompletionCommand::StartTimer {
             seq,
             start_to_fire_timeout,
@@ -3172,6 +3340,53 @@ fn command_from_core(
                 .map_err(|_| invalid_core("Core child cancellation reason is too long"))?;
             Ok(CompletionCommand::CancelChildWorkflow {
                 seq: value.child_workflow_seq,
+                reason: value.reason.clone(),
+            })
+        }
+        Variant::SignalExternalWorkflowExecution(value) => {
+            let (workflow_id, run_id, child_workflow_only) = match value
+                .target
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core external signal target is absent"))?
+            {
+                core_commands::signal_external_workflow_execution::Target::WorkflowExecution(
+                    execution,
+                ) => (
+                    execution.workflow_id.clone(),
+                    execution.run_id.clone(),
+                    false,
+                ),
+                core_commands::signal_external_workflow_execution::Target::ChildWorkflowId(id) => {
+                    (id.clone(), String::new(), true)
+                }
+            };
+            Ok(CompletionCommand::SignalExternalWorkflow {
+                seq: value.seq,
+                workflow_id,
+                run_id,
+                signal_name: value.signal_name.clone(),
+                input: value
+                    .args
+                    .iter()
+                    .map(payload_from_core)
+                    .collect::<Result<_, _>>()?,
+                child_workflow_only,
+                headers: value
+                    .headers
+                    .iter()
+                    .map(|(key, payload)| Ok((key.clone(), payload_from_core(payload)?)))
+                    .collect::<Result<_, CoreConversionError>>()?,
+            })
+        }
+        Variant::RequestCancelExternalWorkflowExecution(value) => {
+            let execution = value
+                .workflow_execution
+                .as_ref()
+                .ok_or_else(|| invalid_core("Core external cancellation target is absent"))?;
+            Ok(CompletionCommand::RequestCancelExternalWorkflow {
+                seq: value.seq,
+                workflow_id: execution.workflow_id.clone(),
+                run_id: execution.run_id.clone(),
                 reason: value.reason.clone(),
             })
         }

@@ -63,6 +63,25 @@ val start_sleep : Duration.t -> (unit, Error.t) Future.t
     returns a typed defect. *)
 val sleep : Duration.t -> (unit, Error.t) result
 
+(** Sends a typed signal to another workflow execution. The operation is
+    represented as a future because Temporal acknowledges delivery in a later
+    activation; [run_id] may be empty when the server should resolve the
+    current run for the workflow ID. *)
+val signal_external_workflow :
+  workflow_id:string ->
+  run_id:string ->
+  signal:'input Signal.t ->
+  input:'input ->
+  (unit, Error.t) Future.t
+
+(** Requests cancellation of another workflow execution and returns a future
+    resolved by Temporal's acknowledgement or structured failure. *)
+val cancel_external_workflow :
+  workflow_id:string ->
+  run_id:string ->
+  reason:string ->
+  (unit, Error.t) Future.t
+
 (** Returns the exact timestamp attached to the activation currently executing
     this workflow. Temporal supplies the value for both live execution and
     replay, so the result is deterministic. Calling this outside workflow

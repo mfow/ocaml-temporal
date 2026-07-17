@@ -378,10 +378,28 @@ let runtime_child_workflow_result path result =
       in
       Ok (Error error)
 
+(** Converts an external workflow acknowledgement. Core's absent failure is a
+    successful delivery; a populated failure is returned as a typed workflow
+    error so user code can decide whether to retry or compensate. *)
+let runtime_external_workflow_result path result =
+  match result with
+  | Ok () -> Ok (Ok ())
+  | Error failure ->
+      let* error =
+        runtime_error_of_failure (path ^ ".failure") ~category:`Workflow failure
+      in
+      Ok (Error error)
+
 (** Operation families that may consume a Core sequence number. A child
     workflow intentionally has two entries—start acknowledgement and terminal
     result—while all other families must appear at most once per activation. *)
-type sequence_kind = Activity | Child_start | Child_result | Timer
+type sequence_kind =
+  | Activity
+  | Child_start
+  | Child_result
+  | External_signal
+  | External_cancel
+  | Timer
 
 (** Converts an activation job and checks its sequence number before any
     mutable execution state is touched. The optional tuple fields retain
@@ -450,6 +468,18 @@ let runtime_job path = function
       Ok
         ( Activation.Resolve_child_workflow { seq; result }, None, None, None,
           Some (Child_result, seq) )
+  | Protocol.Resolve_signal_external_workflow { seq; result } ->
+      let* () = validate_sequence (path ^ ".seq") seq in
+      let* result = runtime_external_workflow_result (path ^ ".result") result in
+      Ok
+        ( Activation.Resolve_signal_external_workflow { seq; result }, None, None,
+          None, Some (External_signal, seq) )
+  | Protocol.Resolve_request_cancel_external_workflow { seq; result } ->
+      let* () = validate_sequence (path ^ ".seq") seq in
+      let* result = runtime_external_workflow_result (path ^ ".result") result in
+      Ok
+        ( Activation.Resolve_request_cancel_external_workflow { seq; result }, None,
+          None, None, Some (External_cancel, seq) )
   | Protocol.Query_workflow { query_id; query_type; arguments; headers } ->
       (* Query payloads are copied into runtime-owned values, retaining every
          repeated argument and sorted header. The public adapter may reject
@@ -1013,6 +1043,42 @@ let command_to_protocol command =
       let* () = validate_sequence "$.command.seq" seq in
       let* () = validate_cancellation_reason "$.command.reason" reason in
       Ok (Protocol.Cancel_child_workflow { seq; reason })
+  | Activation.Signal_external_workflow
+      { seq; workflow_id; run_id; signal_name; input; child_workflow_only; headers }
+    ->
+      let* () = validate_sequence "$.command.seq" seq in
+      let* () = validate_identifier "$.command.workflow_id" workflow_id in
+      let* () = validate_bounded_text "$.command.run_id" run_id in
+      let* () = validate_identifier "$.command.signal_name" signal_name in
+      let rec payloads_loop index reversed = function
+        | [] -> Ok (List.rev reversed)
+        | payload :: rest ->
+            let* payload = protocol_payload
+              (Printf.sprintf "$.command.input[%d]" index) payload
+            in
+            payloads_loop (index + 1) (payload :: reversed) rest
+      in
+      let rec headers_loop reversed = function
+        | [] -> Ok (List.rev reversed)
+        | (key, payload) :: rest ->
+            let* () = validate_identifier "$.command.headers.key" key in
+            let* payload = protocol_payload ("$.command.headers." ^ key) payload in
+            headers_loop ((key, payload) :: reversed) rest
+      in
+      let* input = payloads_loop 0 [] input in
+      let* headers = headers_loop [] headers in
+      Ok
+        (Protocol.Signal_external_workflow
+           { seq; workflow_id; run_id; signal_name; input; child_workflow_only; headers })
+  | Activation.Request_cancel_external_workflow
+      { seq; workflow_id; run_id; reason } ->
+      let* () = validate_sequence "$.command.seq" seq in
+      let* () = validate_identifier "$.command.workflow_id" workflow_id in
+      let* () = validate_bounded_text "$.command.run_id" run_id in
+      let* () = validate_cancellation_reason "$.command.reason" reason in
+      Ok
+        (Protocol.Request_cancel_external_workflow
+           { seq; workflow_id; run_id; reason })
   | Activation.Request_cancel_activity { seq } ->
       let* () = validate_sequence "$.command.seq" seq in
       Ok (Protocol.Request_cancel_activity { seq })

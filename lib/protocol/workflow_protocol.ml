@@ -215,6 +215,17 @@ type activation_job =
       seq : int64;
       result : child_workflow_resolution;
     }
+  (** Reports whether Core delivered a signal to an external workflow. A
+      structured failure is a workflow-level result, not a bridge exception. *)
+  | Resolve_signal_external_workflow of {
+      seq : int64;
+      result : (unit, failure) result;
+    }
+  (** Reports whether Core accepted cancellation of an external workflow. *)
+  | Resolve_request_cancel_external_workflow of {
+      seq : int64;
+      result : (unit, failure) result;
+    }
   (** Delivers one synchronous query request. Query jobs carry no sequence and
       never resume a workflow fiber; preserving the repeated argument and
       header fields lets the runtime apply its typed handler policy without
@@ -329,6 +340,27 @@ type completion_command =
       cancellation_type : child_workflow_cancellation_type;
     }
   | Cancel_child_workflow of { seq : int64; reason : string }
+  (** Sends a signal to another workflow execution. Core resolves the command
+      asynchronously; [child_workflow_only] preserves the safer child-target
+      restriction when requested by the workflow author. *)
+  | Signal_external_workflow of {
+      seq : int64;
+      workflow_id : string;
+      run_id : string;
+      signal_name : string;
+      input : payload list;
+      child_workflow_only : bool;
+      headers : (string * payload) list;
+    }
+  (** Requests cancellation of another workflow execution and waits for Core's
+      acknowledgement or structured failure before resolving the workflow
+      future. *)
+  | Request_cancel_external_workflow of {
+      seq : int64;
+      workflow_id : string;
+      run_id : string;
+      reason : string;
+    }
   | Request_cancel_activity of { seq : int64 }
   (** Requests cancellation of a scheduled local activity.  Core keeps this
       separate from remote activity cancellation because local work has no
@@ -1227,6 +1259,34 @@ let child_workflow_resolution_json = function
       let* failure = failure_json failure in
       Ok (`Assoc [ ("kind", `String "cancelled"); ("failure", failure) ])
 
+(** Decodes the nullable-failure result Core uses for external operations. *)
+let external_workflow_resolution path json =
+  let* entries =
+    match json with
+    | `Assoc entries -> Ok entries
+    | _ -> Error (invalid path "expected JSON object")
+  in
+  let* kind_json = field path "kind" entries in
+  let* kind = string (path ^ ".kind") kind_json in
+  match kind with
+  | "succeeded" ->
+      let* _ = exact_object path [ "kind" ] json in
+      Ok (Ok ())
+  | "failed" ->
+      let* entries = exact_object path [ "kind"; "failure" ] json in
+      let* failure_json = field path "failure" entries in
+      let* failure = failure (path ^ ".failure") failure_json in
+      Ok (Error failure)
+  | _ -> Error (invalid (path ^ ".kind") "unknown external workflow resolution kind")
+
+(** Encodes one external operation acknowledgement without dropping Core's
+    structured failure. *)
+let external_workflow_resolution_json = function
+  | Ok () -> Ok (`Assoc [ ("kind", `String "succeeded") ])
+  | Error failure ->
+      let* failure = failure_json failure in
+      Ok (`Assoc [ ("kind", `String "failed"); ("failure", failure) ])
+
 (** Maps a stable cache-eviction spelling. *)
 let eviction_reason path = function
   | "unspecified" -> Ok Eviction_unspecified
@@ -1734,6 +1794,20 @@ let activation_job path json =
       let* result_json = field path "result" entries in
       let* result = child_workflow_resolution (path ^ ".result") result_json in
       Ok (Resolve_child_workflow { seq; result })
+  | "resolve_signal_external_workflow" ->
+      let* entries = exact_object path [ "kind"; "seq"; "result" ] json in
+      let* seq_json = field path "seq" entries in
+      let* seq = uint32 (path ^ ".seq") seq_json in
+      let* result_json = field path "result" entries in
+      let* result = external_workflow_resolution (path ^ ".result") result_json in
+      Ok (Resolve_signal_external_workflow { seq; result })
+  | "resolve_request_cancel_external_workflow" ->
+      let* entries = exact_object path [ "kind"; "seq"; "result" ] json in
+      let* seq_json = field path "seq" entries in
+      let* seq = uint32 (path ^ ".seq") seq_json in
+      let* result_json = field path "result" entries in
+      let* result = external_workflow_resolution (path ^ ".result") result_json in
+      Ok (Resolve_request_cancel_external_workflow { seq; result })
   | "query_workflow" ->
       let* entries =
         exact_object path [ "kind"; "query_id"; "query_type"; "arguments"; "headers" ]
@@ -1853,6 +1927,24 @@ let activation_job_json = function
         (`Assoc
           [
             ("kind", `String "resolve_child_workflow");
+            ("seq", `Intlit (Int64.to_string seq));
+            ("result", result);
+          ])
+  | Resolve_signal_external_workflow { seq; result } ->
+      let* result = external_workflow_resolution_json result in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "resolve_signal_external_workflow");
+            ("seq", `Intlit (Int64.to_string seq));
+            ("result", result);
+          ])
+  | Resolve_request_cancel_external_workflow { seq; result } ->
+      let* result = external_workflow_resolution_json result in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "resolve_request_cancel_external_workflow");
             ("seq", `Intlit (Int64.to_string seq));
             ("result", result);
           ])
@@ -2304,6 +2396,48 @@ let completion_command path json =
       let* reason_json = field path "reason" entries in
       let* reason = cancellation_reason (path ^ ".reason") reason_json in
       Ok (Cancel_child_workflow { seq; reason })
+  | "signal_external_workflow" ->
+      let* entries =
+        exact_object path
+          [
+            "kind";
+            "seq";
+            "workflow_id";
+            "run_id";
+            "signal_name";
+            "input";
+            "child_workflow_only";
+            "headers";
+          ] json
+      in
+      let* seq_json = field path "seq" entries in
+      let* seq = uint32 (path ^ ".seq") seq_json in
+      let* workflow_id_json = field path "workflow_id" entries in
+      let* workflow_id = identifier (path ^ ".workflow_id") workflow_id_json in
+      let* run_id_json = field path "run_id" entries in
+      let* run_id = bounded_text (path ^ ".run_id") run_id_json in
+      let* signal_name_json = field path "signal_name" entries in
+      let* signal_name = identifier (path ^ ".signal_name") signal_name_json in
+      let* input_json = field path "input" entries in
+      let* input = list (path ^ ".input") payload input_json in
+      let* child_workflow_only_json = field path "child_workflow_only" entries in
+      let* child_workflow_only = bool (path ^ ".child_workflow_only") child_workflow_only_json in
+      let* headers_json = field path "headers" entries in
+      let* headers = payload_map (path ^ ".headers") headers_json in
+      Ok (Signal_external_workflow { seq; workflow_id; run_id; signal_name; input; child_workflow_only; headers })
+  | "request_cancel_external_workflow" ->
+      let* entries =
+        exact_object path [ "kind"; "seq"; "workflow_id"; "run_id"; "reason" ] json
+      in
+      let* seq_json = field path "seq" entries in
+      let* seq = uint32 (path ^ ".seq") seq_json in
+      let* workflow_id_json = field path "workflow_id" entries in
+      let* workflow_id = identifier (path ^ ".workflow_id") workflow_id_json in
+      let* run_id_json = field path "run_id" entries in
+      let* run_id = bounded_text (path ^ ".run_id") run_id_json in
+      let* reason_json = field path "reason" entries in
+      let* reason = cancellation_reason (path ^ ".reason") reason_json in
+      Ok (Request_cancel_external_workflow { seq; workflow_id; run_id; reason })
   | "continue_as_new" ->
       let* entries =
         exact_object path [ "kind"; "workflow_type"; "input" ] json
@@ -2483,6 +2617,33 @@ let completion_command_json = function
           [
             ("kind", `String "cancel_child_workflow");
             ("seq", `Intlit (Int64.to_string seq));
+            ("reason", `String reason);
+          ])
+  | Signal_external_workflow
+      { seq; workflow_id; run_id; signal_name; input; child_workflow_only; headers } ->
+      let* input = payloads_json input in
+      let* headers = payload_map_json "$.command.headers" headers in
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "signal_external_workflow");
+            ("seq", `Intlit (Int64.to_string seq));
+            ("workflow_id", `String workflow_id);
+            ("run_id", `String run_id);
+            ("signal_name", `String signal_name);
+            ("input", input);
+            ("child_workflow_only", `Bool child_workflow_only);
+            ("headers", headers);
+          ])
+  | Request_cancel_external_workflow
+      { seq; workflow_id; run_id; reason } ->
+      Ok
+        (`Assoc
+          [
+            ("kind", `String "request_cancel_external_workflow");
+            ("seq", `Intlit (Int64.to_string seq));
+            ("workflow_id", `String workflow_id);
+            ("run_id", `String run_id);
             ("reason", `String reason);
           ])
   | Continue_as_new { workflow_type; input } ->

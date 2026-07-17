@@ -243,6 +243,17 @@ type activation_job =
       seq : int64;
       result : child_workflow_resolution;
     }
+  (** Resolves a signal sent to an external workflow. [Error] carries Core's
+      structured failure when the target could not be signalled. *)
+  | Resolve_signal_external_workflow of {
+      seq : int64;
+      result : (unit, failure) result;
+    }
+  (** Resolves a request to cancel an external workflow. *)
+  | Resolve_request_cancel_external_workflow of {
+      seq : int64;
+      result : (unit, failure) result;
+    }
   (** Delivers one synchronous query. Arguments and headers are retained even
       though the current public handler API is output-only; non-empty
       arguments are rejected by that adapter rather than silently discarded. *)
@@ -371,6 +382,26 @@ type completion_command =
   (** Requests cancellation of a previously started child workflow.  [reason]
       is retained in history and is therefore part of deterministic replay. *)
   | Cancel_child_workflow of { seq : int64; reason : string }
+  (** Sends a typed signal to another workflow execution. The target identity,
+      child-only safety flag, headers, and payloads are all retained so the
+      native bridge can construct Core's official command without guessing. *)
+  | Signal_external_workflow of {
+      seq : int64;
+      workflow_id : string;
+      run_id : string;
+      signal_name : string;
+      input : payload list;
+      child_workflow_only : bool;
+      headers : (string * payload) list;
+    }
+  (** Requests cancellation of another workflow execution. Core resolves this
+      asynchronous command through a matching activation job. *)
+  | Request_cancel_external_workflow of {
+      seq : int64;
+      workflow_id : string;
+      run_id : string;
+      reason : string;
+    }
   | Request_cancel_activity of { seq : int64 }
   (** Requests cancellation of a local activity attempt through Core's local
       activity manager. *)

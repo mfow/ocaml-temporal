@@ -40,6 +40,23 @@ type child_workflow_state = {
   mutable start_run_id : string option;
 }
 
+(** Resolver retained for one external signal or cancellation command. The
+    command future resolves only after Core reports delivery or a structured
+    failure, preserving Temporal's asynchronous semantics. *)
+type external_workflow_resolution =
+  (unit, Temporal_base.Error.t) result -> unit
+
+(** The Core job kind is retained with each external resolver. Signal and
+    cancellation completions have the same payload type, so checking this
+    discriminator prevents a malformed or reordered activation from resolving
+    the wrong workflow future. *)
+type external_operation = [ `Signal | `Cancel ]
+
+type external_workflow_state = {
+  operation : external_operation;
+  resolve : external_workflow_resolution;
+}
+
 (** Identifies the one language-level patch operation selected for a durable
     patch ID during this reconstructed execution. Temporal Core keeps the first
     marker command for an ID, so silently mixing active and deprecated commands
@@ -86,6 +103,7 @@ type t = {
   activities : (int64, activity_resolution) Hashtbl.t;
   local_activities : (int64, local_activity_state) Hashtbl.t;
   child_workflows : (int64, child_workflow_state) Hashtbl.t;
+  external_workflows : (int64, external_workflow_state) Hashtbl.t;
   timers : (int64, unit -> unit) Hashtbl.t;
   (* Values keyed here belong only to this execution context. The [Obj]
      boundary is private and safe because callers can only use the same
@@ -170,6 +188,7 @@ let create ?(task_queue = "default") ?(randomness_seed = "0") scheduler =
         activities = Hashtbl.create 16;
         local_activities = Hashtbl.create 16;
         child_workflows = Hashtbl.create 16;
+        external_workflows = Hashtbl.create 16;
         timers = Hashtbl.create 16;
         locals = Hashtbl.create 8;
         random_state = seed_of_decimal randomness_seed;
@@ -644,6 +663,31 @@ let start_timer context milliseconds =
   emit context (Activation.Start_timer { seq; milliseconds });
   future
 
+(** Schedules one external workflow signal and retains a resolver until Core
+    acknowledges delivery. *)
+let signal_external_workflow context ~workflow_id ~run_id ~signal_name ~input
+    ?(child_workflow_only = false) ?(headers = []) () =
+  let seq = allocate_sequence context in
+  let future, resolve = Scheduler.promise context.scheduler ~outside_error in
+  Hashtbl.add context.external_workflows seq
+    { operation = `Signal; resolve };
+  emit context
+    (Activation.Signal_external_workflow
+       { seq; workflow_id; run_id; signal_name; input; child_workflow_only; headers });
+  future
+
+(** Schedules one external workflow cancellation request and waits for Core's
+    matching resolution job. *)
+let cancel_external_workflow context ~workflow_id ~run_id ~reason () =
+  let seq = allocate_sequence context in
+  let future, resolve = Scheduler.promise context.scheduler ~outside_error in
+  Hashtbl.add context.external_workflows seq
+    { operation = `Cancel; resolve };
+  emit context
+    (Activation.Request_cancel_external_workflow
+       { seq; workflow_id; run_id; reason });
+  future
+
 (** Removes the activity before invoking its resolver. If resolving triggers a
     repeated completion immediately, the repeated sequence is rejected instead
     of completing the same future twice. *)
@@ -773,6 +817,27 @@ let resolve_child_workflow context ~seq result =
           state.resolve result;
           Ok ())
 
+(** Completes one external workflow operation and rejects duplicate or unknown
+    sequence numbers as bridge defects instead of dropping a Core event. *)
+let resolve_external_workflow context ~operation ~seq result =
+  match Hashtbl.find_opt context.external_workflows seq with
+  | None ->
+      Error
+        (bridge_error
+           (Printf.sprintf
+              "unknown or duplicate external workflow sequence %Ld" seq))
+  | Some state ->
+      if state.operation <> operation then
+        Error
+          (bridge_error
+             (Printf.sprintf
+                "external workflow sequence %Ld resolved with the wrong operation"
+                seq))
+      else (
+        Hashtbl.remove context.external_workflows seq;
+        state.resolve result;
+        Ok ())
+
 (** Removes a timer before completing its future, matching activity handling. *)
 let fire_timer context ~seq =
   match Hashtbl.find_opt context.timers seq with
@@ -817,5 +882,6 @@ let shutdown context =
   Hashtbl.clear context.activities;
   Hashtbl.clear context.local_activities;
   Hashtbl.clear context.child_workflows;
+  Hashtbl.clear context.external_workflows;
   Hashtbl.clear context.timers;
   Hashtbl.clear context.patches

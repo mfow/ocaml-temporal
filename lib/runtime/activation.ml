@@ -25,6 +25,16 @@ type job =
       seq : int64;
       result : (Temporal_base.Codec.payload, Temporal_base.Error.t) result;
     }
+  (** Completion of a signal sent to an external workflow. *)
+  | Resolve_signal_external_workflow of {
+      seq : int64;
+      result : (unit, Temporal_base.Error.t) result;
+    }
+  (** Completion of a request to cancel an external workflow. *)
+  | Resolve_request_cancel_external_workflow of {
+      seq : int64;
+      result : (unit, Temporal_base.Error.t) result;
+    }
   (** A synchronous query request. Query jobs carry no sequence because they
       answer a read-only request directly and never resolve a workflow future. *)
   | Query_workflow of {
@@ -147,6 +157,23 @@ type command =
       sequence.  Core owns the race between this command and the start
       acknowledgment; the OCaml runtime only emits it once per pending child. *)
   | Cancel_child_workflow of { seq : int64; reason : string }
+  (** Sends one signal to a specific workflow execution. *)
+  | Signal_external_workflow of {
+      seq : int64;
+      workflow_id : string;
+      run_id : string;
+      signal_name : string;
+      input : Temporal_base.Codec.payload list;
+      child_workflow_only : bool;
+      headers : (string * Temporal_base.Codec.payload) list;
+    }
+  (** Requests cancellation of a specific workflow execution. *)
+  | Request_cancel_external_workflow of {
+      seq : int64;
+      workflow_id : string;
+      run_id : string;
+      reason : string;
+    }
   | Request_cancel_activity of { seq : int64 }
   (** Cancels a local activity through Core's local activity manager. *)
   | Request_cancel_local_activity of { seq : int64 }

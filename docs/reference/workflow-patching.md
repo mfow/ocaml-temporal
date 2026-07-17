@@ -7,9 +7,9 @@ change, then mark the patch as deprecated while incompatible histories drain.
 
 This is not a general deployment-versioning system. Removing a deprecated
 patch call is supported for histories that passed the documented lifecycle
-gates. Legacy build-ID worker routing is available separately through
-`Temporal.Worker.Options`; deployment-based routing, side effects, arbitrary
-historic compatibility, and migration tooling remain separate work.
+gates. Legacy build-ID and deployment-based worker routing are available
+separately through `Temporal.Worker.Options`; side effects, arbitrary historic
+compatibility, and migration tooling remain separate work.
 
 ## Authoring contract
 

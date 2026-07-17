@@ -57,12 +57,12 @@ type t
     synchronously shut down before the typed error is returned. The optional
     cache bound is passed to Temporal Core; omitting it preserves the default
     bound, while a small positive bound makes Core cache eviction observable
-    through the worker's empty-completion path. [legacy_build_id] selects
-    Temporal's legacy whole-worker build-ID routing; omitting it preserves the
-    unversioned behavior. *)
+    through the worker's empty-completion path. [versioning] selects
+    Temporal's worker routing strategy; omitting it preserves the unversioned
+    behavior. *)
 val create :
   ?max_cached_workflows:int ->
-  ?legacy_build_id:string ->
+  ?versioning:Temporal_core_bridge.Native_bridge.worker_versioning ->
   target_url:string ->
   namespace:string ->
   identity:string ->

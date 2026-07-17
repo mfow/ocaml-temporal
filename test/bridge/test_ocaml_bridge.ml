@@ -71,6 +71,28 @@ let () =
   | Error { status = Invalid_state; message } ->
       assert (String.length message > 0)
   | _ -> failwith "worker construction without a client was accepted");
+  (* Constructing the modern routing variant exercises the OCaml serializer
+     and Rust decoder together before the expected missing-client failure. *)
+  let deployment_worker_config =
+    unwrap
+      (Bridge.worker_config ~namespace:"temporal-sdk-test"
+         ~task_queue:"ocaml-temporal-unit" ~build_id:"agents-v3"
+         ~versioning:
+           (Bridge.Deployment_based
+              {
+                deployment_name = "agents";
+                build_id = "agents-v3";
+                use_worker_versioning = true;
+                default_versioning_behavior = Some Bridge.Pinned;
+              })
+         ~max_cached_workflows:0 ~max_outstanding_workflow_tasks:100
+         ~max_concurrent_workflow_task_polls:1
+         ~graceful_shutdown_timeout_ms:1_000L ())
+  in
+  (match Bridge.worker_start runtime deployment_worker_config with
+  | Error { status = Invalid_state; message } ->
+      assert (String.length message > 0)
+  | _ -> failwith "deployment worker construction without a client was accepted");
   (match Bridge.worker_try_poll_workflow runtime with
   | Error { status = Invalid_state; message } ->
       assert (String.length message > 0)

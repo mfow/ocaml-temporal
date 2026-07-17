@@ -20,7 +20,7 @@
     "task_queue": { "type": "string", "minLength": 1, "description": "Runtime validators enforce the 65536-byte transport ceiling; Core and Server enforce semantic limits." },
     "build_id": { "type": "string", "minLength": 1, "description": "Runtime validators enforce the 65536-byte transport ceiling; Core and Server enforce semantic limits." },
     "versioning": {
-      "description": "Closed worker-routing mode. In legacy mode, build_id must exactly match the top-level build_id; the OCaml and Rust validators enforce that cross-field invariant.",
+      "description": "Closed worker-routing mode. In legacy and deployment-based modes, build_id must exactly match the top-level build_id; the OCaml and Rust validators enforce that cross-field invariant.",
       "oneOf": [
         {
           "type": "object",
@@ -35,6 +35,27 @@
           "properties": {
             "kind": { "const": "legacy_build_id" },
             "build_id": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "deployment_name",
+            "build_id",
+            "use_worker_versioning",
+            "default_versioning_behavior"
+          ],
+          "properties": {
+            "kind": { "const": "deployment_based" },
+            "deployment_name": { "type": "string", "minLength": 1 },
+            "build_id": { "type": "string", "minLength": 1 },
+            "use_worker_versioning": { "type": "boolean" },
+            "default_versioning_behavior": {
+              "type": ["string", "null"],
+              "enum": ["auto_upgrade", "pinned", null]
+            }
           }
         }
       ]

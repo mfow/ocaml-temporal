@@ -15,6 +15,12 @@ module Options : sig
   type versioning =
     | No_versioning
     | Legacy_build_id of string
+    | Deployment_based of {
+        deployment_name : string;
+        build_id : string;
+        use_worker_versioning : bool;
+        default_versioning_behavior : [ `Auto_upgrade | `Pinned ] option;
+      }
 
   (** A validated set of optional worker resource and routing settings. *)
   type t

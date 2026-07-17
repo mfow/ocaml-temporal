@@ -23,9 +23,9 @@ require_source() {
   fi
 }
 
-# Rejects the old second-run barrier. Under a one-slot sticky cache, Core may
-# evict the first run before delivering the second completion callback; waiting
-# for that callback makes the eviction gate self-deadlock.
+# B is diagnostic only. Pinned Core ordering buffers B until it has delivered
+# and received A's cache-full removal acknowledgement, so B's normal
+# completion can never prove that eviction occurred.
 reject_source() {
   path=$1
   needle=$2
@@ -40,17 +40,24 @@ require_source "$makefile" 'SMOKE_WORKER_MAX_CACHED_WORKFLOWS=1'
 require_source "$makefile" 'SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS'
 require_source "$makefile" 'SMOKE_WORKER_CACHE_EVICTION_FILE='
 require_source "$makefile" 'SMOKE_WORKER_CACHE_EVICTION_READY_FILE='
+require_source "$makefile" 'SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE='
 require_source "$makefile" 'SMOKE_CACHE_EVICTION_READY_FILE'
+require_source "$makefile" 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE'
 require_source "$makefile" 'SMOKE_REPLAY_WORKFLOW_ID=two-binary-cache-eviction-a'
 require_source "$makefile" 'smoke-cache-eviction-driver'
 require_source "$worker" 'Worker.create ?max_cached_workflows'
-require_source "$worker" 'Worker.workflow Definitions.cache_eviction'
+require_source "$worker" 'Definitions.cache_eviction_residency_handler'
 require_source "$driver_dune" '(name cache_eviction_driver)'
 require_source "$driver" 'wait_for_marker'
+require_source "$driver" 'wait_for_eviction_with_second_diagnostic'
 require_source "$driver" 'initial-completion'
+require_source "$driver" 'cache_settling'
+require_source "$driver" 'Client.query first ~query:Definitions.cache_eviction_residency_query'
+require_source "$driver" 'require_resident'
 require_source "$driver" 'SMOKE_CACHE_EVICTION_READY_FILE'
-reject_source "$driver" 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE'
-reject_source "$driver" 'ready_b'
+require_source "$driver" 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE'
+require_source "$driver" 'second workflow was acknowledged but A cache-full eviction marker was not published'
+reject_source "$driver" 'phase "ready_b"'
 require_source "$driver" 'two-binary-cache-eviction-a'
 require_source "$driver" 'two-binary-cache-eviction-b'
 require_source "$driver" 'Client.cancel ~request_id ~reason:'
@@ -69,6 +76,8 @@ require_source "$root/lib/runtime/native_worker_execution.ml" 'cache_removal_rea
 require_source "$root/lib/runtime/native_worker_execution.ml" 'on_completion'
 require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
   'Temporal.Workflow.sleep (Temporal.Duration.of_ms 60_000L)'
+require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
+  'smoke.cache_eviction_residency'
 reject_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
   'fun () -> Ok false'
 

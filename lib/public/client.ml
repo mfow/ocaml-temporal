@@ -271,7 +271,7 @@ let follow client ~workflow ({ namespace; workflow_id; run_id } : execution) =
 
 (** Decodes a completed payload and maps terminal failures without exposing the
     private backend constructors. *)
-let wait handle =
+let wait (handle : ('input, 'output) handle) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -597,7 +597,8 @@ let list_visibility ?(page_size = 100) ?page_token client ~query () =
 (** Executes a one-input typed query against the exact run retained by
     [handle]. Encoding happens before transport, so invalid input cannot
     consume a native request or become an ambiguous empty query. *)
-let query_with_input handle ~(query : ('input, 'query) Query.typed) ~input =
+let query_with_input (handle : ('workflow_input, 'workflow_output) handle)
+    ~(query : ('input, 'query) Query.typed) ~input =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())

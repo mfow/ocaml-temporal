@@ -10,7 +10,7 @@ where application code normally uses them.
 
 | Context | Modules | Use them for |
 | --- | --- | --- |
-| Workflow code | `Temporal.Workflow`, `Temporal.Activity`, `Temporal.Child_workflow`, `Temporal.Future`, `Temporal.Condition`, `Temporal.Scope`, `Temporal.Workflow_context`, `Temporal.Time`, `Temporal.Duration` | Defining deterministic work, scheduling Temporal operations, waiting for results, and keeping execution-local state |
+| Workflow code | `Temporal.Workflow`, `Temporal.Activity`, `Temporal.Child_workflow`, `Temporal.Future`, `Temporal.Condition`, `Temporal.Scope`, `Temporal.Workflow_context`, `Temporal.Time`, `Temporal.Duration` | Defining deterministic work, making replay-safe time and pseudo-random choices, scheduling Temporal operations, waiting for results, and keeping execution-local state |
 | Application startup and shutdown | `Temporal.Client`, `Temporal.Worker`, `Temporal.Runtime_info` | Connecting to Temporal, registering executable definitions, running the worker, and checking the linked bridge |
 | Values crossing a Temporal boundary | `Temporal.Codec`, `Temporal.Payload`, `Temporal.Error`, `Temporal.Result_syntax` | Encoding typed values, inspecting opaque payloads, representing expected failures, and composing `result` values |
 | Signals, queries, and updates | `Temporal.Signal`, `Temporal.Query`, `Temporal.Update`, `Temporal.Interaction` | Defining typed interactions, registering handlers, and testing deterministic local dispatch |
@@ -29,12 +29,13 @@ for those rules.
 - `Temporal.Workflow` defines local or remote workflows. `start_sleep` creates
   a durable timer and returns a future; `sleep` is its wait-and-return
   convenience form. `Workflow.now ()` reads the activation timestamp supplied
-  by Temporal and never falls back to host wall-clock time. `continue_as_new`
-  ends the current run and starts a successor. `patched ~id` introduces a new
-  deterministic branch while allowing histories created before that marker to
-  replay the old branch. `deprecate_patch ~id` is the later unit-returning
-  lifecycle marker used while phasing that branch gate out; see
-  [workflow patching](workflow-patching.md).
+  by Temporal and never falls back to host wall-clock time. `random_int ~bound`
+  makes a replay-safe pseudo-random choice from the execution-local stream.
+  `continue_as_new` ends the current run and starts a successor. `patched ~id`
+  introduces a new deterministic branch while allowing histories created
+  before that marker to replay the old branch. `deprecate_patch ~id` is the
+  later unit-returning lifecycle marker used while phasing that branch gate
+  out; see [workflow patching](workflow-patching.md).
 - `Temporal.Activity` defines local, remote, context-aware, and asynchronous
   activities. `start` schedules an activity without waiting; `execute` is the
   convenience composition of `start` and `Future.await`. Keep the handle from
@@ -89,14 +90,17 @@ for those rules.
 
 - `Temporal.Client` starts typed workflow executions, retains the exact
   workflow/run identity, rebuilds a typed handle for a `Continued_as_new`
-  successor with `Client.follow`, requests exact-run cancellation or signals,
-  and waits for typed terminal outcomes. `Client.follow` only validates and
-  combines the existing client, workflow definition, and successor identity;
-  it does not start or implicitly follow a run. A successful cancel or signal
-  acknowledges the server request; it does not claim that workflow code has
-  already processed it. Call `Client.shutdown` when the client is no longer
-  needed to release its native graph; shutdown is idempotent and retains a
-  teardown failure so cleanup problems are not silently discarded.
+  successor with `Client.follow`, requests exact-run cancellation or
+  termination, sends typed signals and output-only queries, lists bounded
+  visibility results, and waits for typed terminal outcomes. `Client.follow`
+  only validates and combines the existing client, workflow definition, and
+  successor identity; it does not start or implicitly follow a run. A
+  successful cancel, terminate, or signal acknowledges the server request; it
+  does not claim that workflow code has already processed an asynchronous
+  request. A query returns the decoded output-only handler result or a typed
+  error. Call `Client.shutdown` when the client is no longer needed to release
+  its native graph; shutdown is idempotent and retains a teardown failure so
+  cleanup problems are not silently discarded.
 - `Temporal.Worker` registers workflows, activities, and the signal, query, and
   update handlers attached to each workflow registration. It owns one
   supervisor graph, runs the poll loops, and performs idempotent shutdown.

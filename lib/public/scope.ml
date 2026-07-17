@@ -32,14 +32,14 @@ let ownership_error operation =
     teardown, while this public module retains only the typed façade and its
     one resolver. *)
 let create () =
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None ->
       Error
         (Error.defect
            ~message:"Temporal.Scope.create used outside a workflow execution")
   | Some context ->
       let cancellation_base, resolve =
-        Temporal_runtime.Workflow_context_store.create_signal context
+        Temporal_sdk_kernel.Workflow_context_store.create_signal context
       in
       let cancellation =
         Future_private.of_internal
@@ -50,10 +50,10 @@ let create () =
           cancellation;
           resolve;
           owner_id =
-            Temporal_runtime.Future_store.owner_id cancellation_base;
+            Temporal_sdk_kernel.Future_store.owner_id cancellation_base;
           callbacks_live =
             (fun () ->
-              Temporal_runtime.Future_store.callbacks_live cancellation_base);
+              Temporal_sdk_kernel.Future_store.callbacks_live cancellation_base);
           state = Active;
         }
 
@@ -64,7 +64,7 @@ let create () =
     keeps the liveness callback from reading scheduler state on a foreign
     Domain. *)
 let owns_scheduler scope =
-  Temporal_runtime.Future_store.current_owner_matches scope.owner_id
+  Temporal_sdk_kernel.Future_store.current_owner_matches scope.owner_id
   && scope.callbacks_live ()
 
 (** Records cancellation and signals waiters through the owning scheduler.

@@ -63,7 +63,7 @@ let implementation definition = definition.implementation
     wrapped before it crosses into the public API, converting native errors to
     public errors and preserving the workflow scheduler owner. *)
 let start_sleep duration =
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None ->
       Future_private.resolved
         ~outside_error:(fun () ->
@@ -76,10 +76,10 @@ let start_sleep duration =
         (* A zero-duration timer is already ready; omitting the command keeps
            replay history free of a timer that cannot suspend the workflow. *)
         Future_private.of_internal
-          (Temporal_runtime.Workflow_context_store.resolved context (Ok ()))
+          (Temporal_sdk_kernel.Workflow_context_store.resolved context (Ok ()))
       else
         Future_private.of_internal
-          (Temporal_runtime.Workflow_context_store.start_timer context milliseconds)
+          (Temporal_sdk_kernel.Workflow_context_store.start_timer context milliseconds)
 
 (** Implements direct-style sleep as timer creation followed by a future wait. *)
 let sleep duration = Future.await (start_sleep duration)
@@ -89,14 +89,14 @@ let sleep duration = Future.await (start_sleep duration)
     user code, which means repeated calls during one activation observe the
     same value and replay does not consult local time. *)
 let now () =
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None ->
       Error
         (Error.defect
            ~message:"Temporal.Workflow.now used outside a workflow execution")
   | Some context -> (
       match
-        Temporal_runtime.Workflow_context_store.activation_timestamp context
+        Temporal_sdk_kernel.Workflow_context_store.activation_timestamp context
       with
       | None ->
           Error
@@ -112,13 +112,13 @@ let now () =
     private runtime advances an execution-local stream so replay observes the
     same value at each call without reading host randomness. *)
 let random_int ~bound =
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None ->
       Error
         (Error.defect
            ~message:"Temporal.Workflow.random_int used outside a workflow execution")
   | Some context ->
-      Temporal_runtime.Workflow_context_store.random_int context ~bound
+      Temporal_sdk_kernel.Workflow_context_store.random_int context ~bound
       |> Result.map_error Error_private.of_base
 
 (** Validates and snapshots a patch ID before consulting workflow state. The
@@ -141,11 +141,11 @@ let validated_patch_id ~operation id =
     decision; the execution context retains it for later calls in this run. *)
 let patched ~id =
   let patch_id = validated_patch_id ~operation:"patched" id in
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None ->
       invalid_arg "Temporal.Workflow.patched used outside a workflow execution"
   | Some context ->
-      Temporal_runtime.Workflow_context_store.patched context ~patch_id
+      Temporal_sdk_kernel.Workflow_context_store.patched context ~patch_id
 
 (** Records that one previously active patch is being phased out. The runtime
     retains Core's deterministic decision internally but exposes no branch
@@ -153,12 +153,12 @@ let patched ~id =
     lifecycle marker while compatible histories drain. *)
 let deprecate_patch ~id =
   let patch_id = validated_patch_id ~operation:"deprecate_patch" id in
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None ->
       invalid_arg
         "Temporal.Workflow.deprecate_patch used outside a workflow execution"
   | Some context ->
-      Temporal_runtime.Workflow_context_store.deprecate_patch context ~patch_id
+      Temporal_sdk_kernel.Workflow_context_store.deprecate_patch context ~patch_id
 
 (** Requests a fresh run of the same workflow type with [input]. This is a
     terminal direct-style operation: it encodes the successor input, buffers a
@@ -166,14 +166,14 @@ let deprecate_patch ~id =
     fiber. If encoding fails, the current run is failed with that typed codec
     error instead of raising it through the worker loop. *)
 let continue_as_new definition next_input =
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None ->
       invalid_arg "Temporal.Workflow.continue_as_new used outside a workflow execution"
   | Some context -> (
       match Codec_private.encode_base (input definition) next_input with
       | Ok payload ->
-          Temporal_runtime.Workflow_context_store.continue_as_new context
+          Temporal_sdk_kernel.Workflow_context_store.continue_as_new context
             ~workflow_type:(name definition) ~input:payload
       | Error error ->
-          Temporal_runtime.Workflow_context_store.terminate context
-            (Temporal_runtime.Activation.Fail_workflow error))
+          Temporal_sdk_kernel.Workflow_context_store.terminate context
+            (Temporal_sdk_kernel.Activation.Fail_workflow error))

@@ -33,7 +33,7 @@ let unsigned_int64_decimal bits =
     bits again therefore produces the same replay-stable representation as
     activity commands without exposing the private record field. *)
 let to_runtime (policy : Activity.Retry_policy.t) =
-  Temporal_runtime.Activation
+  Temporal_sdk_kernel.Activation
   .{
     initial_interval =
       Duration.to_ms (Activity.Retry_policy.initial_interval policy);

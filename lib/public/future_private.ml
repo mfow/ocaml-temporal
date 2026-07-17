@@ -13,26 +13,26 @@ let of_internal ?outside_error future =
           ~message:"Temporal future awaited outside its workflow scheduler")
   in
   let map_error result = Result.map_error Error_private.of_base result in
-  Temporal_future_kernel.make
+  Temporal_sdk_kernel.Future.make
     ~await:(fun () ->
-      map_error (Temporal_runtime.Future_store.await future))
+      map_error (Temporal_sdk_kernel.Future_store.await future))
     ~await_gate:(fun register ->
-      Temporal_runtime.Future_store.await_gate future register)
+      Temporal_sdk_kernel.Future_store.await_gate future register)
     ~observe:(fun observer ->
-      Temporal_runtime.Future_store.observe future (fun result ->
+      Temporal_sdk_kernel.Future_store.observe future (fun result ->
           observer (map_error result)))
-    ~is_ready:(fun () -> Temporal_runtime.Future_store.is_ready future)
+    ~is_ready:(fun () -> Temporal_sdk_kernel.Future_store.is_ready future)
     ~peek:(fun () ->
-      Option.map map_error (Temporal_runtime.Future_store.peek future))
-    ~owner_id:(Temporal_runtime.Future_store.owner_id future)
+      Option.map map_error (Temporal_sdk_kernel.Future_store.peek future))
+    ~owner_id:(Temporal_sdk_kernel.Future_store.owner_id future)
     ~outside_error
-    ~callbacks_live:(fun () -> Temporal_runtime.Future_store.callbacks_live future)
-    ~enqueue:(Temporal_runtime.Future_store.enqueue future)
+    ~callbacks_live:(fun () -> Temporal_sdk_kernel.Future_store.callbacks_live future)
+    ~enqueue:(Temporal_sdk_kernel.Future_store.enqueue future)
 
 (** Creates a settled public value for validation failures and detached calls;
     its callbacks are inert because no workflow scheduler owns the result. *)
 let resolved ~outside_error result =
-  Temporal_future_kernel.make
+  Temporal_sdk_kernel.Future.make
     ~await:(fun () -> result)
     ~await_gate:(fun register -> register (fun () -> ()))
     ~observe:(fun observer -> observer result)

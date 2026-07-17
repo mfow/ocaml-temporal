@@ -27,6 +27,10 @@
  (libraries temporal-sdk))
 
 (executable
+ (name forbidden_sdk_kernel)
+ (libraries temporal-sdk))
+
+(executable
  (name forbidden_native_worker)
  (libraries temporal-sdk))
 

@@ -62,7 +62,7 @@ type t
     behavior. *)
 val create :
   ?max_cached_workflows:int ->
-  ?versioning:Temporal_core_bridge.Native_bridge.worker_versioning ->
+  ?versioning:Temporal_sdk_kernel.Bridge.worker_versioning ->
   target_url:string ->
   namespace:string ->
   identity:string ->

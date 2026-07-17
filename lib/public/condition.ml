@@ -19,7 +19,7 @@ let protect_predicate predicate () =
 (** Evaluates and waits through the current workflow context.  A call outside
     workflow execution returns a typed defect and retains no callback. *)
 let wait_until_result predicate =
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | None ->
       Error
         (Error.defect
@@ -31,7 +31,7 @@ let wait_until_result predicate =
         | Ok value -> Ok value
         | Error error -> Error (Error_private.to_base error)
       in
-      Temporal_runtime.Workflow_context_store.wait_until context ~predicate
+      Temporal_sdk_kernel.Workflow_context_store.wait_until context ~predicate
       |> Result.map_error Error_private.of_base
 
 (** Waits for a boolean predicate by adapting it to the typed predicate form. *)

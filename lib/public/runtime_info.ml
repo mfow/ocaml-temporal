@@ -2,7 +2,7 @@
     stable OCaml error channel. Rust allocation cleanup happens inside the
     private bridge binding before this function receives the result. *)
 let native_bridge_abi_version () =
-  let module Bridge = Temporal_core_bridge.Native_bridge in
+  let module Bridge = Temporal_sdk_kernel.Bridge in
   match Bridge.check_abi_version Bridge.abi_version with
   | Ok () -> Ok Bridge.abi_version
   | Error error ->

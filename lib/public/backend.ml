@@ -7,11 +7,11 @@
     and lifecycle implementation details. Every payload is copied when it is
     converted between the public and protocol representations. *)
 
-module Bridge = Temporal_core_bridge.Native_bridge
-module Native = Sdk_supervisor.Native
-module Client_protocol = Temporal_protocol.Client_protocol
-module Workflow_protocol = Temporal_protocol.Workflow_protocol
-module Failure_diagnostic = Temporal_protocol.Failure_diagnostic
+module Bridge = Temporal_sdk_kernel.Bridge
+module Native = Temporal_sdk_kernel.Supervisor
+module Client_protocol = Temporal_sdk_kernel.Client_protocol
+module Workflow_protocol = Temporal_sdk_kernel.Workflow_protocol
+module Failure_diagnostic = Temporal_sdk_kernel.Failure_diagnostic
 
 (** Connection settings copied into each backend graph. *)
 type config = {

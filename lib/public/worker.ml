@@ -1,6 +1,6 @@
 (** Implements the public worker over the private semantic backend. *)
 
-module Bridge = Temporal_core_bridge.Native_bridge
+module Bridge = Temporal_sdk_kernel.Bridge
 
 (** Heterogeneous workflow registration package. *)
 type registered_workflow =

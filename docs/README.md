@@ -144,11 +144,13 @@ context-aware activity heartbeats are implemented and focused-tested at the
 OCaml/native bridge, and both are included in the live baseline recorded by
 the [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471).
 Native signal delivery is implemented at the scheduler-owned activation
-boundary but still needs live Temporal Server acceptance. The public client can
-submit a typed signal to one exact run through the private control-plane bridge,
-but that acknowledgement does not claim worker-side handler execution. Native
-output-only query delivery and immediate one-input update dispatch are implemented
-at the bridge boundary but still need live Temporal Server acceptance; suspended
+boundary, and typed signal delivery is live-verified by the [PR #266
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29311239247). The public
+client can submit a typed signal to one exact run through the private
+control-plane bridge, but that acknowledgement does not claim worker-side
+handler execution. Native output-only and typed-input query delivery plus
+immediate one-input update dispatch are implemented at the bridge boundary but
+still need live Temporal Server acceptance; suspended
 updates, full workflow-code versioning, Nexus, and the remaining SDK parity
 work are tracked as later milestones. Experimental local activities are
 implemented and focused-tested, but still need live acceptance. `Workflow.patched` and the unit-returning

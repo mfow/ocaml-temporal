@@ -42,9 +42,12 @@ for those rules.
   `start_handle` when the workflow may need to cancel one exact activity or
   inspect its future separately; `Retry_policy` and the cancellation policy
   control the durable command options described in the [operation policy
-  reference](durable-operation-policies.md). Activity callbacks are the boundary for
-  external I/O, and their context/heartbeat rules are described in the
-  [activity reference](native-activity-execution.md). An asynchronous callback
+  reference](durable-operation-policies.md). `Priority` adds validated
+  scheduling metadata: a lower positive priority key is preferred, while an
+  optional fairness key and weight guide best-effort queue fairness. Activity
+  callbacks are the boundary for external I/O. Their context/heartbeat rules
+  are described in the [activity reference](native-activity-execution.md). An
+  asynchronous callback
   returns `Completed`, `Failed`, or `Will_complete_async`; after the handoff,
   `Async_handle` provides terminal `complete`, `fail`, and `cancel` operations
   plus non-terminal `heartbeat`, while `Async_context` is only used to obtain

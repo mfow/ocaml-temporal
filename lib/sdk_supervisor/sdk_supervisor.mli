@@ -138,6 +138,11 @@ module Native : sig
       (bytes, Temporal_core_bridge.Native_bridge.error) result
     (** Canonically serializes one typed exact-run cancellation request. *)
 
+    val encode_client_reset_request :
+      Temporal_protocol.Client_protocol.reset_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one typed exact-run reset request. *)
+
     val encode_client_signal_request :
       Temporal_protocol.Client_protocol.signal_request ->
       (bytes, Temporal_core_bridge.Native_bridge.error) result
@@ -208,6 +213,17 @@ module Native : sig
         Temporal_core_bridge.Native_bridge.error )
       result
     (** Decodes the cancellation acknowledgement and preserves structured
+        server failures as an inner typed result. *)
+
+    val decode_client_reset_result :
+      Temporal_protocol.Client_protocol.reset_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( ( Temporal_protocol.Client_protocol.reset_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes the new run identity after a reset and preserves structured
         server failures as an inner typed result. *)
 
     val encode_client_terminate_request :
@@ -298,6 +314,12 @@ module Native : sig
         (unit, Temporal_protocol.Client_protocol.client_error) result operation
         (** Requests cancellation of one exact run. The acknowledgement does
             not itself prove that the run has reached its cancelled outcome. *)
+    | Client_reset_workflow :
+        Temporal_protocol.Client_protocol.reset_request ->
+        ( Temporal_protocol.Client_protocol.reset_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result operation
+        (** Resets one exact run and returns the new run identity. *)
     | Client_terminate_workflow :
         Temporal_protocol.Client_protocol.terminate_request ->
         (unit, Temporal_protocol.Client_protocol.client_error) result operation

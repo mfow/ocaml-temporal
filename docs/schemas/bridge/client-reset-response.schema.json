@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-reset-response.schema.json",
+  "title": "OCaml Temporal native client exact-run reset response",
+  "description": "Closed response containing the new exact execution identity allocated by Temporal after a reset request.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["execution"],
+  "properties": {
+    "execution": {"$ref": "client-execution-ref.schema.json"}
+  }
+}

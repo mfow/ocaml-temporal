@@ -39,6 +39,15 @@ type cancel_request = {
 
 type cancel_response = { acknowledged : bool }
 
+type reset_request = {
+  execution : execution;
+  request_id : string;
+  reason : string;
+  workflow_task_finish_event_id : int64;
+}
+
+type reset_response = { execution : execution }
+
 (** Exact-run termination request. Temporal termination is an immediate
     control-plane operation and therefore carries operator reason text rather
     than a cancellation request ID. *)
@@ -332,7 +341,7 @@ let decode_start_response ~(request : start_request) input =
     validate_execution_matches "$.execution" ~namespace:request.namespace
       ~workflow_id:request.workflow_id execution
   in
-  Ok { execution }
+  Ok ({ execution } : start_response)
 
 let encode_wait_request (value : wait_request) =
   let* () = validate_identifier "$.namespace" value.namespace in
@@ -381,6 +390,53 @@ let decode_cancel_response input : (cancel_response, error) result =
   let* acknowledged = bool "$.acknowledged" acknowledged_json in
   if acknowledged then Ok ({ acknowledged } : cancel_response)
   else Error (invalid ~path:"$.acknowledged" "cancellation was not acknowledged")
+
+(** Serializes a reset request for one exact run. Temporal requires the reset
+    point to identify a completed or started workflow task event; keeping the
+    event ID as an exact signed 64-bit value avoids float or JSON rounding. *)
+let encode_reset_request (value : reset_request) =
+  let* () = validate_identifier "$.namespace" value.execution.namespace in
+  let* () = validate_identifier "$.workflow_id" value.execution.workflow_id in
+  let* () = validate_identifier "$.run_id" value.execution.run_id in
+  let* () = validate_identifier "$.request_id" value.request_id in
+  if value.workflow_task_finish_event_id < 0L then
+    Error (invalid ~path:"$.workflow_task_finish_event_id" "event ID must be non-negative")
+  else if String.length value.reason > 65_536 then
+    Error (invalid ~path:"$.reason" "reason exceeds the protocol string safety limit")
+  else if String.contains value.reason '\000' then
+    Error (invalid ~path:"$.reason" "reason contains a NUL byte")
+  else
+    encode_object
+      (`Assoc
+        [
+          ("namespace", json_string value.execution.namespace);
+          ("workflow_id", json_string value.execution.workflow_id);
+          ("run_id", json_string value.execution.run_id);
+          ("request_id", json_string value.request_id);
+          ( "workflow_task_finish_event_id",
+            `Intlit (Int64.to_string value.workflow_task_finish_event_id) );
+          ("reason", json_string value.reason);
+        ])
+
+(** Decodes the new exact execution returned by Temporal after a reset. The
+    server may choose a different run ID, so only namespace and workflow ID
+    must match the request; the returned run ID must still be non-empty. *)
+let decode_reset_response ~(request : reset_request) input : (reset_response, error) result =
+  let* json = decode_object input in
+  let* outer = exact_object "$" [ "execution" ] json in
+  let* execution_json = field "$" "execution" outer in
+  let* entries = exact_object "$.execution" [ "namespace"; "workflow_id"; "run_id" ] execution_json in
+  let* namespace_json = field "$.execution" "namespace" entries in
+  let* namespace = identifier "$.execution.namespace" namespace_json in
+  let* workflow_id_json = field "$.execution" "workflow_id" entries in
+  let* workflow_id = identifier "$.execution.workflow_id" workflow_id_json in
+  let* run_id_json = field "$.execution" "run_id" entries in
+  let* run_id = identifier "$.execution.run_id" run_id_json in
+  if not (String.equal namespace request.execution.namespace) then
+    Error (invalid ~path:"$.execution.namespace" "reset response namespace does not match request")
+  else if not (String.equal workflow_id request.execution.workflow_id) then
+    Error (invalid ~path:"$.execution.workflow_id" "reset response workflow ID does not match request")
+  else Ok { execution = { namespace; workflow_id; run_id } }
 
 (** Serializes termination using the same closed identity/reason shape as
     cancellation while keeping the operation-specific type explicit. *)
@@ -852,6 +908,10 @@ let decode_cancel_error input =
         (invalid ~path:"$.kind"
            "already_started is not a valid cancellation error")
   | (Rpc _ | Protocol _) -> Ok error
+
+(** Reset shares the cancellation RPC error vocabulary but has its own public
+    adapter entry point so operation-specific validation remains explicit. *)
+let decode_reset_error input = decode_cancel_error input
 
 (** Decodes a signal failure while rejecting [Already_started], which is a
     start-only category and cannot describe a signal RPC. *)

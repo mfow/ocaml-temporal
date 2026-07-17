@@ -461,6 +461,63 @@ let test_exact_run_termination () =
   | Error error -> failwith (Temporal.Error.message error));
   unwrap (Temporal.Client.shutdown client)
 
+(** Reset replaces the exact mock run with a fresh identity while preserving
+    the original input. The old exact handle remains addressable and observes
+    the terminal reset outcome; callers must rebuild the successor through
+    [follow] rather than silently following it. *)
+let test_exact_run_reset () =
+  let client =
+    unwrap
+      (Temporal.Client.create ~target_url:"mock://client"
+         ~namespace:"unit-test" ())
+  in
+  let handle =
+    unwrap
+      (Temporal.Client.start client ~workflow:echo_workflow
+         ~task_queue:"unit-test" ~id:"unit-reset" ~input:"reset-me" ())
+  in
+  let old_run = Temporal.Client.run_id handle in
+  let execution =
+    unwrap
+      (Temporal.Client.reset ~request_id:"reset-unit-1"
+         ~reason:"unit reset" ~workflow_task_finish_event_id:4L handle)
+  in
+  assert (execution.workflow_id = "unit-reset");
+  assert (execution.run_id <> old_run);
+  (match Temporal.Client.wait handle with
+  | Ok (Temporal.Client.Terminated error) ->
+      assert ((Temporal.Error.view error).category = `Terminated)
+  | Ok _ -> failwith "old reset handle returned the wrong terminal result"
+  | Error error -> failwith (Temporal.Error.message error));
+  let retried =
+    unwrap
+      (Temporal.Client.reset ~request_id:"reset-unit-1"
+         ~reason:"unit reset" ~workflow_task_finish_event_id:4L handle)
+  in
+  assert (retried.workflow_id = execution.workflow_id);
+  assert (retried.run_id = execution.run_id);
+  expect_error "workflow"
+    (Temporal.Client.reset ~request_id:"reset-unit-1"
+       ~reason:"different reset" ~workflow_task_finish_event_id:4L handle);
+  let reset_handle =
+    unwrap (Temporal.Client.follow client ~workflow:echo_workflow execution)
+  in
+  (match Temporal.Client.wait reset_handle with
+  | Ok (Temporal.Client.Completed "reset-me") -> ()
+  | Ok _ -> failwith "reset run returned an unexpected terminal result"
+  | Error error -> failwith (Temporal.Error.message error));
+  List.iter
+    (fun result ->
+      match result with
+      | Error _ -> ()
+      | Ok _ -> failwith "invalid reset metadata was accepted")
+    [
+      Temporal.Client.reset ~workflow_task_finish_event_id:(-1L) handle;
+      Temporal.Client.reset ~reason:"contains\000nul"
+        ~workflow_task_finish_event_id:4L handle;
+    ];
+  unwrap (Temporal.Client.shutdown client)
+
 (** A late cancellation request cannot rewrite a terminal result that the mock
     has already exposed. This protects the deterministic seam from modelling
     mutable terminal history unlike a real Temporal execution. *)
@@ -757,6 +814,7 @@ let () =
   test_follow_rejects_malformed_successor_identity ();
   test_follow_rejects_cross_namespace_execution ();
   test_exact_run_cancellation ();
+  test_exact_run_reset ();
   test_exact_run_termination ();
   test_completed_mock_run_is_immutable ();
   test_exact_run_signal ();

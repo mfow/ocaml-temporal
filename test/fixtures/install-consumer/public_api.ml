@@ -518,6 +518,14 @@ let _client_cancel :
     (unit, T.Error.t) result =
   T.Client.cancel
 
+let _client_reset :
+    ?request_id:string ->
+    ?reason:string ->
+    workflow_task_finish_event_id:int64 ->
+    ('input, 'output) T.Client.handle ->
+    (T.Client.execution, T.Error.t) result =
+  T.Client.reset
+
 let _client_signal :
     ?request_id:string ->
     ('workflow_input, 'workflow_output) T.Client.handle ->

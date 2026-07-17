@@ -3970,7 +3970,9 @@ mod pending_start_reservation_tests {
 
 #[cfg(test)]
 mod worker_config_tests {
-    use super::{MIN_CACHED_WORKFLOW_POLLS, STATUS_CONFIGURATION, WorkerConfigInput};
+    use super::{
+        MIN_CACHED_WORKFLOW_POLLS, STATUS_CONFIGURATION, VersioningBehavior, WorkerConfigInput,
+    };
 
     /// Builds a complete worker document while varying only workflow poller
     /// concurrency, so the Core cache invariant is isolated from other fields.
@@ -4099,9 +4101,10 @@ mod worker_config_tests {
             use_worker_versioning: false,
             default_versioning_behavior: Some("auto_upgrade".to_owned()),
         };
-        let failure = worker
-            .into_core()
-            .expect_err("disabled deployment versioning must reject a default behavior");
+        let failure = match worker.into_core() {
+            Err(failure) => failure,
+            Ok(_) => panic!("disabled deployment versioning must reject a default behavior"),
+        };
         assert_eq!(failure.status, STATUS_CONFIGURATION);
         assert!(
             failure

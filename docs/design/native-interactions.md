@@ -3,12 +3,12 @@
 This document specifies how Temporal Core signals, queries, and updates cross
 the private Rust/OCaml boundary. It is both a design reference and an
 implementation-status record. The bilateral bridge now transports
-`SignalWorkflow`, `QueryWorkflow`, and the first bounded `DoUpdate` activation
+`SignalWorkflow`, `QueryWorkflow`, and the bounded `DoUpdate` activation
 slice safely through Rust, semantic JSON, and the OCaml runtime. Signals are
 queued on the workflow scheduler; queries are answered synchronously by a
-registered read-only handler; and a native update handler currently runs to a
-single result in the activation that delivered it. Suspended update handlers
-and their later-activation completion records remain future work.
+registered read-only handler; and update handlers emit acceptance in the
+delivery activation, retaining suspended continuations until a later activation
+emits their terminal response.
 
 For the public, in-memory typing that already exists, see
 [Signals, queries, and updates](../reference/interactive-workflows.md). That
@@ -40,7 +40,7 @@ the Rust side while giving the OCaml runtime a small type-checked vocabulary.
 
 The current semantic protocol supports initialization, activity and child
 resolutions, timers, cancellation, eviction, `SignalWorkflow`, and
-`QueryWorkflow`/`QueryResult`, and the immediate `DoUpdate`/`UpdateResponse`
+`QueryWorkflow`/`QueryResult`, and the two-phase `DoUpdate`/`UpdateResponse`
 slice. A signal is validated in Rust, encoded as semantic JSON, decoded and
 copied by OCaml, and represented as a runtime signal job in the original
 activation order. A query activation is validated as a query-only batch,
@@ -48,8 +48,9 @@ answered inline on the execution owner Domain, and returned as query-only
 completion commands. An update job is validated and copied in the same way,
 looked up by name, and either rejected or dispatched through the typed public
 update handler. A successful non-suspending handler produces an accepted
-response followed by a completed response; a validator, input, or handler
-error produces a structured rejection.
+response followed by a completed response; a suspending handler retains its
+continuation and emits its terminal response from a later activation. A
+validator, input, or handler error produces a structured rejection.
 
 Consequently:
 
@@ -66,15 +67,15 @@ Consequently:
   bridge never silently truncates or ignores a payload. Missing handlers and
   handler errors use the same failed-query response and leave the workflow
   execution unchanged.
-- `DoUpdate` is deliverable to a registered OCaml update handler when the
-  handler accepts exactly one input payload and returns without suspending.
-  The private runtime retains the full input, headers, identity, metadata ID,
-  protocol-instance ID, and replay-validation flag while the public handler
-  currently exposes only the typed input value. Missing handlers and
-  unsupported input arity are rejected as typed non-retryable workflow errors.
-  The bridge accepts an accepted-plus-completed pair in one activation,
-  completion-only responses in later activations, and accepted-plus-rejected
-  terminal responses. It rejects duplicate acceptance or terminal responses.
+- `DoUpdate` is deliverable to a registered OCaml update handler that accepts
+  exactly one input payload. The private runtime retains the full input,
+  headers, identity, metadata ID, protocol-instance ID, and replay-validation
+  flag while the public handler currently exposes only the typed input value.
+  Missing handlers and unsupported input arity are rejected as typed
+  non-retryable workflow errors. The bridge emits acceptance in the delivery
+  activation, then either completes immediately or retains a suspended
+  continuation for a later completion or rejection. It rejects duplicate
+  acceptance or terminal responses.
 - `Temporal.Interaction` can exercise typed handler registration, codec
   validation, duplicate-name rejection, and validator ordering locally.
 - The signal transport tests prove the native activation boundary. The first
@@ -309,7 +310,7 @@ implementation emits the deterministic acceptance response before its
 completed result in the same activation. A handler failure emits a structured
 `rejected` response; a successful handler encodes its output in `completed`.
 
-If a future handler suspends on a supported workflow operation, the initial
+If a handler suspends on a supported workflow operation, the initial
 acceptance belongs to the current activation and the terminal handler response
 is retained until the future resolves. The implementation uses an
 execution-owned continuation table keyed by `protocol_instance_id`, not a

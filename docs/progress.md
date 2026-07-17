@@ -14,6 +14,23 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-17: Typed workflow query-input API
+
+`Temporal.Query.define_with_input` now defines a synchronous, read-only query
+that decodes exactly one typed argument and returns a typed result. The
+source-compatible `Query.define` form remains available for output-only
+queries. `Temporal.Interaction.query_with_input` exercises the same contract
+in the deterministic local dispatcher, while `Temporal.Client.query_with_input`
+encodes the argument through the validated native payload list for an exact
+workflow/run handle.
+
+Focused interaction tests cover successful input decoding, codec failures,
+exception containment, and the output-only/typed-input distinction. The
+install-consumer public API fixture also compiles the new query definition,
+local dispatcher, and client entry points. This milestone has no live
+Temporal Server query acceptance yet; that remains a separate interaction
+coverage gate.
+
 ## 2026-07-16: Live workflow patch lifecycle gate verified
 
 The dedicated real-Temporal patch target now adds active-to-deprecated and

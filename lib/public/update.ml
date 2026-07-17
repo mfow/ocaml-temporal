@@ -86,10 +86,10 @@ module Handler = struct
                      helper must not advance mutable workflow state here.  The
                      runtime guard is scoped to this callback and restored
                      before the update implementation runs. *)
-                  match Temporal_runtime.Workflow_context_store.current () with
+                  match Temporal_sdk_kernel.Workflow_context_store.current () with
                   | None -> validate input
                   | Some context ->
-                      Temporal_runtime.Workflow_context_store.with_randomness_disabled
+                      Temporal_sdk_kernel.Workflow_context_store.with_randomness_disabled
                         context (fun () -> validate input)
                 with
                 | exception_ ->

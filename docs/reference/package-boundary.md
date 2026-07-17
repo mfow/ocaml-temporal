@@ -12,6 +12,30 @@ module by execution context and explains which source modules are deliberately
 private. Use it alongside this boundary reference when deciding where a new
 public helper belongs.
 
+## Three implementation layers
+
+The package dependency graph has three reviewable layers:
+
+1. The native transport layer contains the strict JSON protocol, project-owned
+   C ABI, Rust bridge, and Temporal Core integration. It owns foreign memory,
+   opaque native handles, Tokio, protobuf conversion, and server I/O.
+2. The private OCaml kernel contains the deterministic activation scheduler,
+   execution-local state, future kernel, mailbox, and one-owner-Domain SDK
+   supervisor. `temporal_sdk_kernel` is the explicit module allow-list through
+   which the public implementation reaches that layer and the native layer
+   beneath it.
+3. The public facade is the installed `Temporal` library. It owns typed codecs,
+   labelled arguments, abstract handles, `result`-based failures, and the
+   direct-style workflow helpers application authors use.
+
+`lib/public` must not name `Temporal_core_bridge`, `Temporal_protocol`,
+`Temporal_runtime`, `Temporal_future_kernel`, or `Sdk_supervisor` directly.
+That rule keeps the facade independently readable and prevents a convenient
+new helper from quietly acquiring a JSON, native-handle, scheduler-state, or
+mailbox dependency. The private `Backend` and `Native_worker` modules translate
+between public values and the kernel allow-list; Dune excludes both from the
+generated public signature.
+
 ## Dune invariant
 
 Every implementation library linked by `lib/public/dune` is declared with:
@@ -27,7 +51,8 @@ and has no `public_name`. This applies to:
 - `temporal_core_bridge`;
 - `temporal_runtime`;
 - `temporal_future_kernel`;
-- `temporal_mailbox_processor`; and
+- `temporal_mailbox_processor`;
+- `temporal_sdk_kernel`; and
 - `temporal_sdk_supervisor`.
 
 Dune therefore installs their archives and interfaces below the package's
@@ -109,7 +134,9 @@ that reference protects the source contract visible to downstream OCaml code.
 
 The repository smoke test also checks each currently listed internal Dune stanza
 for the `(package temporal-sdk)` declaration and rejects a future
-`public_name`.
+`public_name`. It rejects direct lower-layer module references or Dune
+dependencies from `lib/public`, and it compiles a negative consumer fixture for
+`Temporal_sdk_kernel` so the kernel cannot silently become application API.
 Changes that intentionally publish an implementation component must update
 this document, the public API review, and the install regression rather than
 silently widening the package surface.

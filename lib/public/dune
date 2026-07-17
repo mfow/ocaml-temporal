@@ -13,10 +13,6 @@
   workflow_private)
  (libraries
   temporal_base
-  temporal_core_bridge
-  temporal_future_kernel
-  temporal_protocol
-  temporal_runtime
-  temporal_sdk_supervisor
+  temporal_sdk_kernel
   yojson
   threads))

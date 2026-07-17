@@ -2,19 +2,19 @@
 
     The public [Temporal.Worker] module owns registration ergonomics and the
     deterministic mock seam used by unit tests. This module owns the real
-    integration: one [Sdk_supervisor.Native] instance, one workflow adapter, and
-    one activity adapter. Rust/Core remains behind the supervisor; this module
-    never stores a native pointer or a raw JSON document. *)
+    integration: one [Temporal_sdk_kernel.Supervisor] instance, one workflow
+    adapter, and one activity adapter. Rust/Core remains behind the supervisor;
+    this module never stores a native pointer or a raw JSON document. *)
 
-module Native = Sdk_supervisor.Native
-module Bridge = Temporal_core_bridge.Native_bridge
+module Native = Temporal_sdk_kernel.Supervisor
+module Bridge = Temporal_sdk_kernel.Bridge
 module Base_error = Temporal_base.Error
 module Observability = Temporal_base.Observability
-module Workflow_adapter = Temporal_runtime.Native_worker_execution
-module Activity_adapter = Temporal_runtime.Native_activity_execution
-module Worker_loop = Temporal_runtime.Native_worker_loop
-module Worker_policy = Temporal_runtime.Native_worker_policy
-module Role_checkpoint = Temporal_runtime.Workflow_role_checkpoint
+module Workflow_adapter = Temporal_sdk_kernel.Native_worker_execution
+module Activity_adapter = Temporal_sdk_kernel.Native_activity_execution
+module Worker_loop = Temporal_sdk_kernel.Native_worker_loop
+module Worker_policy = Temporal_sdk_kernel.Native_worker_policy
+module Role_checkpoint = Temporal_sdk_kernel.Workflow_role_checkpoint
 
 (** Result-bind notation keeps expected startup and lifecycle failures typed. *)
 let ( let* ) = Result.bind

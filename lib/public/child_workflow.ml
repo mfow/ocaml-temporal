@@ -29,10 +29,10 @@ type 'output handle = {
     workflow the current scheduler owns it; outside a workflow an inert store
     retains the diagnostic for [peek] and [await]. *)
 let resolved result =
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | Some context ->
       Future_private.of_internal
-        (Temporal_runtime.Workflow_context_store.resolved context
+        (Temporal_sdk_kernel.Workflow_context_store.resolved context
            (Result.map_error Error_private.to_base result))
   | None -> Future_private.resolved ~outside_error result
 
@@ -76,12 +76,12 @@ let validate_reason reason =
 (** Converts the public policy to the package-private runtime variant at the
     final boundary before command emission. *)
 let runtime_cancellation_type = function
-  | Try_cancel -> Temporal_runtime.Activation.Child_try_cancel
+  | Try_cancel -> Temporal_sdk_kernel.Activation.Child_try_cancel
   | Wait_cancellation_completed ->
-      Temporal_runtime.Activation.Child_wait_cancellation_completed
-  | Abandon -> Temporal_runtime.Activation.Child_abandon
+      Temporal_sdk_kernel.Activation.Child_wait_cancellation_completed
+  | Abandon -> Temporal_sdk_kernel.Activation.Child_abandon
   | Wait_cancellation_requested ->
-      Temporal_runtime.Activation.Child_wait_cancellation_requested
+      Temporal_sdk_kernel.Activation.Child_wait_cancellation_requested
 
 (** Builds a handle for a request that failed before a child command could be
     emitted. The future is ready and cancellation returns the same typed
@@ -100,11 +100,11 @@ let start_handle ?(cancellation_type = Try_cancel) ?retry_policy ~id definition
       match Codec_private.encode_base (Workflow.input definition) input with
       | Error error -> failed_handle (Error_private.of_base error)
       | Ok input -> (
-          match Temporal_runtime.Workflow_context_store.current () with
+          match Temporal_sdk_kernel.Workflow_context_store.current () with
           | None -> failed_handle (outside_error ())
           | Some context ->
               let future, cancel =
-                Temporal_runtime.Workflow_context_store.start_child_workflow
+                Temporal_sdk_kernel.Workflow_context_store.start_child_workflow
                   context ~id ~name:(Workflow.name definition) ~input
                   ?retry_policy:(Option.map Retry_policy_private.to_runtime retry_policy)
                   ~cancellation_type:(runtime_cancellation_type cancellation_type)

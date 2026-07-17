@@ -9,7 +9,7 @@
     not part of the public API. The handle is valid only for the lifetime of
     its owning execution; completion, eviction, cancellation, or shutdown
     disposes pending callbacks and continuations. *)
-type ('value, 'error) t = ('value, 'error) Temporal_future_kernel.t
+type ('value, 'error) t = ('value, 'error) Temporal_sdk_kernel.Future.t
 
 (** Identifies the input that completed a heterogeneous race. *)
 type ('left, 'right) race = Left of 'left | Right of 'right

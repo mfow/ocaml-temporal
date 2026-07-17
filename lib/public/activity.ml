@@ -374,10 +374,10 @@ type 'output handle = {
 (* Converts the public cancellation policy to the private runtime variant at
    the last boundary before a command is emitted. *)
 let runtime_cancellation_type = function
-  | Try_cancel -> Temporal_runtime.Activation.Try_cancel
+  | Try_cancel -> Temporal_sdk_kernel.Activation.Try_cancel
   | Wait_cancellation_completed ->
-      Temporal_runtime.Activation.Wait_cancellation_completed
-  | Abandon -> Temporal_runtime.Activation.Abandon
+      Temporal_sdk_kernel.Activation.Wait_cancellation_completed
+  | Abandon -> Temporal_sdk_kernel.Activation.Abandon
 
 module Retry_policy = struct
   (** The public retry policy keeps the source float for accessors and its
@@ -518,7 +518,7 @@ end
    the only place where the public activity module knows the bridge's compact
    representation; the public signature keeps those details hidden. *)
 let runtime_retry_policy policy =
-  Temporal_runtime.Activation
+  Temporal_sdk_kernel.Activation
   .{
     initial_interval = Duration.to_ms (Retry_policy.initial_interval policy);
     backoff_coefficient_bits = policy.backoff_coefficient_bits;
@@ -551,10 +551,10 @@ let outside_error () =
     such as [Future.both] report the real defect instead of a cross-execution
     ownership error from an inert owner id. *)
 let resolved result =
-  match Temporal_runtime.Workflow_context_store.current () with
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
   | Some context ->
       Future_private.of_internal
-        (Temporal_runtime.Workflow_context_store.resolved context
+        (Temporal_sdk_kernel.Workflow_context_store.resolved context
            (Result.map_error Error_private.to_base result))
   | None -> Future_private.resolved ~outside_error result
 
@@ -585,7 +585,7 @@ let start_handle_internal ?activity_id ?task_queue ?schedule_to_close_timeout
           match Codec_private.encode_base definition.input input with
           | Error error -> failed_handle (Error_private.of_base error)
           | Ok input -> (
-              match Temporal_runtime.Workflow_context_store.current () with
+              match Temporal_sdk_kernel.Workflow_context_store.current () with
               | None -> failed_handle (outside_error ())
               | Some context ->
                   let schedule_to_close_timeout =
@@ -616,7 +616,7 @@ let start_handle_internal ?activity_id ?task_queue ?schedule_to_close_timeout
                                "local activity does not support remote-only scheduling options")
                       else
                         Ok
-                          (Temporal_runtime.Workflow_context_store.schedule_local_activity
+                          (Temporal_sdk_kernel.Workflow_context_store.schedule_local_activity
                              context ~name:(name definition) ~input ?activity_id
                              ?schedule_to_close_timeout ?schedule_to_start_timeout
                              ?start_to_close_timeout ?retry_policy
@@ -625,7 +625,7 @@ let start_handle_internal ?activity_id ?task_queue ?schedule_to_close_timeout
                              ())
                     else
                       Ok
-                        (Temporal_runtime.Workflow_context_store.schedule_activity
+                        (Temporal_sdk_kernel.Workflow_context_store.schedule_activity
                            context ~name:(name definition) ~input ?activity_id
                            ?task_queue ?schedule_to_close_timeout
                            ?schedule_to_start_timeout ?start_to_close_timeout

@@ -51,10 +51,33 @@ for private_library in \
   temporal_mailbox_processor \
   temporal_protocol \
   temporal_runtime \
+  temporal_sdk_kernel \
   temporal_sdk_supervisor; do
   test -d "$private_root/$private_library"
   test ! -e "$package_root/$private_library"
 done
+
+# The source dependency graph has three deliberate layers. Public facade
+# modules may use the package-private OCaml kernel allow-list, but must not
+# bypass it and couple directly to JSON protocol, C/Rust bridge, deterministic
+# runtime, supervisor, or future-kernel implementation modules.
+if find "$root/lib/public" -type f \( -name '*.ml' -o -name '*.mli' \) \
+  -exec grep -E \
+    'Temporal_(core_bridge|protocol|runtime|future_kernel)|Sdk_supervisor' \
+    {} + >/dev/null; then
+  echo "public facade bypassed the private OCaml kernel boundary" >&2
+  find "$root/lib/public" -type f \( -name '*.ml' -o -name '*.mli' \) \
+    -exec grep -n -E \
+      'Temporal_(core_bridge|protocol|runtime|future_kernel)|Sdk_supervisor' \
+      {} + >&2
+  exit 1
+fi
+if grep -E \
+  'temporal_(core_bridge|future_kernel|protocol|runtime|sdk_supervisor)' \
+  "$root/lib/public/dune" >/dev/null; then
+  echo "public Dune library depends directly on a lower implementation layer" >&2
+  exit 1
+fi
 
 # The artifact layout check above protects against accidental installation in
 # the wrong directory. These separate consumer compilations protect the more
@@ -102,6 +125,7 @@ for forbidden_target in \
   forbidden_base \
   forbidden_runtime \
   forbidden_protocol \
+  forbidden_sdk_kernel \
   forbidden_native_worker \
   forbidden_backend \
   forbidden_future_kernel; do

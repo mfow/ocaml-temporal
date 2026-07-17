@@ -391,8 +391,9 @@ single side accepting a new variant early:
    mode and query-only completion tests. **Implemented in the current
    semantic/runtime slice:** bilateral Core conversion, exact query-ID
    preservation (including Core's `legacy_query` path), output-only and
-   exactly-one-input handler dispatch, and rejected extra arguments. Live
-   Server coverage remains open.
+   exactly-one-input handler dispatch, and rejected extra arguments. Output-only
+   query acceptance is live-verified by [PR #406](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643);
+   typed-input query server coverage remains open.
 3. **Implemented bounded milestone:** add `DoUpdate` and `UpdateResponse`
    semantic records, strict JSON/schema validation, pinned-Core conversion,
    immediate and suspended public handler dispatch, replay validator skipping,

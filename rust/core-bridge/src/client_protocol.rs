@@ -2922,6 +2922,37 @@ mod tests {
     }
 
     #[test]
+    /// Retains named start metadata as owned values and rejects duplicate
+    /// keys before protobuf map conversion can overwrite one entry.
+    fn start_metadata_is_closed_and_duplicate_safe() {
+        let json = serde_json::json!({
+            "request_id":"request-1",
+            "namespace":"default",
+            "workflow_id":"workflow-1",
+            "workflow_type":"smoke",
+            "task_queue":"queue",
+            "input":[],
+            "memo":[{"key":"owner","value":{"metadata":{},"data":{"encoding":"base64","data":"b3duZXI="}}}],
+            "search_attributes":[{"key":"priority","value":{"metadata":{},"data":{"encoding":"base64","data":"aGlnaA=="}}}]
+        })
+        .to_string();
+        let request = decode_start_request(&json).unwrap();
+        assert_eq!(request.memo.len(), 1);
+        assert_eq!(request.search_attributes[0].key, "priority");
+
+        // Build the duplicate through a JSON value rather than textual
+        // replacement: serde_json is free to choose object-key order, while
+        // the validation contract concerns duplicate array entries only.
+        let mut duplicate: serde_json::Value = serde_json::from_str(&json).unwrap();
+        duplicate["memo"] = serde_json::json!([
+            {"key":"owner","value":{"metadata":{},"data":{"encoding":"base64","data":"b3duZXI="}}},
+            {"key":"owner","value":{"metadata":{},"data":{"encoding":"base64","data":"b3duZXI="}}}
+        ]);
+        let duplicate = duplicate.to_string();
+        assert!(decode_start_request(&duplicate).is_err());
+    }
+
+    #[test]
     /// Keeps update admission and polling round trips closed and preserves a
     /// pending outcome as JSON `null` rather than inventing a terminal value.
     fn update_request_and_pending_response_round_trip() {

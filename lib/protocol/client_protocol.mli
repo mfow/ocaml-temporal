@@ -120,6 +120,32 @@ type visibility_page = {
 }
 (** One visibility page and its optional opaque continuation token. *)
 
+type update_request = {
+  execution : execution;
+  update_id : string;
+  update_name : string;
+  input : payload list;
+}
+(** Request to admit one named workflow update. *)
+
+type poll_update_request = { execution : execution; update_id : string }
+(** Exact update handle used by completion polls. *)
+
+type update_outcome =
+  | Update_completed of { result : payload list }
+  | Update_failed of { failure : failure }
+(** Terminal success or application failure returned by an update handler. *)
+
+type update_response = {
+  update_id : string;
+  execution : execution;
+  outcome : update_outcome option;
+}
+(** Admission response; [outcome = None] means the update is still pending. *)
+
+type poll_update_response = { outcome : update_outcome option }
+(** Bounded completion poll; [None] is an expected pending result. *)
+
 type outcome =
   | Completed of { result : payload list; successor : execution option }
   | Failed of { failure : failure; successor : execution option }
@@ -222,6 +248,18 @@ val encode_visibility_request : visibility_request -> (string, error) result
 
 val decode_visibility_response : string -> (visibility_page, error) result
 (** Strictly decodes one visibility page returned by Rust. *)
+
+val encode_update_request : update_request -> (string, error) result
+(** Validates and serializes one update admission request. *)
+
+val encode_poll_update_request : poll_update_request -> (string, error) result
+(** Validates and serializes one update completion poll request. *)
+
+val decode_update_response : request:update_request -> string -> (update_response, error) result
+(** Decodes and correlates one update admission response. *)
+
+val decode_poll_update_response : string -> (poll_update_response, error) result
+(** Strictly decodes one bounded update poll response. *)
 
 val decode_wait_response : request:wait_request -> string -> (wait_response, error) result
 (** Strictly decodes one terminal exact-run response and verifies that the

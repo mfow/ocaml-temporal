@@ -11,6 +11,11 @@ type t
     of the terminal payload. *)
 type ('input, 'output) handle
 
+(** Opaque client-side handle for one admitted workflow update. It records the
+    typed definition and exact target execution internally; callers can only
+    await it or inspect its update ID. *)
+type ('input, 'output) update_handle
+
 (** An exact workflow/run identity returned when a workflow continues as new.
     It contains no codec or client ownership; use [follow] with the original
     client and typed workflow definition to construct a handle for this run.
@@ -203,6 +208,27 @@ val query_with_input :
   query:('query_input, 'query_output) Query.typed ->
   input:'query_input ->
   ('query_output, Error.t) result
+
+(** Starts a typed workflow update and waits only until Temporal admits it.
+    [update_id] is optional but should be supplied by callers that may retry
+    after an uncertain transport result. The returned handle can be polled
+    independently of other workflow handles. *)
+val start_update :
+  ?update_id:string ->
+  ('workflow_input, 'workflow_output) handle ->
+  update:('input, 'output) Update.t ->
+  input:'input ->
+  unit ->
+  (('input, 'output) update_handle, Error.t) result
+
+(** Waits for an admitted update to complete and decodes its typed result.
+    Application-level update failures and transport defects are returned as
+    [Error.t] values; no expected update failure is raised as an exception. *)
+val wait_update :
+  ('input, 'output) update_handle -> ('output, Error.t) result
+
+(** Returns the workflow-scoped update ID retained by a handle. *)
+val update_id : ('input, 'output) update_handle -> string
 
 (** Returns the durable workflow ID supplied to [start]. *)
 val workflow_id : ('input, 'output) handle -> string

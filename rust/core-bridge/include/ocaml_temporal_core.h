@@ -139,6 +139,17 @@ ocaml_temporal_core_v1_client_list_visibility_json(
     ocaml_temporal_core_runtime *runtime, const uint8_t *input,
     size_t input_len, ocaml_temporal_core_result *output);
 
+/* Admit one workflow update and return its strict JSON response. */
+ocaml_temporal_core_status ocaml_temporal_core_v2_client_update_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
+/* Poll one admitted workflow update and return a pending or terminal JSON
+ * response. */
+ocaml_temporal_core_status ocaml_temporal_core_v2_client_poll_update_workflow_json(
+    ocaml_temporal_core_runtime *runtime, const uint8_t *input,
+    size_t input_len, ocaml_temporal_core_result *output);
+
 /* Admit one workflow start without waiting for the RPC. The successful value
  * is an opaque JSON ticket. The caller must later poll or wait that ticket;
  * the Rust owner keeps its Core connection and Tokio task alive until one

@@ -178,6 +178,32 @@ implementation, so it cannot be registered in `Temporal.Worker.create`.
 `result` values; it does not introduce a second effect system.
 
 The function above returns an `Error.t` value instead of raising an exception.
+
+## Update indexed search attributes
+
+Workflows can publish indexed search attributes by emitting one deterministic
+merge command. The values are ordinary `Temporal.Payload.t` values, so the
+same codecs used for activity and workflow inputs can be reused. Keys must be
+unique, non-empty, valid UTF-8 strings no longer than 65,536 bytes; invalid
+keys are programmer errors and are rejected before the command is buffered.
+
+```ocaml
+let classify_workflow () =
+  let status = Temporal.Codec.encode Temporal.Codec.string "ready" in
+  match status with
+  | Error error -> Error error
+  | Ok status ->
+      Temporal.Workflow.upsert_search_attributes [ ("agent_status", status) ];
+      Ok "classified"
+```
+
+The update is recorded in workflow history and becomes visible to Temporal's
+visibility layer after the workflow task completion is accepted. Calling this
+operation does not perform network I/O, read wall-clock time, or mutate
+process-global state, which keeps replay deterministic. The current release
+has focused OCaml and Rust conversion coverage; a live visibility acceptance
+scenario is still tracked separately in the [feature coverage
+matrix](../reference/feature-coverage.md).
 That is the normal way to report an expected workflow failure. Pattern-match
 when the caller needs to choose a recovery path, or use `let*` when the error
 should finish the workflow:

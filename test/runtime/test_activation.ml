@@ -1958,6 +1958,29 @@ let test_update_validator_cannot_consume_workflow_randomness () =
   if after_validation <> fresh_first then
     failwith "update validator changed the workflow random stream"
 
+(** Verifies the public search-attribute helper emits one deterministic Core
+    command with copied payload bytes and leaves normal workflow completion
+    ordering intact. *)
+let test_workflow_search_attribute_upsert () =
+  let workflow =
+    Temporal.Workflow.define ~name:"search_attribute_upsert"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        let value =
+          match Temporal.Codec.encode Temporal.Codec.string "ready" with
+          | Ok value -> value
+          | Error error -> failwith (Temporal.Error.message error)
+        in
+        Temporal.Workflow.upsert_search_attributes [ ("status", value) ];
+        Ok ())
+  in
+  let execution = Execution.start workflow () in
+  match Execution.activate execution [ Activation.Start_workflow ] with
+  | [ Activation.Upsert_search_attributes { search_attributes = [ ("status", value) ] };
+      Activation.Complete_workflow _ ] ->
+      if Bytes.to_string value.data <> "\"ready\"" then
+        failwith "search-attribute payload was not retained"
+  | _ -> failwith "search-attribute upsert emitted an unexpected command sequence"
+
 let () =
   test_commands_and_completion ();
   test_activity_options_and_queue ();
@@ -1997,4 +2020,5 @@ let () =
   test_workflow_patch_isolation_and_public_id_snapshot ();
   test_incoming_patch_notification_snapshot ();
   test_workflow_random_int_is_replay_stable ();
-  test_update_validator_cannot_consume_workflow_randomness ()
+  test_update_validator_cannot_consume_workflow_randomness ();
+  test_workflow_search_attribute_upsert ()

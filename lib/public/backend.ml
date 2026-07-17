@@ -113,6 +113,30 @@ type visibility_page = {
   next_page_token : string option;
 }
 
+(** Exact-run workflow update request retained by the private backend. *)
+type update_request = {
+  workflow_id : string;
+  run_id : string;
+  update_id : string;
+  update_name : string;
+  input : Payload.t;
+}
+
+(** Update completion preserves multiple payloads until the public codec
+    validates the result cardinality. *)
+type update_outcome =
+  | Update_completed of Payload.t list
+  | Update_failed of Error.t
+
+type update_response = {
+  update_id : string;
+  workflow_id : string;
+  run_id : string;
+  outcome : update_outcome option;
+}
+
+type poll_update_response = { outcome : update_outcome option }
+
 (** Terminal workflow outcome represented independently from transport errors. *)
 type terminal_result =
   | Completed of Payload.t
@@ -1220,7 +1244,7 @@ let mock_client_list_visibility (client : mock_client)
             |> List.of_seq
             |> List.sort (fun (left : visibility_execution)
                               (right : visibility_execution) ->
-                   String.compare left.workflow_id right.workflow_id)
+                    String.compare left.workflow_id right.workflow_id)
           in
           Ok ({ executions; next_page_token = None } : visibility_page))
 
@@ -1229,6 +1253,103 @@ let client_list_visibility client request =
   match client with
   | Mock_client client -> mock_client_list_visibility client request
   | Native_client client -> native_client_list_visibility client request
+
+(** Converts a public update request to the namespace-bound JSON protocol. *)
+let native_update_request client (request : update_request) :
+    Client_protocol.update_request =
+  {
+    execution =
+      {
+        namespace = client.namespace;
+        workflow_id = request.workflow_id;
+        run_id = request.run_id;
+      };
+    update_id = request.update_id;
+    update_name = request.update_name;
+    input = [ protocol_payload request.input ];
+  }
+
+(** Converts one protocol update outcome into public payloads or a typed
+    update failure. The protocol decoder has already validated every payload
+    and failure tree before this function runs. *)
+let public_update_outcome = function
+  | Client_protocol.Update_completed { result } ->
+      Update_completed (List.map public_payload result)
+  | Client_protocol.Update_failed { failure } ->
+      Update_failed (workflow_failure_error ~category:`Update failure)
+
+(** Starts one native update and returns its admitted handle data. *)
+let native_client_update (client : native_client) (request : update_request) =
+  if Atomic.get client.closed then Error (bridge_error "client is shut down")
+  else
+    match
+      Native.perform client.supervisor
+        (Native.Client_update_workflow (native_update_request client request))
+    with
+    | Error error -> Error (native_supervisor_error error)
+    | Ok (Error error) -> Error (native_client_error error)
+    | Ok (Ok response) ->
+        Ok
+          {
+            update_id = response.update_id;
+            workflow_id = response.execution.workflow_id;
+            run_id = response.execution.run_id;
+            outcome = Option.map public_update_outcome response.outcome;
+          }
+
+(** Polls one admitted native update. The request input is ignored after
+    admission but retained in the private value to keep exact handle identity
+    and codec ownership in one record. *)
+let native_client_poll_update (client : native_client) (request : update_request) =
+  if Atomic.get client.closed then Error (bridge_error "client is shut down")
+  else
+    let protocol_request : Client_protocol.poll_update_request =
+      {
+        execution =
+          {
+            namespace = client.namespace;
+            workflow_id = request.workflow_id;
+            run_id = request.run_id;
+          };
+        update_id = request.update_id;
+      }
+    in
+    match
+      Native.perform client.supervisor
+        (Native.Client_poll_update_workflow protocol_request)
+    with
+    | Error error -> Error (native_supervisor_error error)
+    | Ok (Error error) -> Error (native_client_error error)
+    | Ok (Ok response) ->
+        Ok { outcome = Option.map public_update_outcome response.outcome }
+
+(** The mock endpoint intentionally does not execute workflow handlers, so it
+    cannot claim an update was admitted. *)
+let mock_client_update (client : mock_client) (_request : update_request) =
+  if client.closed then Error (bridge_error "client is shut down")
+  else
+    Error
+      (Error.make ~category:`Update
+         ~message:"the deterministic mock does not execute workflow updates" ())
+
+let mock_client_poll_update (client : mock_client) (_request : update_request) =
+  if client.closed then Error (bridge_error "client is shut down")
+  else
+    Error
+      (Error.make ~category:`Update
+         ~message:"the deterministic mock does not execute workflow updates" ())
+
+(** Starts one update through the selected private transport. *)
+let client_update client request =
+  match client with
+  | Mock_client client -> mock_client_update client request
+  | Native_client client -> native_client_update client request
+
+(** Polls one update through the selected private transport. *)
+let client_poll_update client request =
+  match client with
+  | Mock_client client -> mock_client_poll_update client request
+  | Native_client client -> native_client_poll_update client request
 
 (** Marks a client closed while preserving idempotent cleanup. Native shutdown
     runs the supervisor's reverse-order worker/client/runtime release path;

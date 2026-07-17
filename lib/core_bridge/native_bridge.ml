@@ -139,6 +139,12 @@ external client_list_visibility_json_raw : runtime -> bytes -> response
 external client_query_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_query_workflow_json"
 
+external client_update_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_update_workflow_json"
+
+external client_poll_update_workflow_json_raw : runtime -> bytes -> response
+  = "ocaml_temporal_client_poll_update_workflow_json"
+
 external client_begin_start_workflow_json_raw : runtime -> bytes -> response
   = "ocaml_temporal_client_begin_start_workflow_json"
 
@@ -588,6 +594,14 @@ let client_list_visibility_json runtime input =
 let client_query_workflow_json runtime input =
   bridge_call "client_query_workflow_json" (fun () ->
       decode (client_query_workflow_json_raw runtime input))
+
+let client_update_workflow_json runtime input =
+  bridge_call "client_update_workflow_json" (fun () ->
+      decode (client_update_workflow_json_raw runtime input))
+
+let client_poll_update_workflow_json runtime input =
+  bridge_call "client_poll_update_workflow_json" (fun () ->
+      decode (client_poll_update_workflow_json_raw runtime input))
 
 (** Admits one asynchronous workflow start and returns an opaque ticket JSON
     document. The native owner retains the Tokio task and all request metadata;

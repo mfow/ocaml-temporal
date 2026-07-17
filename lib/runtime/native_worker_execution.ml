@@ -368,7 +368,8 @@ let is_terminal completion =
       | Protocol.Cancel_timer _
       | Protocol.Query_result _
       | Protocol.Update_response _
-      | Protocol.Set_patch_marker _ -> false)
+      | Protocol.Set_patch_marker _
+      | Protocol.Upsert_search_attributes _ -> false)
     completion.Protocol.commands
 
 (** Reports one bounded lifecycle message without allowing a reporter defect to
@@ -643,6 +644,14 @@ module Make (Supervisor : SUPERVISOR) = struct
       | Protocol.Start_timer _ as command -> command
       | Protocol.Cancel_timer _ as command -> command
       | Protocol.Set_patch_marker _ as command -> command
+      | Protocol.Upsert_search_attributes { search_attributes } ->
+          Protocol.Upsert_search_attributes
+            {
+              search_attributes =
+                List.map
+                  (fun (key, payload) -> (key, copy_payload payload))
+                  search_attributes;
+            }
       | Protocol.Cancel_workflow_execution as command -> command
     in
     {

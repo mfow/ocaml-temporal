@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-update-request.schema.json",
+  "title": "OCaml Temporal native client workflow update request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "workflow_id", "run_id", "update_id", "update_name", "input"],
+  "properties": {
+    "namespace": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "workflow_id": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "update_id": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "update_name": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "input": {"type": "array", "items": {"$ref": "temporal-payload.schema.json"}}
+  }
+}

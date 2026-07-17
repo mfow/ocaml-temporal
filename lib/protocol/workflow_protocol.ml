@@ -381,6 +381,8 @@ type completion_command =
   (** Records one workflow patch lifecycle operation. [deprecated]
       distinguishes an active patch-in call from a deprecation call. *)
   | Set_patch_marker of { patch_id : string; deprecated : bool }
+  (** Merges payload values into Temporal's indexed search-attribute map. *)
+  | Upsert_search_attributes of { search_attributes : (string * payload) list }
   | Complete_workflow of { result : payload option }
   | Fail_workflow of { failure : failure }
   | Continue_as_new of { workflow_type : string; input : payload list }
@@ -1322,8 +1324,9 @@ let payload_map path = function
       let rec loop decoded = function
         | [] -> Ok (List.rev decoded)
         | (key, value) :: rest ->
-            if String.length key = 0 || String.length key > 65_536 then
-              Error (invalid path "invalid payload-map key")
+            let* key = identifier (path ^ ".key") (`String key) in
+            if List.exists (fun (existing, _) -> String.equal existing key) decoded then
+              Error (invalid path "duplicate payload-map key")
             else
               let* value = payload (path ^ "." ^ key) value in
               loop ((key, value) :: decoded) rest
@@ -1337,11 +1340,9 @@ let payload_map_json path values =
   let rec loop encoded = function
     | [] -> Ok (`Assoc (List.rev encoded))
     | (key, value) :: rest ->
-        if
-          String.length key = 0
-          || String.length key > 65_536
-          || List.exists (fun (existing, _) -> String.equal existing key) encoded
-        then Error (invalid path "invalid or duplicate payload-map key")
+        let* key = identifier (path ^ ".key") (`String key) in
+        if List.exists (fun (existing, _) -> String.equal existing key) encoded then
+          Error (invalid path "duplicate payload-map key")
         else
           let* value = payload_json value in
           loop ((key, value) :: encoded) rest
@@ -2496,6 +2497,11 @@ let completion_command path json =
       let* deprecated_json = field path "deprecated" entries in
       let* deprecated = bool (path ^ ".deprecated") deprecated_json in
       Ok (Set_patch_marker { patch_id; deprecated })
+  | "upsert_search_attributes" ->
+      let* entries = exact_object path [ "kind"; "search_attributes" ] json in
+      let* values_json = field path "search_attributes" entries in
+      let* search_attributes = payload_map (path ^ ".search_attributes") values_json in
+      Ok (Upsert_search_attributes { search_attributes })
   | "complete_workflow" ->
       let* entries = exact_object path [ "kind"; "result" ] json in
       let* result_json = field path "result" entries in
@@ -2690,6 +2696,14 @@ let completion_command_json = function
           [ ("kind", `String "set_patch_marker");
             ("patch_id", `String patch_id);
             ("deprecated", `Bool deprecated) ])
+  | Upsert_search_attributes { search_attributes } ->
+      let* search_attributes =
+        payload_map_json "$.commands.search_attributes" search_attributes
+      in
+      Ok
+        (`Assoc
+          [ ("kind", `String "upsert_search_attributes");
+            ("search_attributes", search_attributes) ])
   | Complete_workflow { result } ->
       let* result = match result with None -> Ok `Null | Some value -> payload_json value in
       Ok (`Assoc [ ("kind", `String "complete_workflow"); ("result", result) ])

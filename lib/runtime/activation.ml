@@ -198,6 +198,10 @@ type command =
       lifecycle operation. Core owns same-mode marker deduplication, so the
       OCaml runtime emits this command on every public patch call. *)
   | Set_patch_marker of { patch_id : string; deprecated : bool }
+  (** Merges encoded values into the workflow's indexed search attributes. *)
+  | Upsert_search_attributes of {
+      search_attributes : (string * Temporal_base.Codec.payload) list;
+    }
   | Complete_workflow of Temporal_base.Codec.payload
   | Fail_workflow of Temporal_base.Error.t
   (** Ends this run and asks Temporal to start the same workflow type with a

@@ -369,6 +369,27 @@ deduplication. Both language validators reject active and deprecated commands
 for the same ID in one completion, preventing Core's first-command-wins rule
 from making durable history depend on ambiguous source order.
 
+Workflow code can also merge indexed search attributes with a deterministic
+completion command:
+
+```json
+{
+  "kind": "upsert_search_attributes",
+  "search_attributes": {
+    "agent_status": {
+      "metadata": {"encoding": "json/plain"},
+      "data": "InJlYWR5"
+    }
+  }
+}
+```
+
+The OCaml API validates and copies keys and payloads before buffering this
+command. Rust validates the same limits before converting the map to Core's
+`UpsertWorkflowSearchAttributes` command. Core applies the map as one merge,
+and the new values become visible only after the workflow task is accepted;
+the bridge does not perform a visibility query itself.
+
 ### Continue-as-new
 
 The public OCaml operation `Temporal.Workflow.continue_as_new` emits this

@@ -1124,6 +1124,28 @@ let command_to_protocol command =
   | Activation.Set_patch_marker { patch_id; deprecated } ->
       let* () = validate_identifier "$.command.patch_id" patch_id in
       Ok (Protocol.Set_patch_marker { patch_id; deprecated })
+  | Activation.Upsert_search_attributes { search_attributes } ->
+      let rec validate_keys seen = function
+        | [] -> Ok ()
+        | (key, payload) :: rest ->
+            let* () = validate_identifier "$.command.search_attributes" key in
+            if List.mem key seen then
+              Error
+                (invalid "$.command.search_attributes"
+                   "search-attribute keys must be unique")
+            else
+              let* _ = protocol_payload "$.command.search_attributes" payload in
+              validate_keys (key :: seen) rest
+      in
+      let* () = validate_keys [] search_attributes in
+      let rec convert reversed = function
+        | [] -> Ok (List.rev reversed)
+        | (key, payload) :: rest ->
+            let* payload = protocol_payload "$.command.search_attributes" payload in
+            convert ((key, payload) :: reversed) rest
+      in
+      let* search_attributes = convert [] search_attributes in
+      Ok (Protocol.Upsert_search_attributes { search_attributes })
   | Activation.Complete_workflow payload ->
       let* payload = protocol_payload "$.command.result" payload in
       let result =

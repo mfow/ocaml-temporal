@@ -266,6 +266,35 @@ module Native : sig
       (Temporal_protocol.Client_protocol.visibility_page,
        Temporal_core_bridge.Native_bridge.error) result
     (** Strictly decodes one visibility page returned by Rust. *)
+
+    val encode_client_update_request :
+      Temporal_protocol.Client_protocol.update_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one typed workflow-update admission request. *)
+
+    val encode_client_poll_update_request :
+      Temporal_protocol.Client_protocol.poll_update_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result
+    (** Canonically serializes one typed workflow-update completion poll. *)
+
+    val decode_client_update_result :
+      Temporal_protocol.Client_protocol.update_request ->
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( ( Temporal_protocol.Client_protocol.update_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes update admission and preserves structured server failures. *)
+
+    val decode_client_poll_update_result :
+      (bytes, Temporal_core_bridge.Native_bridge.error) result ->
+      ( ( Temporal_protocol.Client_protocol.poll_update_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result,
+        Temporal_core_bridge.Native_bridge.error )
+      result
+    (** Decodes one update completion poll and preserves structured failures. *)
   end
 
   (** Validated client settings whose representation remains bridge-private. *)
@@ -339,6 +368,18 @@ module Native : sig
           Temporal_protocol.Client_protocol.client_error )
         result operation
         (** Executes one output-only query against one exact run. *)
+    | Client_update_workflow :
+        Temporal_protocol.Client_protocol.update_request ->
+        ( Temporal_protocol.Client_protocol.update_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result operation
+        (** Admits one typed workflow update and returns its durable update ID. *)
+    | Client_poll_update_workflow :
+        Temporal_protocol.Client_protocol.poll_update_request ->
+        ( Temporal_protocol.Client_protocol.poll_update_response,
+          Temporal_protocol.Client_protocol.client_error )
+        result operation
+        (** Waits for one admitted update to reach a terminal outcome. *)
     | Start_worker : worker_config -> unit operation
     | Start_replay_worker : worker_config -> unit operation
         (** Starts a workflow-only replay worker without a Temporal client. *)

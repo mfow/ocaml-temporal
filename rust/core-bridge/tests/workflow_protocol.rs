@@ -198,6 +198,59 @@ fn converts_patch_markers_losslessly() {
     );
 }
 
+/// Proves search-attribute upserts retain sorted map keys, payload bytes, and
+/// the corresponding official Core command on both conversion directions.
+#[test]
+fn converts_search_attribute_upserts_losslessly() {
+    let mut attributes = std::collections::BTreeMap::new();
+    attributes.insert(
+        "status".to_owned(),
+        workflow_protocol::Payload {
+            metadata: [("encoding".to_owned(), b"json/plain".to_vec())]
+                .into_iter()
+                .collect(),
+            data: br#"\"ready\""#.to_vec(),
+        },
+    );
+    let completion = workflow_protocol::Completion {
+        run_id: "search-run".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::UpsertSearchAttributes {
+                search_attributes: attributes.clone(),
+            },
+        ],
+    };
+    let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        completion
+    );
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("search-attribute completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::UpsertWorkflowSearchAttributes(command)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("search-attribute command did not map to Core");
+    };
+    assert_eq!(
+        command
+            .search_attributes
+            .as_ref()
+            .unwrap()
+            .indexed_fields
+            .len(),
+        1
+    );
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+}
+
 /// Rejects malformed patch documents and the query-plus-notification shape
 /// that Core itself forbids when preparing query-only activations.
 #[test]

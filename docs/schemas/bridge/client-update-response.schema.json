@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mfow/ocaml-temporal/docs/schemas/bridge/client-update-response.schema.json",
+  "title": "OCaml Temporal native client workflow update response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["update_id", "execution", "outcome"],
+  "properties": {
+    "update_id": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "execution": {"$ref": "client-execution-ref.schema.json"},
+    "outcome": {"anyOf": [{"$ref": "client-update-outcome.schema.json"}, {"type": "null"}]}
+  }
+}

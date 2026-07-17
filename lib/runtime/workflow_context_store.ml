@@ -360,6 +360,25 @@ let with_randomness_disabled context action =
   context.randomness_disabled <- true;
   Fun.protect action ~finally:(fun () -> context.randomness_disabled <- previous)
 
+(** Buffers a search-attribute merge without consulting wall-clock or process
+    state. The payload list is copied at the public boundary before this
+    command is retained by the execution context. *)
+let upsert_search_attributes context search_attributes =
+  if context.sealed then
+    invalid_arg
+      "Temporal workflow search attributes used after workflow execution ended";
+  let copied =
+    List.map
+      (fun (key, { Temporal_base.Payload.metadata; data }) ->
+        (snapshot_identifier key,
+         { Temporal_base.Payload.metadata = List.map Fun.id metadata;
+           data = Bytes.copy data }))
+      search_attributes
+  in
+  context.commands_rev <-
+    Activation.Upsert_search_attributes { search_attributes = copied }
+    :: context.commands_rev
+
 (** Makes [context] current while [action] runs, then restores the previous
     value even if [action] raises. This prevents later code on the same Domain
     from mistakenly appearing to run inside a workflow. *)

@@ -1231,3 +1231,22 @@ let cache_eviction =
       let open Temporal.Result_syntax in
       let* () = Temporal.Workflow.sleep (Temporal.Duration.of_ms 60_000L) in
       Ok ("SMOKE:CACHE:" ^ String.uppercase_ascii seed))
+
+(** A read-only cache-settling probe used only by the live eviction fixture.
+    The driver invokes it after A has completed its initial timer-scheduling
+    activation and before it starts B. Receiving this typed response proves
+    that Core has processed a follow-up activation for A, providing a settled
+    native-stream boundary after the OCaml initial-completion marker. It does
+    not itself claim which cache route Core took. The handler has no mutable
+    state and emits no workflow command, so it is replay-safe. *)
+let cache_eviction_residency_query =
+  Temporal.Query.define ~name:"smoke.cache_eviction_residency"
+    ~output:Temporal.Codec.string
+
+(** Answers the cache-settling probe with a fixed, codec-checked value.
+    Keeping the response independent of workflow-local state makes this
+    fixture a synchronization check rather than a second behavioral contract
+    for the timer workflow. *)
+let cache_eviction_residency_handler =
+  Temporal.Query.Handler.make cache_eviction_residency_query (fun () ->
+      Ok "resident")

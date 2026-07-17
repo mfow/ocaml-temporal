@@ -12,6 +12,12 @@
   },
   "$defs": {
     "payload": {"$ref": "temporal-payload.schema.json"},
+    "payload_map": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/identifier"},
+      "additionalProperties": {"$ref": "#/$defs/payload"},
+      "description": "A map of unique search-attribute keys to Temporal payloads. JSON object names provide the uniqueness constraint; both bridge implementations also enforce the identifier byte and NUL rules."
+    },
     "failure": {"$ref": "temporal-failure.schema.json"},
     "identifier": {
       "description": "A nonempty, NUL-free identifier. JSON Schema maxLength counts Unicode code points; both bridge implementations additionally enforce the authoritative 65,536-byte UTF-8 limit.",
@@ -270,6 +276,15 @@
             "deprecated": {"type": "boolean"}
           },
           "description": "Records one replay-safe patch lifecycle command. Core owns same-mode marker deduplication, so the language runtime preserves repeated calls in order. Both implementations reject active and deprecated values for the same patch_id within one completion; that cross-element invariant is enforced semantically rather than by this schema."
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "search_attributes"],
+          "properties": {
+            "kind": {"const": "upsert_search_attributes"},
+            "search_attributes": {"$ref": "#/$defs/payload_map"}
+          },
+          "description": "Merges encoded values into Temporal's indexed workflow search attributes. Keys are unique protocol identifiers and values are ordinary Temporal payloads."
         },
         {
           "type": "object", "additionalProperties": false,

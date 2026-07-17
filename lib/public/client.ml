@@ -34,6 +34,18 @@ type ('input, 'output) handle = {
   run_id : string;
 }
 
+(** A client-side handle for one admitted workflow update. It retains the
+    update definition and encoded input so completion polls cannot be confused
+    with another request or require any native pointer ownership. *)
+type ('input, 'output) update_handle = {
+  client : t;
+  definition : ('input, 'output) Update.t;
+  workflow_id : string;
+  run_id : string;
+  update_id : string;
+  input : Payload.t;
+}
+
 (** Identifies a successor execution returned by Temporal after a workflow
     continues as new. The pair is intentionally kept separate from a typed
     [handle]: callers must supply the original workflow definition when they
@@ -89,6 +101,11 @@ let default_identity = "ocaml-temporal-client"
     for one exact execution. The atomic counter keeps concurrent callers
     distinct without introducing another lock around the native graph. *)
 let next_signal_request_id = Atomic.make 0
+
+(** Allocates IDs for updates whose caller does not need retry-stable
+    idempotency across a process restart. This counter has no native state and
+    only distinguishes requests created by this one OCaml process. *)
+let next_update_id = Atomic.make 0
 
 (** Rejects empty, oversized, or NUL-containing identifiers before they can
     enter a backend request. The 65,536-byte bound is shared by the JSON
@@ -254,7 +271,7 @@ let follow client ~workflow ({ namespace; workflow_id; run_id } : execution) =
 
 (** Decodes a completed payload and maps terminal failures without exposing the
     private backend constructors. *)
-let wait handle =
+let wait (handle : ('input, 'output) handle) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -318,7 +335,8 @@ let generated_cancel_request_id (handle : ('input, 'output) handle) =
 (** Sends a cancellation request for one exact run and returns only after the
     server acknowledgement has been decoded. This operation is deliberately
     separate from [wait], because Temporal cancellation is asynchronous. *)
-let cancel ?request_id ?(reason = "") handle =
+let cancel ?request_id ?(reason = "")
+    (handle : ('workflow_input, 'workflow_output) handle) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -354,7 +372,7 @@ let validate_terminate_reason reason =
 
 (** Terminates one exact run. The acknowledgement is deliberately separate
     from [wait], which observes the server's terminal history event. *)
-let terminate ?(reason = "") handle =
+let terminate ?(reason = "") (handle : ('input, 'output) handle) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -392,20 +410,25 @@ let validate_reset_fields ~request_id ~reason ~workflow_task_finish_event_id =
       Error (Error.defect ~message:"reset reason must not contain NUL")
   | Ok () -> Ok ()
 
-(** Derives an idempotency key for an omitted reset request ID. The exact run
-    and event boundary are included so retries of one logical reset are stable,
-    while different reset points cannot alias one another. *)
-let generated_reset_request_id (handle : ('input, 'output) handle) event_id =
+(** Derives an idempotency key for an omitted reset request ID from the exact
+    execution identity. Taking copied identity fields rather than a particular
+    public handle keeps this private helper independent of record-label
+    inference: workflow and update handles deliberately share those labels,
+    but only a workflow handle is accepted by [reset]. The run and event
+    boundary make retries of one logical reset stable while distinct reset
+    points cannot alias one another. *)
+let generated_reset_request_id ~workflow_id ~run_id event_id =
   "ocaml-client-reset-"
   ^ Digest.to_hex
       (Digest.string
-         (handle.workflow_id ^ "\000" ^ handle.run_id ^ "\000"
+         (workflow_id ^ "\000" ^ run_id ^ "\000"
         ^ Int64.to_string event_id))
 
 (** Resets one exact run and returns the new execution identity. A successful
     acknowledgement does not imply the new run has completed; use [follow] and
     [wait] to observe it explicitly. *)
-let reset ?request_id ?(reason = "") ~workflow_task_finish_event_id handle =
+let reset ?request_id ?(reason = "") ~workflow_task_finish_event_id
+    (handle : ('input, 'output) handle) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -418,7 +441,9 @@ let reset ?request_id ?(reason = "") ~workflow_task_finish_event_id handle =
         let request_id =
           match request_id with
           | Some request_id -> request_id
-          | None -> generated_reset_request_id handle workflow_task_finish_event_id
+          | None ->
+              generated_reset_request_id ~workflow_id:handle.workflow_id
+                ~run_id:handle.run_id workflow_task_finish_event_id
         in
         let request : Backend.reset_request =
           {
@@ -450,7 +475,9 @@ let generated_signal_request_id () =
 (** Sends one typed signal to the exact run retained by [handle]. The input is
     encoded before the backend call, and success means only that Temporal
     acknowledged the RPC; workflow code may process it asynchronously. *)
-let signal ?request_id handle ~(signal : 'signal Signal.t) ~input =
+let signal ?request_id
+    (handle : ('workflow_input, 'workflow_output) handle)
+    ~(signal : 'signal Signal.t) ~input =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -482,7 +509,8 @@ let signal ?request_id handle ~(signal : 'signal Signal.t) ~input =
     workflow-side [Query] definition is already output-only, and the result is
     decoded with the definition's codec only after the native bridge has
     validated the response payload. *)
-let query handle ~(query : 'query Query.t) =
+let query (handle : ('workflow_input, 'workflow_output) handle)
+    ~(query : 'query Query.t) =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -569,7 +597,8 @@ let list_visibility ?(page_size = 100) ?page_token client ~query () =
 (** Executes a one-input typed query against the exact run retained by
     [handle]. Encoding happens before transport, so invalid input cannot
     consume a native request or become an ambiguous empty query. *)
-let query_with_input handle ~(query : ('input, 'query) Query.typed) ~input =
+let query_with_input (handle : ('workflow_input, 'workflow_output) handle)
+    ~(query : ('input, 'query) Query.typed) ~input =
   if Atomic.get handle.client.closed then
     Error
       (Error.make ~category:`Bridge ~message:"client is shut down" ())
@@ -588,6 +617,99 @@ let query_with_input handle ~(query : ('input, 'query) Query.typed) ~input =
         Result.bind
            (Backend.client_query handle.client.backend request)
            (fun payload -> Codec.decode (Query.output_with_input query) payload)
+
+(** Allocates a process-local update ID for callers that do not need to
+    reconcile an uncertain admission across a restart. *)
+let generated_update_id () =
+  let sequence = Atomic.fetch_and_add next_update_id 1 in
+  Printf.sprintf "ocaml-client-update-%d" sequence
+
+(** Canonical payload used when an update returns no result values. Temporal
+    represents unit-like values with the same binary/null marker used by the
+    exact-run workflow wait path. *)
+let update_unit_payload : Payload.t =
+  { Payload.metadata = [ ("encoding", "binary/null") ]; data = Bytes.empty }
+
+(** Decodes the result cardinality promised by one update definition. *)
+let decode_update_output definition = function
+  | Backend.Update_completed [] ->
+      Codec.decode (Update.output definition) update_unit_payload
+  | Backend.Update_completed [ payload ] ->
+      Codec.decode (Update.output definition) payload
+  | Backend.Update_completed _ ->
+      Error
+        (Error.make ~category:`Codec
+           ~message:"workflow update returned multiple result payloads" ())
+  | Backend.Update_failed error -> Error error
+
+(** Starts one typed update and returns as soon as Temporal admits it. This
+    admission/completion split lets callers issue several updates before
+    waiting, while the supervisor still serializes every native operation. *)
+let start_update ?update_id
+    (handle : ('workflow_input, 'workflow_output) handle)
+    ~(update : ('input, 'output) Update.t) ~input () =
+  if Atomic.get handle.client.closed then
+    Error
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else
+    let update_id = Option.value update_id ~default:(generated_update_id ()) in
+    match validate_name "update id" update_id with
+    | Error error -> Error error
+    | Ok () -> (
+        match Codec.encode (Update.input update) input with
+        | Error error -> Error error
+        | Ok encoded_input ->
+            let request : Backend.update_request =
+              {
+                workflow_id = handle.workflow_id;
+                run_id = handle.run_id;
+                update_id;
+                update_name = Update.name update;
+                input = encoded_input;
+              }
+            in
+            Result.map
+              (fun (response : Backend.update_response) ->
+                {
+                  client = handle.client;
+                  definition = update;
+                  workflow_id = response.workflow_id;
+                  run_id = response.run_id;
+                  update_id = response.update_id;
+                  input = encoded_input;
+                })
+              (Backend.client_update handle.client.backend request))
+
+(** Waits for one admitted update, retrying bounded polls until Temporal
+    supplies a terminal outcome. Each retry occurs on the caller Domain; the
+    Rust bridge releases the OCaml runtime lock while its gRPC poll is active. *)
+let wait_update handle =
+  if Atomic.get handle.client.closed then
+    Error
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else
+    let request : Backend.update_request =
+      {
+        workflow_id = handle.workflow_id;
+        run_id = handle.run_id;
+        update_id = handle.update_id;
+        update_name = Update.name handle.definition;
+        input = handle.input;
+      }
+    in
+    let rec poll () =
+      match Backend.client_poll_update handle.client.backend request with
+      | Error error -> Error error
+      | Ok { Backend.outcome = None } ->
+          Thread.yield ();
+          poll ()
+      | Ok { Backend.outcome = Some outcome } ->
+          decode_update_output handle.definition outcome
+    in
+    poll ()
+
+(** Returns the durable update ID retained by a typed handle. *)
+let update_id (handle : ('input, 'output) update_handle) = handle.update_id
 
 (** Returns the durable workflow identity retained by a handle. *)
 let workflow_id (handle : ('input, 'output) handle) = handle.workflow_id

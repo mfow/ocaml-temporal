@@ -78,6 +78,19 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Reclaim disposable GitHub-hosted runner disk
+        # The smoke lane builds several isolated OCaml/Dune trees, each of
+        # which statically links the Rust Core bridge. Reclaim the large
+        # preinstalled SDKs before the first Compose build so a valid native
+        # link cannot fail because the disposable runner ran out of space.
+        if: runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          docker system prune --all --force --volumes
+          df -h /
       - name: Run the live two-OCaml-binary Temporal Compose smoke
         run: |
           make test-temporal-integration

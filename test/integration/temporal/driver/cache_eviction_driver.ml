@@ -2,13 +2,15 @@
 
     The client starts two exact runs while the worker is configured with one
     Core cache slot. Each run schedules a long deterministic timer, so the
-    first task reaches a durable pending boundary. The driver waits for that
-    first task, admits the second run, and then observes the worker's
-    payload-free eviction marker. It deliberately does not wait for a
-    second-run completion marker:
-    with one sticky-cache slot Core may evict the first run before the second
-    task's completion callback is delivered, so that handshake can deadlock
-    the very eviction it is intended to prove. It cancels both exact runs and
+    first task reaches a durable pending boundary. Before admitting B, the
+    driver makes a read-only query of A and requires its typed response. That
+    gives the native stream a completed follow-up activation boundary, rather
+    than racing the marker published immediately after the initial completion
+    with subsequent Core processing. It then requires the worker's
+    payload-free eviction marker. The second run's normal-completion marker is
+    retained only as timeout diagnostics: pinned Core ordering buffers B until
+    A's [RemoveFromCache(CacheFull)] activation has been acknowledged, so B is
+    never evidence that eviction has happened. It cancels both exact runs and
     requires each to reach Temporal's typed cancellation outcome. The client
     never registers or executes workflow code. *)
 
@@ -99,6 +101,35 @@ let wait_for_marker ?expected path ~timeout =
   in
   loop ()
 
+(** Waits for A's cache-full marker while retaining B's completion marker as a
+    diagnostic only. Core buffers B when the one-slot cache is full and only
+    releases it after A's cache-removal activation is acknowledged; therefore
+    B cannot satisfy this acceptance condition. One deadline covers both
+    observations so a late B marker cannot silently grant a second timeout
+    budget before the required eviction arrives. *)
+let wait_for_eviction_with_second_diagnostic ~eviction ~second_ready ~timeout =
+  let deadline = Unix.gettimeofday () +. timeout in
+  let rec loop saw_second_acknowledgement =
+    if marker_matches eviction None then Ok ()
+    else if Unix.gettimeofday () >= deadline then
+      let message =
+        if saw_second_acknowledgement then
+          "second workflow was acknowledged but A cache-full eviction marker was not published"
+        else
+          "neither A cache-full eviction marker nor second workflow acknowledgement was published"
+      in
+      Error (Error.defect ~message)
+    else begin
+      let saw_second_acknowledgement =
+        saw_second_acknowledgement
+        || marker_matches second_ready (Some "initial-completion\n")
+      in
+      Unix.sleepf 0.1;
+      loop saw_second_acknowledgement
+    end
+  in
+  loop false
+
 (** Requires an exact run to report Temporal's typed cancellation category. *)
 let require_cancelled label = function
   | Client.Cancelled error ->
@@ -131,6 +162,18 @@ let require_cancelled label = function
 let cancel handle ~request_id =
   Client.cancel ~request_id ~reason:"cache eviction acceptance requested" handle
 
+(** Validates the fixed response from A's read-only cache-settling query.
+    A mismatched value is a typed driver defect, rather than an accidental
+    signal that any successful query response is sufficient evidence. *)
+let require_resident = function
+  | "resident" -> Ok ()
+  | value ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "cache-settling query returned unexpected value %S"
+                value))
+
 (** Starts two exact executions against the one-slot worker cache. The
     cache-only workflow has no durable command before it parks, so each initial
     workflow task can complete as an empty non-terminal activation while Core
@@ -145,6 +188,9 @@ let run () =
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* marker = required_env "SMOKE_CACHE_EVICTION_FILE" in
       let* ready = required_env "SMOKE_CACHE_EVICTION_READY_FILE" in
+      let* second_ready =
+        required_env "SMOKE_CACHE_EVICTION_SECOND_READY_FILE"
+      in
       let* timeout = timeout_seconds () in
       phase "client_create" "begin";
       let* client =
@@ -162,6 +208,7 @@ let run () =
       let result =
         let* () = clear_marker marker in
         let* () = clear_marker ready in
+        let* () = clear_marker second_ready in
         phase "start_a" "begin";
         let* first =
           Client.start client ~workflow:Definitions.cache_eviction
@@ -172,6 +219,17 @@ let run () =
         phase "ready_marker" "begin";
         let* () = wait_for_marker ~expected:"initial-completion\n" ready ~timeout in
         phase "ready_marker" "observed";
+        (* A's initial marker is published by OCaml after the native completion
+           returns. This query/response round trip gives Core's stream a
+           concrete, observable follow-up boundary before B creates one-slot
+           cache pressure; it does not infer a cache insertion from the marker
+           alone. *)
+        phase "cache_settling" "begin";
+        let* cache_state =
+          Client.query first ~query:Definitions.cache_eviction_residency_query
+        in
+        let* () = require_resident cache_state in
+        phase "cache_settling" "observed";
         phase "start_b" "begin";
         let* second =
           Client.start client ~workflow:Definitions.cache_eviction
@@ -180,7 +238,10 @@ let run () =
         in
         phase "start_b" "ok";
         phase "eviction_marker" "begin";
-        let* () = wait_for_marker marker ~timeout in
+        let* () =
+          wait_for_eviction_with_second_diagnostic ~eviction:marker
+            ~second_ready ~timeout
+        in
         phase "eviction_marker" "observed";
         phase "cancel_b" "begin";
         let* () = cancel second ~request_id:"two-binary-cache-eviction-cancel-b" in

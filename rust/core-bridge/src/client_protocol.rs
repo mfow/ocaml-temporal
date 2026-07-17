@@ -9,11 +9,12 @@
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 use temporalio_client::Connection;
 use temporalio_client::tonic::{Code, IntoRequest, Status};
 use temporalio_common::protos::temporal::api::{
-    common::v1::{Payloads, WorkflowExecution, WorkflowType},
+    common::v1::{Memo, Payloads, SearchAttributes, WorkflowExecution, WorkflowType},
     enums::v1::{HistoryEventFilterType, UpdateWorkflowExecutionLifecycleStage},
     history::v1::{HistoryEvent, history_event::Attributes},
     query::v1::WorkflowQuery,
@@ -42,6 +43,18 @@ pub struct ExecutionRef {
     pub run_id: String,
 }
 
+/// One named payload in a workflow-start memo or search-attribute map.
+/// Arrays are used at the JSON boundary so duplicate names can be rejected
+/// before conversion to protobuf maps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataField {
+    /// User-visible metadata key.
+    pub key: String,
+    /// Payload retained under that key.
+    pub value: workflow_protocol::Payload,
+}
+
 /// Request to start one workflow execution with raw Temporal payloads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +77,12 @@ pub struct StartWorkflowRequest {
     pub task_queue: String,
     /// Ordered input payloads; an empty vector means no workflow arguments.
     pub input: Vec<workflow_protocol::Payload>,
+    /// Optional memo fields copied to Temporal's start request.
+    #[serde(default)]
+    pub memo: Vec<MetadataField>,
+    /// Optional indexed search attributes copied to Temporal's start request.
+    #[serde(default)]
+    pub search_attributes: Vec<MetadataField>,
 }
 
 /// Successful result returned by the start operation.
@@ -1340,6 +1359,9 @@ pub async fn start_workflow(
     request: StartWorkflowRequest,
 ) -> Result<StartWorkflowResponse, ClientOperationError> {
     let payloads = payloads_to_core(&request.input).map_err(ClientOperationError::Core)?;
+    let memo = metadata_to_memo(&request.memo).map_err(ClientOperationError::Core)?;
+    let search_attributes = metadata_to_search_attributes(&request.search_attributes)
+        .map_err(ClientOperationError::Core)?;
     let workflow_id = request.workflow_id.clone();
     let mut service = connection.workflow_service();
     let response = match tokio::time::timeout(
@@ -1357,11 +1379,12 @@ pub async fn start_workflow(
                     kind: 0,
                     normal_name: String::new(),
                 }),
+                memo,
+                search_attributes,
                 identity: connection.identity().to_owned(),
                 request_id: request.request_id,
-                // The first slice intentionally uses server defaults for all
-                // optional start policies; adding them is a later protocol
-                // extension, not an implicit semantic default here.
+                // All other start policies intentionally use server defaults;
+                // metadata is the only optional field in this protocol slice.
                 ..Default::default()
             }
             .into_request(),
@@ -1551,6 +1574,41 @@ fn payloads_to_core(
     })
 }
 
+/// Converts named OCaml metadata to Temporal's memo map while preserving the
+/// validation guarantees established by [`validate_metadata`].
+fn metadata_to_memo(
+    fields: &[MetadataField],
+) -> Result<Option<Memo>, workflow_protocol::CoreConversionError> {
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    let mut values = HashMap::with_capacity(fields.len());
+    for field in fields {
+        let payload = workflow_protocol::payload_to_core(&field.value)?;
+        values.insert(field.key.clone(), payload);
+    }
+    Ok(Some(Memo { fields: values }))
+}
+
+/// Converts named OCaml search attributes to Temporal's indexed-field map.
+/// Temporal represents each indexed field as one payload; callers that need
+/// multiple values should encode a list using their normal codec first.
+fn metadata_to_search_attributes(
+    fields: &[MetadataField],
+) -> Result<Option<SearchAttributes>, workflow_protocol::CoreConversionError> {
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    let mut values = HashMap::with_capacity(fields.len());
+    for field in fields {
+        let payload = workflow_protocol::payload_to_core(&field.value)?;
+        values.insert(field.key.clone(), payload);
+    }
+    Ok(Some(SearchAttributes {
+        indexed_fields: values,
+    }))
+}
+
 /// Builds successor metadata only for a nonempty Core run ID.
 fn successor_ref(namespace: &str, workflow_id: &str, run_id: &str) -> Option<SuccessorRef> {
     (!run_id.is_empty()).then(|| SuccessorRef {
@@ -1639,6 +1697,32 @@ fn validate_start_request(value: &StartWorkflowRequest) -> Result<(), protocol::
     for payload in &value.input {
         workflow_protocol::payload_to_core(payload)
             .map_err(|_| protocol::ProtocolError::invalid("$.input", "invalid Temporal payload"))?;
+    }
+    validate_metadata(&value.memo, "$.memo")?;
+    validate_metadata(&value.search_attributes, "$.search_attributes")?;
+    Ok(())
+}
+
+/// Validates metadata names, duplicate rejection, and payload conversion
+/// before any protobuf map is constructed. Duplicate names would otherwise be
+/// silently overwritten by a `HashMap` and make retries ambiguous.
+fn validate_metadata(fields: &[MetadataField], path: &str) -> Result<(), protocol::ProtocolError> {
+    let mut names = std::collections::HashSet::new();
+    for (index, field) in fields.iter().enumerate() {
+        let field_path = format!("{path}[{index}].key");
+        validate_identifier(&field.key, &field_path)?;
+        if !names.insert(field.key.as_str()) {
+            return Err(protocol::ProtocolError::invalid(
+                &field_path,
+                "duplicate metadata key",
+            ));
+        }
+        workflow_protocol::payload_to_core(&field.value).map_err(|_| {
+            protocol::ProtocolError::invalid(
+                &format!("{path}[{index}].value"),
+                "invalid Temporal payload",
+            )
+        })?;
     }
     Ok(())
 }

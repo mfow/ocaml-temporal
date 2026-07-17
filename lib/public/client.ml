@@ -492,6 +492,7 @@ let query handle ~(query : 'query Query.t) =
         workflow_id = handle.workflow_id;
         run_id = handle.run_id;
         query_name = Query.name query;
+        input = [];
       }
     in
     Result.bind (Backend.client_query handle.client.backend request) (fun payload ->
@@ -564,6 +565,29 @@ let list_visibility ?(page_size = 100) ?page_token client ~query () =
                   next_page_token = page.next_page_token;
                 })
               (Backend.client_list_visibility client.backend request))
+
+(** Executes a one-input typed query against the exact run retained by
+    [handle]. Encoding happens before transport, so invalid input cannot
+    consume a native request or become an ambiguous empty query. *)
+let query_with_input handle ~(query : ('input, 'query) Query.typed) ~input =
+  if Atomic.get handle.client.closed then
+    Error
+      (Error.make ~category:`Bridge ~message:"client is shut down" ())
+  else
+    match Codec.encode (Query.input query) input with
+    | Error error -> Error error
+    | Ok encoded_input ->
+        let request : Backend.query_request =
+          {
+            workflow_id = handle.workflow_id;
+            run_id = handle.run_id;
+            query_name = Query.name_with_input query;
+            input = [ encoded_input ];
+          }
+        in
+        Result.bind
+           (Backend.client_query handle.client.backend request)
+           (fun payload -> Codec.decode (Query.output_with_input query) payload)
 
 (** Returns the durable workflow identity retained by a handle. *)
 let workflow_id (handle : ('input, 'output) handle) = handle.workflow_id

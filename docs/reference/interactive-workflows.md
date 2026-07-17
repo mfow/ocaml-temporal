@@ -14,7 +14,7 @@ The definitions and handler types are available in `Temporal.Signal`,
 `Temporal.Query`, and `Temporal.Update`. `Temporal.Interaction` provides the
 deterministic local routing path for tests. Native workflow signal delivery is
 now available when a handler is attached to `Temporal.Worker.workflow`. Native
-output-only query delivery is also implemented at the bridge boundary. Native
+query delivery is also implemented at the bridge boundary. Native
 updates have an experimental typed slice: a registered one-input handler may
  suspend on a workflow future; acceptance is emitted before it parks and
  completion is emitted when it resumes. PR #266 provides the first focused live proof of the typed
@@ -25,11 +25,13 @@ fixture, whose first live run remains pending.
 Live query/update delivery and broader interaction coverage remain future work.
 
 `Temporal.Client.query` is a separate control-plane operation: it asks an
-already registered workflow for the same output-only query through an exact
-workflow/run handle and returns the typed result. It does not register or
-invoke a handler locally. See the [native client JSON protocol](client-protocol.md)
-for the request/response shape and exact-run semantics; live server acceptance
-for client queries remains follow-up work.
+already registered workflow for an output-only query through an exact
+workflow/run handle and returns the typed result. `Temporal.Client.query_with_input`
+does the same for a query defined with `Query.define_with_input`; it encodes
+exactly one argument before transport. Neither method registers or invokes a
+handler locally. See the [native client JSON protocol](client-protocol.md) for
+the request/response shape and exact-run semantics; live server acceptance for
+client queries remains follow-up work.
 
 ## Current status: local handlers and a partial native boundary
 
@@ -49,12 +51,13 @@ validated and retained by the runtime, but the first public handler API exposes
 only the typed payload; a later API can add those metadata fields without
 changing the transport contract.
 
-Query activations are delivered to a registered output-only handler on the
-execution owner Domain and produce a matching query result. The current public
-query definition has no input argument, so an activation containing one or more
-arguments returns a typed non-retryable query failure rather than silently
-dropping them. Query callbacks are synchronous and non-suspending; they do not
-enter the workflow scheduler.
+Query activations are delivered to a registered handler on the execution owner
+Domain and produce a matching query result. `Query.define` creates an
+output-only handler; `Query.define_with_input` creates a handler that decodes
+exactly one argument. Zero or multiple arguments for a typed handler, and any
+non-empty argument list for an output-only handler, produce a typed
+non-retryable query failure rather than silently dropping data. Query callbacks
+are synchronous and non-suspending; they do not enter the workflow scheduler.
 
 Native update activations are validated and copied in the same way, then routed
 by update name to a typed `Temporal.Update.Handler.t`. The adapter requires
@@ -74,7 +77,7 @@ An interaction is assembled in three steps:
    interaction boundary.
 2. Pair that definition with a typed OCaml callback to make a handler. Update
    callbacks may use ordinary workflow helpers such as `Future.await`.
-3. Attach signal, output-only query, and/or update handlers to a worker workflow, or
+3. Attach signal, typed query, and/or update handlers to a worker workflow, or
    put handlers in an `Interaction` dispatcher when writing a local test.
 
 The definition and handler preserve the relationship between a Temporal name,
@@ -82,8 +85,8 @@ its codec, and its OCaml type. A caller cannot accidentally pass a string to a
 handler that was defined for bytes without receiving a typed codec error. The
 native transport and the remaining handler/response lifecycles are described
 in the [native interaction design](../design/native-interactions.md). Signal
-and output-only query activation delivery plus two-phase update responses are
-implemented; typed query inputs are not.
+and typed query activation delivery plus two-phase update responses are
+implemented; live query/update acceptance remains deferred.
 
 ## Definitions
 
@@ -101,6 +104,12 @@ let status =
     ~name:"status"
     ~output:Temporal.Codec.string
 
+let status_for_user =
+  Temporal.Query.define_with_input
+    ~name:"status-for-user"
+    ~input:Temporal.Codec.string
+    ~output:Temporal.Codec.string
+
 let add_tool =
   Temporal.Update.define
     ~name:"add-tool"
@@ -113,6 +122,8 @@ The public shapes are:
 ```text
 Signal.define : name:string -> input:'a Codec.t -> 'a Signal.t
 Query.define  : name:string -> output:'b Codec.t -> 'b Query.t
+Query.define_with_input : name:string -> input:'a Codec.t ->
+                          output:'b Codec.t -> ('a, 'b) Query.typed
 Update.define : name:string -> input:'a Codec.t -> output:'b Codec.t
                 -> ('a, 'b) Update.t
 ```
@@ -125,12 +136,10 @@ registration. An invalid name raises `Invalid_argument` because it is a
 programmer or configuration defect detected while building the workflow,
 not a routine runtime failure.
 
-Signals carry one input and do not return a result. Queries have no input in
-this initial public API and return one typed value. A record or tuple codec
-changes only the query's output type; it does not add arguments to the native
-query request. Callers that need typed query inputs must wait for the future
-query-input extension. Updates carry one input, run an optional validator, and
-return one typed result.
+Signals carry one input and do not return a result. Output-only queries return
+one typed value; typed queries receive exactly one typed input and return one
+typed value. Updates carry one input, run an optional validator, and return one
+typed result.
 
 ### Codecs and payloads
 
@@ -334,13 +343,12 @@ retention, and fail-closed handling. PR #266 established the first focused
 live signal/condition acceptance, and the recorded seventeen-result baseline
 is covered by the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
 Native query delivery now uses the same private registration path:
-query IDs, repeated arguments, and headers are retained, output-only handlers
-run synchronously on the owner Domain, and non-empty arguments produce a
-failed query result rather than being discarded. The remaining native
+query IDs, repeated arguments, and headers are retained, handlers run
+synchronously on the owner Domain, and argument arity is checked by the
+registered output-only or typed handler rather than discarded. The remaining native
 interaction work is:
 
 - live acceptance scenarios for handlers that suspend, including recovery and
   shutdown/eviction cleanup;
-- typed query inputs; and
 - Docker Compose acceptance scenarios for queries and updates, including
   workflow-side assertions through Temporal Server.

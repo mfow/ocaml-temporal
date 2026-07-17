@@ -80,14 +80,14 @@ type signal_request = {
   input : Payload.t;
 }
 
-(** Exact workflow/run identity and query definition name for one read-only
-    control-plane query. Query arguments are intentionally absent from the
-    public API's first slice; the protocol still carries an empty payload list
-    so the Rust adapter can preserve Temporal's normal request shape. *)
+(** Exact workflow/run identity and encoded arguments for one read-only
+    control-plane query. The list is empty for legacy output-only queries and
+    contains exactly one payload for the typed-input API. *)
 type query_request = {
   workflow_id : string;
   run_id : string;
   query_name : string;
+  input : Payload.t list;
 }
 
 (** One bounded visibility query. The continuation token is opaque to callers
@@ -904,9 +904,9 @@ let native_query_request client (request : query_request) :
         namespace = client.namespace;
         workflow_id = request.workflow_id;
         run_id = request.run_id;
-      };
+    };
     query_type = request.query_name;
-    input = [];
+    input = List.map protocol_payload request.input;
   }
 
 (** Sends one output-only query through the serialized supervisor operation.

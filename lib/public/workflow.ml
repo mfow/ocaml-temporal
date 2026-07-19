@@ -89,6 +89,91 @@ let start_sleep duration =
 (** Implements direct-style sleep as timer creation followed by a future wait. *)
 let sleep duration = Future.await (start_sleep duration)
 
+(** Validates a workflow execution target before retaining it in a command. A
+    run ID may be empty to let Temporal resolve the current run, but workflow
+    IDs and signal names are always required identifiers. *)
+let validate_external_target ~workflow_id ~run_id =
+  let validate_required field value =
+    if String.equal value "" then
+      Error (Error.defect ~message:(field ^ " must not be empty"))
+    else if String.contains value '\000' then
+      Error (Error.defect ~message:(field ^ " must not contain NUL"))
+    else if String.length value > max_name_bytes then
+      Error (Error.defect ~message:(field ^ " exceeds 65536 bytes"))
+    else if not (Temporal_base.Codec.valid_utf_8 value) then
+      Error (Error.defect ~message:(field ^ " must be valid UTF-8"))
+    else Ok ()
+  in
+  let validate_optional field value =
+    if String.length value > max_name_bytes then
+      Error (Error.defect ~message:(field ^ " exceeds 65536 bytes"))
+    else if String.contains value '\000' then
+      Error (Error.defect ~message:(field ^ " must not contain NUL"))
+    else if not (Temporal_base.Codec.valid_utf_8 value) then
+      Error (Error.defect ~message:(field ^ " must be valid UTF-8"))
+    else Ok ()
+  in
+  match validate_required "external workflow id" workflow_id with
+  | Error _ as error -> error
+  | Ok () -> validate_optional "external run id" run_id
+
+(** Sends a typed signal to another workflow execution. The returned future
+    suspends the current workflow until Core reports delivery or a structured
+    failure; it does not perform nondeterministic network I/O itself. *)
+let signal_external_workflow ~workflow_id ~run_id ~(signal : 'input Signal.t)
+    ~input =
+  let outside_error () =
+    Error.defect ~message:"external workflow signal used outside a workflow execution"
+  in
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
+  | None -> Future_private.resolved ~outside_error (Error (outside_error ()))
+  | Some context -> (
+      match validate_external_target ~workflow_id ~run_id with
+      | Error error ->
+          Future_private.resolved ~outside_error (Error error)
+      | Ok () -> (
+          match Codec_private.encode_base (Signal.input signal) input with
+          | Error error ->
+              Future_private.resolved ~outside_error
+                (Error (Error_private.of_base error))
+          | Ok payload ->
+              let future =
+                Temporal_sdk_kernel.Workflow_context_store.signal_external_workflow
+                  context ~workflow_id ~run_id
+                  ~signal_name:(Signal.name signal) ~input:[ payload ] ()
+              in
+              Future_private.of_internal future))
+
+(** Requests cancellation of another workflow execution. Core owns delivery and
+    target lookup; the returned future therefore reports acknowledgement or a
+    typed Temporal failure rather than raising an exception. *)
+let cancel_external_workflow ~workflow_id ~run_id ~reason =
+  let outside_error () =
+    Error.defect ~message:"external workflow cancellation used outside a workflow execution"
+  in
+  match Temporal_sdk_kernel.Workflow_context_store.current () with
+  | None -> Future_private.resolved ~outside_error (Error (outside_error ()))
+  | Some context -> (
+      match validate_external_target ~workflow_id ~run_id with
+      | Error error ->
+          Future_private.resolved ~outside_error (Error error)
+      | Ok () when String.equal reason "" ->
+          Future_private.resolved ~outside_error
+            (Error (Error.defect ~message:"external cancellation reason must not be empty"))
+      | Ok () when String.contains reason '\000' ->
+          Future_private.resolved ~outside_error
+            (Error (Error.defect ~message:"external cancellation reason must not contain NUL"))
+      | Ok () when String.length reason > max_name_bytes ->
+          Future_private.resolved ~outside_error
+            (Error (Error.defect ~message:"external cancellation reason exceeds 65536 bytes"))
+      | Ok () when not (Temporal_base.Codec.valid_utf_8 reason) ->
+          Future_private.resolved ~outside_error
+            (Error (Error.defect ~message:"external cancellation reason must be valid UTF-8"))
+      | Ok () ->
+          Future_private.of_internal
+            (Temporal_sdk_kernel.Workflow_context_store.cancel_external_workflow
+               context ~workflow_id ~run_id ~reason ()))
+
 (** Reads the deterministic timestamp captured from the current Temporal
     activation. The runtime stores it in the workflow context before invoking
     user code, which means repeated calls during one activation observe the

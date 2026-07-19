@@ -535,6 +535,79 @@ fn converts_local_activity_and_cancellation_commands() {
     );
 }
 
+/// Proves external signal and cancellation commands map to the official Core
+/// command variants and back without changing target identity, payload bytes,
+/// headers, or operation ordering. The round-trip is important because the
+/// resolution sequence is how the OCaml workflow future is resumed.
+#[test]
+fn converts_external_workflow_commands() {
+    let input = workflow_protocol::Payload {
+        metadata: [("encoding".to_owned(), b"json/plain".to_vec())].into(),
+        data: br#""hello""#.to_vec(),
+    };
+    let completion = workflow_protocol::Completion {
+        run_id: "parent-run".to_owned(),
+        commands: vec![
+            workflow_protocol::CompletionCommand::SignalExternalWorkflow {
+                seq: 7,
+                workflow_id: "target-workflow".to_owned(),
+                run_id: "target-run".to_owned(),
+                signal_name: "greeting".to_owned(),
+                input: vec![input.clone()],
+                child_workflow_only: false,
+                headers: [("trace-id".to_owned(), input.clone())].into(),
+            },
+            workflow_protocol::CompletionCommand::RequestCancelExternalWorkflow {
+                seq: 8,
+                workflow_id: "target-workflow".to_owned(),
+                run_id: "target-run".to_owned(),
+                reason: "parent shutdown".to_owned(),
+            },
+        ],
+    };
+    let encoded = workflow_protocol::encode_completion(&completion).unwrap();
+    assert_eq!(
+        workflow_protocol::decode_completion(&encoded).unwrap(),
+        completion
+    );
+
+    let core = workflow_protocol::completion_to_core(&completion).unwrap();
+    let Some(core_completion::workflow_activation_completion::Status::Successful(success)) =
+        core.status.as_ref()
+    else {
+        panic!("external workflow completion must be successful");
+    };
+    let Some(core_commands::workflow_command::Variant::SignalExternalWorkflowExecution(signal)) =
+        success.commands[0].variant.as_ref()
+    else {
+        panic!("signal command must map to Core's external-signal variant");
+    };
+    assert_eq!(signal.seq, 7);
+    assert_eq!(signal.signal_name, "greeting");
+    assert_eq!(signal.args.len(), 1);
+    assert_eq!(signal.headers.len(), 1);
+    let Some(core_commands::signal_external_workflow_execution::Target::WorkflowExecution(target)) =
+        signal.target.as_ref()
+    else {
+        panic!("signal command must retain a workflow-execution target");
+    };
+    assert_eq!(target.workflow_id, "target-workflow");
+    assert_eq!(target.run_id, "target-run");
+
+    let Some(core_commands::workflow_command::Variant::RequestCancelExternalWorkflowExecution(
+        cancel,
+    )) = success.commands[1].variant.as_ref()
+    else {
+        panic!("cancel command must map to Core's external-cancel variant");
+    };
+    assert_eq!(cancel.seq, 8);
+    assert_eq!(cancel.reason, "parent shutdown");
+    assert_eq!(
+        workflow_protocol::completion_from_core(&core).unwrap(),
+        completion
+    );
+}
+
 /// Ensures a live worker supplies its configured namespace to Core even
 /// though namespace is intentionally absent from the workflow-level command.
 /// Core copies this field into child failure metadata, including the
@@ -1322,7 +1395,7 @@ fn converts_query_results_and_matches_activation_ids() {
         commands: vec![workflow_protocol::CompletionCommand::QueryResult {
             query_id: "query-42".to_owned(),
             result: workflow_protocol::QueryResult::Failed {
-                failure: failure.clone(),
+                failure: Box::new(failure.clone()),
             },
         }],
     };
@@ -1657,7 +1730,7 @@ fn converts_update_responses_and_enforces_phases() {
             workflow_protocol::CompletionCommand::UpdateResponse {
                 protocol_instance_id: "protocol-42".to_owned(),
                 response: workflow_protocol::UpdateResponseResult::Rejected {
-                    failure: workflow_protocol::Failure {
+                    failure: Box::new(workflow_protocol::Failure {
                         message: "handler failed".to_owned(),
                         source: "ocaml".to_owned(),
                         stack_trace: String::new(),
@@ -1668,7 +1741,7 @@ fn converts_update_responses_and_enforces_phases() {
                             non_retryable: true,
                             details: Vec::new(),
                         },
-                    },
+                    }),
                 },
             },
         ],

@@ -661,6 +661,35 @@ it requires both replay observations before the typed child failure and the
 parent's `SMOKE:PARENT:CHILD:FAILURE_RECOVERED` result. Additional child
 failure and recovery permutations remain separate acceptance work.
 
+### Signal or cancel another workflow
+
+Workflow code can address another execution without leaving the direct-style
+OCaml API. Define the signal's input codec once, then use the returned future
+like any other workflow operation:
+
+```ocaml
+let refresh_signal =
+  Temporal.Signal.define ~name:"refresh" ~input:Temporal.Codec.string
+
+let notify_refresh workflow_id run_id reason =
+  Temporal.Workflow.signal_external_workflow
+    ~workflow_id ~run_id ~signal:refresh_signal ~input:reason
+
+let stop_other_workflow workflow_id run_id =
+  Temporal.Workflow.cancel_external_workflow
+    ~workflow_id ~run_id ~reason:"superseded by a newer execution"
+```
+
+Both operations emit a deterministic command and suspend the current workflow
+until Core reports an acknowledgement or structured failure. They do not make
+network calls from OCaml or block an Eio fiber or Domain. The exact run ID is
+optional for targets that intentionally address the latest execution, but
+supplying it is safer when a workflow must never affect a replacement run.
+Input and headers are copied through the private JSON bridge; invalid names,
+payloads, NUL bytes, and duplicate sequence resolutions become typed errors.
+See the [external workflow protocol reference](../reference/core-protocol.md#external-workflow-operations)
+for the wire shapes and Core target mapping.
+
 ### Continue a run with fresh history
 
 Use `Temporal.Workflow.continue_as_new` when the current execution should end

@@ -210,6 +210,21 @@
         }
       ]
     },
+    "external_workflow_resolution": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {"kind": {"const": "succeeded"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "failure"],
+          "properties": {"kind": {"const": "failed"}, "failure": {"$ref": "#/$defs/failure"}}
+        }
+      ],
+      "description": "Reports whether Core delivered an external signal or accepted an external cancellation request. A failure is structured Temporal failure data, not a transport exception."
+    },
     "query_workflow": {
       "type": "object", "additionalProperties": false,
       "required": ["kind", "query_id", "query_type", "arguments", "headers"],
@@ -275,6 +290,16 @@
           "type": "object", "additionalProperties": false,
           "required": ["kind", "seq", "result"],
           "properties": {"kind": {"const": "resolve_child_workflow"}, "seq": {"$ref": "#/$defs/u32"}, "result": {"$ref": "#/$defs/child_workflow_resolution"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "result"],
+          "properties": {"kind": {"const": "resolve_signal_external_workflow"}, "seq": {"$ref": "#/$defs/u32"}, "result": {"$ref": "#/$defs/external_workflow_resolution"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "result"],
+          "properties": {"kind": {"const": "resolve_request_cancel_external_workflow"}, "seq": {"$ref": "#/$defs/u32"}, "result": {"$ref": "#/$defs/external_workflow_resolution"}}
         },
         {"$ref": "#/$defs/query_workflow"},
         {"$ref": "#/$defs/do_update"},

@@ -1188,13 +1188,13 @@ impl PollLanes {
     /// force-complete outstanding tasks or retry. A failed finalize must not
     /// drop the only handle that can still talk to Core.
     pub async fn finalize(self) -> Result<(), (Self, WorkerBridgeError)> {
-        let ledger_state = self
-            .ledger
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let outstanding = ledger_state.outstanding();
-        let lost_poll_lease = ledger_state.lost_poll_lease;
-        drop(ledger_state);
+        let (outstanding, lost_poll_lease) = {
+            let ledger_state = self
+                .ledger
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            (ledger_state.outstanding(), ledger_state.lost_poll_lease)
+        };
         if outstanding != 0 {
             return Err((self, WorkerBridgeError::OutstandingTasks(outstanding)));
         }

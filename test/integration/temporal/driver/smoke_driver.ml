@@ -599,30 +599,21 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-parent-retries-child" ~input:"smoke"
         in
-        let* cancellation_handle =
-          start_workflow client ~workflow:Definitions.long_running_cancellation
-            ~task_queue:Definitions.task_queue
-            ~id:"two-binary-long-running-cancellation" ~input:cancellation_token
-        in
-        let* child_start_failure_handle =
-          start_workflow client
-            ~workflow:Definitions.parent_observes_child_start_failure
-            ~task_queue:Definitions.task_queue
-            ~id:"two-binary-parent-observes-child-start-failure" ~input:"smoke"
-        in
         let* signal_handle =
           start_workflow client ~workflow:Definitions.signal_condition_workflow
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-signal-condition" ~input:signal_condition_token
         in
-        (* Sixteen starts intentionally happen before the first wait. The
-           cancellation workflow's marker activity proves that its timer and
-           marker commands were accepted in one activation before this exact
-           run is cancelled; the timer keeps the execution outstanding. The
-           child-start-failure parent is started only after that top-level
-           cancellation run is accepted, so its duplicate child ID must be
-           rejected by Temporal rather than succeeding as an ordinary child.
-           heartbeat workflow is also already outstanding here, so its retry
+        (* Most starts intentionally happen before the first result wait. The
+           signal workflow is started before its synchronous query checks, but
+           the cancellation workflow is deliberately started afterwards so a
+           slow query cannot race with its timer. The cancellation workflow's
+           marker activity proves that its timer and marker commands were
+           accepted in one activation before this exact run is cancelled; the
+           timer keeps the execution outstanding. The child-start-failure
+           parent is started only after that top-level cancellation run is
+           submitted, so its duplicate child ID must be rejected by Temporal
+           rather than succeeding as an ordinary child. The heartbeat workflow is also already outstanding here, so its retry
            runs concurrently with the other live server work instead of being
            mistaken for a sequential local callback. The timeout workflow is
            deliberately started only after the heartbeat workflow has reached
@@ -680,6 +671,22 @@ let run () =
         let* () = query_missing_handler signal_handle in
         let* () = query_invalid_input signal_handle in
         let* () = signal_workflow signal_handle in
+        (* Start the long-running cancellation workflow only after all
+           synchronous query checks have completed.  Otherwise a slow query
+           request could allow the workflow's ready marker to arrive and the
+           later cancellation to race with its timer, making the smoke test
+           depend on request latency rather than the cancellation contract. *)
+        let* cancellation_handle =
+          start_workflow client ~workflow:Definitions.long_running_cancellation
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-long-running-cancellation" ~input:cancellation_token
+        in
+        let* child_start_failure_handle =
+          start_workflow client
+            ~workflow:Definitions.parent_observes_child_start_failure
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-parent-observes-child-start-failure" ~input:"smoke"
+        in
         let* () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token
         in

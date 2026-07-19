@@ -261,8 +261,11 @@ end
     command is emitted immediately and [future] remains pending until Core
     reports a terminal result. Invalid options or input encoding return a ready
     failed handle without emitting a command or consuming a sequence. The
-    default policy is [Try_cancel]. *)
+    default policy is [Try_cancel]. When [scope] is supplied, cancellation of
+    that scope emits the activity's Core cancellation command exactly once;
+    the scope must belong to the same workflow execution. *)
 val start_handle :
+  ?scope:Scope.t ->
   ?activity_id:string ->
   ?task_queue:string ->
   ?schedule_to_close_timeout:Duration.t ->
@@ -296,8 +299,12 @@ val cancel : 'output handle -> (unit, Error.t) result
     Temporal requires at least one activity timeout. If input or option
     validation fails, the returned future contains a typed error and no command
     is emitted. [do_not_eagerly_execute] controls whether Core may run the
-    activity inline with the scheduling activation; it defaults to [false]. *)
+    activity inline with the scheduling activation; it defaults to [false]. If
+    [scope] is supplied, cancelling the scope requests cancellation of this
+    activity at the Temporal server as well as cancelling its local
+    observation. *)
 val start :
+  ?scope:Scope.t ->
   ?activity_id:string ->
   ?task_queue:string ->
   ?schedule_to_close_timeout:Duration.t ->
@@ -313,8 +320,10 @@ val start :
   ('output, Error.t) Future.t
 
 (** Schedules the activity and waits for its result. This is equivalent to
-    calling [start] followed by [Future.await]. *)
+    calling [start] followed by [Future.await]. A supplied [scope] also
+    attaches the activity's server-side cancellation command to that scope. *)
 val execute :
+  ?scope:Scope.t ->
   ?activity_id:string ->
   ?task_queue:string ->
   ?schedule_to_close_timeout:Duration.t ->

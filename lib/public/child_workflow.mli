@@ -21,8 +21,11 @@ type 'output handle
     Temporal Core so retryable child failures are retried by the durable state
     machine rather than by replay-sensitive OCaml code. Invalid input and
     detached calls return ready failed handles, so no command or sequence
-    number is created. *)
+    number is created. When [scope] is supplied, cancelling it emits the
+    child's Core cancellation command with the stable default reason
+    ["cancelled by workflow"]. *)
 val start_handle :
+  ?scope:Scope.t ->
   ?cancellation_type:cancellation_type ->
   ?retry_policy:Activity.Retry_policy.t ->
   id:string ->
@@ -50,8 +53,10 @@ val cancel :
     a ready failed future without emitting a command or consuming a sequence.
     Starting several operations before awaiting them lets Temporal run them
     concurrently. The default cancellation policy is [Try_cancel]. A supplied
-    [retry_policy] controls retries in Temporal Core. *)
+    [retry_policy] controls retries in Temporal Core. A supplied [scope]
+    attaches server-side child cancellation to the scope. *)
 val start :
+  ?scope:Scope.t ->
   ?cancellation_type:cancellation_type ->
   ?retry_policy:Activity.Retry_policy.t ->
   id:string ->
@@ -62,8 +67,10 @@ val start :
 (** Starts a child workflow and waits for its result. This is equivalent to
     [Future.await (start ~id definition input)]. Child, codec, cancellation,
     retry, and bridge failures are returned as structured values. The default
-    cancellation policy is [Try_cancel]. *)
+    cancellation policy is [Try_cancel]. A supplied [scope] also requests
+    server-side cancellation of the child. *)
 val execute :
+  ?scope:Scope.t ->
   ?cancellation_type:cancellation_type ->
   ?retry_policy:Activity.Retry_policy.t ->
   id:string ->

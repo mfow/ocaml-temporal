@@ -565,20 +565,30 @@ let resolved result =
 let failed_handle error =
   { future = resolved (Error error); cancel = (fun () -> Error error) }
 
+(** Verifies an optional structured-cancellation scope before validating or
+    encoding an activity request. A cancelled or foreign scope therefore
+    cannot cause a new Temporal command or invoke user codec code. *)
+let check_scope = function
+  | None -> Ok ()
+  | Some scope -> Scope.check scope
+
 (** Schedules an activity after validating command options and encoding input.
     Option validation deliberately happens first: a malformed activity ID or
     task queue must not invoke an application codec, allocate workflow state,
     or perform any user conversion before the request is rejected. The native
     runtime receives a base payload; its result decoder is converted back to
     public errors at the same boundary. *)
-let start_handle_internal ?activity_id ?task_queue ?schedule_to_close_timeout
+let start_handle_internal ?scope ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
     ?retry_policy ?priority ?(cancellation_type = Try_cancel)
     ?(do_not_eagerly_execute = false) ?(local = false)
     definition input =
-  match validate_optional_identifier "activity id" activity_id with
+  match check_scope scope with
   | Error error -> failed_handle error
   | Ok () -> (
+      match validate_optional_identifier "activity id" activity_id with
+      | Error error -> failed_handle error
+      | Ok () -> (
       match validate_optional_identifier "task queue" task_queue with
       | Error error -> failed_handle error
       | Ok () -> (
@@ -639,18 +649,29 @@ let start_handle_internal ?activity_id ?task_queue ?schedule_to_close_timeout
                   match schedule_result with
                   | Error error -> failed_handle error
                   | Ok (future, cancel) ->
+                      let request_cancel () =
+                        Result.map_error Error_private.of_base (cancel ())
+                      in
+                      let () =
+                        Option.iter
+                          (fun scope ->
+                            (* Scope ownership was checked before scheduling;
+                               this registration is therefore deterministic and
+                               cannot race another Domain. *)
+                            ignore (Scope.on_cancel scope request_cancel))
+                          scope
+                      in
                       {
                         future = Future_private.of_internal future;
-                        cancel = (fun () ->
-                          Result.map_error Error_private.of_base (cancel ()))
-                      })))
+                        cancel = request_cancel;
+                      }))))
 
 (* Public wrapper keeps the implementation-only [local] switch out of the
    published signature; local callers use the dedicated [start_local] helper. *)
-let start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
+let start_handle ?scope ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
     ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input =
-  start_handle_internal ?activity_id ?task_queue ?schedule_to_close_timeout
+  start_handle_internal ?scope ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
     ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute
     ~local:false definition input
@@ -666,20 +687,20 @@ let cancel handle = handle.cancel ()
 
 (** Schedules an activity and returns only its future. Callers that need to
     cancel explicitly should retain the handle returned by [start_handle]. *)
-let start ?activity_id ?task_queue ?schedule_to_close_timeout
+let start ?scope ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
     ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input =
   future
-    (start_handle ?activity_id ?task_queue ?schedule_to_close_timeout
+    (start_handle ?scope ?activity_id ?task_queue ?schedule_to_close_timeout
        ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
        ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input)
 
 (** Direct-style convenience for scheduling and awaiting one activity. *)
-let execute ?activity_id ?task_queue ?schedule_to_close_timeout
+let execute ?scope ?activity_id ?task_queue ?schedule_to_close_timeout
     ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
     ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input =
   Future.await
-    (start ?activity_id ?task_queue ?schedule_to_close_timeout
+    (start ?scope ?activity_id ?task_queue ?schedule_to_close_timeout
        ?schedule_to_start_timeout ?start_to_close_timeout ?heartbeat_timeout
        ?retry_policy ?priority ?cancellation_type ?do_not_eagerly_execute definition input)
 

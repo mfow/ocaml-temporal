@@ -3,8 +3,8 @@
     The fixtures use the deterministic scheduler directly so they can resolve
     a source future and request scope cancellation in controlled FIFO order.
     No Temporal server or native bridge is involved: this slice proves the
-    scope's typed observation and ownership contract before server-side
-    cancellation commands are added. *)
+    scope's typed observation, ownership, and exactly-once cancellation-hook
+    contract. The live smoke suite covers the resulting Temporal commands. *)
 
 module Scheduler = Temporal_runtime.Scheduler
 module Workflow_context_store = Temporal_runtime.Workflow_context_store
@@ -199,6 +199,50 @@ let test_cancellation_is_idempotent () =
     (Workflow_context_store.take_commands context);
   Workflow_context_store.shutdown context
 
+(** Cancellation hooks run in registration order, all hooks are attempted even
+    when one reports a typed error, and a late registration runs immediately.
+    These properties make attaching activity and child handles deterministic
+    without introducing a second lock or a cross-Domain callback path. *)
+let test_cancellation_hooks () =
+  let scheduler = Scheduler.create () in
+  let context = Workflow_context_store.create scheduler in
+  let events = ref [] in
+  let events_after_cancel = ref [] in
+  let first_result = ref None in
+  let late_result = ref None in
+  with_active_context scheduler context (fun () ->
+      match Temporal.Scope.create () with
+      | Error error -> failwith (Temporal.Error.message error)
+      | Ok scope ->
+          let hook label result () =
+            events := !events @ [ label ];
+            result
+          in
+          begin match Temporal.Scope.on_cancel scope (hook "first" (Ok ())) with
+          | Ok () -> ()
+          | Error error -> failwith (Temporal.Error.message error)
+          end;
+          begin match
+            Temporal.Scope.on_cancel scope
+              (hook "second"
+                 (Error (Temporal.Error.make ~category:`Cancelled
+                           ~message:"hook failed" ())))
+          with
+          | Ok () -> ()
+          | Error error -> failwith (Temporal.Error.message error)
+          end;
+          first_result := Some (Temporal.Scope.cancel scope);
+          events_after_cancel := !events;
+          late_result :=
+            Some (Temporal.Scope.on_cancel scope (hook "late" (Ok ())))) ;
+  expect "hook run" "complete" (Scheduler.run_label scheduler);
+  expect "hook order" [ "first"; "second" ] !events_after_cancel;
+  expect_error "first hook error" "cancelled" "hook failed"
+    (Option.get !first_result);
+  expect "late hook" (Some (Ok ())) !late_result;
+  expect "late hook event" [ "first"; "second"; "late" ] !events;
+  Workflow_context_store.shutdown context
+
 (** A scope rejects a future owned by another workflow execution as a typed
     defect instead of allowing one scheduler to await another's continuation. *)
 let test_cross_execution_future_is_rejected () =
@@ -310,5 +354,6 @@ let () =
   test_completed_future_and_cleanup ();
   test_cancellation_resumes_waiter ();
   test_cancellation_is_idempotent ();
+  test_cancellation_hooks ();
   test_cross_execution_future_is_rejected ();
   test_foreign_scheduler_scope_operations_are_rejected ()

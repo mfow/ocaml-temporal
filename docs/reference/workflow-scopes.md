@@ -1,19 +1,21 @@
 # Workflow-local cancellation scopes
 
 `Temporal.Scope` is an experimental, workflow-local boundary for deciding
-which future a workflow still wants to observe. It is cooperative: cancelling
-the scope makes `Temporal.Scope.await` return a typed cancellation error, but
-it does not cancel the activity, child workflow, or timer represented by the
-future. The underlying operation remains owned by the workflow execution and
-is cleaned up by the normal Temporal/runtime lifecycle.
+which future a workflow still wants to observe. Cancelling a scope always
+wakes its waiters with a typed cancellation error. When an activity or child
+workflow was started with the optional `~scope` argument, cancellation also
+invokes that operation's server-side cancellation hook exactly once. Timers
+and operations started without `~scope` remain observation-only and are
+cleaned up by the normal Temporal/runtime lifecycle.
 
-Use a scope when cancellation is about the *observation* of an operation. Use
-the operation's own cancellation option or handle when the Temporal operation
-itself must receive a cancellation command:
+Use a scope when a workflow wants one cancellation decision to cover both its
+local waiters and selected durable operations. Use an operation handle when
+the Temporal operation must be cancelled independently of a scope:
 
 | Need | Public API | Effect |
 | --- | --- | --- |
-| Stop waiting for a workflow-owned future | `Temporal.Scope.cancel` and `Temporal.Scope.await` | Resolves only the scope's private signal; emits no Temporal command |
+| Stop waiting for a workflow-owned future | `Temporal.Scope.cancel` and `Temporal.Scope.await` | Resolves the private signal and wakes scope waiters |
+| Cancel scoped activity or child workflow operations | `Temporal.Scope.cancel` after starting with `~scope` | Runs each registered server-cancellation hook once and emits the corresponding Core command |
 | Request cancellation of one scheduled activity | `Temporal.Activity.start_handle` and `Temporal.Activity.cancel` | Emits the activity cancellation command using its configured policy |
 | Request cancellation of one child workflow | `Temporal.Child_workflow.start_handle` and `Temporal.Child_workflow.cancel` | Emits the child cancellation command using its configured policy |
 | Cancel an exact client execution | `Temporal.Client.cancel` | Sends an exact workflow/run cancellation request to Temporal Server |
@@ -27,8 +29,9 @@ exception is still propagated. A body should await every branch it intends to
 observe before returning.
 
 The following pattern races a workflow operation against a durable deadline.
-When the deadline wins, the operation is no longer observed by this body, but
-the scope does not pretend that the operation was cancelled:
+When the deadline wins, the operation is no longer observed by this body. If
+the operation was started with `~scope`, the same cancellation also requests
+server-side cancellation according to that operation's policy:
 
 ```ocaml
 let await_until deadline operation =
@@ -51,7 +54,9 @@ already been requested. If both the operation and the private scope signal
 are ready, the operation wins because it is registered first. Otherwise the
 first deterministic scheduler completion wins. A future error passes through
 unchanged; a scope signal produces an error whose category is `Cancelled`.
-The future must belong to the same workflow execution as the scope.
+Registered operation hooks run as part of `Scope.cancel`; the first hook error
+is returned after all hooks have been attempted. The future must belong to the
+same workflow execution as the scope.
 
 Another runnable fiber in that same workflow execution can request the stop:
 
@@ -61,9 +66,9 @@ let stop_observation scope =
 ```
 
 The call must run during the owning workflow scheduler's active turn. A
-successful cancellation is idempotent, and it wakes scope waiters without
-resolving or cancelling their underlying futures. A cancellation request that
-arrives after an operation has already completed does not rewrite that result.
+successful cancellation is idempotent, and it wakes scope waiters. A
+cancellation request that arrives after an operation has already completed
+does not rewrite that result; its hook is simply not registered as live work.
 
 ## Lifecycle and ownership
 
@@ -79,15 +84,18 @@ arrives after an operation has already completed does not rewrite that result.
   active scope and a typed `Cancelled` error after cancellation.
 - `Temporal.Scope.is_cancelled` reports the state without scheduling work, but
   it has the same ownership checks as cancellation and awaiting.
-- Scope cancellation emits no workflow command and cannot make an activity,
-  child workflow, or timer future ready. Workflow completion, eviction,
-  cancellation, and shutdown still dispose the scope signal and its waiters.
+- Scope cancellation itself is a private deterministic signal. Only activity
+  and child operations started with `~scope` register hooks that enqueue the
+  corresponding server-cancellation command. Timer futures and unscoped
+  operations are not implicitly cancelled. Workflow completion, eviction,
+  cancellation, and shutdown dispose the scope signal and its waiters.
 
 These rules keep cancellation deterministic and prevent one workflow execution
 from reading or mutating another execution's state. They are part of the
 [runtime invariants](runtime-invariants.md); the focused ownership, cleanup,
-idempotence, and no-command regression cases live in
-[`test/runtime/test_scope.ml`](../../test/runtime/test_scope.ml).
+idempotence, and server-cancellation cases live in
+[`test/runtime/test_scope.ml`](../../test/runtime/test_scope.ml) and
+[`test/runtime/test_scope_server_cancel.ml`](../../test/runtime/test_scope_server_cancel.ml).
 
 For a complete public-module index, see the [public API map](public-api-map.md).
 For server-facing activity and child cancellation behavior, see the

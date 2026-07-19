@@ -62,17 +62,19 @@ and bridge, read the [documentation guide](../README.md) first.
   before scheduler shutdown, so a late notification cannot retain or resume
   an ended workflow.
 - A `Temporal.Scope` signal belongs to the same scheduler as the workflow
-  futures it observes. Cancellation resolves only that private signal, never
-  the underlying activity, child-workflow, or timer future. Every scope
+  futures it observes. Cancellation resolves that private signal and invokes
+  each registered activity or child-workflow cancellation hook at most once;
+  timers and unscoped operations remain observation-only. Every scope
   operation, including `is_cancelled` and `check`, is owner-checked (including
   while the scheduler is paused between runs), so a foreign or stale handle
   returns a typed defect rather than racing mutable state. Normal workflow
   teardown closes any still-pending signal and its callbacks. Repeating
-  cancellation is idempotent and emits no Temporal command. The owner check
-  compares the currently running scheduler with the scheduler that created
-  the scope, so a foreign scheduler cannot inspect or mutate the scope. A
-  rejected foreign operation leaves the owner able to query and cancel its
-  own scope, as covered by the cross-scheduler scope test.
+  cancellation is idempotent; hook errors are aggregated as a typed first
+  error after all hooks have been attempted. The owner check compares the
+  currently running scheduler with the scheduler that created the scope, so a
+  foreign scheduler cannot inspect or mutate the scope. A rejected foreign
+  operation leaves the owner able to query and cancel its own scope, as
+  covered by the cross-scheduler scope test.
 - Combining futures from different executions returns a ready typed defect
   owned by the leading input rather than raising an operational exception.
 - User callback exceptions are contained and reported as scheduler defects.

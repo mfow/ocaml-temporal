@@ -66,8 +66,9 @@ activity and pass the resulting value through a replay-safe workflow decision.
 
 Cancellation policy controls how the parent operation's future is settled
 after its exact operation handle is cancelled. It is different from
-`Temporal.Scope.cancel`, which only stops observing a future and emits no
-Temporal cancellation command. It is also different from
+`Temporal.Scope.cancel`: a scope always stops local observation, and when the
+operation was started with `~scope`, it additionally runs that operation's
+server-cancellation hook. It is also different from
 `Temporal.Client.cancel`, which addresses an exact workflow/run from
 application code.
 
@@ -124,18 +125,18 @@ These mechanisms affect different owners:
 
 | Goal | Mechanism | Does it emit a Temporal command? |
 | --- | --- | --- |
-| Stop a workflow fiber from observing a future | `Temporal.Scope.await` after `Temporal.Scope.cancel` | No; only the private scope signal is resolved |
+| Stop a workflow fiber from observing a future | `Temporal.Scope.await` after `Temporal.Scope.cancel` | Resolves the private scope signal; scoped activities and children also emit their registered cancellation command |
 | Stop or abandon one scheduled activity | Activity cancellation type plus `Activity.cancel` | Yes, according to the selected Core policy |
 | Stop or abandon one child workflow | Child cancellation type plus `Child_workflow.cancel` | Yes, according to the selected Core policy |
 | Cancel an exact client execution | `Temporal.Client.cancel` | Yes, through the native client path |
 | Retry a failed activity or child according to history | `~retry_policy` | The command carries policy data; Core owns later attempts |
 
-Cancelling a scope does not cancel the operation it is observing. If an
-activity must stop, retain its activity handle and use its cancellation
-policy. If a child must stop, retain its child handle and use its child
-policy. If an application needs to cancel a running workflow from outside
-workflow execution, use the exact workflow/run handle through
-`Temporal.Client.cancel`.
+Cancelling a scope only requests server-side cancellation for activities and
+children that were started with `~scope`; timers and unscoped operations are
+not implicitly cancelled. To cancel an operation independently of a scope,
+retain its activity or child handle and use its cancellation policy. If an
+application needs to cancel a running workflow from outside workflow
+execution, use the exact workflow/run handle through `Temporal.Client.cancel`.
 
 ## Current boundary and evidence
 

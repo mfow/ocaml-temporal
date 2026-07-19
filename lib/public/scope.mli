@@ -1,12 +1,11 @@
 (** Workflow-local structured cancellation boundaries.
 
     A scope provides a deterministic cancellation signal for code that waits
-    on public futures. It is deliberately cooperative: cancelling a scope
-    changes the result returned by [await], but does not emit an activity or
-    child-workflow cancellation command. Pending Temporal operations are still
-    owned and cleaned up by the workflow execution. Every operation on a scope
-    is owner-checked, so a handle cannot be read or mutated from another
-    Domain or after its workflow scheduler has shut down. *)
+    on public futures. Cancelling a scope wakes [await] callers and invokes
+    every action registered with [on_cancel], allowing attached activity and
+    child-workflow handles to emit their real Temporal cancellation commands.
+    Every operation on a scope is owner-checked, so a handle cannot be read or
+    mutated from another Domain or after its workflow scheduler has shut down. *)
 type t
 
 (** Creates a scope for the workflow execution currently running on this
@@ -27,6 +26,16 @@ val with_scope :
     scheduler shutdown returns a typed defect. Repeating cancellation after
     it has already been requested is [Ok ()] when called by that scheduler. *)
 val cancel : t -> (unit, Error.t) result
+
+(** Registers one action to run when [scope] is cancelled. Actions are invoked
+    once, in registration order, on the owning workflow scheduler. A callback
+    should request cancellation of one or more Temporal operations and return
+    [Ok ()] after the command has been buffered. All callbacks are attempted;
+    if several fail, [cancel] returns the first structured error after the
+    scope's own cancellation signal has still been delivered. Registering on
+    an already-cancelled scope runs the action immediately. The callback must
+    not block, perform nondeterministic I/O, or retain the scope indefinitely. *)
+val on_cancel : t -> (unit -> (unit, Error.t) result) -> (unit, Error.t) result
 
 (** Reports whether cancellation has been requested for [scope]. The query is
     owner-checked just like [cancel], so a foreign Domain or a retained scope

@@ -278,6 +278,7 @@ let run () =
                 ~queries:
                   [ Definitions.signal_condition_status_handler;
                     Definitions.signal_value_echo_handler ]
+                ~updates:[ Definitions.signal_value_update_handler ]
                 Definitions.signal_condition_workflow;
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;

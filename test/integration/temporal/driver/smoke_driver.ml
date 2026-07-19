@@ -108,6 +108,14 @@ let signal_condition_token () =
   Printf.sprintf "signal-condition-%d-%Ld" (Unix.getpid ())
     (Int64.of_float (Unix.gettimeofday () *. 1_000_000.))
 
+(** Creates the independent token used by the update workflow's readiness
+    activity. Keeping it distinct from the signal token prevents a stale or
+    cross-run marker from proving that the wrong execution reached its first
+    task. *)
+let update_condition_token () =
+  Printf.sprintf "update-condition-%d-%Ld" (Unix.getpid ())
+    (Int64.of_float (Unix.gettimeofday () *. 1_000_000.))
+
 (** Reads an atomically published marker and checks its complete per-run token.
     A stale marker from an interrupted run therefore cannot satisfy either
     handshake, even before the Makefile's best-effort cleanup runs. *)
@@ -397,6 +405,37 @@ let query_signal_value_echo handle input =
         ~duration_ms:(elapsed_ms started) ();
       Error error
 
+(** Sends an update to an exact parked execution and waits for its typed result.
+    The two calls deliberately remain separate so this acceptance path proves
+    both server admission and the subsequent result poll rather than only a
+    fire-and-forget request. *)
+let update_signal_condition_workflow handle input =
+  let operation = "update:" ^ Client.workflow_id handle in
+  let started = Unix.gettimeofday () in
+  phase ~operation ~status:"begin" ~workflow_id:(Client.workflow_id handle)
+    ~run_id:(Client.run_id handle) ();
+  match
+    Client.start_update ~update_id:"two-binary-update-1" handle
+      ~update:Definitions.signal_value_update ~input ()
+  with
+  | Error error ->
+      phase ~operation ~status:("error:" ^ Error.kind error)
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Error error
+  | Ok update_handle -> (
+      match Client.wait_update update_handle with
+      | Ok value ->
+          phase ~operation ~status:"completed"
+            ~workflow_id:(Client.workflow_id handle)
+            ~run_id:(Client.run_id handle) ~duration_ms:(elapsed_ms started) ();
+          Ok value
+      | Error error ->
+          phase ~operation ~status:("error:" ^ Error.kind error)
+            ~workflow_id:(Client.workflow_id handle)
+            ~run_id:(Client.run_id handle) ~duration_ms:(elapsed_ms started) ();
+          Error error)
+
 (** Confirms the live server rejects an unknown query handler. *)
 let query_missing_handler handle =
   match Client.query handle ~query:missing_query with
@@ -604,6 +643,12 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-signal-condition" ~input:signal_condition_token
         in
+        let update_condition_token = update_condition_token () in
+        let* update_handle =
+          start_workflow client ~workflow:Definitions.signal_condition_workflow
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-update-condition" ~input:update_condition_token
+        in
         (* Most starts intentionally happen before the first result wait. The
            signal workflow is started before its synchronous query checks, but
            the cancellation workflow is deliberately started afterwards so a
@@ -671,6 +716,23 @@ let run () =
         let* () = query_missing_handler signal_handle in
         let* () = query_invalid_input signal_handle in
         let* () = signal_workflow signal_handle in
+        let* () =
+          wait_for_signal_condition_ready signal_condition_ready_file
+            update_condition_token
+        in
+        let* update_result =
+          update_signal_condition_workflow update_handle "updated"
+        in
+        let* () =
+          if String.equal update_result "SMOKE:UPDATE:ACCEPTED:UPDATED" then Ok ()
+          else
+            Error
+              (Error.defect
+                 ~message:
+                   (Printf.sprintf
+                      "smoke.signal_value_update returned unexpected value %S"
+                      update_result))
+        in
         (* Start the long-running cancellation workflow only after all
            synchronous query checks have completed.  Otherwise a slow query
            request could allow the workflow's ready marker to arrive and the
@@ -817,8 +879,13 @@ let run () =
             (Ok cancellation_result)
         in
         let* signal_result = wait_workflow signal_handle in
-        require_completed "smoke.signal_condition" "SMOKE:SIGNAL:ACCEPTED"
-          (Ok signal_result)
+        let* () =
+          require_completed "smoke.signal_condition" "SMOKE:SIGNAL:ACCEPTED"
+            (Ok signal_result)
+        in
+        let* update_workflow_result = wait_workflow update_handle in
+        require_completed "smoke.signal_condition_update" "SMOKE:SIGNAL:UPDATED"
+          (Ok update_workflow_result)
       in
       finish result
 

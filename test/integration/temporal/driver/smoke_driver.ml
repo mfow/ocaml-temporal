@@ -18,6 +18,26 @@ module Client = Temporal.Client
 module Error = Temporal.Error
 module Definitions = Smoke_definitions
 
+(** Client-only query definition whose encoder always rejects. It exercises the
+    public validation path without changing the worker registry: malformed
+    input must fail before a native query request is emitted. *)
+let invalid_typed_query_input =
+  Temporal.Codec.make ~encoding:"test/invalid-query-input"
+    ~encode:(fun _ -> Error (Error.defect ~message:"invalid query input"))
+    ~decode:(fun _ -> Error (Error.defect ~message:"invalid query input"))
+
+let invalid_typed_query =
+  Temporal.Query.define_with_input
+    ~name:(Temporal.Query.name_with_input Definitions.signal_value_echo)
+    ~input:invalid_typed_query_input ~output:Temporal.Codec.string
+
+(** A query name with no worker registration. The live driver uses it to prove
+    that a missing handler is surfaced as a typed Temporal error rather than a
+    fabricated empty result. *)
+let missing_query =
+  Temporal.Query.define ~name:"smoke.query_not_registered"
+    ~output:Temporal.Codec.string
+
 (** Wall-clock process timestamp used only for operator diagnostics.
     Workflow payloads and workflow code never call this helper; the driver is
     an ordinary client process, so a clock adjustment can affect only a
@@ -377,6 +397,30 @@ let query_signal_value_echo handle input =
         ~duration_ms:(elapsed_ms started) ();
       Error error
 
+(** Confirms the live server rejects an unknown query handler. *)
+let query_missing_handler handle =
+  match Client.query handle ~query:missing_query with
+  | Error _ -> Ok ()
+  | Ok value ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf
+                "missing query handler unexpectedly returned %S" value))
+
+(** Confirms a rejected input codec is reported locally and does not become a
+    malformed empty-payload query request. *)
+let query_invalid_input handle =
+  match
+    Client.query_with_input handle ~query:invalid_typed_query ~input:"invalid"
+  with
+  | Error _ -> Ok ()
+  | Ok value ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "invalid query input unexpectedly returned %S" value))
+
 (** Starts one workflow and records the server-issued run identity only after
     the typed client has accepted it. *)
 let start_workflow client ~workflow ~task_queue ~id ~input =
@@ -633,6 +677,8 @@ let run () =
                       "smoke.signal_value_echo query returned unexpected value %S"
                       typed_query_result))
         in
+        let* () = query_missing_handler signal_handle in
+        let* () = query_invalid_input signal_handle in
         let* () = signal_workflow signal_handle in
         let* () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token

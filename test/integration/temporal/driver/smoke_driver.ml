@@ -338,30 +338,6 @@ let cancel_workflow handle =
         ~duration_ms:(elapsed_ms started) ();
       Error error
 
-(** Sends the typed signal to the exact run returned by [Client.start]. The
-    acknowledgement proves only that Temporal accepted the request; the later
-    [wait_workflow] assertion proves that the worker delivered it to the
-    registered handler and that the suspended condition resumed. *)
-let signal_workflow handle =
-  let operation = "signal:" ^ Client.workflow_id handle in
-  let started = Unix.gettimeofday () in
-  phase ~operation ~status:"begin" ~workflow_id:(Client.workflow_id handle)
-    ~run_id:(Client.run_id handle) ();
-  match
-    Client.signal ~request_id:"two-binary-signal-1" handle
-      ~signal:Definitions.signal_value ~input:"accepted"
-  with
-  | Ok () ->
-      phase ~operation ~status:"acknowledged"
-        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
-        ~duration_ms:(elapsed_ms started) ();
-      Ok ()
-  | Error error ->
-      phase ~operation ~status:("error:" ^ Error.kind error)
-        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
-        ~duration_ms:(elapsed_ms started) ();
-      Error error
-
 (** Queries the exact parked signal workflow through Temporal's read-only
     control-plane RPC. This is intentionally performed before the signal is
     sent: the expected pending marker proves that the worker ran a query
@@ -542,7 +518,7 @@ let run () =
         Definitions.clear_signal_condition_ready_file signal_condition_ready_file
       in
       let cancellation_token = cancellation_token () in
-      let signal_condition_token = signal_condition_token () in
+      let signal_condition_token_value = signal_condition_token () in
       let* client =
         measured "client_create" (fun () ->
             Client.create ~target_url ~namespace
@@ -641,7 +617,7 @@ let run () =
         let* signal_handle =
           start_workflow client ~workflow:Definitions.signal_condition_workflow
             ~task_queue:Definitions.task_queue
-            ~id:"two-binary-signal-condition" ~input:signal_condition_token
+            ~id:"two-binary-signal-condition" ~input:signal_condition_token_value
         in
         (* Most starts intentionally happen before the first result wait. The
            signal workflow is started before its synchronous query checks, but
@@ -678,7 +654,7 @@ let run () =
            accepted before the worker has taken the execution's first task. *)
         let* () =
           wait_for_signal_condition_ready signal_condition_ready_file
-            signal_condition_token
+            signal_condition_token_value
         in
         let* signal_query_result =
           query_signal_condition_workflow signal_handle
@@ -709,22 +685,61 @@ let run () =
         in
         let* () = query_missing_handler signal_handle in
         let* () = query_invalid_input signal_handle in
-        let* () = signal_workflow signal_handle in
-        (* Start the update workflow only after the signal workflow has
-           published and consumed its readiness marker. Both workflows use a
-           deliberately shared test marker path; serializing their startup
-           avoids one activity overwriting the token that the other wait is
-           checking. This does not serialize their Temporal work: the update
-           workflow is accepted before any terminal result is awaited. *)
-        let update_condition_token = update_condition_token () in
-        let* update_handle =
+        (* Keep a separate parked execution for the client-to-workflow signal
+           path.  The external-signal parent below exercises a different
+           command path; using the same execution for both would let one
+           signal satisfy the other and would leave the public [Client.signal]
+           RPC untested by the live acceptance suite. *)
+        let direct_signal_token = signal_condition_token () in
+        let* direct_signal_handle =
           start_workflow client ~workflow:Definitions.signal_condition_workflow
-            ~task_queue:Definitions.task_queue
-            ~id:"two-binary-update-condition" ~input:update_condition_token
+            ~task_queue:Definitions.task_queue ~id:"two-binary-client-signal"
+            ~input:direct_signal_token
+        in
+        let () =
+          Definitions.clear_signal_condition_ready_file signal_condition_ready_file
         in
         let* () =
           wait_for_signal_condition_ready signal_condition_ready_file
-            update_condition_token
+            direct_signal_token
+        in
+        let* () =
+          measured "client_signal" (fun () ->
+              Client.signal direct_signal_handle
+                ~signal:Definitions.signal_value ~input:"direct")
+        in
+        let* direct_signal_result = wait_workflow direct_signal_handle in
+        let* () =
+          require_completed "smoke.signal_condition.client_signal"
+            "SMOKE:SIGNAL:DIRECT" (Ok direct_signal_result)
+        in
+        (* Exercise the workflow-to-workflow command path instead of sending the
+           signal directly from this client process. The target is already
+           parked behind its readiness marker, so the parent can only complete
+           after Temporal has delivered the signal to that exact run. *)
+        let external_signal_target =
+          Client.workflow_id signal_handle ^ "\n" ^ Client.run_id signal_handle
+        in
+        let* external_signal_parent_handle =
+          start_workflow client ~workflow:Definitions.external_signal_parent
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-external-signal-parent"
+            ~input:external_signal_target
+        in
+        (* Start the update workflow after the direct signal has completed.
+           All three parked executions share a marker file, so each startup
+           clears and then waits for its own token before issuing a request. *)
+        let update_token = update_condition_token () in
+        let* update_handle =
+          start_workflow client ~workflow:Definitions.signal_condition_workflow
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-update-condition" ~input:update_token
+        in
+        let () =
+          Definitions.clear_signal_condition_ready_file signal_condition_ready_file
+        in
+        let* () =
+          wait_for_signal_condition_ready signal_condition_ready_file update_token
         in
         let* update_result =
           update_signal_condition_workflow update_handle "updated"
@@ -884,9 +899,16 @@ let run () =
           require_cancelled "smoke.long_running_cancellation"
             (Ok cancellation_result)
         in
+        let* external_signal_parent_result =
+          wait_workflow external_signal_parent_handle
+        in
+        let* () =
+          require_completed "smoke.external_signal_parent"
+            "SMOKE:EXTERNAL:SIGNAL:ACK" (Ok external_signal_parent_result)
+        in
         let* signal_result = wait_workflow signal_handle in
         let* () =
-          require_completed "smoke.signal_condition" "SMOKE:SIGNAL:ACCEPTED"
+          require_completed "smoke.signal_condition" "SMOKE:SIGNAL:EXTERNAL"
             (Ok signal_result)
         in
         let* update_workflow_result = wait_workflow update_handle in

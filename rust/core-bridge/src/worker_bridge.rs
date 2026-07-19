@@ -155,6 +155,9 @@ pub enum WorkerBridgeError {
     RetryableActivityCompletion,
     /// Finalization was attempted while tasks remain outstanding.
     OutstandingTasks(usize),
+    /// A poll result was dropped without a safe, identity-specific Core
+    /// completion, so consuming the worker would make shutdown unsound.
+    LostPollLease,
     /// A poll task still retained the worker after both joins completed.
     WorkerStillShared,
 }
@@ -189,6 +192,7 @@ pub fn public_worker_error_message(error: &WorkerBridgeError) -> &'static str {
             "Temporal activity completion transport is temporarily unavailable"
         }
         WorkerBridgeError::OutstandingTasks(_) => "Temporal worker has outstanding tasks",
+        WorkerBridgeError::LostPollLease => "Temporal worker has an uncompleted poll lease",
         WorkerBridgeError::WorkerStillShared => "Temporal worker remains shared after shutdown",
     }
 }
@@ -1184,13 +1188,18 @@ impl PollLanes {
     /// force-complete outstanding tasks or retry. A failed finalize must not
     /// drop the only handle that can still talk to Core.
     pub async fn finalize(self) -> Result<(), (Self, WorkerBridgeError)> {
-        let outstanding = self
-            .ledger
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .outstanding();
+        let (outstanding, lost_poll_lease) = {
+            let ledger_state = self
+                .ledger
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            (ledger_state.outstanding(), ledger_state.lost_poll_lease)
+        };
         if outstanding != 0 {
             return Err((self, WorkerBridgeError::OutstandingTasks(outstanding)));
+        }
+        if lost_poll_lease {
+            return Err((self, WorkerBridgeError::LostPollLease));
         }
         let Self {
             worker,
@@ -1313,7 +1322,12 @@ async fn run_workflow_lane(
                 // Core workflow completions are keyed only by run_id. Force-
                 // failing a duplicate would complete the already-outstanding
                 // activation that is still queued or leased to OCaml. Drop the
-                // duplicate delivery and surface a lane error instead.
+                // duplicate delivery, persist a fatal drain blocker, and
+                // surface a lane error instead.
+                ledger
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .mark_lost_poll_lease();
                 drop(activation);
                 if !signal.enqueue(&sender, Err(PollLaneError::DuplicateIdentity)) {
                     return;
@@ -1323,6 +1337,10 @@ async fn run_workflow_lane(
                 // Disposal already force-failed this identity. A second poll
                 // with the same run ID is therefore diagnostic only: dropping
                 // it is safer than sending a duplicate Core completion.
+                ledger
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .mark_lost_poll_lease();
                 drop(activation);
                 if !signal.enqueue(&sender, Err(PollLaneError::Admission(error))) {
                     return;
@@ -1426,8 +1444,16 @@ async fn run_activity_lane(
                 // duplicate Start would complete the already-outstanding lease
                 // still queued or held by OCaml. Drop the duplicate delivery
                 // and surface a lane error instead, matching the workflow
-                // duplicate path. A second Cancel is only a repeated
-                // notification and must not complete the activity either.
+                // duplicate path. Persist the fatal drain blocker only for a
+                // duplicate Start: a duplicate Cancel is a repeated update
+                // for the original start and does not represent another Core
+                // completion lease that could be lost.
+                if kind == ActivityAdmission::Start {
+                    ledger
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .mark_lost_poll_lease();
+                }
                 drop(task);
                 if !signal.enqueue(&sender, Err(PollLaneError::DuplicateIdentity)) {
                     return;
@@ -1448,7 +1474,16 @@ async fn run_activity_lane(
                     };
                     force_fail_undeliverable_activity(worker.as_ref(), &task.task_token, reason)
                         .await;
+                } else if kind == ActivityAdmission::Cancel {
+                    // Cancellation is an update to an existing start, not a
+                    // second completion debt. Unknown, retired, and repeated
+                    // cancellation notifications are diagnostic only.
+                    drop(task);
                 } else {
+                    ledger
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .mark_lost_poll_lease();
                     drop(task);
                 }
                 if !signal.enqueue(&sender, Err(PollLaneError::Admission(error))) {
@@ -1553,6 +1588,15 @@ pub struct TaskLedger {
     phase: Phase,
     workflows: HashMap<String, bool>,
     activities: HashMap<Vec<u8>, ActivityState>,
+    /// Whether a Core poll result was dropped because the bridge could not
+    /// safely correlate or complete its lease.
+    ///
+    /// Duplicate identities and stale cancellation-shaped tasks cannot be
+    /// force-completed without risking completion of a different outstanding
+    /// lease with the same public key. Once such a task has been observed,
+    /// ordinary ledger counts are no longer a complete shutdown-safety proof,
+    /// so finalization remains blocked for the lifetime of the worker.
+    lost_poll_lease: bool,
     /// Workflow identities force-completed during disposal. The tombstones
     /// remain until both poll lanes join so a late duplicate result cannot be
     /// admitted as a fresh completion obligation.
@@ -1593,6 +1637,7 @@ impl TaskLedger {
             phase: Phase::Open,
             workflows: HashMap::new(),
             activities: HashMap::new(),
+            lost_poll_lease: false,
             retired_workflows: HashSet::new(),
             retired_activities: HashSet::new(),
             #[cfg(test)]
@@ -1895,9 +1940,20 @@ impl TaskLedger {
         self.phase = Phase::Draining;
     }
 
+    /// Records that a Core-returned task was dropped without a safe completion.
+    ///
+    /// This is reserved for admission failures where the task identity is not
+    /// sufficient to complete only the just-polled lease. The poll lane still
+    /// publishes a fatal diagnostic, but this durable ledger bit ensures that
+    /// shutdown cannot later finalize solely because ordinary outstanding
+    /// counts reached zero.
+    pub fn mark_lost_poll_lease(&mut self) {
+        self.lost_poll_lease = true;
+    }
+
     /// Returns whether Core finalization can consume the worker safely.
     pub fn can_finalize(&self) -> bool {
-        self.phase == Phase::Draining && self.outstanding() == 0
+        self.phase == Phase::Draining && self.outstanding() == 0 && !self.lost_poll_lease
     }
 
     /// Returns the number of workflow activations awaiting completion.

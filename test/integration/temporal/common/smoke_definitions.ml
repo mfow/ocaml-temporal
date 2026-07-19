@@ -300,6 +300,27 @@ let signal_condition_workflow =
                ~message:"signal condition resumed without a signal value")
       | Error error -> Error error)
 
+(** Signals a separately started workflow execution through Temporal's
+    workflow-to-workflow command path. The driver supplies the exact target
+    identity as two newline-separated fields; parsing remains deterministic
+    and keeps the public fixture codec intentionally small. *)
+let external_signal_parent =
+  Temporal.Workflow.define ~name:"smoke.external_signal_parent"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun target ->
+      let open Temporal.Result_syntax in
+      match String.split_on_char '\n' target with
+      | [ workflow_id; run_id ] ->
+          let* () =
+            Temporal.Workflow.signal_external_workflow ~workflow_id ~run_id
+              ~signal:signal_value ~input:"external"
+            |> Temporal.Future.await
+          in
+          Ok "SMOKE:EXTERNAL:SIGNAL:ACK"
+      | _ ->
+          Error
+            (Temporal.Error.defect
+               ~message:"external signal target must contain workflow and run IDs"))
+
 (** Builds the short, bounded policy used by [activity_retry]. Keeping this as a
     result lets the workflow return a typed configuration defect if the public
     constructor's validation ever changes, instead of hiding a construction

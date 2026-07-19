@@ -1122,6 +1122,96 @@ let test_query_adapter_failure_uses_query_results () =
        ~query_id:"query-translation" ~query_type:"")
     [ "query-translation" ]
 
+
+(** Query-only activations remain read-only even when runtime command validation
+    has to synthesize an adapter-level failed query result. The invalid payload
+    handler forces [Native_execution.activate] to fail after finding an existing
+    run; the following timer activation proves the registry entry was not
+    dropped while retiring the query lease. *)
+let test_query_validation_failure_preserves_run () =
+  let supervisor = fake_supervisor () in
+  let invalid_query =
+    Raw_adapter.make_query_handler ~name:"invalid-payload"
+      ~dispatch:(fun _query ->
+        Ok { Temporal_base.Payload.metadata = [ ("", "invalid") ]; data = Bytes.empty })
+  in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_query_validation_failure"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-query-validation-failure" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id
+           ~workflow_type:"native_worker_query_validation_failure" ]);
+  let worker =
+    worker supervisor [ Adapter.register ~query_handlers:[ invalid_query ] workflow ]
+  in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  let timer_seq =
+    match (latest_completion supervisor).commands with
+    | [ Protocol.Start_timer { seq; _ } ] -> seq
+    | _ -> failwith "query validation fixture did not emit its initial timer"
+  in
+  enqueue supervisor
+    (activation ~run_id
+       [ Protocol.Query_workflow
+           {
+             query_id = "query-invalid-payload";
+             query_type = "invalid-payload";
+             arguments = [];
+             headers = [];
+           } ]);
+  begin match Worker.poll worker with
+  | Ok (Adapter.Rejected { lease_retired = true; error; _ })
+    when String.equal error.code "invalid_message" -> ()
+  | Ok _ -> failwith "invalid query payload was not retired as a rejection"
+  | Error error ->
+      failwith ("invalid query payload failed to retire: " ^ error.message)
+  end;
+  begin match (latest_completion supervisor).commands with
+  | [ Protocol.Query_result
+        { query_id = "query-invalid-payload"; result = Query_failed _ } ] -> ()
+  | _ -> failwith "invalid query payload did not emit a failed query result"
+  end;
+  enqueue supervisor
+    (activation ~run_id [ Protocol.Fire_timer { seq = timer_seq } ]);
+  expect_completed ~terminal:true (Result.get_ok (Worker.poll worker))
+
+(** Overlong unhandled query names are bounded before protocol encoding. The
+    query type is individually valid at the bridge limit, but the constructed
+    diagnostic would exceed that limit without truncation. *)
+let test_unhandled_query_failure_message_is_bounded () =
+  let supervisor = fake_supervisor () in
+  let workflow =
+    Temporal.Workflow.define ~name:"native_worker_long_unhandled_query"
+      ~input:Temporal.Codec.unit ~output:Temporal.Codec.unit (fun () ->
+        Temporal.Workflow.sleep (Temporal.Duration.of_ms 25L))
+  in
+  let run_id = "run-long-unhandled-query" in
+  enqueue supervisor
+    (activation ~run_id
+       [ initialize ~run_id ~workflow_type:"native_worker_long_unhandled_query" ]);
+  let worker = worker supervisor [ Adapter.register workflow ] in
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  let query_type = String.make 65_536 'q' in
+  enqueue supervisor
+    (activation ~run_id
+       [ Protocol.Query_workflow
+           { query_id = "query-long"; query_type; arguments = []; headers = [] } ]);
+  expect_completed ~terminal:false (Result.get_ok (Worker.poll worker));
+  begin match (latest_completion supervisor).commands with
+  | [ Protocol.Query_result
+        { query_id = "query-long"; result = Query_failed { message; _ } } ]
+    when String.length message <= 65_536 -> ()
+  | [ Protocol.Query_result { result = Query_failed { message; _ }; _ } ] ->
+      failwith
+        (Printf.sprintf "unhandled query message remained overlong: %d"
+           (String.length message))
+  | _ -> failwith "long unhandled query did not emit a failed query result"
+  end
+
 (** A SignalWorkflow with no matching registration fails the workflow
     non-retryably. Silently acknowledging an unknown signal would make replay
     diverge from the worker's observable state, so the run is removed only
@@ -2413,6 +2503,8 @@ let () =
   test_update_completion_retry ();
   test_update_terminal_and_eviction_cleanup ();
   test_query_adapter_failure_uses_query_results ();
+  test_query_validation_failure_preserves_run ();
+  test_unhandled_query_failure_message_is_bounded ();
   test_unhandled_signal_fails_closed ();
   test_eviction ();
   test_eviction_allows_fresh_replay_execution ();

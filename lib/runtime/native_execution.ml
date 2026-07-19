@@ -125,6 +125,26 @@ let validate_cancellation_reason path value : (unit, error) result =
     Error (invalid path "reason must be valid UTF-8")
   else Ok ()
 
+(** Bounds human-readable failure diagnostics before they are copied into
+    protocol string fields. Runtime errors can include application text or
+    server-supplied identifiers that were valid by themselves; this helper keeps
+    the combined message within the protocol encoder's 65,536-byte string limit
+    without splitting a UTF-8 code point. *)
+let bounded_protocol_message value =
+  let maximum = 65_536 in
+  let fallback = "invalid workflow failure diagnostic" in
+  if not (Temporal_base.Codec.valid_utf_8 value) then fallback
+  else if String.length value <= maximum then value
+  else
+    let rec prefix length =
+      if length <= 0 then fallback
+      else
+        let candidate = String.sub value 0 length in
+        if Temporal_base.Codec.valid_utf_8 candidate then candidate ^ "..."
+        else prefix (length - 1)
+    in
+    prefix (maximum - 3)
+
 (** Copies a protocol payload before retaining it in translated activation
     metadata. Protocol payload bodies and metadata values are mutable [bytes],
     so retaining the caller's record directly would let a later mutation alter
@@ -758,7 +778,7 @@ let protocol_failure path (error : Temporal_base.Error.t) =
   Ok
     Protocol.
       {
-        message = view.message;
+        message = bounded_protocol_message view.message;
         source = "ocaml";
         stack_trace = "";
         encoded_attributes = None;

@@ -770,6 +770,22 @@ module Make (Supervisor : SUPERVISOR) = struct
       adapter.pending <- Run_map.add pending.run_id pending adapter.pending;
       finish_pending adapter pending)
 
+  (** Returns query IDs only when an activation consists solely of workflow
+      queries. Query-only activations are read-only leases: adapter-level
+      failures may retire the query requests, but must not remove the live
+      workflow run from the registry. *)
+  let query_only_ids (activation : Protocol.activation) =
+    let query_ids =
+      List.filter_map
+        (function
+          | Protocol.Query_workflow { query_id; _ } -> Some query_id
+          | _ -> None)
+        activation.Protocol.jobs
+    in
+    if query_ids <> [] && List.length query_ids = List.length activation.Protocol.jobs
+    then Some query_ids
+    else None
+
   (** Builds the completion for an adapter-level failure. Query activations are
       read-only requests, so Core rejects a workflow-failure command for them;
       each query ID must instead receive a failed query result. Ordinary and
@@ -778,29 +794,20 @@ module Make (Supervisor : SUPERVISOR) = struct
       reached. *)
   let failure_commands (activation : Protocol.activation) error =
     let failure = failure_of_error error in
-    let query_ids =
-      List.filter_map
-        (function
-          | Protocol.Query_workflow { query_id; _ } -> Some query_id
-          | _ -> None)
-        activation.Protocol.jobs
-    in
-    let query_only =
-      query_ids <> [] && List.length query_ids = List.length activation.Protocol.jobs
-    in
-    if query_only then
-      List.map
-        (fun query_id ->
-          Protocol.Query_result
-            { query_id; result = Protocol.Query_failed failure })
-        query_ids
-    else [ Protocol.Fail_workflow { failure } ]
+    match query_only_ids activation with
+    | Some query_ids ->
+        List.map
+          (fun query_id ->
+            Protocol.Query_result
+              { query_id; result = Protocol.Query_failed failure })
+          query_ids
+    | None -> [ Protocol.Fail_workflow { failure } ]
 
   (** Encodes and submits an adapter-level failure. A successful submission is
       the lease-retirement proof for the activation; a failed submission
       preserves a source error rather than claiming the lease was retired.
-      [remove_run] is used only when an execution was inserted before a local
-      activation defect was discovered. *)
+      [remove_run] is deliberately false for query-only activations because
+      failed queries are read-only and must not mutate the workflow registry. *)
   let retire_with_failure ?(remove_run = false) adapter
       (activation : Protocol.activation) error =
     let completion : Protocol.completion =
@@ -1015,7 +1022,10 @@ module Make (Supervisor : SUPERVISOR) = struct
                     | Some (Run { execution; _ }) ->
                         (match Native_execution.activate execution activation with
                         | Error error ->
-                            retire_with_failure ~remove_run:true adapter activation
+                            let remove_run =
+                              Option.is_none (query_only_ids activation)
+                            in
+                            retire_with_failure ~remove_run adapter activation
                               (native_error error)
                         | Ok completion ->
                             submit_completion adapter activation completion

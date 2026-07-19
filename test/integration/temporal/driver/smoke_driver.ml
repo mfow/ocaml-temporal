@@ -38,7 +38,6 @@ let missing_query =
   Temporal.Query.define ~name:"smoke.query_not_registered"
     ~output:Temporal.Codec.string
 
-
 (** An update name with no worker registration. The live driver submits it to a
     parked workflow and requires a typed rejection before sending the valid
     update, proving that an unknown update cannot corrupt the running execution. *)
@@ -426,7 +425,6 @@ let update_signal_condition_workflow handle input =
             ~workflow_id:(Client.workflow_id handle)
             ~run_id:(Client.run_id handle) ~duration_ms:(elapsed_ms started) ();
           Error error)
-
 
 (** Confirms the live server rejects an update whose name is absent from the
     workflow registration. Both immediate start rejection and asynchronous

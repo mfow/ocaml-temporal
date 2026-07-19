@@ -550,10 +550,26 @@ let update_missing_handler handle =
                  (Printf.sprintf
                     "unknown update unexpectedly completed with %S" value)))
 
-(** Confirms the live server rejects an unknown query handler. *)
+(** Confirms the live server rejects an unknown query handler with the
+    documented failed-precondition boundary. Accepting any error here would let
+    a connection, timeout, or protocol failure masquerade as a correct handler
+    rejection. *)
 let query_missing_handler handle =
   match Client.query handle ~query:missing_query with
-  | Error _ -> Ok ()
+  | Error error ->
+      let view = Error.view error in
+      if
+        String.equal (Error.kind error) "bridge"
+        && String.equal view.message
+             "Temporal client RPC failed: failed_precondition"
+      then Ok ()
+      else
+        Error
+          (Error.defect
+             ~message:
+               (Printf.sprintf
+                  "unknown query returned an unexpected rejection: kind=%s message=%S"
+                  (Error.kind error) view.message))
   | Ok value ->
       Error
         (Error.defect

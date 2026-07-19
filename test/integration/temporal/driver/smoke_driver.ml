@@ -38,6 +38,14 @@ let missing_query =
   Temporal.Query.define ~name:"smoke.query_not_registered"
     ~output:Temporal.Codec.string
 
+
+(** An update name with no worker registration. The live driver submits it to a
+    parked workflow and requires a typed rejection before sending the valid
+    update, proving that an unknown update cannot corrupt the running execution. *)
+let missing_update =
+  Temporal.Update.define ~name:"smoke.update_not_registered"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+
 (** Wall-clock process timestamp used only for operator diagnostics.
     Workflow payloads and workflow code never call this helper; the driver is
     an ordinary client process, so a clock adjustment can affect only a
@@ -419,6 +427,38 @@ let update_signal_condition_workflow handle input =
             ~run_id:(Client.run_id handle) ~duration_ms:(elapsed_ms started) ();
           Error error)
 
+
+(** Confirms the live server rejects an update whose name is absent from the
+    workflow registration. Both immediate start rejection and asynchronous
+    wait rejection are accepted because either is a valid typed server response;
+    a successful update is a defect, since it would prove the handler registry
+    was bypassed. *)
+let update_missing_handler handle =
+  let operation = "update_missing:" ^ Client.workflow_id handle in
+  let started = Unix.gettimeofday () in
+  phase ~operation ~status:"begin" ~workflow_id:(Client.workflow_id handle)
+    ~run_id:(Client.run_id handle) ();
+  let rejected () =
+    phase ~operation ~status:"rejected"
+      ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+      ~duration_ms:(elapsed_ms started) ();
+    Ok ()
+  in
+  match
+    Client.start_update ~update_id:"two-binary-update-unknown-1" handle
+      ~update:missing_update ~input:"unknown" ()
+  with
+  | Error _ -> rejected ()
+  | Ok update_handle -> (
+      match Client.wait_update update_handle with
+      | Error _ -> rejected ()
+      | Ok value ->
+          Error
+            (Error.defect
+               ~message:
+                 (Printf.sprintf
+                    "unknown update unexpectedly completed with %S" value)))
+
 (** Confirms the live server rejects an unknown query handler. *)
 let query_missing_handler handle =
   match Client.query handle ~query:missing_query with
@@ -749,6 +789,7 @@ let run () =
         let* () =
           wait_for_signal_condition_ready signal_condition_ready_file update_token
         in
+        let* () = update_missing_handler update_handle in
         let* update_result =
           update_signal_condition_workflow update_handle "updated"
         in

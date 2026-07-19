@@ -102,6 +102,31 @@ fn cancellation_during_start_lease_is_delivered_without_second_debt() {
     assert_eq!(ledger.outstanding_activities(), 0);
 }
 
+/// Repeated cancellation notifications do not poison shutdown. They update
+/// the original start identity and must not be treated as dropped completion
+/// leases merely because the same token appears more than once.
+#[test]
+fn repeated_cancellation_does_not_block_finalization() {
+    let mut ledger = TaskLedger::new();
+    let token = b"activity-token";
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::ExistingCancellation)
+    );
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::Duplicate)
+    );
+    assert_eq!(ledger.complete_activity(token), Ok(()));
+    ledger.begin_draining();
+    assert!(ledger.can_finalize());
+}
+
 /// Shutdown closes poll admission immediately, while preserving the ability to
 /// finish work already leased to OCaml before final Core worker destruction.
 #[test]
@@ -115,6 +140,22 @@ fn draining_rejects_new_tasks_until_existing_tasks_complete() {
     assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
     assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
     assert!(ledger.can_finalize());
+}
+
+/// A poll lease dropped before safe completion makes ordinary outstanding
+/// counts insufficient for finalization, even after known ledger debt drains.
+#[test]
+fn lost_poll_lease_blocks_finalization_after_debt_drains() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+
+    ledger.mark_lost_poll_lease();
+    ledger.begin_draining();
+    assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
+
+    assert_eq!(ledger.outstanding(), 0);
+    assert!(!ledger.can_finalize());
 }
 
 /// Core may issue cancellation for an already admitted activity while worker

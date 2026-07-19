@@ -344,7 +344,7 @@ let external_cancellation_wrong_run_parent =
           Error
             (Temporal.Error.defect
                ~message:
-                 "wrong-run cancellation target must contain workflow and run IDs")
+                 "wrong-run cancellation target must contain workflow and run IDs"))
 
 (** Requests cancellation of a separately started workflow execution through
     Temporal's workflow-to-workflow command path. The driver supplies exact

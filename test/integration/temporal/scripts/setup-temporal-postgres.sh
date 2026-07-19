@@ -10,6 +10,16 @@ set -eu
 
 port=${DB_PORT:-5432}
 
+# Temporal's SQL tool uses different wording for an already-created database
+# and an already-initialized schema across image releases. Normalize the
+# diagnostic before matching it so idempotent startup does not depend on
+# capitalization or one exact PostgreSQL prefix.
+existing_state() {
+  printf '%s\n' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | grep -Eq 'already[[:space:]-]+(exists|initialized|created)|database.*exists|schema.*exists'
+}
+
 # SQL-tool startup can briefly race PostgreSQL's transition from accepting
 # connections to accepting schema DDL. Keep retries here, at the database
 # boundary, so the Temporal service never observes a half-initialized schema.
@@ -32,12 +42,10 @@ run_sql_tool() {
     fi
 
     if [ "$allow_existing" = yes ]; then
-      case "$output" in
-        *"already exists"*)
-          printf '%s\n' "$output" >&2
-          return 0
-          ;;
-      esac
+      if existing_state "$output"; then
+        printf '%s\n' "$output" >&2
+        return 0
+      fi
     fi
 
     if [ "$attempts" -ge 30 ]; then
@@ -71,12 +79,10 @@ create_database() {
       printf '%s\n' "$output"
       return 0
     fi
-    case "$output" in
-      *"already exists"*)
-        printf '%s\n' "$output" >&2
-        return 0
-        ;;
-    esac
+    if existing_state "$output"; then
+      printf '%s\n' "$output" >&2
+      return 0
+    fi
     if [ "$attempts" -ge 30 ]; then
       printf '%s\n' "$output" >&2
       printf 'temporal-sql-tool create failed after %s attempts\n' \

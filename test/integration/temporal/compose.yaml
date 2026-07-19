@@ -51,7 +51,10 @@ services:
     networks:
       - temporal-network
     entrypoint: [/bin/sh, /scripts/setup-temporal-postgres.sh]
-    restart: "no"
+    # A fresh PostgreSQL container can report healthy before its first DDL
+    # transaction is accepted. Restart the one-shot initializer a few times;
+    # the script remains bounded and fail-closed for real migration errors.
+    restart: on-failure:5
 
   temporal:
     profiles: [temporal]

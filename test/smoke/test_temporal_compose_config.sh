@@ -514,7 +514,8 @@ test -x "$fixture/scripts/validate-restart-replay-identity.sh"
 # test so a future cleanup cannot reintroduce a second-stack startup race.
 require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'run_sql_tool()'
 require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'create_database()'
-require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'already exists'
+require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'existing_state()'
+require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'already'
 require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'attempts -ge 30'
 
 if ! grep -F 'test/integration/temporal' "$makefile" >/dev/null; then

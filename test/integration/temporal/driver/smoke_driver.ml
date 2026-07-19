@@ -715,7 +715,7 @@ let run () =
            deliberately shared test marker path; serializing their startup
            avoids one activity overwriting the token that the other wait is
            checking. This does not serialize their Temporal work: the update
-           workflow is still admitted before any terminal result is awaited. *)
+           workflow is accepted before any terminal result is awaited. *)
         let update_condition_token = update_condition_token () in
         let* update_handle =
           start_workflow client ~workflow:Definitions.signal_condition_workflow

@@ -551,8 +551,8 @@ let update_missing_handler handle =
                     "unknown update unexpectedly completed with %S" value)))
 
 (** Confirms the live server rejects an unknown query handler with the
-    documented failed-precondition boundary. Accepting any error here would let
-    a connection, timeout, or protocol failure masquerade as a correct handler
+    documented invalid-argument boundary. Accepting any error here would let a
+    connection, timeout, or protocol failure masquerade as a correct handler
     rejection. *)
 let query_missing_handler handle =
   match Client.query handle ~query:missing_query with
@@ -561,7 +561,7 @@ let query_missing_handler handle =
       if
         String.equal (Error.kind error) "bridge"
         && String.equal view.message
-             "Temporal client RPC failed: failed_precondition"
+             "Temporal client RPC failed: invalid_argument"
       then Ok ()
       else
         Error

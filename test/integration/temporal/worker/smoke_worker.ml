@@ -279,6 +279,7 @@ let run () =
                   [ Definitions.signal_condition_status_handler;
                     Definitions.signal_value_echo_handler ]
                 Definitions.signal_condition_workflow;
+              Worker.workflow Definitions.external_signal_parent;
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;
               Worker.workflow Definitions.local_activity_workflow;

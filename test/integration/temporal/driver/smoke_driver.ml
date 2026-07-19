@@ -427,9 +427,10 @@ let update_signal_condition_workflow handle input =
           Error error)
 
 (** Confirms the live server rejects an update whose name is absent from the
-    workflow registration. Both immediate start rejection and asynchronous
-    wait rejection are accepted because either is a valid typed server response;
-    a successful update is a defect, since it would prove the handler registry
+    workflow registration. Temporal may reject this request at admission with
+    the stable [not_found] RPC response, or admit it and return the typed
+    non-retryable Core failure; the smoke accepts only those exact contracts.
+    A successful update is a defect, since it would prove the handler registry
     was bypassed. *)
 let update_missing_handler handle =
   let operation = "update_missing:" ^ Client.workflow_id handle in
@@ -444,14 +445,17 @@ let update_missing_handler handle =
   in
   let reject_error error =
     let view = Error.view error in
-    if
-      not (String.equal (Error.kind error) "update")
-      || not view.non_retryable
-      ||
-      not
-        (String.equal view.message
-           "unhandled workflow update: smoke.update_not_registered")
-    then
+    let expected_update_failure =
+      String.equal (Error.kind error) "update"
+      && view.non_retryable
+      && String.equal view.message
+           "unhandled workflow update: smoke.update_not_registered"
+    in
+    let expected_admission_rejection =
+      String.equal (Error.kind error) "bridge"
+      && String.equal view.message "Temporal client RPC failed: not_found"
+    in
+    if not (expected_update_failure || expected_admission_rejection) then
       Error
         (Error.defect
            ~message:

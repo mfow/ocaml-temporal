@@ -321,6 +321,28 @@ let external_signal_parent =
             (Temporal.Error.defect
                ~message:"external signal target must contain workflow and run IDs"))
 
+
+(** Requests cancellation of a separately started workflow execution through Temporal's workflow-to-workflow command path. The driver supplies exact workflow/run IDs as
+two newline-separated fields and waits for the typed Core acknowledgement before checking
+the target's cancellation. *)
+let external_cancellation_parent =
+  Temporal.Workflow.define ~name:"smoke.external_cancellation_parent"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun target ->
+      let open Temporal.Result_syntax in
+      match String.split_on_char (Char.chr 10) target with
+      | [ workflow_id; run_id ] ->
+          let* () =
+            Temporal.Workflow.cancel_external_workflow ~workflow_id ~run_id
+              ~reason:"external acceptance requested cancellation"
+            |> Temporal.Future.await
+          in
+          Ok "SMOKE:EXTERNAL:CANCEL:ACK"
+      | _ ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 "external cancellation target must contain workflow and run IDs")
+
 (** Builds the short, bounded policy used by [activity_retry]. Keeping this as a
     result lets the workflow return a typed configuration defect if the public
     constructor's validation ever changes, instead of hiding a construction

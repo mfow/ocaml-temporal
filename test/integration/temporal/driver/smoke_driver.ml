@@ -643,12 +643,6 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-signal-condition" ~input:signal_condition_token
         in
-        let update_condition_token = update_condition_token () in
-        let* update_handle =
-          start_workflow client ~workflow:Definitions.signal_condition_workflow
-            ~task_queue:Definitions.task_queue
-            ~id:"two-binary-update-condition" ~input:update_condition_token
-        in
         (* Most starts intentionally happen before the first result wait. The
            signal workflow is started before its synchronous query checks, but
            the cancellation workflow is deliberately started afterwards so a
@@ -716,6 +710,18 @@ let run () =
         let* () = query_missing_handler signal_handle in
         let* () = query_invalid_input signal_handle in
         let* () = signal_workflow signal_handle in
+        (* Start the update workflow only after the signal workflow has
+           published and consumed its readiness marker. Both workflows use a
+           deliberately shared test marker path; serializing their startup
+           avoids one activity overwriting the token that the other wait is
+           checking. This does not serialize their Temporal work: the update
+           workflow is still admitted before any terminal result is awaited. *)
+        let update_condition_token = update_condition_token () in
+        let* update_handle =
+          start_workflow client ~workflow:Definitions.signal_condition_workflow
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-update-condition" ~input:update_condition_token
+        in
         let* () =
           wait_for_signal_condition_ready signal_condition_ready_file
             update_condition_token

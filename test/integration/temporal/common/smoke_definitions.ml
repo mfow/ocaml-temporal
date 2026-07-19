@@ -321,10 +321,10 @@ let external_signal_parent =
             (Temporal.Error.defect
                ~message:"external signal target must contain workflow and run IDs"))
 
-
-(** Requests cancellation of a separately started workflow execution through Temporal's workflow-to-workflow command path. The driver supplies exact workflow/run IDs as
-two newline-separated fields and waits for the typed Core acknowledgement before checking
-the target's cancellation. *)
+(** Requests cancellation of a separately started workflow execution through
+    Temporal's workflow-to-workflow command path. The driver supplies exact
+    workflow/run IDs as two newline-separated fields and waits for the typed Core
+    acknowledgement before checking the target's cancellation. *)
 let external_cancellation_parent =
   Temporal.Workflow.define ~name:"smoke.external_cancellation_parent"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun target ->

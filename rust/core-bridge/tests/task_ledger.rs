@@ -102,6 +102,31 @@ fn cancellation_during_start_lease_is_delivered_without_second_debt() {
     assert_eq!(ledger.outstanding_activities(), 0);
 }
 
+/// Repeated cancellation notifications do not poison shutdown. They update
+/// the original start identity and must not be treated as dropped completion
+/// leases merely because the same token appears more than once.
+#[test]
+fn repeated_cancellation_does_not_block_finalization() {
+    let mut ledger = TaskLedger::new();
+    let token = b"activity-token";
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Start),
+        Ok(Admission::New)
+    );
+    assert_eq!(ledger.lease_activity(token), Ok(()));
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::ExistingCancellation)
+    );
+    assert_eq!(
+        ledger.admit_activity(token, ActivityAdmission::Cancel),
+        Ok(Admission::Duplicate)
+    );
+    assert_eq!(ledger.complete_activity(token), Ok(()));
+    ledger.begin_draining();
+    assert!(ledger.can_finalize());
+}
+
 /// Shutdown closes poll admission immediately, while preserving the ability to
 /// finish work already leased to OCaml before final Core worker destruction.
 #[test]

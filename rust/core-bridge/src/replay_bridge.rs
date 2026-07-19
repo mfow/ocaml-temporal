@@ -247,6 +247,7 @@ impl fmt::Display for ReplayWorkerError {
                         "worker completion transport was temporarily unavailable"
                     }
                     WorkerBridgeError::OutstandingTasks(_) => "worker has outstanding tasks",
+                    WorkerBridgeError::LostPollLease => "worker has an uncompleted poll lease",
                     WorkerBridgeError::WorkerStillShared => "worker ownership was not released",
                 };
                 formatter.write_str(category)

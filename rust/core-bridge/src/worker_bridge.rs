@@ -155,6 +155,9 @@ pub enum WorkerBridgeError {
     RetryableActivityCompletion,
     /// Finalization was attempted while tasks remain outstanding.
     OutstandingTasks(usize),
+    /// A poll result was dropped without a safe, identity-specific Core
+    /// completion, so consuming the worker would make shutdown unsound.
+    LostPollLease,
     /// A poll task still retained the worker after both joins completed.
     WorkerStillShared,
 }
@@ -189,6 +192,7 @@ pub fn public_worker_error_message(error: &WorkerBridgeError) -> &'static str {
             "Temporal activity completion transport is temporarily unavailable"
         }
         WorkerBridgeError::OutstandingTasks(_) => "Temporal worker has outstanding tasks",
+        WorkerBridgeError::LostPollLease => "Temporal worker has an uncompleted poll lease",
         WorkerBridgeError::WorkerStillShared => "Temporal worker remains shared after shutdown",
     }
 }
@@ -1184,13 +1188,18 @@ impl PollLanes {
     /// force-complete outstanding tasks or retry. A failed finalize must not
     /// drop the only handle that can still talk to Core.
     pub async fn finalize(self) -> Result<(), (Self, WorkerBridgeError)> {
-        let outstanding = self
+        let ledger_state = self
             .ledger
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .outstanding();
+            .unwrap_or_else(|error| error.into_inner());
+        let outstanding = ledger_state.outstanding();
+        let lost_poll_lease = ledger_state.lost_poll_lease;
+        drop(ledger_state);
         if outstanding != 0 {
             return Err((self, WorkerBridgeError::OutstandingTasks(outstanding)));
+        }
+        if lost_poll_lease {
+            return Err((self, WorkerBridgeError::LostPollLease));
         }
         let Self {
             worker,
@@ -1435,14 +1444,16 @@ async fn run_activity_lane(
                 // duplicate Start would complete the already-outstanding lease
                 // still queued or held by OCaml. Drop the duplicate delivery
                 // and surface a lane error instead, matching the workflow
-                // duplicate path. Persisting the fatal drain blocker prevents
-                // a silently dropped Core lease from becoming invisible to
-                // shutdown finalization. A second Cancel is only a repeated
-                // notification and must not complete the activity either.
-                ledger
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .mark_lost_poll_lease();
+                // duplicate path. Persist the fatal drain blocker only for a
+                // duplicate Start: a duplicate Cancel is a repeated update
+                // for the original start and does not represent another Core
+                // completion lease that could be lost.
+                if kind == ActivityAdmission::Start {
+                    ledger
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .mark_lost_poll_lease();
+                }
                 drop(task);
                 if !signal.enqueue(&sender, Err(PollLaneError::DuplicateIdentity)) {
                     return;
@@ -1463,6 +1474,11 @@ async fn run_activity_lane(
                     };
                     force_fail_undeliverable_activity(worker.as_ref(), &task.task_token, reason)
                         .await;
+                } else if kind == ActivityAdmission::Cancel {
+                    // Cancellation is an update to an existing start, not a
+                    // second completion debt. Unknown, retired, and repeated
+                    // cancellation notifications are diagnostic only.
+                    drop(task);
                 } else {
                     ledger
                         .lock()

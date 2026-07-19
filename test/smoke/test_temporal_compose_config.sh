@@ -153,7 +153,11 @@ require_source_text "$worker" \
   'Worker.create ?max_cached_workflows ~target_url ~namespace'
 require_source_text "$worker" 'Worker.run worker'
 require_source_text "$worker" 'Worker.shutdown worker'
-require_source_text "$worker" '~queries:[ Definitions.signal_condition_status_handler ]'
+# Keep both live query handlers registered. The typed-input handler is on a
+# separate source line so this contract must not require a brittle exact list
+# layout or whitespace arrangement.
+require_source_text "$worker" 'Definitions.signal_condition_status_handler'
+require_source_text "$worker" 'Definitions.signal_value_echo_handler'
 require_source_text "$worker" 'let publish_stopped path'
 require_source_text "$worker" 'publish_stopped stopped_file'
 require_source_absent "$worker" 'Client.start'

@@ -550,6 +550,58 @@ let test_start_child_workflow_command () =
   if unwrap (Protocol.decode_completion encoded) <> completion then
     failwith "child command did not round-trip"
 
+(** Proves external signal and cancellation commands retain their target
+    identity, payload bytes, and sequence numbers across the strict JSON
+    boundary.  These commands are intentionally tested together because both
+    suspend a workflow until Core sends a matching resolution job. *)
+let test_external_workflow_commands () =
+  let payload : Protocol.payload =
+    {
+      metadata = [ ("encoding", Bytes.of_string "json/plain") ];
+      data = Bytes.of_string "\"hello\"";
+    }
+  in
+  let completion : Protocol.completion =
+    {
+      run_id = "parent-run";
+      commands =
+        [ Protocol.Signal_external_workflow
+            {
+              seq = 7L;
+              workflow_id = "target-workflow";
+              run_id = "target-run";
+              signal_name = "greeting";
+              input = [ payload ];
+              child_workflow_only = false;
+              headers = [ ("trace-id", payload) ];
+            };
+          Protocol.Request_cancel_external_workflow
+            {
+              seq = 8L;
+              workflow_id = "target-workflow";
+              run_id = "target-run";
+              reason = "parent shutdown";
+            } ];
+    }
+  in
+  let encoded = unwrap (Protocol.encode_completion completion) in
+  if unwrap (Protocol.decode_completion encoded) <> completion then
+    failwith "external workflow commands did not round-trip";
+  require_error
+    (Protocol.encode_completion
+       { completion with
+         commands =
+           [ Protocol.Signal_external_workflow
+               { seq = 7L; workflow_id = ""; run_id = ""; signal_name = "greeting";
+                 input = [ payload ]; child_workflow_only = false; headers = [] } ] });
+  require_error
+    (Protocol.encode_completion
+       { completion with
+         commands =
+           [ Protocol.Request_cancel_external_workflow
+               { seq = 8L; workflow_id = "target-workflow"; run_id = "target-run";
+                 reason = "" } ] })
+
 (** Proves every child cancellation policy has a distinct, stable JSON spelling
     and remains typed after decoding. This closes the gap where a serializer
     and decoder could agree on one accidentally collapsed policy while the
@@ -1287,6 +1339,7 @@ let () =
   run "query protocol slice" test_query_protocol_slice;
   run "update protocol slice" test_update_protocol_slice;
   run "start child workflow command" test_start_child_workflow_command;
+  run "external workflow commands" test_external_workflow_commands;
   run "all child cancellation policies" test_all_child_cancellation_policies;
   run "child cancellation validation" test_child_cancellation_validation;
   run "continue-as-new command" test_continue_as_new_command;

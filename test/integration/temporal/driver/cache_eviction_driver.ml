@@ -174,6 +174,50 @@ let require_resident = function
              (Printf.sprintf "cache-settling query returned unexpected value %S"
                 value))
 
+(** Identifies the bounded set of Temporal RPC failures that can be transient
+    while a sticky-cache worker is draining. The query is a control-plane
+    observation, not the eviction assertion itself, so a short-lived
+    [failed_precondition] or transport deadline must not turn an otherwise
+    healthy cache transition into a false negative. Codec, protocol, and
+    workflow-handler errors remain terminal and are never retried. *)
+let transient_query_error error =
+  let view = Error.view error in
+  if view.non_retryable || view.category <> `Bridge then false
+  else
+    let prefix = "Temporal client RPC failed: " in
+    let message = view.message in
+    if String.starts_with ~prefix message then
+      let code =
+        String.sub message (String.length prefix)
+          (String.length message - String.length prefix)
+      in
+      List.mem code
+        [ "aborted"; "deadline_exceeded"; "failed_precondition"; "internal";
+          "resource_exhausted"; "unavailable" ]
+    else false
+
+(** Waits for the worker to answer the cache-settling query, retaining the
+    last typed error if the bounded observation window expires. Temporal may
+    briefly report that no poller was seen immediately after A's first task;
+    retrying only the known transient RPC codes preserves strict failure for
+    malformed responses and handler defects while allowing the worker to
+    publish its next activation boundary. *)
+let query_residency handle ~timeout =
+  let deadline = Unix.gettimeofday () +. min timeout 60. in
+  let rec loop () =
+    match Client.query handle ~query:Definitions.cache_eviction_residency_query with
+    | Ok value -> require_resident value
+    | Error error when transient_query_error error ->
+        if Unix.gettimeofday () >= deadline then Error error
+        else begin
+          phase "cache_settling" "query_retry";
+          Unix.sleepf 0.5;
+          loop ()
+        end
+    | Error error -> Error error
+  in
+  loop ()
+
 (** Starts two exact executions against the one-slot worker cache. The
     cache-only workflow has no durable command before it parks, so each initial
     workflow task can complete as an empty non-terminal activation while Core
@@ -225,10 +269,7 @@ let run () =
            cache pressure; it does not infer a cache insertion from the marker
            alone. *)
         phase "cache_settling" "begin";
-        let* cache_state =
-          Client.query first ~query:Definitions.cache_eviction_residency_query
-        in
-        let* () = require_resident cache_state in
+        let* () = query_residency first ~timeout in
         phase "cache_settling" "observed";
         phase "start_b" "begin";
         let* second =

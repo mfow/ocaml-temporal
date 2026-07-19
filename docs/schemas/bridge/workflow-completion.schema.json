@@ -202,6 +202,33 @@
         },
         {
           "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "workflow_id", "run_id", "signal_name", "input", "child_workflow_only", "headers"],
+          "description": "Sends a signal to an external workflow execution. Core resolves the command asynchronously; child_workflow_only selects the parent run's child-workflow target form.",
+          "properties": {
+            "kind": {"const": "signal_external_workflow"},
+            "seq": {"$ref": "#/$defs/u32"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "run_id": {"type": "string", "maxLength": 65536, "pattern": "^[^\\u0000]*$"},
+            "signal_name": {"$ref": "#/$defs/identifier"},
+            "input": {"type": "array", "maxItems": 201326592, "items": {"$ref": "#/$defs/payload"}},
+            "child_workflow_only": {"type": "boolean"},
+            "headers": {"type": "object", "maxProperties": 201326592, "additionalProperties": {"$ref": "#/$defs/payload"}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "seq", "workflow_id", "run_id", "reason"],
+          "description": "Requests cancellation of an external workflow execution. Core resolves the command asynchronously and retains the reason for history and diagnostics.",
+          "properties": {
+            "kind": {"const": "request_cancel_external_workflow"},
+            "seq": {"$ref": "#/$defs/u32"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "run_id": {"type": "string", "maxLength": 65536, "pattern": "^[^\\u0000]*$"},
+            "reason": {"$ref": "#/$defs/identifier"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
           "required": ["kind", "workflow_type", "input"],
           "description": "Ends the current run and starts a fresh run of the named workflow type. The current SDK emits one input payload; the array mirrors Core's repeated argument field.",
           "properties": {

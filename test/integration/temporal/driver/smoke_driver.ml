@@ -5,7 +5,7 @@
     asynchronous activity completion, timeout-triggered-retry,
     heartbeat-timeout-triggered-retry, activity-level non-retryable failure,
     retryable parent/child retry, parent/child success, parent/child failure,
-    typed signal/condition,
+    typed signal/condition, external workflow signal/cancellation,
     parent/child cancellation, typed-failure, long-running cancellation, and
     continue-as-new scenarios before waiting for most of them. It then stages
     the timeout-triggered retries after the shorter heartbeat/detail path and
@@ -98,6 +98,13 @@ let required_env name =
     workflow decision other than passing it to the test-only marker activity. *)
 let cancellation_token () =
   Printf.sprintf "cancellation-%d-%Ld" (Unix.getpid ())
+    (Int64.of_float (Unix.gettimeofday () *. 1_000_000.))
+
+(** Creates the distinct token used by the external-cancellation target. Keeping
+    this marker separate lets the driver observe the second workflow without
+    mistaking the direct client-cancellation marker for readiness. *)
+let external_cancellation_token () =
+  Printf.sprintf "external-cancellation-%d-%Ld" (Unix.getpid ())
     (Int64.of_float (Unix.gettimeofday () *. 1_000_000.))
 
 (** Creates the distinct token passed through the signal workflow's readiness
@@ -774,6 +781,33 @@ let run () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token
         in
         let* () = cancel_workflow cancellation_handle in
+        (* Reuse the marker file sequentially for a second target, but use a
+           distinct token so readiness cannot be satisfied by the direct
+           client-cancellation workflow above. The first target has already
+           received its exact cancellation request, so clearing the marker here
+           cannot hide a still-needed handshake. *)
+        let () =
+          Definitions.clear_cancellation_ready_file cancellation_ready_file
+        in
+        let* external_cancellation_handle =
+          start_workflow client ~workflow:Definitions.long_running_cancellation
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-external-long-running-cancellation"
+            ~input:external_cancel_token
+        in
+        let* () =
+          wait_for_cancellation_ready cancellation_ready_file external_cancel_token
+        in
+        let external_cancellation_target =
+          Client.workflow_id external_cancellation_handle ^ "\n"
+          ^ Client.run_id external_cancellation_handle
+        in
+        let* external_cancellation_parent_handle =
+          start_workflow client ~workflow:Definitions.external_cancellation_parent
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-external-cancellation-parent"
+            ~input:external_cancellation_target
+        in
         let* fan_result = wait_workflow fan_handle in
         let* () =
           require_completed "smoke.fan_out" "SMOKE:LEFT|SMOKE:RIGHT"
@@ -898,6 +932,21 @@ let run () =
         let* () =
           require_cancelled "smoke.long_running_cancellation"
             (Ok cancellation_result)
+        in
+        let* external_cancellation_parent_result =
+          wait_workflow external_cancellation_parent_handle
+        in
+        let* () =
+          require_completed "smoke.external_cancellation_parent"
+            "SMOKE:EXTERNAL:CANCEL:ACK"
+            (Ok external_cancellation_parent_result)
+        in
+        let* external_cancellation_result =
+          wait_workflow external_cancellation_handle
+        in
+        let* () =
+          require_cancelled "smoke.external_long_running_cancellation"
+            (Ok external_cancellation_result)
         in
         let* external_signal_parent_result =
           wait_workflow external_signal_parent_handle

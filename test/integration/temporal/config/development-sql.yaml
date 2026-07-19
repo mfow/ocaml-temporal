@@ -9,5 +9,4 @@ system.forceSearchAttributesCacheRefreshOnRead:
     constraints: {}
 frontend.enableUpdateWorkflowExecution:
   - value: true
-    constraints:
-      namespace: temporal-sdk-test
+    constraints: {}

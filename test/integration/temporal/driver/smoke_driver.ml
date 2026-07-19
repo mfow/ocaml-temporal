@@ -107,6 +107,13 @@ let cancellation_token () =
   Printf.sprintf "cancellation-%d-%Ld" (Unix.getpid ())
     (Int64.of_float (Unix.gettimeofday () *. 1_000_000.))
 
+(** Creates the distinct token used by the direct-termination target. Keeping
+    this marker separate lets the driver observe its readiness before issuing
+    the exact-run termination request. *)
+let termination_token () =
+  Printf.sprintf "termination-%d-%Ld" (Unix.getpid ())
+    (Int64.of_float (Unix.gettimeofday () *. 1_000_000.))
+
 (** Creates the distinct token used by the external-cancellation target. Keeping
     this marker separate lets the driver observe the second workflow without
     mistaking the direct client-cancellation marker for readiness. *)
@@ -328,6 +335,33 @@ let require_cancelled operation = function
                 (terminal_kind outcome)))
   | Error error -> Error error
 
+(** Requires the exact run to report Temporal's termination category and the
+    stable operator-facing message after a successful termination acknowledgement.
+    Details remain owned by the public error value but are not matched here because
+    their Core encoding is server-version-specific. *)
+let require_terminated operation = function
+  | Ok (Client.Terminated error) ->
+      let view = Error.view error in
+      if
+        view.category = `Terminated
+        && view.non_retryable
+        && String.equal view.message "workflow execution was terminated"
+      then Ok ()
+      else
+        Error
+          (Error.defect
+             ~message:
+               (Printf.sprintf
+                  "%s returned unexpected termination metadata (kind=%s, non_retryable=%b)"
+                  operation (Error.kind error) view.non_retryable))
+  | Ok outcome ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "%s returned terminal outcome %s" operation
+                (terminal_kind outcome)))
+  | Error error -> Error error
+
 (** Sends an exact-run cancellation request and records only its acknowledgement
     metadata. A successful result means Temporal accepted the control request;
     the caller must still wait on the same handle to observe the terminal
@@ -340,6 +374,28 @@ let cancel_workflow handle =
   match
     Client.cancel ~request_id:"two-binary-cancel-long-running-1"
       ~reason:"live acceptance requested cancellation" handle
+  with
+  | Ok () ->
+      phase ~operation ~status:"acknowledged"
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Ok ()
+  | Error error ->
+      phase ~operation ~status:("error:" ^ Error.kind error)
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Error error
+
+(** Sends an exact-run termination request and records only its acknowledgement
+    metadata. A successful result means Temporal accepted the operator request;
+    the caller must still wait on the same handle to observe [Terminated]. *)
+let terminate_workflow handle =
+  let operation = "terminate:" ^ Client.workflow_id handle in
+  let started = Unix.gettimeofday () in
+  phase ~operation ~status:"begin" ~workflow_id:(Client.workflow_id handle)
+    ~run_id:(Client.run_id handle) ();
+  match
+    Client.terminate ~reason:"live acceptance requested termination" handle
   with
   | Ok () ->
       phase ~operation ~status:"acknowledged"
@@ -585,6 +641,7 @@ let run () =
         Definitions.clear_signal_condition_ready_file signal_condition_ready_file
       in
       let cancellation_token = cancellation_token () in
+      let termination_token = termination_token () in
       let external_cancel_token = external_cancellation_token () in
       let signal_condition_token_value = signal_condition_token () in
       let* client =
@@ -843,11 +900,24 @@ let run () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token
         in
         let* () = cancel_workflow cancellation_handle in
-        (* Reuse the marker file sequentially for a second target, but use a
-           distinct token so readiness cannot be satisfied by the direct
-           client-cancellation workflow above. The first target has already
-           received its exact cancellation request, so clearing the marker here
-           cannot hide a still-needed handshake. *)
+        (* Reuse the marker file for a distinct direct-termination target only
+           after the cancellation acknowledgement is observed. This readiness
+           barrier proves the exact terminated run is still active before the
+           operator request is sent. *)
+        let () =
+          Definitions.clear_cancellation_ready_file cancellation_ready_file
+        in
+        let* termination_handle =
+          start_workflow client ~workflow:Definitions.long_running_cancellation
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-long-running-termination" ~input:termination_token
+        in
+        let* () =
+          wait_for_cancellation_ready cancellation_ready_file termination_token
+        in
+        let* () = terminate_workflow termination_handle in
+        (* Reuse the marker file for the external-cancellation target after the
+           direct termination has been acknowledged. *)
         let () =
           Definitions.clear_cancellation_ready_file cancellation_ready_file
         in
@@ -1018,6 +1088,11 @@ let run () =
         let* () =
           require_cancelled "smoke.long_running_cancellation"
             (Ok cancellation_result)
+        in
+        let* termination_result = wait_workflow termination_handle in
+        let* () =
+          require_terminated "smoke.long_running_termination"
+            (Ok termination_result)
         in
         let* external_cancellation_parent_result =
           wait_workflow external_cancellation_parent_handle

@@ -386,9 +386,19 @@ let cancel_workflow handle =
         ~duration_ms:(elapsed_ms started) ();
       Error error
 
-(** Sends an exact-run termination request and records only its acknowledgement
-    metadata. A successful result means Temporal accepted the operator request;
-    the caller must still wait on the same handle to observe [Terminated]. *)
+(** Identifies the one public bridge diagnostic for which the termination
+    acknowledgement is deliberately uncertain. The public client contract says
+    that the server may have accepted this request, so the caller must reconcile
+    it through [wait] rather than retrying a non-idempotent command. *)
+let is_uncertain_termination error =
+  String.equal (Error.kind error) "bridge"
+  && String.equal (Error.message error)
+       "Temporal client RPC failed: termination_outcome_uncertain"
+
+(** Sends an exact-run termination request and records its acknowledgement
+    metadata. A documented uncertain bridge response is accepted here because
+    the caller waits on the same exact handle below; any other error remains
+    fatal. *)
 let terminate_workflow handle =
   let operation = "terminate:" ^ Client.workflow_id handle in
   let started = Unix.gettimeofday () in
@@ -399,6 +409,11 @@ let terminate_workflow handle =
   with
   | Ok () ->
       phase ~operation ~status:"acknowledged"
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Ok ()
+  | Error error when is_uncertain_termination error ->
+      phase ~operation ~status:"uncertain"
         ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
         ~duration_ms:(elapsed_ms started) ();
       Ok ()

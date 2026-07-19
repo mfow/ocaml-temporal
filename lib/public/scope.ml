@@ -14,6 +14,10 @@ type t = {
   owner_id : int;
   callbacks_live : unit -> bool;
   mutable state : state;
+  (* Hooks are kept by the owning scheduler and invoked in registration order
+     when this scope is cancelled.  They are the bridge from cooperative OCaml
+     observation to real Temporal cancellation commands. *)
+  mutable cancel_hooks : (unit -> (unit, Error.t) result) list;
 }
 
 (** Constructs the stable public error returned when a scope has been
@@ -55,6 +59,7 @@ let create () =
             (fun () ->
               Temporal_sdk_kernel.Future_store.callbacks_live cancellation_base);
           state = Active;
+          cancel_hooks = [];
         }
 
 (** Checks whether the current scheduler is the one that owns [scope] and is
@@ -80,7 +85,50 @@ let cancel scope =
     | Active ->
         scope.state <- Cancelled;
         if scope.callbacks_live () then scope.resolve (Ok ());
+        (* Seal the hook list before invoking user-owned closures.  If a hook
+           re-enters [cancel], it therefore observes the already-cancelled
+           state and cannot run this list twice. *)
+        let hooks = List.rev scope.cancel_hooks in
+        scope.cancel_hooks <- [];
+        let first_error =
+          List.fold_left
+            (fun first_error hook ->
+              let result =
+                try hook () with
+                | exn ->
+                    Error
+                      (Error.defect
+                         ~message:
+                           ("Temporal.Scope cancellation hook raised: "
+                           ^ Printexc.to_string exn))
+              in
+              match (first_error, result) with
+              | Some error, _ -> Some error
+              | None, Error error -> Some error
+              | None, Ok () -> None)
+            None hooks
+        in
+        match first_error with None -> Ok () | Some error -> Error error
+
+(** Registers a server-side cancellation action.  An active scope stores the
+    hook until cancellation; registering after cancellation runs it
+    immediately, closing the cancel-before-registration race without another
+    lock or Domain. *)
+let on_cancel scope hook =
+  if not (owns_scheduler scope) then Error (ownership_error "on_cancel")
+  else
+    match scope.state with
+    | Active ->
+        scope.cancel_hooks <- hook :: scope.cancel_hooks;
         Ok ()
+    | Cancelled ->
+        (try hook () with
+        | exn ->
+            Error
+              (Error.defect
+                 ~message:
+                   ("Temporal.Scope cancellation hook raised: "
+                   ^ Printexc.to_string exn)))
 
 (** Reports the scope state without scheduling work or touching the resolver.
     Status is an owner-domain operation just like [cancel]: returning a typed

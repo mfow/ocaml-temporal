@@ -12,6 +12,7 @@
   test_scheduler
   test_activity_retry_policy
   test_scope
+  test_scope_server_cancel
   test_workflow_time
   test_condition
   test_workflow_role_checkpoint)

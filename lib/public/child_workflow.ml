@@ -89,35 +89,61 @@ let runtime_cancellation_type = function
 let failed_handle error =
   { future = resolved (Error error); cancel = (fun ~reason:_ -> Error error) }
 
+(** Verifies an optional structured-cancellation scope before validating or
+    encoding a child request. This keeps a cancelled scope from emitting a
+    new start command or invoking application codecs. *)
+let check_scope = function
+  | None -> Ok ()
+  | Some scope -> Scope.check scope
+
 (** Validates durable identity and encodes input before allocating a private
     sequence number. Consequently invalid requests cannot change command order
     or appear in replay history. *)
-let start_handle ?(cancellation_type = Try_cancel) ?retry_policy ~id definition
-    input =
-  match validate_id id with
+let start_handle ?scope ?(cancellation_type = Try_cancel) ?retry_policy ~id
+    definition input =
+  match check_scope scope with
   | Error error -> failed_handle error
-  | Ok () -> (
-      match Codec_private.encode_base (Workflow.input definition) input with
-      | Error error -> failed_handle (Error_private.of_base error)
-      | Ok input -> (
-          match Temporal_sdk_kernel.Workflow_context_store.current () with
-          | None -> failed_handle (outside_error ())
-          | Some context ->
-              let future, cancel =
-                Temporal_sdk_kernel.Workflow_context_store.start_child_workflow
-                  context ~id ~name:(Workflow.name definition) ~input
-                  ?retry_policy:(Option.map Retry_policy_private.to_runtime retry_policy)
-                  ~cancellation_type:(runtime_cancellation_type cancellation_type)
-                  ~decode:(Codec_private.decode_base (Workflow.output definition)) ()
-              in
-              {
-                future = Future_private.of_internal future;
-                cancel = (fun ~reason ->
-                  match validate_reason reason with
-                  | Error error -> Error error
-                  | Ok () ->
-                      Result.map_error Error_private.of_base (cancel ~reason));
-              }))
+  | Ok () ->
+      match validate_id id with
+      | Error error -> failed_handle error
+      | Ok () ->
+          match Codec_private.encode_base (Workflow.input definition) input with
+          | Error error -> failed_handle (Error_private.of_base error)
+          | Ok input ->
+              match Temporal_sdk_kernel.Workflow_context_store.current () with
+              | None -> failed_handle (outside_error ())
+              | Some context ->
+                  let future, cancel =
+                    Temporal_sdk_kernel.Workflow_context_store.start_child_workflow
+                      context ~id ~name:(Workflow.name definition) ~input
+                      ?retry_policy:
+                        (Option.map Retry_policy_private.to_runtime retry_policy)
+                      ~cancellation_type:
+                        (runtime_cancellation_type cancellation_type)
+                      ~decode:
+                        (Codec_private.decode_base (Workflow.output definition))
+                      ()
+                  in
+                  let request_cancel ~reason =
+                    match validate_reason reason with
+                    | Error error -> Error error
+                    | Ok () ->
+                        Result.map_error Error_private.of_base (cancel ~reason)
+                  in
+                  let () =
+                    Option.iter
+                      (fun scope ->
+                        (* Scope ownership was checked before scheduling, so
+                           this registration cannot race another Domain. *)
+                        ignore
+                          (Scope.on_cancel scope (fun () ->
+                               request_cancel ~reason:"cancelled by workflow")))
+                      scope
+                  in
+                  {
+                    future = Future_private.of_internal future;
+                    cancel = request_cancel;
+                  }
 
 (** Returns the typed future associated with an operation handle. *)
 let future handle = handle.future
@@ -130,11 +156,12 @@ let cancel ?(reason = "cancelled by workflow") handle = handle.cancel ~reason
 
 (** Starts a child workflow and returns only its future. Callers that need to
     cancel explicitly should retain the handle returned by [start_handle]. *)
-let start ?cancellation_type ?retry_policy ~id definition input =
+let start ?scope ?cancellation_type ?retry_policy ~id definition input =
   future
-    (start_handle ?cancellation_type ?retry_policy ~id definition input)
+    (start_handle ?scope ?cancellation_type ?retry_policy ~id definition input)
 
 (** Implements the direct-style child call as start followed by an effect-backed
     wait. Expected child and codec failures remain explicit [result] values. *)
-let execute ?cancellation_type ?retry_policy ~id definition input =
-  Future.await (start ?cancellation_type ?retry_policy ~id definition input)
+let execute ?scope ?cancellation_type ?retry_policy ~id definition input =
+  Future.await
+    (start ?scope ?cancellation_type ?retry_policy ~id definition input)

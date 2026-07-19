@@ -36,6 +36,14 @@ let signal_condition_status =
   Temporal.Query.define ~name:"smoke.signal_condition_status"
     ~output:Temporal.Codec.string
 
+(** The typed-input query used by the live interaction scenario. Its input is
+    deliberately independent from workflow state so the acceptance test can
+    prove that the request payload was decoded and delivered to the handler,
+    rather than merely receiving the output-only query's answer. *)
+let signal_value_echo =
+  Temporal.Query.define_with_input ~name:"smoke.signal_value_echo"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+
 (** The signal handler and workflow body share this key, while every Temporal
     execution receives an independent value slot. A new run therefore starts
     with [None] even when the same worker process has already handled another
@@ -100,6 +108,19 @@ let signal_condition_status_handler =
       | Ok None -> Ok "SMOKE:QUERY:PENDING"
       | Ok (Some value) ->
           Ok ("SMOKE:QUERY:SIGNAL:" ^ String.uppercase_ascii value)
+      | Error error -> Error error)
+
+(** Answers a typed query without mutating the workflow or suspending. The
+    current signal state is included only as a read-only marker so the driver
+    can distinguish a live handler result from a hard-coded response. *)
+let signal_value_echo_handler =
+  Temporal.Query.Handler.make_with_input signal_value_echo (fun input ->
+      match Temporal.Workflow_context.Local.get signal_value_state with
+      | Ok None -> Ok ("SMOKE:TYPED_QUERY:" ^ String.uppercase_ascii input ^ ":PENDING")
+      | Ok (Some value) ->
+          Ok
+            ("SMOKE:TYPED_QUERY:" ^ String.uppercase_ascii input ^ ":SIGNAL:"
+           ^ String.uppercase_ascii value)
       | Error error -> Error error)
 
 (** Counts attempts for the intentionally transient activity used by the live
@@ -472,6 +493,17 @@ let timer_then_activity =
       match Temporal.Workflow.sleep (Temporal.Duration.of_ms 10L) with
       | Error error -> Error error
       | Ok () -> Temporal.Activity.execute mock_transform (seed ^ ":timer"))
+
+(** Runs the same typed activity through Core's local-activity lane. The live
+    assertion checks that local activity scheduling, worker dispatch, and the
+    history marker path work against a real server without turning the helper
+    into a remote task-queue call. *)
+let local_activity_workflow =
+  Temporal.Workflow.define ~name:"smoke.local_activity"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      Temporal.Activity.execute_local
+        ~start_to_close_timeout:(Temporal.Duration.of_ms 1_000L)
+        mock_transform seed)
 
 (** Command-only reference used by the executable continuation below. Keeping
     this reference separate avoids a recursive OCaml value: the workflow

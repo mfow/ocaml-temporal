@@ -18,6 +18,26 @@ module Client = Temporal.Client
 module Error = Temporal.Error
 module Definitions = Smoke_definitions
 
+(** Client-only query definition whose encoder always rejects. It exercises the
+    public validation path without changing the worker registry: malformed
+    input must fail before a native query request is emitted. *)
+let invalid_typed_query_input =
+  Temporal.Codec.make ~encoding:"test/invalid-query-input"
+    ~encode:(fun _ -> Error (Error.defect ~message:"invalid query input"))
+    ~decode:(fun _ -> Error (Error.defect ~message:"invalid query input"))
+
+let invalid_typed_query =
+  Temporal.Query.define_with_input
+    ~name:(Temporal.Query.name_with_input Definitions.signal_value_echo)
+    ~input:invalid_typed_query_input ~output:Temporal.Codec.string
+
+(** A query name with no worker registration. The live driver uses it to prove
+    that a missing handler is surfaced as a typed Temporal error rather than a
+    fabricated empty result. *)
+let missing_query =
+  Temporal.Query.define ~name:"smoke.query_not_registered"
+    ~output:Temporal.Codec.string
+
 (** Wall-clock process timestamp used only for operator diagnostics.
     Workflow payloads and workflow code never call this helper; the driver is
     an ordinary client process, so a clock adjustment can affect only a
@@ -355,6 +375,52 @@ let query_signal_condition_workflow handle =
         ~duration_ms:(elapsed_ms started) ();
       Error error
 
+(** Executes the typed-input query against the same parked run. The expected
+    marker proves the input codec, native payload list, worker decoder, and
+    output codec all participated in one live request. *)
+let query_signal_value_echo handle input =
+  let operation = "query_typed:" ^ Client.workflow_id handle in
+  let started = Unix.gettimeofday () in
+  phase ~operation ~status:"begin" ~workflow_id:(Client.workflow_id handle)
+    ~run_id:(Client.run_id handle) ();
+  match
+    Client.query_with_input handle ~query:Definitions.signal_value_echo ~input
+  with
+  | Ok value ->
+      phase ~operation ~status:"answered"
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Ok value
+  | Error error ->
+      phase ~operation ~status:("error:" ^ Error.kind error)
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Error error
+
+(** Confirms the live server rejects an unknown query handler. *)
+let query_missing_handler handle =
+  match Client.query handle ~query:missing_query with
+  | Error _ -> Ok ()
+  | Ok value ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf
+                "missing query handler unexpectedly returned %S" value))
+
+(** Confirms a rejected input codec is reported locally and does not become a
+    malformed empty-payload query request. *)
+let query_invalid_input handle =
+  match
+    Client.query_with_input handle ~query:invalid_typed_query ~input:"invalid"
+  with
+  | Error _ -> Ok ()
+  | Ok value ->
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf "invalid query input unexpectedly returned %S" value))
+
 (** Starts one workflow and records the server-issued run identity only after
     the typed client has accepted it. *)
 let start_workflow client ~workflow ~task_queue ~id ~input =
@@ -471,6 +537,11 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-timer-then-activity" ~input:"smoke"
         in
+        let* local_activity_handle =
+          start_workflow client ~workflow:Definitions.local_activity_workflow
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-local-activity" ~input:"local"
+        in
         let* continue_handle =
           start_workflow client ~workflow:Definitions.continue_as_new
             ~task_queue:Definitions.task_queue
@@ -528,30 +599,21 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-parent-retries-child" ~input:"smoke"
         in
-        let* cancellation_handle =
-          start_workflow client ~workflow:Definitions.long_running_cancellation
-            ~task_queue:Definitions.task_queue
-            ~id:"two-binary-long-running-cancellation" ~input:cancellation_token
-        in
-        let* child_start_failure_handle =
-          start_workflow client
-            ~workflow:Definitions.parent_observes_child_start_failure
-            ~task_queue:Definitions.task_queue
-            ~id:"two-binary-parent-observes-child-start-failure" ~input:"smoke"
-        in
         let* signal_handle =
           start_workflow client ~workflow:Definitions.signal_condition_workflow
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-signal-condition" ~input:signal_condition_token
         in
-        (* Sixteen starts intentionally happen before the first wait. The
-           cancellation workflow's marker activity proves that its timer and
-           marker commands were accepted in one activation before this exact
-           run is cancelled; the timer keeps the execution outstanding. The
-           child-start-failure parent is started only after that top-level
-           cancellation run is accepted, so its duplicate child ID must be
-           rejected by Temporal rather than succeeding as an ordinary child.
-           heartbeat workflow is also already outstanding here, so its retry
+        (* Most starts intentionally happen before the first result wait. The
+           signal workflow is started before its synchronous query checks, but
+           the cancellation workflow is deliberately started afterwards so a
+           slow query cannot race with its timer. The cancellation workflow's
+           marker activity proves that its timer and marker commands were
+           accepted in one activation before this exact run is cancelled; the
+           timer keeps the execution outstanding. The child-start-failure
+           parent is started only after that top-level cancellation run is
+           submitted, so its duplicate child ID must be rejected by Temporal
+           rather than succeeding as an ordinary child. The heartbeat workflow is also already outstanding here, so its retry
            runs concurrently with the other live server work instead of being
            mistaken for a sequential local callback. The timeout workflow is
            deliberately started only after the heartbeat workflow has reached
@@ -592,7 +654,39 @@ let run () =
                       "smoke.signal_condition query returned unexpected value %S"
                       signal_query_result))
         in
+        let* typed_query_result =
+          query_signal_value_echo signal_handle "probe"
+        in
+        let* () =
+          if String.equal typed_query_result "SMOKE:TYPED_QUERY:PROBE:PENDING"
+          then Ok ()
+          else
+            Error
+              (Error.defect
+                 ~message:
+                   (Printf.sprintf
+                      "smoke.signal_value_echo query returned unexpected value %S"
+                      typed_query_result))
+        in
+        let* () = query_missing_handler signal_handle in
+        let* () = query_invalid_input signal_handle in
         let* () = signal_workflow signal_handle in
+        (* Start the long-running cancellation workflow only after all
+           synchronous query checks have completed.  Otherwise a slow query
+           request could allow the workflow's ready marker to arrive and the
+           later cancellation to race with its timer, making the smoke test
+           depend on request latency rather than the cancellation contract. *)
+        let* cancellation_handle =
+          start_workflow client ~workflow:Definitions.long_running_cancellation
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-long-running-cancellation" ~input:cancellation_token
+        in
+        let* child_start_failure_handle =
+          start_workflow client
+            ~workflow:Definitions.parent_observes_child_start_failure
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-parent-observes-child-start-failure" ~input:"smoke"
+        in
         let* () =
           wait_for_cancellation_ready cancellation_ready_file cancellation_token
         in
@@ -606,6 +700,11 @@ let run () =
         let* () =
           require_completed "smoke.timer_then_activity" "SMOKE:TIMER"
             (Ok timer_result)
+        in
+        let* local_activity_result = wait_workflow local_activity_handle in
+        let* () =
+          require_completed "smoke.local_activity" "LOCAL"
+            (Ok local_activity_result)
         in
         let* continued_result =
           wait_continued_workflow client ~workflow:Definitions.continue_as_new

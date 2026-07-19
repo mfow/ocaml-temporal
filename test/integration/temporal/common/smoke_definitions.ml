@@ -341,7 +341,7 @@ let external_cancellation_parent =
           Error
             (Temporal.Error.defect
                ~message:
-                 "external cancellation target must contain workflow and run IDs")
+                 "external cancellation target must contain workflow and run IDs"))
 
 (** Builds the short, bounded policy used by [activity_retry]. Keeping this as a
     result lets the workflow return a typed configuration defect if the public

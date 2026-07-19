@@ -494,6 +494,17 @@ let timer_then_activity =
       | Error error -> Error error
       | Ok () -> Temporal.Activity.execute mock_transform (seed ^ ":timer"))
 
+(** Runs the same typed activity through Core's local-activity lane. The live
+    assertion checks that local activity scheduling, worker dispatch, and the
+    history marker path work against a real server without turning the helper
+    into a remote task-queue call. *)
+let local_activity_workflow =
+  Temporal.Workflow.define ~name:"smoke.local_activity"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun seed ->
+      Temporal.Activity.execute_local
+        ~start_to_close_timeout:(Temporal.Duration.of_ms 1_000L)
+        mock_transform seed)
+
 (** Command-only reference used by the executable continuation below. Keeping
     this reference separate avoids a recursive OCaml value: the workflow
     definition that the worker registers remains local and executable, while the

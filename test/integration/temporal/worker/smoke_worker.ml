@@ -281,6 +281,7 @@ let run () =
                 Definitions.signal_condition_workflow;
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;
+              Worker.workflow Definitions.local_activity_workflow;
               Worker.workflow Definitions.continue_as_new;
               Worker.workflow Definitions.activity_retry;
               Worker.workflow Definitions.activity_long_backoff_retry;

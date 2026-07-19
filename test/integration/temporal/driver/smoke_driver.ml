@@ -493,6 +493,11 @@ let run () =
             ~task_queue:Definitions.task_queue
             ~id:"two-binary-timer-then-activity" ~input:"smoke"
         in
+        let* local_activity_handle =
+          start_workflow client ~workflow:Definitions.local_activity_workflow
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-local-activity" ~input:"local"
+        in
         let* continue_handle =
           start_workflow client ~workflow:Definitions.continue_as_new
             ~task_queue:Definitions.task_queue
@@ -642,6 +647,11 @@ let run () =
         let* () =
           require_completed "smoke.timer_then_activity" "SMOKE:TIMER"
             (Ok timer_result)
+        in
+        let* local_activity_result = wait_workflow local_activity_handle in
+        let* () =
+          require_completed "smoke.local_activity" "LOCAL"
+            (Ok local_activity_result)
         in
         let* continued_result =
           wait_continued_workflow client ~workflow:Definitions.continue_as_new

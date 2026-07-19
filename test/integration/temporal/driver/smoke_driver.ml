@@ -355,6 +355,28 @@ let query_signal_condition_workflow handle =
         ~duration_ms:(elapsed_ms started) ();
       Error error
 
+(** Executes the typed-input query against the same parked run. The expected
+    marker proves the input codec, native payload list, worker decoder, and
+    output codec all participated in one live request. *)
+let query_signal_value_echo handle input =
+  let operation = "query_typed:" ^ Client.workflow_id handle in
+  let started = Unix.gettimeofday () in
+  phase ~operation ~status:"begin" ~workflow_id:(Client.workflow_id handle)
+    ~run_id:(Client.run_id handle) ();
+  match
+    Client.query_with_input handle ~query:Definitions.signal_value_echo ~input
+  with
+  | Ok value ->
+      phase ~operation ~status:"answered"
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Ok value
+  | Error error ->
+      phase ~operation ~status:("error:" ^ Error.kind error)
+        ~workflow_id:(Client.workflow_id handle) ~run_id:(Client.run_id handle)
+        ~duration_ms:(elapsed_ms started) ();
+      Error error
+
 (** Starts one workflow and records the server-issued run identity only after
     the typed client has accepted it. *)
 let start_workflow client ~workflow ~task_queue ~id ~input =
@@ -591,6 +613,20 @@ let run () =
                    (Printf.sprintf
                       "smoke.signal_condition query returned unexpected value %S"
                       signal_query_result))
+        in
+        let* typed_query_result =
+          query_signal_value_echo signal_handle "probe"
+        in
+        let* () =
+          if String.equal typed_query_result "SMOKE:TYPED_QUERY:PROBE:PENDING"
+          then Ok ()
+          else
+            Error
+              (Error.defect
+                 ~message:
+                   (Printf.sprintf
+                      "smoke.signal_value_echo query returned unexpected value %S"
+                      typed_query_result))
         in
         let* () = signal_workflow signal_handle in
         let* () =

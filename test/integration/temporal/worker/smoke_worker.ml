@@ -275,7 +275,9 @@ let run () =
           ~workflows:
             [
               Worker.workflow ~signals:[ Definitions.signal_value_handler ]
-                ~queries:[ Definitions.signal_condition_status_handler ]
+                ~queries:
+                  [ Definitions.signal_condition_status_handler;
+                    Definitions.signal_value_echo_handler ]
                 Definitions.signal_condition_workflow;
               Worker.workflow Definitions.fan_out;
               Worker.workflow Definitions.timer_then_activity;

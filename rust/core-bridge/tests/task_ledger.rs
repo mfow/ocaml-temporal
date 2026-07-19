@@ -117,6 +117,22 @@ fn draining_rejects_new_tasks_until_existing_tasks_complete() {
     assert!(ledger.can_finalize());
 }
 
+/// A poll lease dropped before safe completion makes ordinary outstanding
+/// counts insufficient for finalization, even after known ledger debt drains.
+#[test]
+fn lost_poll_lease_blocks_finalization_after_debt_drains() {
+    let mut ledger = TaskLedger::new();
+    assert_eq!(ledger.admit_workflow("run-1"), Ok(Admission::New));
+    assert_eq!(ledger.lease_workflow("run-1"), Ok(()));
+
+    ledger.mark_lost_poll_lease();
+    ledger.begin_draining();
+    assert_eq!(ledger.complete_workflow("run-1"), Ok(()));
+
+    assert_eq!(ledger.outstanding(), 0);
+    assert!(!ledger.can_finalize());
+}
+
 /// Core may issue cancellation for an already admitted activity while worker
 /// shutdown is draining; that update must remain deliverable without admitting
 /// any new completion obligation.

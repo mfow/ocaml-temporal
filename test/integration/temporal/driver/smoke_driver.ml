@@ -442,14 +442,32 @@ let update_missing_handler handle =
       ~duration_ms:(elapsed_ms started) ();
     Ok ()
   in
+  let reject_error error =
+    let view = Error.view error in
+    if
+      not (String.equal (Error.kind error) "update")
+      || not view.non_retryable
+      ||
+      not
+        (String.equal view.message
+           "unhandled workflow update: smoke.update_not_registered")
+    then
+      Error
+        (Error.defect
+           ~message:
+             (Printf.sprintf
+                "unknown update returned an unexpected rejection: kind=%s message=%S"
+                (Error.kind error) view.message))
+    else rejected ()
+  in
   match
     Client.start_update ~update_id:"two-binary-update-unknown-1" handle
       ~update:missing_update ~input:"unknown" ()
   with
-  | Error _ -> rejected ()
+  | Error error -> reject_error error
   | Ok update_handle -> (
       match Client.wait_update update_handle with
-      | Error _ -> rejected ()
+      | Error error -> reject_error error
       | Ok value ->
           Error
             (Error.defect

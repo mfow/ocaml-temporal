@@ -10,34 +10,96 @@ set -eu
 
 port=${DB_PORT:-5432}
 
-# Creates the database when absent, establishes Temporal's version table, and
-# applies every migration newer than the stored version. All three operations
-# are deliberately safe to repeat when a retained Compose volume is restarted.
+# SQL-tool startup can briefly race PostgreSQL's transition from accepting
+# connections to accepting schema DDL. Keep retries here, at the database
+# boundary, so the Temporal service never observes a half-initialized schema.
+# A bounded retry also preserves a useful failure when the image, credentials,
+# or migration directory is genuinely invalid.
+run_sql_tool() {
+  allow_existing=$1
+  database=$2
+  shift 2
+  attempts=1
+  while :; do
+    if output=$(temporal-sql-tool \
+      --plugin postgres12 \
+      --ep "$POSTGRES_SEEDS" \
+      -u "$POSTGRES_USER" \
+      -p "$port" \
+      --db "$database" "$@" 2>&1); then
+      printf '%s\n' "$output"
+      return 0
+    fi
+
+    if [ "$allow_existing" = yes ]; then
+      case "$output" in
+        *"already exists"*)
+          printf '%s\n' "$output" >&2
+          return 0
+          ;;
+      esac
+    fi
+
+    if [ "$attempts" -ge 30 ]; then
+      printf '%s\n' "$output" >&2
+      printf 'temporal-sql-tool %s failed after %s attempts\n' \
+        "$*" "$attempts" >&2
+      return 1
+    fi
+
+    printf 'temporal-sql-tool %s attempt %s failed; retrying\n' \
+      "$*" "$attempts" >&2
+    attempts=$((attempts + 1))
+    sleep 2
+  done
+}
+
+# Creates the database when absent. PostgreSQL images commonly create the
+# user's database during first boot, so an explicit create can legitimately
+# report that it already exists; that state is success, not a failed setup.
+create_database() {
+  database=$1
+  attempts=1
+  while :; do
+    if output=$(temporal-sql-tool \
+      --plugin postgres12 \
+      --ep "$POSTGRES_SEEDS" \
+      -u "$POSTGRES_USER" \
+      -p "$port" \
+      --db "$database" \
+      create 2>&1); then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    case "$output" in
+      *"already exists"*)
+        printf '%s\n' "$output" >&2
+        return 0
+        ;;
+    esac
+    if [ "$attempts" -ge 30 ]; then
+      printf '%s\n' "$output" >&2
+      printf 'temporal-sql-tool create failed after %s attempts\n' \
+        "$attempts" >&2
+      return 1
+    fi
+    printf 'temporal-sql-tool create attempt %s failed; retrying\n' \
+      "$attempts" >&2
+    attempts=$((attempts + 1))
+    sleep 2
+  done
+}
+
+# Establishes Temporal's version table and applies every migration newer than
+# the stored version. These operations are safe to repeat after a retained
+# Compose volume is restarted.
 setup_database() {
   database=$1
   schema_directory=$2
 
-  temporal-sql-tool \
-    --plugin postgres12 \
-    --ep "$POSTGRES_SEEDS" \
-    -u "$POSTGRES_USER" \
-    -p "$port" \
-    --db "$database" \
-    create
-  temporal-sql-tool \
-    --plugin postgres12 \
-    --ep "$POSTGRES_SEEDS" \
-    -u "$POSTGRES_USER" \
-    -p "$port" \
-    --db "$database" \
-    setup-schema -v 0.0
-  temporal-sql-tool \
-    --plugin postgres12 \
-    --ep "$POSTGRES_SEEDS" \
-    -u "$POSTGRES_USER" \
-    -p "$port" \
-    --db "$database" \
-    update-schema -d "$schema_directory"
+  create_database "$database"
+  run_sql_tool yes "$database" setup-schema -v 0.0
+  run_sql_tool no "$database" update-schema -d "$schema_directory"
 }
 
 setup_database temporal /etc/temporal/schema/postgresql/v12/temporal/versioned

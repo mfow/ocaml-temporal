@@ -642,8 +642,8 @@ let decode_update_output definition = function
            ~message:"workflow update returned multiple result payloads" ())
   | Backend.Update_failed error -> Error error
 
-(** Starts one typed update and returns as soon as Temporal admits it. This
-    admission/completion split lets callers issue several updates before
+(** Starts one typed update and returns once Temporal has accepted it. This
+    acceptance/completion split lets callers issue several updates before
     waiting, while the supervisor still serializes every native operation. *)
 let start_update ?update_id
     (handle : ('workflow_input, 'workflow_output) handle)

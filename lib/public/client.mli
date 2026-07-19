@@ -11,7 +11,7 @@ type t
     of the terminal payload. *)
 type ('input, 'output) handle
 
-(** Opaque client-side handle for one admitted workflow update. It records the
+(** Opaque client-side handle for one accepted workflow update. It records the
     typed definition and exact target execution internally; callers can only
     await it or inspect its update ID. *)
 type ('input, 'output) update_handle
@@ -209,7 +209,7 @@ val query_with_input :
   input:'query_input ->
   ('query_output, Error.t) result
 
-(** Starts a typed workflow update and waits only until Temporal admits it.
+(** Starts a typed workflow update and waits until a Temporal worker accepts it.
     [update_id] is optional but should be supplied by callers that may retry
     after an uncertain transport result. The returned handle can be polled
     independently of other workflow handles. *)
@@ -221,7 +221,7 @@ val start_update :
   unit ->
   (('input, 'output) update_handle, Error.t) result
 
-(** Waits for an admitted update to complete and decodes its typed result.
+(** Waits for an accepted update to complete and decodes its typed result.
     Application-level update failures and transport defects are returned as
     [Error.t] values; no expected update failure is raised as an exception. *)
 val wait_update :

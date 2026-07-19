@@ -44,6 +44,14 @@ let signal_value_echo =
   Temporal.Query.define_with_input ~name:"smoke.signal_value_echo"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string
 
+(** The immediate update used by the live interaction scenario. Unlike the
+    signal, an update has a client-visible admission and completion lifecycle;
+    the handler still writes the same workflow-local state so the parked
+    condition can prove that the update changed the running execution. *)
+let signal_value_update =
+  Temporal.Update.define ~name:"smoke.set_value_update"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string
+
 (** The signal handler and workflow body share this key, while every Temporal
     execution receives an independent value slot. A new run therefore starts
     with [None] even when the same worker process has already handled another
@@ -121,6 +129,15 @@ let signal_value_echo_handler =
           Ok
             ("SMOKE:TYPED_QUERY:" ^ String.uppercase_ascii input ^ ":SIGNAL:"
            ^ String.uppercase_ascii value)
+      | Error error -> Error error)
+
+(** Applies one live update to the parked workflow and returns a distinct
+    result payload. The callback is deterministic and performs no external
+    I/O; [Local.set] also wakes the condition scheduler for this execution. *)
+let signal_value_update_handler =
+  Temporal.Update.Handler.make signal_value_update (fun value ->
+      match Temporal.Workflow_context.Local.set signal_value_state value with
+      | Ok () -> Ok ("SMOKE:UPDATE:ACCEPTED:" ^ String.uppercase_ascii value)
       | Error error -> Error error)
 
 (** Counts attempts for the intentionally transient activity used by the live

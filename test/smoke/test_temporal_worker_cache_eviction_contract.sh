@@ -48,9 +48,7 @@ require_source "$makefile" 'smoke-cache-eviction-driver'
 require_source "$worker" 'Worker.create ?max_cached_workflows'
 require_source "$worker" 'Definitions.cache_eviction_residency_handler'
 require_source "$driver_dune" '(name cache_eviction_driver)'
-require_source "$driver" 'wait_for_marker'
 require_source "$driver" 'wait_for_eviction_with_second_diagnostic'
-require_source "$driver" 'initial-completion'
 require_source "$driver" 'cache_settling'
 # The settling observation is intentionally wrapped in a retry helper. Keep
 # this contract coupled to the actual query call rather than to the helper's
@@ -58,7 +56,6 @@ require_source "$driver" 'cache_settling'
 # detail while the required residency query cannot disappear.
 require_source "$driver" 'Client.query handle ~query:Definitions.cache_eviction_residency_query'
 require_source "$driver" 'require_resident'
-require_source "$driver" 'SMOKE_CACHE_EVICTION_READY_FILE'
 require_source "$driver" 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE'
 require_source "$driver" 'second workflow was acknowledged but A cache-full eviction marker was not published'
 reject_source "$driver" 'phase "ready_b"'

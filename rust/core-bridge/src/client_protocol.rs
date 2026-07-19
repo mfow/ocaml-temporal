@@ -270,7 +270,7 @@ pub struct QueryWorkflowResponse {
     pub result: Vec<workflow_protocol::Payload>,
 }
 
-/// Request to start one named workflow update and wait until it is admitted.
+/// Request to start one named workflow update and wait until a worker accepts it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateWorkflowRequest {
@@ -288,7 +288,7 @@ pub struct UpdateWorkflowRequest {
     pub input: Vec<workflow_protocol::Payload>,
 }
 
-/// Request to poll a previously admitted workflow update until completion.
+/// Request to poll a previously accepted workflow update until completion.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PollWorkflowUpdateRequest {
@@ -298,7 +298,7 @@ pub struct PollWorkflowUpdateRequest {
     pub workflow_id: String,
     /// Concrete run identifier returned by start or retained by the caller.
     pub run_id: String,
-    /// Workflow-scoped update id returned by the admission response.
+    /// Workflow-scoped update id returned by the acceptance response.
     pub update_id: String,
 }
 
@@ -316,7 +316,7 @@ pub enum UpdateOutcome {
     },
 }
 
-/// Response from update admission, optionally containing a fast completion.
+/// Response from update acceptance, optionally containing a fast completion.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateWorkflowResponse {
@@ -324,7 +324,7 @@ pub struct UpdateWorkflowResponse {
     pub update_id: String,
     /// Exact execution used by the update.
     pub execution: ExecutionRef,
-    /// Present when the server completed the update before admission returned.
+    /// Present when the server completed the update before acceptance returned.
     pub outcome: Option<UpdateOutcome>,
 }
 
@@ -1159,8 +1159,10 @@ pub async fn query_workflow(
     })
 }
 
-/// Starts one update through Temporal's workflow service and waits only for
-/// admission. Completion is a separate poll operation.
+/// Starts one update through Temporal's workflow service and waits until the
+/// workflow worker has accepted it. Temporal deliberately does not allow the
+/// asynchronous `Admitted` stage for the public start-update flow; `Accepted`
+/// is the interoperable stage for a handle that will be polled separately.
 pub async fn update_workflow(
     connection: Connection,
     request: UpdateWorkflowRequest,
@@ -1177,7 +1179,7 @@ pub async fn update_workflow(
                     run_id: request.run_id.clone(),
                 }),
                 wait_policy: Some(WaitPolicy {
-                    lifecycle_stage: UpdateWorkflowExecutionLifecycleStage::Admitted as i32,
+                    lifecycle_stage: UpdateWorkflowExecutionLifecycleStage::Accepted as i32,
                 }),
                 request: Some(update::v1::Request {
                     meta: Some(update::v1::Meta {

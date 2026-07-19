@@ -85,22 +85,6 @@ let marker_matches path expected =
               String.equal contents expected)
         with _ -> false)
 
-(** Waits for an atomically published worker marker. A bounded wait keeps a
-    missing eviction activation a normal driver failure instead of letting CI
-    hang until its global job timeout. *)
-let wait_for_marker ?expected path ~timeout =
-  let deadline = Unix.gettimeofday () +. timeout in
-  let rec loop () =
-    if marker_matches path expected then Ok ()
-    else if Unix.gettimeofday () >= deadline then
-      Error (Error.defect ~message:"cache eviction marker was not published")
-    else begin
-      Unix.sleepf 0.1;
-      loop ()
-    end
-  in
-  loop ()
-
 (** Waits for A's cache-full marker while retaining B's completion marker as a
     diagnostic only. Core buffers B when the one-slot cache is full and only
     releases it after A's cache-removal activation is acknowledged; therefore
@@ -231,7 +215,6 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* marker = required_env "SMOKE_CACHE_EVICTION_FILE" in
-      let* ready = required_env "SMOKE_CACHE_EVICTION_READY_FILE" in
       let* second_ready =
         required_env "SMOKE_CACHE_EVICTION_SECOND_READY_FILE"
       in
@@ -251,7 +234,6 @@ let run () =
       in
       let result =
         let* () = clear_marker marker in
-        let* () = clear_marker ready in
         let* () = clear_marker second_ready in
         phase "start_a" "begin";
         let* first =
@@ -260,14 +242,10 @@ let run () =
             ~id:"two-binary-cache-eviction-a" ~input:"first" ()
         in
         phase "start_a" "ok";
-        phase "ready_marker" "begin";
-        let* () = wait_for_marker ~expected:"initial-completion\n" ready ~timeout in
-        phase "ready_marker" "observed";
-        (* A's initial marker is published by OCaml after the native completion
-           returns. This query/response round trip gives Core's stream a
-           concrete, observable follow-up boundary before B creates one-slot
-           cache pressure; it does not infer a cache insertion from the marker
-           alone. *)
+        (* The typed query is the synchronization barrier. It cannot return
+           until the worker has accepted and executed a workflow activation,
+           so it is stronger than a best-effort filesystem callback that may
+           be delayed while Core is processing the same completion. *)
         phase "cache_settling" "begin";
         let* () = query_residency first ~timeout in
         phase "cache_settling" "observed";

@@ -5,7 +5,7 @@
     asynchronous activity completion, timeout-triggered-retry,
     heartbeat-timeout-triggered-retry, activity-level non-retryable failure,
     retryable parent/child retry, parent/child success, parent/child failure,
-    typed signal/condition, external workflow signal/cancellation,
+    typed signal/condition, external workflow signal/cancellation, including wrong-run rejection,
     parent/child cancellation, typed-failure, long-running cancellation, and
     continue-as-new scenarios before waiting for most of them. It then stages
     the timeout-triggered retries after the shorter heartbeat/detail path and
@@ -798,6 +798,30 @@ let run () =
         in
         let* () =
           wait_for_cancellation_ready cancellation_ready_file external_cancel_token
+        in
+        (* Send a deliberately mismatched run ID first. The signal workflow is a
+           different execution, so this exact pair must be rejected without
+           canceling the external-cancellation target. If the bridge drops
+           [run_id], this parent would complete successfully and the check would
+           fail. *)
+        let external_cancellation_wrong_run_target =
+          Client.workflow_id external_cancellation_handle ^ "\n"
+          ^ Client.run_id signal_handle
+        in
+        let* external_cancellation_wrong_run_parent_handle =
+          start_workflow client
+            ~workflow:Definitions.external_cancellation_wrong_run_parent
+            ~task_queue:Definitions.task_queue
+            ~id:"two-binary-external-cancellation-wrong-run-parent"
+            ~input:external_cancellation_wrong_run_target
+        in
+        let* external_cancellation_wrong_run_parent_result =
+          wait_workflow external_cancellation_wrong_run_parent_handle
+        in
+        let* () =
+          require_completed "smoke.external_cancellation_wrong_run_parent"
+            "SMOKE:EXTERNAL:CANCEL:WRONG-RUN"
+            (Ok external_cancellation_wrong_run_parent_result)
         in
         let external_cancellation_target =
           Client.workflow_id external_cancellation_handle ^ "\n"

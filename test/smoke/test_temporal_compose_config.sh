@@ -509,6 +509,13 @@ require_absent "$root/scripts/setup-temporal-postgres.sh"
 test -x "$fixture/scripts/setup-temporal-postgres.sh"
 test -x "$fixture/scripts/check-temporal-stack.sh"
 test -x "$fixture/scripts/validate-restart-replay-identity.sh"
+# Schema initialization is a live-test reliability boundary. Keep the
+# bounded retry and idempotent database handling visible to this fast contract
+# test so a future cleanup cannot reintroduce a second-stack startup race.
+require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'run_sql_tool()'
+require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'create_database()'
+require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'already exists'
+require_source_text "$fixture/scripts/setup-temporal-postgres.sh" 'attempts -ge 30'
 
 if ! grep -F 'test/integration/temporal' "$makefile" >/dev/null; then
   echo "root Make entrypoints must select the nested Compose fixture" >&2

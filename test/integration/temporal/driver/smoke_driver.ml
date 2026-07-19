@@ -578,12 +578,26 @@ let query_missing_handler handle =
                 "missing query handler unexpectedly returned %S" value))
 
 (** Confirms a rejected input codec is reported locally and does not become a
-    malformed empty-payload query request. *)
+    malformed empty-payload query request. Accepting any error here would let a
+    bridge or transport failure masquerade as local validation. *)
 let query_invalid_input handle =
   match
     Client.query_with_input handle ~query:invalid_typed_query ~input:"invalid"
   with
-  | Error _ -> Ok ()
+  | Error error ->
+      let view = Error.view error in
+      if
+        String.equal (Error.kind error) "defect"
+        && view.non_retryable
+        && String.equal view.message "invalid query input"
+      then Ok ()
+      else
+        Error
+          (Error.defect
+             ~message:
+               (Printf.sprintf
+                  "invalid query input returned an unexpected rejection: kind=%s message=%S"
+                  (Error.kind error) view.message))
   | Ok value ->
       Error
         (Error.defect

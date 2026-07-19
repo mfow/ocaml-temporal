@@ -525,6 +525,7 @@ let run () =
         Definitions.clear_signal_condition_ready_file signal_condition_ready_file
       in
       let cancellation_token = cancellation_token () in
+      let external_cancel_token = external_cancellation_token () in
       let signal_condition_token_value = signal_condition_token () in
       let* client =
         measured "client_create" (fun () ->

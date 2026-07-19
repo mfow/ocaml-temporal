@@ -7,3 +7,6 @@ limit.maxIDLength:
 system.forceSearchAttributesCacheRefreshOnRead:
   - value: true
     constraints: {}
+frontend.enableUpdateWorkflowExecution:
+  - value: true
+    constraints: {}

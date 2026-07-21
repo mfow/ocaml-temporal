@@ -3,16 +3,17 @@
     The client starts two exact runs while the worker is configured with one
     Core cache slot. Each run schedules a long deterministic timer, so the
     first task reaches a durable pending boundary. Before admitting B, the
-    driver makes a read-only query of A and requires its typed response. That
-    gives the native stream a completed follow-up activation boundary, rather
-    than racing the marker published immediately after the initial completion
-    with subsequent Core processing. It then requires the worker's
-    payload-free eviction marker. The second run's normal-completion marker is
-    retained only as timeout diagnostics: pinned Core ordering buffers B until
-    A's [RemoveFromCache(CacheFull)] activation has been acknowledged, so B is
-    never evidence that eviction has happened. It cancels both exact runs and
-    requires each to reach Temporal's typed cancellation outcome. The client
-    never registers or executes workflow code. *)
+    driver waits for the worker's payload-free completion marker for A. This
+    marker is written only after Core acknowledges A's initial activation, so
+    the cache transition is synchronized without issuing a control-plane query
+    that can wait on a separate poller during cache pressure. The driver then
+    requires the worker's payload-free eviction marker. The second run's
+    normal-completion marker is retained only as timeout diagnostics: pinned
+    Core ordering buffers B until A's [RemoveFromCache(CacheFull)] activation
+    has been acknowledged, so B is never evidence that eviction has happened.
+    It cancels both exact runs and requires each to reach Temporal's typed
+    cancellation outcome. The client never registers or executes workflow
+    code. *)
 
 module Client = Temporal.Client
 module Error = Temporal.Error
@@ -85,6 +86,26 @@ let marker_matches path expected =
               String.equal contents expected)
         with _ -> false)
 
+(** Waits for an exact completion marker before admitting the second run. The
+    worker publishes this marker after Core acknowledges A's first activation;
+    using the marker as the admission barrier keeps the driver independent of
+    query-task routing and gives the eviction assertion one deterministic
+    starting state. *)
+let wait_for_marker ~path ~expected ~timeout =
+  let deadline = Unix.gettimeofday () +. timeout in
+  let rec loop () =
+    if marker_matches path (Some expected) then Ok ()
+    else if Unix.gettimeofday () >= deadline then
+      Error
+        (Error.defect
+           ~message:("timed out waiting for marker " ^ path))
+    else begin
+      Unix.sleepf 0.1;
+      loop ()
+    end
+  in
+  loop ()
+
 (** Waits for A's cache-full marker while retaining B's completion marker as a
     diagnostic only. Core buffers B when the one-slot cache is full and only
     releases it after A's cache-removal activation is acknowledged; therefore
@@ -146,62 +167,6 @@ let require_cancelled label = function
 let cancel handle ~request_id =
   Client.cancel ~request_id ~reason:"cache eviction acceptance requested" handle
 
-(** Validates the fixed response from A's read-only cache-settling query.
-    A mismatched value is a typed driver defect, rather than an accidental
-    signal that any successful query response is sufficient evidence. *)
-let require_resident = function
-  | "resident" -> Ok ()
-  | value ->
-      Error
-        (Error.defect
-           ~message:
-             (Printf.sprintf "cache-settling query returned unexpected value %S"
-                value))
-
-(** Identifies the bounded set of Temporal RPC failures that can be transient
-    while a sticky-cache worker is draining. The query is a control-plane
-    observation, not the eviction assertion itself, so a short-lived
-    [failed_precondition] or transport deadline must not turn an otherwise
-    healthy cache transition into a false negative. Codec, protocol, and
-    workflow-handler errors remain terminal and are never retried. *)
-let transient_query_error error =
-  let view = Error.view error in
-  if view.non_retryable || view.category <> `Bridge then false
-  else
-    let prefix = "Temporal client RPC failed: " in
-    let message = view.message in
-    if String.starts_with ~prefix message then
-      let code =
-        String.sub message (String.length prefix)
-          (String.length message - String.length prefix)
-      in
-      List.mem code
-        [ "aborted"; "deadline_exceeded"; "failed_precondition"; "internal";
-          "resource_exhausted"; "unavailable" ]
-    else false
-
-(** Waits for the worker to answer the cache-settling query, retaining the
-    last typed error if the bounded observation window expires. Temporal may
-    briefly report that no poller was seen immediately after A's first task;
-    retrying only the known transient RPC codes preserves strict failure for
-    malformed responses and handler defects while allowing the worker to
-    publish its next activation boundary. *)
-let query_residency handle ~timeout =
-  let deadline = Unix.gettimeofday () +. min timeout 60. in
-  let rec loop () =
-    match Client.query handle ~query:Definitions.cache_eviction_residency_query with
-    | Ok value -> require_resident value
-    | Error error when transient_query_error error ->
-        if Unix.gettimeofday () >= deadline then Error error
-        else begin
-          phase "cache_settling" "query_retry";
-          Unix.sleepf 0.5;
-          loop ()
-        end
-    | Error error -> Error error
-  in
-  loop ()
-
 (** Starts two exact executions against the one-slot worker cache. The
     cache-only workflow has no durable command before it parks, so each initial
     workflow task can complete as an empty non-terminal activation while Core
@@ -215,6 +180,7 @@ let run () =
       let* target_url = required_env "TEMPORAL_ADDRESS" in
       let* namespace = required_env "TEMPORAL_NAMESPACE" in
       let* marker = required_env "SMOKE_CACHE_EVICTION_FILE" in
+      let* ready = required_env "SMOKE_CACHE_EVICTION_READY_FILE" in
       let* second_ready =
         required_env "SMOKE_CACHE_EVICTION_SECOND_READY_FILE"
       in
@@ -234,6 +200,7 @@ let run () =
       in
       let result =
         let* () = clear_marker marker in
+        let* () = clear_marker ready in
         let* () = clear_marker second_ready in
         phase "start_a" "begin";
         let* first =
@@ -242,12 +209,10 @@ let run () =
             ~id:"two-binary-cache-eviction-a" ~input:"first" ()
         in
         phase "start_a" "ok";
-        (* The typed query is the synchronization barrier. It cannot return
-           until the worker has accepted and executed a workflow activation,
-           so it is stronger than a best-effort filesystem callback that may
-           be delayed while Core is processing the same completion. *)
         phase "cache_settling" "begin";
-        let* () = query_residency first ~timeout in
+        let* () =
+          wait_for_marker ~path:ready ~expected:"initial-completion\n" ~timeout
+        in
         phase "cache_settling" "observed";
         phase "start_b" "begin";
         let* second =

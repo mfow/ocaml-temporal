@@ -324,7 +324,8 @@ let external_signal_parent =
 (** Attempts to cancel an external execution with a deliberately unrelated run
     ID. The workflow succeeds only when Temporal rejects the mismatched exact-run
     identity, proving the integration does not silently fall back to workflow ID
-    alone. *)
+    alone. The pinned Core bridge reports that rejection as a retryable workflow
+    error with a stable "not found" diagnostic prefix. *)
 let external_cancellation_wrong_run_parent =
   Temporal.Workflow.define ~name:"smoke.external_cancellation_wrong_run_parent"
     ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun target ->
@@ -335,7 +336,23 @@ let external_cancellation_wrong_run_parent =
               ~run_id:wrong_run_id ~reason:"external acceptance mismatched run ID"
             |> Temporal.Future.await
           with
-          | Error _ -> Ok "SMOKE:EXTERNAL:CANCEL:WRONG-RUN"
+          | Error error ->
+              let view = Temporal.Error.view error in
+              if
+                String.equal (Temporal.Error.kind error) "workflow"
+                && not view.non_retryable
+                && String.starts_with ~prefix:
+                     "Unable to cancel external workflow because not found"
+                     view.message
+              then Ok "SMOKE:EXTERNAL:CANCEL:WRONG-RUN"
+              else
+                Error
+                  (Temporal.Error.defect
+                     ~message:
+                       (Printf.sprintf
+                          "wrong-run cancellation returned an unexpected error: kind=%s non_retryable=%b message=%S"
+                          (Temporal.Error.kind error) view.non_retryable
+                          view.message))
           | Ok () ->
               Error
                 (Temporal.Error.defect

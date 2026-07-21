@@ -180,11 +180,10 @@ services:
       SMOKE_WORKER_CACHE_EVICTION_READY_FILE: /workspace/test/integration/temporal/.cache-eviction-ready
       SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE: /workspace/test/integration/temporal/.cache-eviction-second-ready
       SMOKE_CACHE_EVICTION_SECOND_WORKFLOW_ID: two-binary-cache-eviction-b
-      # The cache fixture binds A from the first activation it observes. The
-      # initial Core activation may not carry workflow identity metadata, so a
-      # preconfigured target ID would prevent the completion hook from ever
-      # publishing A's admission marker.
-      SMOKE_REPLAY_WORKFLOW_ID: ""
+      # The driver supplies A's exact workflow ID. The native diagnostic hook
+      # uses it as a fallback when Core omits identity metadata on an
+      # activation, while learning the run ID from the activation itself.
+      SMOKE_REPLAY_WORKFLOW_ID: "${SMOKE_REPLAY_WORKFLOW_ID:-}"
     command:
       - opam
       - exec

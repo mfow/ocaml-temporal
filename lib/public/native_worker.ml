@@ -746,6 +746,16 @@ let replay_diagnostic_hook () =
           cache_eviction_ready_path;
           cache_eviction_second_ready_path;
           second_target_workflow_id;
+          (* Core may omit workflow identity metadata on the initial and
+             cache-removal activations.  The cache acceptance fixture supplies
+             the exact workflow ID out of band, so retain it as the diagnostic
+             identity while still learning the run ID from the activation.
+             This keeps a later [cache_full] marker attributable even when the
+             activation itself contains no workflow ID. *)
+          workflow_id =
+            (match (cache_eviction_path, target_workflow_id) with
+            | Some _, Some workflow_id -> Some workflow_id
+            | _ -> state.workflow_id);
         }
       in
       let matches_target (info : Workflow_adapter.activation_info) =
@@ -754,7 +764,7 @@ let replay_diagnostic_hook () =
         with
         | Some target, Some workflow_id, _ -> String.equal target workflow_id
         | Some target, None, Some workflow_id -> String.equal target workflow_id
-        | Some _, None, None -> false
+        | Some _, None, None -> Option.is_some state.cache_eviction_path
         | None, Some workflow_id, _ -> (
             match state.workflow_id with
             | None -> true

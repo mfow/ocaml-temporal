@@ -410,7 +410,7 @@ test-temporal-worker-cache-eviction-live: test-temporal-config
 		trap - EXIT HUP INT TERM; \
 		cleanup_driver; \
 		cleanup_cache_worker; \
-		if [ "$$status" -ne 0 ]; then cat "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" 2>/dev/null || true; $(MAKE) temporal-logs || true; fi; \
+		if [ "$$status" -ne 0 ]; then cat "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" 2>/dev/null || true; $(TEMPORAL_COMPOSE) logs --no-color --tail 200 smoke-cache-eviction-worker 2>/dev/null || true; $(MAKE) temporal-logs || true; fi; \
 		$(MAKE) temporal-clean || true; \
 		exit "$$status"; \
 	}; \

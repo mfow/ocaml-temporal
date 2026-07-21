@@ -852,6 +852,16 @@ let replay_diagnostic_hook () =
           end
       in
       let completion_callback (info : Workflow_adapter.activation_info) =
+        (* Keep the isolated cache fixture diagnosable without exposing this
+           test-only observer through the public API.  In particular, Core may
+           deliver the eviction activation without workflow metadata, so the
+           run ID and reason are the useful facts when the marker is absent. *)
+        if Option.is_some state.cache_eviction_path then
+          Printf.eprintf
+            "cache observer completion run_id=%s workflow_id=%s reason=%s\n%!"
+            info.run_id
+            (Option.value info.workflow_id ~default:"<none>")
+            (Option.value info.cache_removal_reason ~default:"<none>");
         if matches_target info then
           match info.cache_removal_reason with
           | Some "cache_full" ->

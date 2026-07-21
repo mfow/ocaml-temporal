@@ -82,9 +82,11 @@ opaque bytes and applications may choose another deterministic codec.
   larger-backoff extension is the next live gate.
   Forced worker crash recovery is live-verified by the separate
   `make test-temporal-worker-crash-recovery` gate and the [PR #306 CI run](https://github.com/mfow/ocaml-temporal/actions/runs/29356904816);
-  sticky-cache eviction is live-verified by the complete [PR #322
-  run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748);
-  exact parent/child restart-replay is live-verified by the complete [PR #351
+  sticky-cache eviction is live-verified by the complete [PR #438
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29805397413); the
+  earlier [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748)
+  is historical evidence for the original gate. Exact parent/child
+  restart-replay is live-verified by the complete [PR #351
   run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013), while
   broader child failure recovery and cache/recovery cases remain separate work.
 - Child-workflow commands can be authored and are translated by the semantic
@@ -255,9 +257,11 @@ replacement and replay. `make test-temporal-worker-crash-recovery` repeats the
 exact-run acceptance after a forced generation-one process kill, requiring the
 replacement worker to replay and complete before accepting the run. Broader
 child failure recovery and cache/recovery coverage remain follow-up work;
-sticky-cache eviction is live-verified by PR #322, exact parent/child
-restart-replay by PR #351, and child retry plus duplicate-ID child-start failure
-by PR #289 above.
+sticky-cache eviction is live-verified by the complete [PR #438
+run](https://github.com/mfow/ocaml-temporal/actions/runs/29805397413) (the
+earlier PR #322 run is historical evidence), exact parent/child restart-replay
+by PR #351, and child retry plus duplicate-ID child-start failure by PR #289
+above.
 
 ### Workflow-patch replay acceptance
 

@@ -14,6 +14,18 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-21: Repaired live sticky-cache eviction acceptance (#438)
+
+The complete [PR #438 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29805397413)
+passes the real Temporal/PostgreSQL integration smoke after isolating the
+cache-eviction worker and configuring it with one Core cache slot. The current
+`make test-temporal-worker-cache-eviction` gate uses a typed read-only query as
+its synchronization barrier, requires the payload-free `cache_full` marker,
+acknowledges Core's `RemoveFromCache` activation with an empty completion, and
+then checks exact-run cancellation and teardown. The earlier [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748)
+remains historical evidence for the original gate; broader cache/recovery and
+child-failure scenarios remain planned.
+
 ## 2026-07-19: Live typed queries, workflow updates, and termination
 
 The complete [PR #434 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29684113836)

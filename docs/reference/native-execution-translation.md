@@ -212,9 +212,12 @@ run](https://github.com/mfow/ocaml-temporal/actions/runs/29346853291) live-verif
 the current two-generation worker restart/replay path, including the
 replacement-worker retry to attempt two; the earlier [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471)
 remains historical evidence for the original path. Sticky-cache eviction is
-now live-verified by the [PR #322 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748):
+now live-verified by the complete [PR #438 Compose run](https://github.com/mfow/ocaml-temporal/actions/runs/29805397413).
+That repaired gate uses an isolated worker configured with one Core cache slot;
 the one-slot scenario observes a `RemoveFromCache(CacheFull)` activation,
 acknowledges it with an empty completion, and checks the exact workflow runs.
+The earlier [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748)
+remains historical evidence for the original gate.
 Other untested child recovery cases remain deferred live acceptance scenarios
 even though several of their local worker paths are already tested. The later
 [PR #306 Build run](https://github.com/mfow/ocaml-temporal/actions/runs/29356904816)

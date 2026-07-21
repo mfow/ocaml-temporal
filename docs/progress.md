@@ -37,6 +37,17 @@ earlier documentation boundary that treated live external workflow operations
 as outstanding; missing or already-completed targets and replay interaction
 remain separate live scenarios.
 
+## 2026-07-21: Stable mismatched-run external cancellation diagnostic (#439)
+
+The complete [PR #439 Build run](https://github.com/mfow/ocaml-temporal/actions/runs/29824441578)
+keeps the live external-cancellation scenario green while tightening its
+wrong-run assertion. A mismatched exact-run cancellation now has documented
+bridge evidence as a retryable workflow error (`non_retryable=false`) whose
+message begins `Unable to cancel external workflow because not found`. The
+workflow-ID-plus-run-ID identity check remains the acceptance boundary; missing
+or already-completed targets and replay interaction are not implied by this
+diagnostic.
+
 ## 2026-07-19: Live typed queries, workflow updates, and termination
 
 The complete [PR #434 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29684113836)

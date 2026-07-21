@@ -105,8 +105,10 @@ opaque bytes and applications may choose another deterministic codec.
   It returns typed cancellation and ownership errors without blocking an OS
   thread, but it is intentionally cooperative: cancelling a scope does not
   emit Temporal activity or child-workflow cancellation commands. Use activity
-  cancellation options or the public client cancel operation when server-side
-  cancellation is required.
+  cancellation options or the public client/external-workflow cancellation
+  operation when the Temporal execution itself must be cancelled. The local
+  scope remains cooperative; those server-side cancellation paths are live-
+  verified separately.
 - `Temporal.Workflow.patched` supports initial patch-in and
   `Temporal.Workflow.deprecate_patch` provides the focused-tested deprecation
   phase. The

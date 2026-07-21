@@ -429,11 +429,12 @@ and
 
 The deterministic mock transport validates the exact execution identity but
 does not run workflow code, so mock queries fail with a typed workflow error.
-The complete [PR #406 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643)
-live-verifies the output-only query handler against a parked exact run; typed-
-input query acceptance remains a follow-up test. This slice also proves the
-public API, strict protocol, supervisor serialization, ABI state guards, and
-official Rust RPC mapping without claiming broader live evidence prematurely.
+The complete [PR #434 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29684113836)
+live-verifies both the output-only and exactly-one-input query handlers against
+parked exact runs, including the missing-handler rejection. This slice also
+proves the public API, strict protocol, supervisor serialization, ABI state
+guards, and official Rust RPC mapping; query deadlines and behavior across
+replay or cache eviction remain separate live scenarios.
 
 ## Complete a handed-off asynchronous activity
 

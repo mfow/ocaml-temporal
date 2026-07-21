@@ -24,8 +24,12 @@ That historical run predates the long-backoff workflow now present in the
 fixture, whose first live run remains pending.
 The [PR #406 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643)
 also proves an output-only client query against the exact signal-condition run
-while it is parked. Typed-input query acceptance, live update delivery, and
-broader interaction coverage remain future work.
+while it is parked. The complete [PR #434 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29684113836)
+also proves the typed-input query against that parked run, while the [PR #428
+Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29676120429)
+proves typed update admission and completion. Suspended update recovery,
+query deadlines and replay/cache-eviction behavior, and broader interaction
+coverage remain future work.
 
 `Temporal.Client.query` is a separate control-plane operation: it asks an
 already registered workflow for an output-only query through an exact
@@ -34,8 +38,9 @@ does the same for a query defined with `Query.define_with_input`; it encodes
 exactly one argument before transport. Neither method registers or invokes a
 handler locally. See the [native client JSON protocol](client-protocol.md) for
 the request/response shape and exact-run semantics; output-only query
-acceptance is recorded in PR #406, while typed-input query acceptance remains
-follow-up work.
+acceptance is recorded in PR #406 and both query forms are live-verified by PR
+#434. Typed update admission/completion is live-verified by PR #428; rejected
+unknown updates are covered by PR #432.
 
 ## Current status: local handlers and a partial native boundary
 
@@ -71,7 +76,8 @@ that awaits a workflow future retains its continuation in the execution-owned
 pending map; a later activation emits completed or rejected and removes that
 entry. Codec failures, missing handlers, unsupported input arity, duplicate
 pending protocol IDs, and callback errors become typed rejections. Focused
-native tests prove this behavior but are not live-server evidence.
+native tests prove this behavior; live typed admission/completion and the
+missing-handler rejection are verified by PRs #428 and #432.
 
 ## The three-step model
 
@@ -90,8 +96,10 @@ handler that was defined for bytes without receiving a typed codec error. The
 native transport and the remaining handler/response lifecycles are described
 in the [native interaction design](../design/native-interactions.md). Signal
 and typed query activation delivery plus two-phase update responses are
-implemented. Output-only query acceptance is live-verified by PR #406; typed-
-input query and update acceptance remain deferred.
+implemented. Output-only query acceptance is live-verified by PR #406, both
+query forms by PR #434, and typed update admission/completion by PR #428. The
+remaining live boundaries are suspended update recovery, query deadlines and
+replay/cache-eviction behavior, and broader handler policies.
 
 ## Definitions
 
@@ -357,7 +365,8 @@ synchronously on the owner Domain, and argument arity is checked by the
 registered output-only or typed handler rather than discarded. The remaining native
 interaction work is:
 
-- live acceptance scenarios for typed-input queries and update handlers that
-  suspend, including recovery and shutdown/eviction cleanup;
+- live acceptance scenarios for update handlers that suspend, including
+  recovery and shutdown/eviction cleanup;
+- query deadlines and query behavior across replay or cache eviction;
 - Docker Compose acceptance scenarios for updates, including workflow-side
   assertions through Temporal Server.

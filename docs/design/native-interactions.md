@@ -87,10 +87,12 @@ Consequently:
   the [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368).
   That historical run predates the long-backoff workflow now present in the
   fixture, whose first live run remains pending.
-  The [PR #406 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643)
-  additionally proves an output-only query against a parked exact run. The
-  focused scheduler and bridge tests remain the evidence for typed-input query
-  and update delivery.
+  The [PR #434 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29684113836)
+  proves both query forms against parked exact runs. Typed update
+  admission/completion is live-verified by the [PR #428 Actions
+  run](https://github.com/mfow/ocaml-temporal/actions/runs/29676120429); the
+  focused scheduler and bridge tests remain the evidence for suspended update
+  continuation behavior.
 
 Unsupported Core fields and oneof variants still fail explicitly. This is
 intentional: a newer Core field or update metadata field must not silently
@@ -392,31 +394,36 @@ single side accepting a new variant early:
    semantic/runtime slice:** bilateral Core conversion, exact query-ID
    preservation (including Core's `legacy_query` path), output-only and
    exactly-one-input handler dispatch, and rejected extra arguments. Output-only
-   query acceptance is live-verified by [PR #406](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643);
-   typed-input query server coverage remains open.
+   query acceptance is live-verified by [PR #406](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643),
+   and both query forms are live-verified by [PR #434](https://github.com/mfow/ocaml-temporal/actions/runs/29684113836).
 3. **Implemented bounded milestone:** add `DoUpdate` and `UpdateResponse`
    semantic records, strict JSON/schema validation, pinned-Core conversion,
    immediate and suspended public handler dispatch, replay validator skipping,
    pending-continuation lifecycle tests, and response-phase tests. Live recovery
    acceptance remains open.
-4. Add live typed-input query and update acceptance, recovery, and broader
-   query coverage.
+4. Add live recovery and broader query/update coverage, including suspended
+   update continuations, query deadlines, and replay/cache-eviction behavior.
 5. Add Core conversion fixtures in `rust/core-bridge/tests/`, OCaml runtime
    tests under `test/`, and bilateral JSON round-trip tests for every supported
    variant. Run the representative local Makefile gates; queued GitHub
    Actions checks remain unexecuted evidence until the repository quota clears.
 6. Expand the Docker Compose acceptance scenario with Temporal Server and
-   PostgreSQL to issue a typed-input query and wait for an update through the
-   two OCaml binaries. The current typed signal/condition path is live-verified in the
-   [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368),
-   with PR #266 retained as focused historical evidence. Record the query and
-   update results separately from synthetic and bridge-only evidence.
+   PostgreSQL to cover suspended update continuations, query deadlines, and
+   replay/cache-eviction behavior through the two OCaml binaries. The current
+   typed query path is live-verified in the [PR #434 Actions
+   run](https://github.com/mfow/ocaml-temporal/actions/runs/29684113836), and
+   typed update admission/completion is live-verified in [PR
+   #428](https://github.com/mfow/ocaml-temporal/actions/runs/29676120429).
+   Record recovery and deadline results separately from the existing
+   acceptance evidence.
 
 The overall feature status remains experimental: native `SignalWorkflow`
 transport and its typed signal/condition success path, output-only and
 exactly-one-input `QueryWorkflow` delivery, and two-phase update dispatch
 (including suspended handlers) are implemented and focused-tested. Output-only
-query acceptance is live-verified by PR #406; live typed-input query/update
-delivery, update recovery, and broader interaction acceptance remain pending.
+and typed-input query acceptance are live-verified by PR #434, and typed update
+admission/completion is live-verified by PR #428; suspended update recovery,
+query deadlines, replay/cache-eviction behavior, and broader interaction
+acceptance remain pending.
 `Temporal.Interaction` remains the public local-testing path for all three
 interaction kinds.

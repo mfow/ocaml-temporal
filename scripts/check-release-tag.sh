@@ -19,15 +19,28 @@ case "$tag" in
   *) fail "tag must start with v (got $tag)" ;;
 esac
 
-# Accept only the three numeric components used by opam releases. This
-# intentionally rejects a development marker and floating or ambiguous tags.
+# Accept three numeric components plus an optional SemVer-style prerelease
+# suffix. The suffix is useful for tags such as v1.0.0-beta.1 while keeping
+# floating, malformed, and development tags out of the release path.
 version=${tag#v}
+core=$version
+prerelease=
 case "$version" in
+  *-*)
+    core=${version%%-*}
+    prerelease=${version#*-}
+    case "$prerelease" in
+      '' | .* | *. | *..* | *[!A-Za-z0-9.-]*)
+        fail "tag has an invalid prerelease suffix (got $tag)" ;;
+    esac
+    ;;
+esac
+case "$core" in
   *[!0-9.]* | .* | *. | *..*) fail "tag must be vMAJOR.MINOR.PATCH (got $tag)" ;;
 esac
 old_ifs=$IFS
 IFS=.
-set -- $version
+set -- $core
 IFS=$old_ifs
 [ "$#" -eq 3 ] || fail "tag must be vMAJOR.MINOR.PATCH (got $tag)"
 for component in "$@"; do

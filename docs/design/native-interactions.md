@@ -393,24 +393,25 @@ single side accepting a new variant early:
    preservation (including Core's `legacy_query` path), output-only and
    exactly-one-input handler dispatch, and rejected extra arguments. Output-only
    query acceptance is live-verified by [PR #406](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643);
-   typed-input query server coverage remains open.
+   typed-input query success and rejection are live-verified in the current
+   master acceptance run; replay, cache-recovery, and deadline behavior remain
+   open.
 3. **Implemented bounded milestone:** add `DoUpdate` and `UpdateResponse`
    semantic records, strict JSON/schema validation, pinned-Core conversion,
    immediate and suspended public handler dispatch, replay validator skipping,
    pending-continuation lifecycle tests, and response-phase tests. Live recovery
    acceptance remains open.
-4. Add live typed-input query and update acceptance, recovery, and broader
-   query coverage.
+4. Add live recovery and broader query/update coverage. Basic typed-input query
+   and immediate update success/rejection paths are already live-verified.
 5. Add Core conversion fixtures in `rust/core-bridge/tests/`, OCaml runtime
    tests under `test/`, and bilateral JSON round-trip tests for every supported
    variant. Run the representative local Makefile gates; queued GitHub
    Actions checks remain unexecuted evidence until the repository quota clears.
 6. Expand the Docker Compose acceptance scenario with Temporal Server and
-   PostgreSQL to issue a typed-input query and wait for an update through the
-   two OCaml binaries. The current typed signal/condition path is live-verified in the
-   [PR #289 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29339077368),
-   with PR #266 retained as focused historical evidence. Record the query and
-   update results separately from synthetic and bridge-only evidence.
+   PostgreSQL to exercise query and update recovery, deadlines, and suspended
+   handlers through the two OCaml binaries. The current master run already
+   records the basic typed query and immediate update results separately from
+   synthetic and bridge-only evidence.
 
 The overall feature status remains experimental: native `SignalWorkflow`
 transport and its typed signal/condition success path, output-only and

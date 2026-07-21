@@ -50,9 +50,10 @@ The remaining reference documents are useful when changing one subsystem:
 - [Native workflow interactions](design/native-interactions.md) specifies the
   Core-to-Rust-to-OCaml mapping for signals, queries, and updates, including
   response timing, replay rules, validation, the implemented signal boundary,
-  the immediate and suspended update boundaries, and the remaining live
-  typed-input query/update acceptance work. Output-only query acceptance is
-  recorded in the live two-binary evidence.
+  the immediate and suspended update boundaries. Typed-query success/rejection
+  and immediate update success/unknown-handler rejection are recorded in the
+  current master live two-binary evidence; replay, deadline, and suspended
+  update recovery remain open.
 - [OCaml SDK logging](reference/observability.md) documents log sources, tags,
   levels, privacy, and Domain behavior.
 - [Local Temporal stack](reference/local-temporal-stack.md) documents the
@@ -137,7 +138,7 @@ opaque bytes with encoding metadata.
 | Pure OCaml workflow runtime | Dune unit and runtime tests | Synthetic activation/replay, not proof of live Server compatibility |
 | Workflow patching and worker versioning | Public patch-in, deprecation, and safe call-removal semantics are implemented and focused-tested. A three-transition gate uses separately compiled legacy, active, deprecated, and removed workers; the complete [PR #356 run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271) verifies all transitions against Temporal Server. Legacy build-ID and deployment-based worker routing are implemented through `Temporal.Worker.Options` and the private Core bridge. | Deployment registration and rollout automation, a dedicated live worker-routing gate, migration automation, and broader historical compatibility remain pending. |
 | Public native worker | Focused adapter, supervisor, Rust bridge, lifecycle tests, and real two-binary Compose paths. Restart/replay is live-verified by PR #253, retry after restart by PR #298, sticky-cache eviction by the complete [PR #322 run](https://github.com/mfow/ocaml-temporal/actions/runs/29402103748), and exact parent/child restart-replay by the complete [PR #351 run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013). | Broader cache/recovery scenarios remain untested live |
-| Public native client | Typed start with memo/search attributes, exact-run wait/cancel/reset/terminate/signal, output-only and typed-input query APIs, bounded visibility-listing APIs, and experimental typed workflow update handles are focused-tested. The [PR #253 run](https://github.com/mfow/ocaml-temporal/actions/runs/29286560471) live-verified the twelve-result baseline, including continue-as-new successor following and exact-run cancellation. The [PR #406 run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643) additionally live-verifies an output-only query against a parked workflow. | Typed signal delivery and output-only query acceptance are live-verified; typed-input query, update, reset, termination, and visibility acceptance remain outstanding. |
+| Public native client | Typed start with memo/search attributes, exact-run wait/cancel/reset/terminate/signal, output-only and typed-input query APIs, bounded visibility-listing APIs, and experimental typed workflow update handles are focused-tested. Master live acceptance now covers typed-query success/rejection, immediate update success/unknown-handler rejection, exact-run termination, and external workflow cancellation. | Reset and visibility round trips, query replay/deadline behavior, suspended-update recovery, and less common external-operation outcomes remain outstanding. |
 | Child workflows | Scheduling, command translation, and two-stage native resolution are covered by focused Rust/OCaml tests; [PR #289](https://github.com/mfow/ocaml-temporal/actions/runs/29333761719) live-verified success, propagated failure, cancellation, retry, and duplicate-ID start failure. The complete [PR #351 run](https://github.com/mfow/ocaml-temporal/actions/runs/29434016013) binds and validates both exact histories across worker replacement. | Broader child failure recovery remains untested live. |
 | Temporal/PostgreSQL stack | `make test-temporal-integration` starts real containers, runs a public worker and a separate public client driver, and asserts the eighteen-result baseline; dedicated targets add restart, crash recovery, cache eviction, workflow patching, and parent/child replay/recovery paths. | The acceptance suite remains deliberately narrower than the complete Temporal feature surface. |
 
@@ -153,11 +154,10 @@ client can submit a typed signal to one exact run through the private
 control-plane bridge, but that acknowledgement does not claim worker-side
 handler execution. Native output-only and typed-input query delivery plus
 immediate one-input update dispatch are implemented at the bridge boundary.
-The [PR #406 run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643)
-live-verifies the output-only query path against a parked workflow; typed-input
-query and update acceptance, including suspended
-updates, full workflow-code versioning, Nexus, and the remaining SDK parity
-work are tracked as later milestones. Experimental local activities are
+Master live acceptance now verifies typed-query success/rejection and immediate
+update success/unknown-handler rejection; suspended updates, full workflow-code
+versioning, Nexus, and the remaining SDK parity work are tracked as later
+milestones. Experimental local activities are
 implemented and focused-tested, but still need live acceptance. `Workflow.patched` and the unit-returning
 `Workflow.deprecate_patch` lifecycle operation are focused-tested. The complete [PR #348 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29411260374) also
@@ -165,8 +165,8 @@ live-verifies the original patch-in histories. The complete [PR #356 CI
 run](https://github.com/mfow/ocaml-temporal/actions/runs/29469232271)
 live-verifies the expanded active-to-deprecated and deprecated-to-removed
 replay cases. Legacy build-ID and deployment-based worker routing are
-implemented through `Temporal.Worker.Options`; arbitrary-history
-compatibility remains pending. The typed definitions and
+implemented through `Temporal.Worker.Options`; deployment rollout and
+arbitrary-history compatibility remain pending. The typed definitions and
 deterministic local dispatcher are documented in the [interactive workflow
 reference](reference/interactive-workflows.md).
 

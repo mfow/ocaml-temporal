@@ -14,6 +14,25 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-21: Beta-candidate status at `e42f185`
+
+The exact-master [Build run](https://github.com/mfow/ocaml-temporal/actions/runs/29806989620)
+passed all 13 jobs, including the Temporal/PostgreSQL smoke, Linux OCaml
+5.2--5.5 on amd64/arm64, macOS ARM64, Windows x64, quality/security scans,
+and dependency licensing. The [release preflight run](https://github.com/mfow/ocaml-temporal/actions/runs/29806989618)
+also passed. This makes the implementation a stronger beta candidate, but it
+does not establish a beta compatibility promise or a published release.
+
+The current live evidence includes workflows, activities, retries, timers,
+children, signals, typed queries, immediate typed updates, workflow/client/
+external cancellation, termination, continue-as-new, patching, restart/crash/
+replay, and sticky-cache eviction. Remaining release gates are API and feature
+scope freeze, deployment upgrade/rollback evidence, a retained cross-version
+replay corpus, multi-hour soak/performance evidence, source-archive and OPAM
+beta packaging/provenance, and explicit support boundaries for local
+activities, suspended updates, reset, visibility/search-attribute round trips,
+query replay/deadlines, and external-operation edge cases.
+
 ## 2026-07-17: Live output-only query acceptance (#406)
 
 The two-binary Temporal/PostgreSQL smoke now queries the exact

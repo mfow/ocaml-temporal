@@ -24,7 +24,8 @@ That historical run predates the long-backoff workflow now present in the
 fixture, whose first live run remains pending.
 The [PR #406 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643)
 also proves an output-only client query against the exact signal-condition run
-while it is parked. Typed-input query acceptance, live update delivery, and
+while it is parked. Typed-input query success/rejection and immediate update
+delivery are now live-verified in master; suspended update recovery and
 broader interaction coverage remain future work.
 
 `Temporal.Client.query` is a separate control-plane operation: it asks an
@@ -34,8 +35,9 @@ does the same for a query defined with `Query.define_with_input`; it encodes
 exactly one argument before transport. Neither method registers or invokes a
 handler locally. See the [native client JSON protocol](client-protocol.md) for
 the request/response shape and exact-run semantics; output-only query
-acceptance is recorded in PR #406, while typed-input query acceptance remains
-follow-up work.
+acceptance is recorded in PR #406, while typed-input query success/rejection
+and immediate update acceptance are covered by the current master run; replay,
+deadline, and suspended-recovery cases remain follow-up work.
 
 ## Current status: local handlers and a partial native boundary
 
@@ -91,7 +93,8 @@ native transport and the remaining handler/response lifecycles are described
 in the [native interaction design](../design/native-interactions.md). Signal
 and typed query activation delivery plus two-phase update responses are
 implemented. Output-only query acceptance is live-verified by PR #406; typed-
-input query and update acceptance remain deferred.
+input query and immediate update acceptance are live-verified in master, while
+suspended-update recovery and broader interaction cases remain deferred.
 
 ## Definitions
 

@@ -35,6 +35,7 @@ require_text 'nc -z localhost 7233'
 require_text 'smoke-worker:'
 require_text 'smoke-driver:'
 require_text 'smoke-restart-driver:'
+require_text 'smoke-cache-eviction-worker:'
 require_text 'smoke-cache-eviction-driver:'
 require_text 'patch-replay-legacy-worker:'
 require_text 'patch-replay-patched-worker:'
@@ -49,6 +50,7 @@ require_text 'smoke_worker.exe'
 require_text 'smoke_driver.exe'
 require_text 'restart_driver.exe'
 require_text 'cache_eviction_driver.exe'
+require_text 'cache_eviction_worker.exe'
 require_text 'legacy_worker.exe'
 require_text 'patched_worker.exe'
 require_text 'deprecated_worker.exe'
@@ -60,6 +62,7 @@ require_text '--build-dir=/workspace/_build/smoke-worker'
 require_text '--build-dir=/workspace/_build/smoke-driver'
 require_text '--build-dir=/workspace/_build/smoke-restart-driver'
 require_text '--build-dir=/workspace/_build/smoke-cache-eviction-driver'
+require_text '--build-dir=/workspace/_build/smoke-cache-eviction-worker'
 require_text '--build-dir=/workspace/_build/patch-replay-legacy-worker'
 require_text '--build-dir=/workspace/_build/patch-replay-patched-worker'
 require_text '--build-dir=/workspace/_build/patch-replay-deprecated-worker'
@@ -73,6 +76,20 @@ require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/tempora
 require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
 require_text 'SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE:'
 require_text 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE: /workspace/test/integration/temporal/.cache-eviction-second-ready'
+# The cache worker receives the target ID from the Makefile when the live
+# acceptance starts.  The source must therefore preserve interpolation, while
+# the normalized value may legitimately be empty for an isolated config check
+# or the exact target ID during the live run.
+if ! grep -F 'SMOKE_REPLAY_WORKFLOW_ID: "${SMOKE_REPLAY_WORKFLOW_ID:-}"' \
+  "$compose_file" >/dev/null; then
+  echo "cache worker must interpolate SMOKE_REPLAY_WORKFLOW_ID" >&2
+  exit 1
+fi
+if ! grep -E 'SMOKE_REPLAY_WORKFLOW_ID: "?[A-Za-z0-9._-]*"?$' \
+  "$rendered" >/dev/null; then
+  echo "normalized Compose model has an invalid SMOKE_REPLAY_WORKFLOW_ID" >&2
+  exit 1
+fi
 require_text '--kill-after=10s'
 expected_uid=${HOST_UID:-1000}
 expected_gid=${HOST_GID:-1000}
@@ -126,6 +143,7 @@ driver="$fixture/driver/smoke_driver.ml"
 worker="$fixture/worker/smoke_worker.ml"
 driver_dune="$fixture/driver/dune"
 worker_dune="$fixture/worker/dune"
+cache_worker="$fixture/worker/cache_eviction_worker.ml"
 
 # The driver is an independent OCaml test client. It must use the public
 # client operations to start, cancel, and await exact workflow executions;
@@ -162,6 +180,15 @@ require_source_text "$worker" 'let publish_stopped path'
 require_source_text "$worker" 'publish_stopped stopped_file'
 require_source_absent "$worker" 'Client.start'
 require_source_absent "$worker" 'Client.wait'
+
+# The cache proof uses a separate worker process with exactly one Core cache
+# slot.  Keep this role check next to the broad worker checks so a future
+# refactor cannot silently reconnect the driver to the noisy all-workflow
+# worker and reintroduce the original cache-pressure race.
+require_source_text "$cache_worker" 'module Worker = Temporal.Worker'
+require_source_text "$cache_worker" '~max_cached_workflows:1'
+require_source_text "$cache_worker" 'Worker.run worker'
+require_source_absent "$cache_worker" 'Client.start'
 
 # Patching acceptance uses isolated OCaml executables for every source
 # generation plus a client-only driver. The live target proves server behavior;

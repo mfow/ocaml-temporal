@@ -2,6 +2,10 @@
  (name smoke_worker)
  (libraries temporal-sdk temporal_two_binary_smoke_common unix))
 
+(executable
+ (name cache_eviction_worker)
+ (libraries temporal-sdk temporal_two_binary_smoke_common unix))
+
 ;; This isolated worker registers only the long-timer child and its waiting
 ;; parent, so a two-generation replay proof has no unrelated workflow types.
 (executable

@@ -402,11 +402,15 @@ test-temporal-worker-cache-eviction-live: test-temporal-config
 		docker rm -f "$$driver_container" >/dev/null 2>&1 || true; \
 		$(TEMPORAL_COMPOSE) rm --stop --force smoke-cache-eviction-driver >/dev/null 2>&1 || true; \
 	}; \
+	cleanup_cache_worker() { \
+		$(TEMPORAL_COMPOSE) rm --stop --force smoke-cache-eviction-worker >/dev/null 2>&1 || true; \
+	}; \
 	cleanup() { \
 		status=$$?; \
 		trap - EXIT HUP INT TERM; \
+		if [ "$$status" -ne 0 ]; then cat "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" 2>/dev/null || true; $(TEMPORAL_COMPOSE) logs --no-color --tail 200 smoke-cache-eviction-worker 2>/dev/null || true; $(MAKE) temporal-logs || true; fi; \
 		cleanup_driver; \
-		if [ "$$status" -ne 0 ]; then cat "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" 2>/dev/null || true; $(MAKE) temporal-logs || true; fi; \
+		cleanup_cache_worker; \
 		$(MAKE) temporal-clean || true; \
 		exit "$$status"; \
 	}; \
@@ -417,7 +421,7 @@ test-temporal-worker-cache-eviction-live: test-temporal-config
 	$(MAKE) temporal-clean; \
 	rm -f "$(SMOKE_CACHE_EVICTION_FILE)" "$(SMOKE_CACHE_EVICTION_READY_FILE)" "$(SMOKE_CACHE_EVICTION_SECOND_READY_FILE)" "$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)"; \
 	$(MAKE) temporal-start; \
-	$(MAKE) temporal-start-worker; \
+	$(TEMPORAL_COMPOSE) up --force-recreate --detach --build --wait smoke-cache-eviction-worker; \
 	docker rm -f "$$driver_container" >/dev/null 2>&1 || true; \
 	status=0; \
 	$(TEMPORAL_COMPOSE) run --build --rm --name "$$driver_container" --no-deps smoke-cache-eviction-driver >"$(SMOKE_CACHE_EVICTION_DRIVER_LOG_FILE)" 2>&1 || status=$$?; \
@@ -427,8 +431,7 @@ test-temporal-worker-cache-eviction-live: test-temporal-config
 	jq -e --arg workflow_id two-binary-cache-eviction-a \
 		--arg reason cache_full \
 		'type == "object" and (keys | sort) == ["reason", "run_id", "workflow_id"] and .workflow_id == $$workflow_id and .run_id != "" and .reason == $$reason' \
-		"$(SMOKE_CACHE_EVICTION_FILE)" >/dev/null; \
-	$(MAKE) temporal-stop-worker
+		"$(SMOKE_CACHE_EVICTION_FILE)" >/dev/null
 
 test-temporal-worker-restart-live: test-temporal-config
 	@set -eu; \

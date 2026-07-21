@@ -156,6 +156,51 @@ services:
     stop_grace_period: 30s
     init: true
 
+  # Cache eviction has its own worker so the one-entry Core cache contains no
+  # executions from the broad smoke suite.  The same private diagnostic paths
+  # are used by the existing native callback, but only this process can publish
+  # the cache-full marker for the two runs under test.
+  smoke-cache-eviction-worker:
+    profiles: [temporal]
+    extends:
+      service: dev
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_TWO_BINARY_LIVE: "1"
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: temporal-sdk-test
+      SMOKE_CACHE_EVICTION_READY_FILE: /tmp/ocaml-temporal-cache-eviction-worker.ready
+      SMOKE_WORKER_REPLAY_DIAGNOSTICS_FILE: /workspace/test/integration/temporal/.restart-replay-diagnostics.json
+      SMOKE_WORKER_GENERATION: "1"
+      SMOKE_WORKER_MAX_CACHED_WORKFLOWS: "1"
+      SMOKE_WORKER_CACHE_EVICTION_FILE: /workspace/test/integration/temporal/.cache-eviction.json
+      SMOKE_WORKER_CACHE_EVICTION_READY_FILE: /workspace/test/integration/temporal/.cache-eviction-ready
+      SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE: /workspace/test/integration/temporal/.cache-eviction-second-ready
+      SMOKE_CACHE_EVICTION_SECOND_WORKFLOW_ID: two-binary-cache-eviction-b
+      # The driver supplies A's exact workflow ID. The native diagnostic hook
+      # uses it as a fallback when Core omits identity metadata on an
+      # activation, while learning the run ID from the activation itself.
+      SMOKE_REPLAY_WORKFLOW_ID: "${SMOKE_REPLAY_WORKFLOW_ID:-}"
+    command:
+      - opam
+      - exec
+      - --
+      - dune
+      - exec
+      - --build-dir=/workspace/_build/smoke-cache-eviction-worker
+      - test/integration/temporal/worker/cache_eviction_worker.exe
+    healthcheck:
+      test: [CMD-SHELL, "test -s /tmp/ocaml-temporal-cache-eviction-worker.ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 300
+      start_period: 60s
+    stop_grace_period: 30s
+    init: true
+
   # The driver is run with `docker compose run` by the Makefile after the
   # worker health check succeeds. Keeping it as a service still gives Compose
   # one normalized model to validate and makes the two-process topology clear.
@@ -234,7 +279,7 @@ services:
       service: dev
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     depends_on:
-      smoke-worker:
+      smoke-cache-eviction-worker:
         condition: service_healthy
     environment:
       TEMPORAL_TWO_BINARY_LIVE: "1"

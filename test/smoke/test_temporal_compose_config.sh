@@ -76,7 +76,20 @@ require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/tempora
 require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
 require_text 'SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE:'
 require_text 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE: /workspace/test/integration/temporal/.cache-eviction-second-ready'
-require_text 'SMOKE_REPLAY_WORKFLOW_ID: ""'
+# The cache worker receives the target ID from the Makefile when the live
+# acceptance starts.  The source must therefore preserve interpolation, while
+# the normalized value may legitimately be empty for an isolated config check
+# or the exact target ID during the live run.
+if ! grep -F 'SMOKE_REPLAY_WORKFLOW_ID: "${SMOKE_REPLAY_WORKFLOW_ID:-}"' \
+  "$compose_file" >/dev/null; then
+  echo "cache worker must interpolate SMOKE_REPLAY_WORKFLOW_ID" >&2
+  exit 1
+fi
+if ! grep -E 'SMOKE_REPLAY_WORKFLOW_ID: "?[A-Za-z0-9._-]*"?$' \
+  "$rendered" >/dev/null; then
+  echo "normalized Compose model has an invalid SMOKE_REPLAY_WORKFLOW_ID" >&2
+  exit 1
+fi
 require_text '--kill-after=10s'
 expected_uid=${HOST_UID:-1000}
 expected_gid=${HOST_GID:-1000}

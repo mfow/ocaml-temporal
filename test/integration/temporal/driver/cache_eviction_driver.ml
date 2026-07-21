@@ -36,7 +36,15 @@ let required_env name =
 (** Converts the bounded driver timeout into a positive floating-point wait
     budget used only for the file-backed test coordination marker. *)
 let timeout_seconds () =
-  match Sys.getenv_opt "SMOKE_DRIVER_TIMEOUT_SECONDS" with
+  (* The cache fixture has a larger budget than the ordinary client driver
+     because Core may wait for a later workflow-task boundary before emitting
+     RemoveFromCache.  Keep the generic variable as a local/manual fallback. *)
+  let configured_timeout () =
+    match Sys.getenv_opt "SMOKE_CACHE_EVICTION_TIMEOUT_SECONDS" with
+    | Some value when value <> "" -> Some value
+    | _ -> Sys.getenv_opt "SMOKE_DRIVER_TIMEOUT_SECONDS"
+  in
+  match configured_timeout () with
   | None -> Ok 300.
   | Some value -> (
       try

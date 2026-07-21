@@ -76,6 +76,7 @@ require_text 'SMOKE_CANCELLATION_READY_FILE: /workspace/test/integration/tempora
 require_text 'SMOKE_WORKER_STOPPED_FILE: /workspace/test/integration/temporal/.worker-stopped'
 require_text 'SMOKE_WORKER_CACHE_EVICTION_SECOND_READY_FILE:'
 require_text 'SMOKE_CACHE_EVICTION_SECOND_READY_FILE: /workspace/test/integration/temporal/.cache-eviction-second-ready'
+require_text 'SMOKE_REPLAY_WORKFLOW_ID: ""'
 require_text '--kill-after=10s'
 expected_uid=${HOST_UID:-1000}
 expected_gid=${HOST_GID:-1000}

@@ -363,6 +363,45 @@ let external_cancellation_wrong_run_parent =
                ~message:
                  "wrong-run cancellation target must contain workflow and run IDs"))
 
+(** Attempts to signal an external execution after its exact run has
+    completed. Temporal must reject the terminal target with a typed not-found
+    workflow failure rather than acknowledging delivery to a completed run. *)
+let external_signal_completed_parent =
+  Temporal.Workflow.define ~name:"smoke.external_signal_completed_parent"
+    ~input:Temporal.Codec.string ~output:Temporal.Codec.string (fun target ->
+      match String.split_on_char (Char.chr 10) target with
+      | [ workflow_id; run_id ] -> (
+          match
+            Temporal.Workflow.signal_external_workflow ~workflow_id ~run_id
+              ~signal:signal_value ~input:"after-completion"
+            |> Temporal.Future.await
+          with
+          | Error error ->
+              let view = Temporal.Error.view error in
+              if
+                String.equal (Temporal.Error.kind error) "workflow"
+                && String.starts_with ~prefix:
+                     "Unable to signal external workflow because not found"
+                     view.message
+              then Ok "SMOKE:EXTERNAL:SIGNAL:COMPLETED"
+              else
+                Error
+                  (Temporal.Error.defect
+                     ~message:
+                       (Printf.sprintf
+                          "completed-target signal returned an unexpected error: kind=%s non_retryable=%b message=%S"
+                          (Temporal.Error.kind error) view.non_retryable
+                          view.message))
+          | Ok () ->
+              Error
+                (Temporal.Error.defect
+                   ~message:"external signal succeeded for a completed target"))
+      | _ ->
+          Error
+            (Temporal.Error.defect
+               ~message:
+                 "completed-target signal target must contain workflow and run IDs"))
+
 (** Requests cancellation of a separately started workflow execution through
     Temporal's workflow-to-workflow command path. The driver supplies exact
     workflow/run IDs as two newline-separated fields and waits for the typed Core

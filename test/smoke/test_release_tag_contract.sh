@@ -16,15 +16,16 @@ done
 
 sh "$script" "$fixture" v0.1.0
 
-# Prerelease tags are valid release candidates.  The package metadata and
-# .release-version use the same suffix, so the checker proves that the tag
-# cannot silently publish a different package version.
+# Prerelease tags are valid release candidates.  A familiar SemVer hyphen is
+# normalized to OPAM's tilde ordering, so the package beta remains older than
+# the eventual final release. A tag written with OPAM's tilde is accepted too.
 for path in .release-version temporal-sdk.opam temporal-sdk.opam.locked; do
   cp "$root/$path" "$fixture/$path"
-  sed 's/~dev/1.0.0-beta.1/g' "$fixture/$path" > "$fixture/$path.tmp"
+  sed 's/~dev/1.0.0~beta.1/g' "$fixture/$path" > "$fixture/$path.tmp"
   mv "$fixture/$path.tmp" "$fixture/$path"
 done
 sh "$script" "$fixture" v1.0.0-beta.1
+sh "$script" "$fixture" v1.0.0~beta.1
 
 if sh "$script" "$fixture" 0.1.0 >/dev/null 2>&1; then
   echo "release tag contract accepted a tag without v prefix" >&2

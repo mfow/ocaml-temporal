@@ -43,9 +43,14 @@ artifact provenance.
 ## Tag consistency gate
 
 Before creating a release tag, run `make release-tag-check RELEASE_TAG=vX.Y.Z`.
-The check accepts only a three-part numeric tag and verifies that its version
-matches `.release-version`, `temporal-sdk.opam`, and
-`temporal-sdk.opam.locked`. A development checkout using `~dev` therefore
-cannot accidentally be published under a release-looking tag. The same
+For a prerelease, use either the familiar `v1.0.0-beta.1` spelling or the
+equivalent OPAM-native `v1.0.0~beta.1` spelling. The checker records the
+package version as `1.0.0~beta.1` in both cases, because OPAM's tilde ordering
+keeps the beta below the eventual `1.0.0` release.
+The check accepts only a three-part numeric tag with an optional prerelease
+suffix and verifies the normalized version against `.release-version`,
+`temporal-sdk.opam`, and `temporal-sdk.opam.locked`. A development checkout
+using `~dev` therefore cannot accidentally be published under a release-looking
+tag. The same
 contract is exercised without Docker by
 `test/smoke/test_release_tag_contract.sh`.

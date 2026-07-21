@@ -26,6 +26,17 @@ then checks exact-run cancellation and teardown. The earlier [PR #322 run](https
 remains historical evidence for the original gate; broader cache/recovery and
 child-failure scenarios remain planned.
 
+## 2026-07-19: Live external workflow cancellation acceptance (#431)
+
+The complete [PR #431 Build run](https://github.com/mfow/ocaml-temporal/actions/runs/29679213525)
+passes the real Temporal/PostgreSQL integration smoke and all compatibility
+jobs. Its two-binary scenario delivers an external signal, rejects a
+mismatched run ID before acknowledging the exact-run request, then cancels the
+separately started target and observes its cancelled result. This replaces the
+earlier documentation boundary that treated live external workflow operations
+as outstanding; missing or already-completed targets and replay interaction
+remain separate live scenarios.
+
 ## 2026-07-19: Live typed queries, workflow updates, and termination
 
 The complete [PR #434 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29684113836)

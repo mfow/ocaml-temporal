@@ -74,7 +74,7 @@ reject_source "$root/lib/public/native_worker.ml" \
 require_source "$root/lib/runtime/native_worker_execution.ml" 'cache_removal_reason'
 require_source "$root/lib/runtime/native_worker_execution.ml" 'on_completion'
 require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
-  'Temporal.Workflow.sleep (Temporal.Duration.of_ms 60_000L)'
+  'Temporal.Workflow.sleep (Temporal.Duration.of_ms 3_600_000L)'
 require_source "$root/test/integration/temporal/common/smoke_definitions.ml" \
   'smoke.cache_eviction_residency'
 reject_source "$root/test/integration/temporal/common/smoke_definitions.ml" \

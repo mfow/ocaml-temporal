@@ -14,6 +14,24 @@ implementation when a later entry documents that work as complete. The
 latest entry that records a successful live run is the authoritative status
 for the two-binary Temporal acceptance path.
 
+## 2026-07-19: Live typed queries, workflow updates, and termination
+
+The complete [PR #434 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29684113836)
+extends the parked-workflow query acceptance from output-only queries to
+`Temporal.Client.query_with_input`. It also requires the exact missing-handler
+rejection and preserves the local typed-input validation boundary. The [PR #428
+Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29676120429)
+verifies typed workflow-update admission, polling, handler state mutation, and
+completion against the real Temporal/PostgreSQL stack; [PR #432](https://github.com/mfow/ocaml-temporal/actions/runs/29681119024)
+adds the unregistered-handler rejection and proves the parked workflow remains
+usable afterward. The [PR #433 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29683521094)
+verifies exact-run termination and reconciliation of the uncertain
+acknowledgement before observing the stable `Terminated` result.
+
+Query deadlines and replay/cache-eviction behavior, suspended update
+continuations and recovery, reset/visibility acceptance, and richer interaction
+policies remain separate live scenarios.
+
 ## 2026-07-17: Live output-only query acceptance (#406)
 
 The two-binary Temporal/PostgreSQL smoke now queries the exact
@@ -25,10 +43,9 @@ query response came from a live workflow execution rather than a local
 dispatcher or a completed final state.
 
 The complete [PR #406 Actions run](https://github.com/mfow/ocaml-temporal/actions/runs/29557704643)
-passed the live integration smoke and all compatibility jobs. It establishes
-live output-only query acceptance only; typed-input query acceptance,
-query-error and deadline paths, replay or cache-recovery query behavior, and
-update acceptance remain separate scenarios.
+passed the live integration smoke and all compatibility jobs. It established
+the output-only query slice; the newer 2026-07-19 entry above supersedes its
+typed-input query, update, and termination status.
 
 ## 2026-07-17: Typed workflow query-input API
 
@@ -43,9 +60,8 @@ workflow/run handle.
 Focused interaction tests cover successful input decoding, codec failures,
 exception containment, and the output-only/typed-input distinction. The
 install-consumer public API fixture also compiles the new query definition,
-local dispatcher, and client entry points. This milestone has no live
-Temporal Server query acceptance yet; that remains a separate interaction
-coverage gate.
+local dispatcher, and client entry points. Live typed-input query acceptance is
+recorded by the newer 2026-07-19 entry above.
 
 ## 2026-07-16: Live workflow patch lifecycle gate verified
 

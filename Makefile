@@ -431,8 +431,7 @@ test-temporal-worker-cache-eviction-live: test-temporal-config
 	jq -e --arg workflow_id two-binary-cache-eviction-a \
 		--arg reason cache_full \
 		'type == "object" and (keys | sort) == ["reason", "run_id", "workflow_id"] and .workflow_id == $$workflow_id and .run_id != "" and .reason == $$reason' \
-		"$(SMOKE_CACHE_EVICTION_FILE)" >/dev/null; \
-	$(MAKE) temporal-stop-worker
+		"$(SMOKE_CACHE_EVICTION_FILE)" >/dev/null
 
 test-temporal-worker-restart-live: test-temporal-config
 	@set -eu; \
